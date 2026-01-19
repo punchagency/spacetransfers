@@ -169,7 +169,7 @@ export const useArtboardEffects = (
       const selectedItem = selectedId ? items.find(item => item.id === selectedId) : null;
       const displayName = selectedItem
         ? (selectedItem.name || `Item #${selectedItem.id}`).replace(/\.[^/.]+$/, "")
-        : 'Instant Hot Peel';
+        : 'Instant hot peel';
 
       onHeaderInfoChange({
         hasItem: items.length > 0,

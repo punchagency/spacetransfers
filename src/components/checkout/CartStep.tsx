@@ -27,6 +27,13 @@ interface CartStepProps {
 export default function CartStep({ cartItems, updateQuantity, removeItem }: CartStepProps) {
   const renderItemImage = (item: CartItem) => {
     if (item.type === 'gangsheet') {
+      console.log('Gang sheet item:', item);
+      console.log('Items array:', item.items);
+      console.log('Items length:', item.items?.length);
+      if (item.items && item.items.length > 0) {
+        console.log('First item:', item.items[0]);
+        console.log('First item URL:', item.items[0]?.url);
+      }
       return (
         <div className="w-24 h-24 bg-gray-100 rounded border border-gray-200 flex-shrink-0 overflow-hidden">
           {item.image && item.image !== '/placeholder-gangsheet.png' ? (
@@ -37,15 +44,20 @@ export default function CartStep({ cartItems, updateQuantity, removeItem }: Cart
                 <div className="grid gap-0.5 p-0.5" style={{
                   gridTemplateColumns: `repeat(${Math.min(3, Math.ceil(Math.sqrt(item.items.length)))}, 1fr)`,
                 }}>
-                  {item.items.map((subItem: any, idx: number) => (
-                    <div key={idx} className="relative aspect-square">
-                      <img
-                        src={subItem.url}
-                        alt=""
-                        className="w-full h-full object-contain"
-                      />
-                    </div>
-                  ))}
+                  {item.items.map((subItem: any, idx: number) => {
+                    console.log(`Rendering item ${idx}:`, subItem, 'URL:', subItem?.url);
+                    return (
+                      <div key={idx} className="relative aspect-square">
+                        <img
+                          src={subItem.url}
+                          alt=""
+                          className="w-full h-full object-contain"
+                          onError={(e) => console.error('Image failed to load:', subItem.url, e)}
+                          onLoad={() => console.log('Image loaded successfully:', subItem.url)}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

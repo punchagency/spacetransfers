@@ -16,7 +16,7 @@ export default function CanvasRulers({ showRulers, zoom }: CanvasRulersProps) {
   return (
     <>
       {/* Top Ruler */}
-      <div className="absolute top-0 left-8 w-full h-8 z-20 bg-transparent pointer-events-none overflow-hidden">
+      <div className="absolute top-0 left-8 w-full h-8 z-50 bg-transparent pointer-events-none overflow-hidden">
         <div
           className="h-full flex"
           style={{
@@ -32,7 +32,7 @@ export default function CanvasRulers({ showRulers, zoom }: CanvasRulersProps) {
       </div>
 
       {/* Left Ruler */}
-      <div className="absolute top-8 left-0 h-full w-8 z-20 bg-transparent pointer-events-none overflow-hidden">
+      <div className="absolute top-8 left-0 h-full w-8 z-50 bg-transparent pointer-events-none overflow-hidden">
         <div
           className="w-full flex flex-col"
           style={{
@@ -48,7 +48,7 @@ export default function CanvasRulers({ showRulers, zoom }: CanvasRulersProps) {
       </div>
 
       {/* Corner 0 Label */}
-      <div className="absolute top-0 left-0 w-8 h-8 z-20 bg-white flex items-center justify-center pointer-events-none">
+      <div className="absolute top-0 left-0 w-8 h-8 z-50 bg-white flex items-center justify-center pointer-events-none">
         <span className="text-[9px] text-gray-500 font-medium">0</span>
       </div>
     </>

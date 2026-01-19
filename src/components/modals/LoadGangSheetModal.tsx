@@ -99,11 +99,11 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
                   }
                 }}
               >
-                <div className="relative h-[200px] bg-[#F1F5F9] overflow-hidden px-1 py-4">
+                <div className="relative h-[200px] bg-[#E9F2F1] overflow-hidden flex items-center justify-center">
                   <img
                     src={design.thumbnail}
                     alt={design.title}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                 </div>
                 <div className="px-4 py-3 pb-12">

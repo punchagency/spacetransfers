@@ -23,21 +23,21 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
   const [shipping, setShipping] = useState<"standard" | "express">("standard");
   const [cartItems, setCartItems] = useState(initialCartItems || []);
   const [formData, setFormData] = useState({
-    firstName: 'John',
-    lastName: 'Doe',
-    email: 'john.doe@example.com',
-    phone: '+1 (555) 000-0000',
-    street: '123 Main Street, Apt 4B',
-    city: 'New York',
+    firstName: '',
+    lastName: '',
+    email: '',
+    phone: '',
+    street: '',
+    city: '',
     state: '',
-    postalCode: '10001',
+    postalCode: '',
     country: ''
   });
   const [cardData, setCardData] = useState({
-    cardNumber: '1234 5678 9012 3456',
-    expiry: 'MM / YY',
-    cvv: '123',
-    cardName: 'John Doe'
+    cardNumber: '',
+    expiry: '',
+    cvv: '',
+    cardName: ''
   });
 
   const subtotal = cartItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || item.copies || 1)), 0);

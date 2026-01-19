@@ -1,11 +1,18 @@
 import React, { useState } from "react";
-import { useItemActions, useMouseInteractions, useDropHandler, useCanvasWidth, useArtboardEffects } from "./artboard/lib/hooks";
+import {
+  useItemActions,
+  useMouseInteractions,
+  useDropHandler,
+  useCanvasWidth,
+  useArtboardEffects,
+} from "./artboard/lib/hooks";
 import { snapToGridPoint } from "./artboard/lib/utils";
 import { DpiWarning, CanvasContainer } from "./artboard/features/canvas";
 import type { ArtboardProps } from "./artboard/types";
 
 export default function Artboard({
   onHeaderInfoChange,
+  onActionPerformed,
   showRulers = true,
   showGrid = true,
   snapToGrid = false,
@@ -22,33 +29,44 @@ export default function Artboard({
   const [counter, setCounter] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [showProperties, setShowProperties] = useState<Record<number, boolean>>({});
+  const [showProperties, setShowProperties] = useState<Record<number, boolean>>(
+    {}
+  );
   const [addedToCart, setAddedToCart] = useState<Set<number>>(new Set());
 
   const canvasWidth = useCanvasWidth();
-  const { isDragging, lowDpiCount, onDragOver, onDragLeave, onDropEvent } = useDropHandler(
-    items,
-    setItems,
-    counter,
-    setCounter,
-    setSelectedId,
-    canvasWidth,
-    zoom,
-    autoNestStickers,
-    spacing,
-    marginSize,
-    showRulers
-  );
-  const itemActions = useItemActions(items, setItems, selectedId, snapToGrid, snapToGridPoint);
-  const { handleResizeStart, handleDragStart, isDraggingItem } = useMouseInteractions(
+  const { isDragging, lowDpiCount, onDragOver, onDragLeave, onDropEvent } =
+    useDropHandler(
+      items,
+      setItems,
+      counter,
+      setCounter,
+      setSelectedId,
+      canvasWidth,
+      zoom,
+      autoNestStickers,
+      spacing,
+      marginSize,
+      showRulers
+    );
+  const itemActions = useItemActions(
     items,
     setItems,
     selectedId,
-    zoom,
     snapToGrid,
     snapToGridPoint,
-    autoNestStickers
+    onActionPerformed
   );
+  const { handleResizeStart, handleDragStart, isDraggingItem } =
+    useMouseInteractions(
+      items,
+      setItems,
+      selectedId,
+      zoom,
+      snapToGrid,
+      snapToGridPoint,
+      autoNestStickers
+    );
 
   useArtboardEffects(
     items,
@@ -73,35 +91,47 @@ export default function Artboard({
     if (!target) return;
     const newId = counter + 1;
     setCounter(newId);
-    const copy = { ...target, id: newId, posX: target.posX + 0.5, posY: target.posY + 0.5 };
+    const copy = {
+      ...target,
+      id: newId,
+      posX: target.posX + 0.5,
+      posY: target.posY + 0.5,
+    };
     setItems((prev) => [...prev, copy]);
     setSelectedId(newId);
   };
 
   const handleLinkSelected = () => {
-    const selectedItems = items.filter((it) => selectedIds.has(it.id) || it.id === selectedId);
+    const selectedItems = items.filter(
+      (it) => selectedIds.has(it.id) || it.id === selectedId
+    );
     // De-dupe by ID
-    const uniqueSelected = Array.from(new Map(selectedItems.map(item => [item.id, item])).values());
+    const uniqueSelected = Array.from(
+      new Map(selectedItems.map((item) => [item.id, item])).values()
+    );
 
     if (uniqueSelected.length < 2) return;
 
     // Check if all are the same image URL
     const firstUrl = uniqueSelected[0].url;
-    const allSame = uniqueSelected.every(it => it.url === firstUrl);
+    const allSame = uniqueSelected.every((it) => it.url === firstUrl);
 
     if (allSame) {
-      const totalCopies = uniqueSelected.reduce((sum, it) => sum + it.copies, 0);
+      const totalCopies = uniqueSelected.reduce(
+        (sum, it) => sum + it.copies,
+        0
+      );
       const primary = uniqueSelected[0];
 
       const mergedItem = {
         ...primary,
         copies: totalCopies,
         id: Date.now(),
-        linked: false // Reset link state
+        linked: false, // Reset link state
       };
 
-      const selectedIdSet = new Set(uniqueSelected.map(it => it.id));
-      const remainingItems = items.filter(it => !selectedIdSet.has(it.id));
+      const selectedIdSet = new Set(uniqueSelected.map((it) => it.id));
+      const remainingItems = items.filter((it) => !selectedIdSet.has(it.id));
 
       setItems([...remainingItems, mergedItem]);
       setSelectedId(mergedItem.id);
@@ -110,7 +140,10 @@ export default function Artboard({
   };
 
   return (
-    <div id="artboard-main-container" className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area">
+    <div
+      id="artboard-main-container"
+      className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
+    >
       <DpiWarning count={lowDpiCount} />
       <div className="flex-1 flex overflow-hidden">
         <CanvasContainer
@@ -125,11 +158,14 @@ export default function Artboard({
           selectedIds={selectedIds}
           showProperties={showProperties}
           addedToCart={addedToCart}
+          emptyOffsetY={350}
           onWheel={(e) => {
             if (e.ctrlKey || e.metaKey) {
               e.preventDefault();
               const delta = e.deltaY > 0 ? -0.1 : 0.1;
-              setZoom((z) => Math.min(3, Math.max(0.5, +(z + delta).toFixed(2))));
+              setZoom((z) =>
+                Math.min(3, Math.max(0.5, +(z + delta).toFixed(2)))
+              );
             }
           }}
           onDragOver={onDragOver}
@@ -144,7 +180,7 @@ export default function Artboard({
           }}
           onItemSelect={(id, multi) => {
             if (multi) {
-              setSelectedIds(prev => {
+              setSelectedIds((prev) => {
                 const next = new Set(prev);
                 if (next.has(id)) next.delete(id);
                 else next.add(id);

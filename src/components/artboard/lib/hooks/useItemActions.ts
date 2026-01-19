@@ -6,29 +6,53 @@ export const useItemActions = (
   setItems: React.Dispatch<React.SetStateAction<ArtboardItem[]>>,
   selectedId: number | null,
   snapToGrid: boolean,
-  snapToGridPoint: (value: number) => number
+  snapToGridPoint: (value: number) => number,
+  onActionPerformed?: (action: {
+    type: string;
+    id?: number;
+    payload?: any;
+  }) => void
 ) => {
+  const emit = (action: { type: string; id?: number; payload?: any }) => {
+    setTimeout(() => {
+      onActionPerformed?.(action);
+    }, 0);
+  };
+
   const rotateSelected = () => {
     if (selectedId == null) return;
     setItems((prev) =>
       prev.map((it) =>
-        it.id === selectedId ? { ...it, rotation: (it.rotation + 90) % 360 } : it
+        it.id === selectedId
+          ? { ...it, rotation: (it.rotation + 90) % 360 }
+          : it
       )
     );
+    emit({
+      type: "rotate",
+      id: selectedId,
+      payload: { delta: 90 },
+    });
   };
 
   const toggleLockSelected = () => {
     if (selectedId == null) return;
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, locked: !it.locked } : it))
+      prev.map((it) =>
+        it.id === selectedId ? { ...it, locked: !it.locked } : it
+      )
     );
+    emit({ type: "toggleLock", id: selectedId });
   };
 
   const flipSelected = () => {
     if (selectedId == null) return;
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, flipped: !it.flipped } : it))
+      prev.map((it) =>
+        it.id === selectedId ? { ...it, flipped: !it.flipped } : it
+      )
     );
+    emit({ type: "flip", id: selectedId });
   };
 
   const toggleAutoCrop = () => {
@@ -82,8 +106,14 @@ export const useItemActions = (
         // Draw only the cropped portion
         croppedCtx.drawImage(
           img,
-          minX, minY, cropWidth, cropHeight,
-          0, 0, cropWidth, cropHeight
+          minX,
+          minY,
+          cropWidth,
+          cropHeight,
+          0,
+          0,
+          cropWidth,
+          cropHeight
         );
 
         // Convert to data URL
@@ -97,15 +127,15 @@ export const useItemActions = (
           prev.map((it) =>
             it.id === selectedId
               ? {
-                ...it,
-                autoCrop: true,
-                widthIn: newWidthIn,
-                heightIn: newHeightIn,
-                url: croppedImageUrl,
-                originalUrl: it.originalUrl || it.url,
-                originalWidthIn: it.originalWidthIn || it.widthIn,
-                originalHeightIn: it.originalHeightIn || it.heightIn
-              }
+                  ...it,
+                  autoCrop: true,
+                  widthIn: newWidthIn,
+                  heightIn: newHeightIn,
+                  url: croppedImageUrl,
+                  originalUrl: it.originalUrl || it.url,
+                  originalWidthIn: it.originalWidthIn || it.widthIn,
+                  originalHeightIn: it.originalHeightIn || it.heightIn,
+                }
               : it
           )
         );
@@ -117,16 +147,17 @@ export const useItemActions = (
         prev.map((it) =>
           it.id === selectedId
             ? {
-              ...it,
-              autoCrop: false,
-              url: it.originalUrl || it.url,
-              widthIn: it.originalWidthIn || it.widthIn,
-              heightIn: it.originalHeightIn || it.heightIn
-            }
+                ...it,
+                autoCrop: false,
+                url: it.originalUrl || it.url,
+                widthIn: it.originalWidthIn || it.widthIn,
+                heightIn: it.originalHeightIn || it.heightIn,
+              }
             : it
         )
       );
     }
+    emit({ type: "toggleAutoCrop", id: selectedId });
   };
 
   const toggleLinked = () => {
@@ -156,7 +187,7 @@ export const useItemActions = (
             copies: 1,
             posX: item.posX + xOffset,
             posY: item.posY + yOffset,
-            // Ensure they are selected or handled correctly? 
+            // Ensure they are selected or handled correctly?
             // Maybe deselect or select all? For now just place them.
           };
           newItems.push(newItem);
@@ -164,19 +195,28 @@ export const useItemActions = (
 
         // Replace the original item (and any others) with the new list
         // Filter out original, then add all new
-        return [...prev.filter(it => it.id !== selectedId), ...newItems];
+        return [...prev.filter((it) => it.id !== selectedId), ...newItems];
       }
 
       // Default behavior: toggle aspect ratio link
-      return prev.map((it) => (it.id === selectedId ? { ...it, linked: !it.linked } : it));
+      return prev.map((it) =>
+        it.id === selectedId ? { ...it, linked: !it.linked } : it
+      );
     });
+    emit({ type: "toggleLinked", id: selectedId });
   };
 
   const setCopies = (n: number) => {
     if (selectedId == null) return;
+    const clamped = Math.max(1, Math.min(250, Math.floor(n)));
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, copies: n } : it))
+      prev.map((it) => (it.id === selectedId ? { ...it, copies: clamped } : it))
     );
+    emit({
+      type: "setCopies",
+      id: selectedId,
+      payload: { value: clamped },
+    });
   };
 
   const setWidthIn = (n: number) => {
@@ -193,6 +233,11 @@ export const useItemActions = (
         return it;
       })
     );
+    emit({
+      type: "setWidthIn",
+      id: selectedId,
+      payload: { value: n },
+    });
   };
 
   const setHeightIn = (n: number) => {
@@ -209,6 +254,11 @@ export const useItemActions = (
         return it;
       })
     );
+    emit({
+      type: "setHeightIn",
+      id: selectedId,
+      payload: { value: n },
+    });
   };
 
   const setPosX = (n: number) => {
@@ -217,6 +267,11 @@ export const useItemActions = (
     setItems((prev) =>
       prev.map((it) => (it.id === selectedId ? { ...it, posX: finalX } : it))
     );
+    emit({
+      type: "setPosX",
+      id: selectedId,
+      payload: { value: finalX },
+    });
   };
 
   const setPosY = (n: number) => {
@@ -225,18 +280,39 @@ export const useItemActions = (
     setItems((prev) =>
       prev.map((it) => (it.id === selectedId ? { ...it, posY: finalY } : it))
     );
+    emit({
+      type: "setPosY",
+      id: selectedId,
+      payload: { value: finalY },
+    });
   };
 
   const toggleExpandSelected = () => {
     if (selectedId == null) return;
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, expanded: !it.expanded } : it))
+      prev.map((it) =>
+        it.id === selectedId ? { ...it, expanded: !it.expanded } : it
+      )
     );
+    emit({ type: "toggleExpand", id: selectedId });
   };
 
   const deleteSelected = () => {
     if (selectedId == null) return;
-    setItems((prev) => prev.filter((it) => it.id !== selectedId));
+    setItems((prev) => {
+      const snapshot = prev.find((it) => it.id === selectedId);
+      const next = prev.filter((it) => it.id !== selectedId);
+      if (snapshot) {
+        emit({
+          type: "delete",
+          id: selectedId,
+          payload: { item: snapshot },
+        });
+      } else {
+        emit({ type: "delete", id: selectedId });
+      }
+      return next;
+    });
   };
 
   return {

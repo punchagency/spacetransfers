@@ -155,7 +155,7 @@ export default function Sidebar({ isOpen, onClose, settings, onUpdateSetting, on
                                         <select
                                             value={settings.marginSize}
                                             onChange={(e) => onUpdateSetting('marginSize', parseFloat(e.target.value))}
-                                            className="bg-gray-100 text-[12px] py-1.5 pl-3 pr-8 rounded-md border-none focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer appearance-none text-gray-700 font-medium w-40"
+                                            className="bg-gray-100 text-[12px] py-1.5 pl-3 pr-8 rounded-md border-none focus:outline-none focus:ring-1 focus:ring-black cursor-pointer appearance-none text-gray-700 font-medium w-40"
                                         >
                                             <option value={0.25}>0.25" (Default)</option>
                                             <option value={0.5}>0.5"</option>
@@ -195,7 +195,7 @@ export default function Sidebar({ isOpen, onClose, settings, onUpdateSetting, on
                                             type="number"
                                             value={settings.spacing}
                                             onChange={(e) => onUpdateSetting('spacing', parseFloat(e.target.value))}
-                                            className="w-full bg-gray-100 border-none rounded-md py-2 px-3 text-[12px] font-medium focus:outline-none focus:ring-1 focus:ring-slate-900"
+                                            className="w-full bg-gray-100 border-none rounded-md py-2 px-3 text-[12px] font-medium focus:outline-none focus:ring-1 focus:ring-black"
                                         />
                                     </div>
                                     <p className="text-[12px] text-gray-500 mt-2">Space between stickers when auto-nesting</p>
