@@ -36,6 +36,7 @@ export interface ArtboardProps {
   onDataChange?: (data: any) => void;
   initialData?: any;
   onAddToCart?: (item: any) => void;
+  onActionPerformed?: (action: { type: string; id?: number; payload?: any }) => void;
 }
 
 export interface HeaderInfo {

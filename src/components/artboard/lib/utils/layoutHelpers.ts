@@ -26,6 +26,7 @@ export const calculateGridLayout = (
   margin: number = 0.15
 ): LayoutItem[] => {
   const selectionBuffer = 0.084; // Room for blue selection ring (4px) to stay within margin
+  const minSpacing = Math.max(spacing, 0.3); // Increased from 0.15 to 0.3 inches to prevent overlap
   const maxWidth = canvasWidth - margin * 2;
   const rows: LayoutItem[][] = [];
   let currentRow: LayoutItem[] = [];
@@ -33,7 +34,7 @@ export const calculateGridLayout = (
 
   items.forEach((it) => {
     const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
-    const itemWidth = width + selectionBuffer + spacing;
+    const itemWidth = width + selectionBuffer + minSpacing;
     if (currentRowWidth + itemWidth > maxWidth && currentRow.length > 0) {
       rows.push(currentRow);
       currentRow = [it];
@@ -49,7 +50,7 @@ export const calculateGridLayout = (
   const updates = rows.flatMap((row) => {
     const rowWidth = row.reduce((sum, it, idx) => {
       const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
-      return sum + (width + selectionBuffer) + (idx > 0 ? spacing : 0);
+      return sum + (width + selectionBuffer) + (idx > 0 ? minSpacing : 0);
     }, 0);
 
     let currentX = margin + (maxWidth - rowWidth) / 2;
@@ -61,11 +62,11 @@ export const calculateGridLayout = (
     const rowItems = row.map((it) => {
       const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
       const result = { ...it, posX: currentX + selectionBuffer / 2, posY: currentY + selectionBuffer / 2, gravityActive: false };
-      currentX += width + selectionBuffer + spacing;
+      currentX += width + selectionBuffer + minSpacing;
       return result;
     });
 
-    currentY += maxHeight + spacing;
+    currentY += maxHeight + minSpacing;
     return rowItems;
   });
 
@@ -81,6 +82,7 @@ export const calculateDropPosition = (
   margin: number = 0.15
 ): { targetX: number; targetY: number } => {
   const selectionBuffer = 0.084;
+  const minSpacing = Math.max(spacing, 0.3);
   const maxWidth = canvasWidth - margin * 2;
   const allItems = [...items, newItem];
 
@@ -90,7 +92,7 @@ export const calculateDropPosition = (
 
   allItems.forEach((it) => {
     const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
-    const itemWidth = width + selectionBuffer + spacing;
+    const itemWidth = width + selectionBuffer + minSpacing;
     if (currentRowWidth + itemWidth > maxWidth && currentRow.length > 0) {
       rows.push(currentRow);
       currentRow = [it];
@@ -109,7 +111,7 @@ export const calculateDropPosition = (
   for (const row of rows) {
     const rowWidth = row.reduce((sum, it, idx) => {
       const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
-      return sum + (width + selectionBuffer) + (idx > 0 ? spacing : 0);
+      return sum + (width + selectionBuffer) + (idx > 0 ? minSpacing : 0);
     }, 0);
     let currentX = margin + (maxWidth - rowWidth) / 2;
     const maxHeight = Math.max(...row.map((it) => {
@@ -124,11 +126,11 @@ export const calculateDropPosition = (
         break;
       }
       const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
-      currentX += width + selectionBuffer + spacing;
+      currentX += width + selectionBuffer + minSpacing;
     }
 
     if (found) break;
-    targetY += maxHeight + spacing;
+    targetY += maxHeight + minSpacing;
   }
 
   return { targetX, targetY };

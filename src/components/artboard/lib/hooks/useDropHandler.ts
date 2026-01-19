@@ -43,6 +43,92 @@ export const useDropHandler = (
     const dropX = (e.clientX - rect.left) / (96 * zoomVal);
     const dropY = (e.clientY - rect.top) / (96 * zoomVal);
 
+    const cropImage = async (url: string, dpi: number) => {
+      return new Promise<{
+        url: string;
+        widthIn: number;
+        heightIn: number;
+        widthPx: number;
+        heightPx: number;
+      } | null>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            resolve(null);
+            return;
+          }
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const data = imageData.data;
+
+          let minX = canvas.width,
+            minY = canvas.height,
+            maxX = 0,
+            maxY = 0;
+          let found = false;
+
+          for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
+              const alpha = data[(y * canvas.width + x) * 4 + 3];
+              if (alpha > 10) {
+                found = true;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+              }
+            }
+          }
+
+          if (!found) {
+            resolve(null);
+            return;
+          }
+
+          const cropWidth = maxX - minX + 1;
+          const cropHeight = maxY - minY + 1;
+
+          const croppedCanvas = document.createElement("canvas");
+          const croppedCtx = croppedCanvas.getContext("2d");
+          if (!croppedCtx) {
+            resolve(null);
+            return;
+          }
+
+          croppedCanvas.width = cropWidth;
+          croppedCanvas.height = cropHeight;
+          croppedCtx.drawImage(
+            img,
+            minX,
+            minY,
+            cropWidth,
+            cropHeight,
+            0,
+            0,
+            cropWidth,
+            cropHeight
+          );
+
+          const croppedUrl = croppedCanvas.toDataURL("image/png");
+          resolve({
+            url: croppedUrl,
+            widthPx: cropWidth,
+            heightPx: cropHeight,
+            widthIn: cropWidth / dpi,
+            heightIn: cropHeight / dpi,
+          });
+        };
+        img.onerror = () => resolve(null);
+        img.src = url;
+      });
+    };
+
     const start = counter + 1;
     let lowDpiImages = 0;
     const created = await Promise.all(
@@ -55,14 +141,15 @@ export const useDropHandler = (
         if (dpi < 300) lowDpiImages++;
         const widthIn = widthPx / dpi;
         const heightIn = heightPx / dpi;
-        return {
+
+        const baseItem: ArtboardItem = {
           id: start + idx,
           url,
           rotation: 0,
           locked: false,
           expanded: false,
           flipped: false,
-          autoCrop: false,
+          autoCrop: true,
           copies: 1,
           widthIn,
           heightIn,
@@ -73,7 +160,23 @@ export const useDropHandler = (
           name: file.name,
           gravityActive: false,
           isDropping: true,
-        } as ArtboardItem;
+          originalUrl: url,
+          originalWidthIn: widthIn,
+          originalHeightIn: heightIn,
+        };
+
+        const cropped = await cropImage(url, dpi);
+        if (cropped) {
+          const deltaX = (widthIn - cropped.widthIn) / 2;
+          const deltaY = (heightIn - cropped.heightIn) / 2;
+          baseItem.url = cropped.url;
+          baseItem.widthIn = cropped.widthIn;
+          baseItem.heightIn = cropped.heightIn;
+          baseItem.posX = baseItem.posX + deltaX;
+          baseItem.posY = baseItem.posY + deltaY;
+        }
+
+        return baseItem;
       })
     );
 
@@ -84,26 +187,32 @@ export const useDropHandler = (
 
     // 1. Calculate the final intended layout for ALL items immediately
     setTimeout(() => {
-      const artboardContainer = document.querySelector("#artboard-main-container") as HTMLElement;
-      const currentCanvasWidth = artboardContainer ? artboardContainer.offsetWidth / 96 : (canvasWidth || 24);
+      const artboardContainer = document.querySelector(
+        "#artboard-main-container"
+      ) as HTMLElement;
+      const currentCanvasWidth = artboardContainer
+        ? artboardContainer.offsetWidth / 96
+        : canvasWidth || 24;
 
       const allItems = [...created, ...items];
       const offsetInches = 20 / 96;
       const effectiveMargin = marginSize + offsetInches;
 
-      const finalUpdates = calculateGridLayout(allItems, currentCanvasWidth, spacing, autoNestStickers, effectiveMargin);
+      const finalUpdates = calculateGridLayout(
+        allItems,
+        currentCanvasWidth,
+        spacing,
+        autoNestStickers,
+        effectiveMargin
+      );
 
-      // 2. Update state IMMEDIATELY but only for NEW items. 
-      // Keep old items at their current positions to prevent "snapping" before they are pushed.
+      // 2. Preserve NEW items at their drop position initially (avoid instant jump).
       setItems((prev) => {
         const withCreated = [...created, ...prev];
-        return withCreated.map(it => {
-          const isNew = created.some(c => c.id === it.id);
+        return withCreated.map((it) => {
+          const isNew = created.some((c) => c.id === it.id);
           if (isNew) {
-            const update = finalUpdates.find(u => u.id === it.id);
-            if (update) {
-              return { ...it, posX: update.posX, posY: update.posY, gravityActive: false };
-            }
+            return { ...it, gravityActive: false };
           }
           return it;
         });
@@ -114,69 +223,95 @@ export const useDropHandler = (
         const PPI = 96;
 
         // Calculate items that need to be pushed
-        const itemsToPush = finalUpdates.filter(u => {
-          const existing = items.find(ex => ex.id === u.id);
-          return existing && (Math.abs(u.posX - existing.posX) > 0.01 || Math.abs(u.posY - existing.posY) > 0.01);
+        const itemsToPush = finalUpdates.filter((u) => {
+          const existing = items.find((ex) => ex.id === u.id);
+          return (
+            existing &&
+            (Math.abs(u.posX - existing.posX) > 0.01 ||
+              Math.abs(u.posY - existing.posY) > 0.01)
+          );
         });
 
-        const pushedIds = new Set(itemsToPush.map(p => p.id));
-        const newIds = new Set(created.map(c => c.id));
+        const pushedIds = new Set(itemsToPush.map((p) => p.id));
+        const newIds = new Set(created.map((c) => c.id));
 
-        // A. CONTACT POINT: Trigger 'Physical Shove' with progressive ripple (Domino effect)
-        gsap.delayedCall(2.4, () => {
+        // A. CONTACT POINT: Trigger 'Physical Shove' quickly after contact
+        gsap.delayedCall(0.2, () => {
           // 1. Update React state for ALL affected items at once
-          setItems(prev => prev.map(it => {
-            const update = finalUpdates.find(u => u.id === it.id);
-            const isNew = newIds.has(it.id);
-            if (isNew) return { ...it, isDropping: false };
-            if (update && pushedIds.has(it.id)) {
-              return { ...it, posX: update.posX, posY: update.posY, gravityActive: true };
-            }
-            return it;
-          }));
+          setItems((prev) =>
+            prev.map((it) => {
+              const update = finalUpdates.find((u) => u.id === it.id);
+              const isNew = newIds.has(it.id);
+              if (isNew) return { ...it, isDropping: false };
+              if (update && pushedIds.has(it.id)) {
+                return {
+                  ...it,
+                  posX: update.posX,
+                  posY: update.posY,
+                  gravityActive: true,
+                };
+              }
+              return it;
+            })
+          );
 
           // 2. Trigger staggered physical animations
           const sortedToPush = [...itemsToPush].sort((a, b) => {
-            const indexA = finalUpdates.findIndex(u => u.id === a.id);
-            const indexB = finalUpdates.findIndex(u => u.id === b.id);
+            const indexA = finalUpdates.findIndex((u) => u.id === a.id);
+            const indexB = finalUpdates.findIndex((u) => u.id === b.id);
             return indexA - indexB;
           });
 
           sortedToPush.forEach((u, index) => {
-            const existing = items.find(ex => ex.id === u.id);
+            const existing = items.find((ex) => ex.id === u.id);
             if (!existing) return;
-            const el = document.querySelector(`[data-item-id="${u.id}"]`) as HTMLElement;
+            const el = document.querySelector(
+              `[data-item-id="${u.id}"]`
+            ) as HTMLElement;
             if (el) {
               gsap.delayedCall(index * 0.08, () => {
-                animateItemPosition(el, u.posX, u.posY, true, existing.posX, existing.posY);
+                animateItemPosition(
+                  el,
+                  u.posX,
+                  u.posY,
+                  true,
+                  existing.posX,
+                  existing.posY
+                );
               });
             }
           });
         });
 
         // B. SETTLE POINT: Shake nearby items that WERE NOT pushed
-        gsap.delayedCall(3.3, () => {
+        // Adjusted from 2.7 to 2.1 to match earlier push timing
+        gsap.delayedCall(2.1, () => {
           finalUpdates.forEach((u) => {
             if (!pushedIds.has(u.id) && !newIds.has(u.id)) {
-              const el = document.querySelector(`[data-item-id="${u.id}"]`) as HTMLElement;
+              const el = document.querySelector(
+                `[data-item-id="${u.id}"]`
+              ) as HTMLElement;
               if (el) animateShake(el);
             }
           });
         });
 
-        // C. INDIVIDUAL ANIMATIONS FOR NEW ITEMS
+        // C. INDIVIDUAL ANIMATIONS FOR NEW ITEMS (smooth transition to top layout)
         created.forEach((item) => {
-          const update = finalUpdates.find(u => u.id === item.id);
+          const update = finalUpdates.find((u) => u.id === item.id);
           if (!update) return;
 
-          const element = document.querySelector(`[data-item-id="${item.id}"]`) as HTMLElement;
+          const element = document.querySelector(
+            `[data-item-id="${item.id}"]`
+          ) as HTMLElement;
           if (!element) return;
 
-          gsap.fromTo(element,
+          gsap.fromTo(
+            element,
             {
               left: `${(dropX - item.widthIn / 2) * PPI}px`,
               top: `${(dropY - item.heightIn / 2) * PPI}px`,
-              scale: 1.2,
+              scale: 1.08,
               opacity: 0,
             },
             {
@@ -184,11 +319,25 @@ export const useDropHandler = (
               top: `${update.posY * PPI}px`,
               scale: 1,
               opacity: 1,
-              duration: 3.0,
+              duration: 1.6,
               ease: "power2.out",
+              immediateRender: true,
               onComplete: () => {
+                // Commit final coordinates in React state
+                setItems((prev) =>
+                  prev.map((it) =>
+                    it.id === item.id
+                      ? {
+                          ...it,
+                          posX: update.posX,
+                          posY: update.posY,
+                          isDropping: false,
+                        }
+                      : it
+                  )
+                );
                 animateBounce(element, update.posY);
-              }
+              },
             }
           );
         });

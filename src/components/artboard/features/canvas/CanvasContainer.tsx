@@ -37,6 +37,7 @@ interface CanvasContainerProps {
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
   canvasWidth: number;
+  emptyOffsetY?: number;
 }
 
 export default function CanvasContainer({
@@ -69,6 +70,7 @@ export default function CanvasContainer({
   onResizeStart,
   isDraggingItem,
   canvasWidth,
+  emptyOffsetY = 0,
 }: CanvasContainerProps) {
   return (
     <div
@@ -78,7 +80,10 @@ export default function CanvasContainer({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
-      <div className="absolute inset-0 z-0 opacity-100" style={getGridStyle(zoom)} />
+      <div
+        className="absolute inset-0 z-0 opacity-100"
+        style={getGridStyle(zoom)}
+      />
       <CanvasRulers showRulers={showRulers} zoom={zoom} />
       <CanvasMargins
         showMargins={showMargins}
@@ -129,7 +134,16 @@ export default function CanvasContainer({
               />
             ))
           ) : (
-            <EmptyState />
+            <div
+              className="pointer-events-none"
+              style={{
+                transform: emptyOffsetY
+                  ? `translateY(${emptyOffsetY}px)`
+                  : undefined,
+              }}
+            >
+              <EmptyState />
+            </div>
           )}
         </div>
       </div>

@@ -1,6 +1,5 @@
-import React from "react";
 import { MdOutlineShoppingCart, MdMenu } from "react-icons/md";
-
+import { GrRedo } from "react-icons/gr";
 type HeaderInfo = {
   hasItem: boolean;
   areaSf?: number;
@@ -11,7 +10,23 @@ type HeaderInfo = {
   imageNames?: string[];
 };
 
-export default function Header({ info, onMenuClick, onCartClick, cartCount, onAddGangSheetToCart }: { info?: HeaderInfo; onMenuClick?: () => void; onCartClick?: () => void; cartCount?: number; onAddGangSheetToCart?: () => void }) {
+export default function Header({
+  info,
+  onMenuClick,
+  onCartClick,
+  cartCount,
+  onAddGangSheetToCart,
+  onRedo,
+  canRedo,
+}: {
+  info?: HeaderInfo;
+  onMenuClick?: () => void;
+  onCartClick?: () => void;
+  cartCount?: number;
+  onAddGangSheetToCart?: () => void;
+  onRedo?: () => void;
+  canRedo?: boolean;
+}) {
   return (
     <header className="flex items-center justify-between px-6 h-10 bg-white border-b border-gray-200">
       <div className="flex items-center ">
@@ -22,22 +37,40 @@ export default function Header({ info, onMenuClick, onCartClick, cartCount, onAd
       </div>
 
       <div className="flex items-center gap-4">
-        <div className="hidden md:flex items-center gap-3 text-sm text-gray-800">
+        <div className="hidden md:flex items-center gap-3 text-xs text-gray-800">
+          {info?.hasItem && (
+            <>
+              <button
+                onClick={onRedo}
+                disabled={!canRedo}
+                className={`inline-flex items-center justify-center rounded px-1 ${
+                  canRedo
+                    ? "hover:bg-gray-100"
+                    : "opacity-40 pointer-events-none"
+                }`}
+                aria-label="Redo last action"
+              >
+                <GrRedo className="inline-block w-3.5 h-3.5" />
+              </button>
+              <span className="text-gray-300">|</span>
+            </>
+          )}
           <span>{(info?.areaSf ?? 3.25).toFixed(2)}sf</span>
           <span className="text-gray-300">|</span>
           <span>
-            {(info?.widthIn ?? 24).toFixed(2)}in wide x {(info?.heightIn ?? 19.5).toFixed(2)}in long
+            {(info?.widthIn ?? 24).toFixed(2)}in wide x{" "}
+            {(info?.heightIn ?? 19.5).toFixed(2)}in long
           </span>
           <span className="text-gray-300">|</span>
-          <span className="font-medium max-w-xs truncate" title={info?.name}>
-            {info?.name || 'Gang Sheet'}
+          <span className="  max-w-xs truncate" title={info?.name}>
+            {info?.name || "Gang Sheet"}
           </span>
           <span className="text-gray-300">|</span>
           <span>${(info?.price ?? 0).toFixed(2)}</span>
         </div>
         <button
           onClick={onAddGangSheetToCart}
-          className="px-3 text-sm font-medium rounded-2xl text-black bg-white border border-gray-300 hover:bg-gray-50 transition-colors"
+          className="px-3 text-xs font-medium rounded-2xl text-black bg-white border border-gray-300 hover:bg-gray-50 transition-colors"
         >
           Add to Cart
         </button>
