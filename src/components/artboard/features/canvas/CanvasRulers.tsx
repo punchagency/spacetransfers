@@ -1,6 +1,5 @@
-import React from "react";
 import RulerSegment from "../rulers/RulerSegment";
-import { CANVAS } from "../../../../config/artboard.config";
+// import { CANVAS } from "../../../../config/artboard.config";
 
 interface CanvasRulersProps {
   showRulers: boolean;

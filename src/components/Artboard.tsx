@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import {
   useItemActions,
   useMouseInteractions,
@@ -30,7 +30,7 @@ export default function Artboard({
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [showProperties, setShowProperties] = useState<Record<number, boolean>>(
-    {}
+    {},
   );
   const [addedToCart, setAddedToCart] = useState<Set<number>>(new Set());
 
@@ -47,7 +47,7 @@ export default function Artboard({
       autoNestStickers,
       spacing,
       marginSize,
-      showRulers
+      showRulers,
     );
   const itemActions = useItemActions(
     items,
@@ -55,7 +55,7 @@ export default function Artboard({
     selectedId,
     snapToGrid,
     snapToGridPoint,
-    onActionPerformed
+    onActionPerformed,
   );
   const { handleResizeStart, handleDragStart, isDraggingItem } =
     useMouseInteractions(
@@ -65,7 +65,7 @@ export default function Artboard({
       zoom,
       snapToGrid,
       snapToGridPoint,
-      autoNestStickers
+      autoNestStickers,
     );
 
   useArtboardEffects(
@@ -82,7 +82,7 @@ export default function Artboard({
     onHeaderInfoChange,
     initialData,
     onDataChange,
-    counter
+    counter,
   );
 
   const duplicateSelected = () => {
@@ -103,11 +103,11 @@ export default function Artboard({
 
   const handleLinkSelected = () => {
     const selectedItems = items.filter(
-      (it) => selectedIds.has(it.id) || it.id === selectedId
+      (it) => selectedIds.has(it.id) || it.id === selectedId,
     );
     // De-dupe by ID
     const uniqueSelected = Array.from(
-      new Map(selectedItems.map((item) => [item.id, item])).values()
+      new Map(selectedItems.map((item) => [item.id, item])).values(),
     );
 
     if (uniqueSelected.length < 2) return;
@@ -119,7 +119,7 @@ export default function Artboard({
     if (allSame) {
       const totalCopies = uniqueSelected.reduce(
         (sum, it) => sum + it.copies,
-        0
+        0,
       );
       const primary = uniqueSelected[0];
 
@@ -164,7 +164,7 @@ export default function Artboard({
               e.preventDefault();
               const delta = e.deltaY > 0 ? -0.1 : 0.1;
               setZoom((z) =>
-                Math.min(3, Math.max(0.5, +(z + delta).toFixed(2)))
+                Math.min(3, Math.max(0.5, +(z + delta).toFixed(2))),
               );
             }
           }}

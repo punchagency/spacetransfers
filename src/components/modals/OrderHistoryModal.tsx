@@ -1,5 +1,10 @@
-import React from "react";
-import { MdClose, MdArrowBack, MdInventory, MdVisibility, MdDownload } from "react-icons/md";
+import {
+  MdClose,
+  MdArrowBack,
+  MdInventory,
+  MdVisibility,
+  MdDownload,
+} from "react-icons/md";
 
 interface OrderHistoryModalProps {
   isOpen: boolean;
@@ -7,8 +12,11 @@ interface OrderHistoryModalProps {
   onViewDetails: () => void;
 }
 
-export default function OrderHistoryModal({ isOpen, onClose, onViewDetails }: OrderHistoryModalProps) {
-  
+export default function OrderHistoryModal({
+  isOpen,
+  onClose,
+  onViewDetails,
+}: OrderHistoryModalProps) {
   if (!isOpen) return null;
 
   const orders = [
@@ -21,7 +29,7 @@ export default function OrderHistoryModal({ isOpen, onClose, onViewDetails }: Or
       amount: "$127.50",
       sheetSize: '13" × 19"',
       tracking: "17999AA16123456784",
-      showReorder: true
+      showReorder: true,
     },
     {
       id: "ORD-2024-002",
@@ -32,8 +40,8 @@ export default function OrderHistoryModal({ isOpen, onClose, onViewDetails }: Or
       amount: "$89.99",
       sheetSize: '13" × 19"',
       tracking: "17999AA16123473483",
-      showReorder: false
-    }
+      showReorder: false,
+    },
   ];
 
   return (

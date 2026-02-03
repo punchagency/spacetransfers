@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { ArtboardItem } from "../../types";
 
 export const useItemActions = (

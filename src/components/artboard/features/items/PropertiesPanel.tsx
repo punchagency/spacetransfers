@@ -1,5 +1,4 @@
-import React from "react";
-import { MdClose, MdLink } from "react-icons/md";
+import { MdClose } from "react-icons/md";
 
 interface PropertiesPanelProps {
   item: {
@@ -47,8 +46,8 @@ export default function PropertiesPanel({
         position === "center"
           ? "top-0 left-1/2 -translate-x-1/2"
           : position === "right"
-          ? "top-0 left-full ml-3"
-          : "top-0 right-full mr-3"
+            ? "top-0 left-full ml-3"
+            : "top-0 right-full mr-3"
       } z-50 w-60 bg-white border border-gray-300 shadow-2xl rounded-xl`}
       onClick={(e) => e.stopPropagation()}
     >

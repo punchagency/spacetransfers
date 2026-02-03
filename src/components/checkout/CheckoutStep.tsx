@@ -1,5 +1,3 @@
-import React from "react";
-import { MdLocationOn, MdCheckCircle } from "react-icons/md";
 import { BsPerson } from "react-icons/bs";
 import { IoLocationOutline } from "react-icons/io5";
 import { IoMdCheckmarkCircleOutline } from "react-icons/io";
@@ -21,7 +19,10 @@ interface CheckoutStepProps {
   setFormData: (data: FormData) => void;
 }
 
-export default function CheckoutStep({ formData, setFormData }: CheckoutStepProps) {
+export default function CheckoutStep({
+  formData,
+  setFormData,
+}: CheckoutStepProps) {
   return (
     <>
       <div className="bg-white rounded-lg border mb-5 border-gray-200 p-6">
@@ -116,7 +117,9 @@ export default function CheckoutStep({ formData, setFormData }: CheckoutStepProp
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">City <span className="text-red-500">*</span></label>
+              <label className="block text-sm font-medium mb-1">
+                City <span className="text-red-500">*</span>
+              </label>
               <input
                 type="text"
                 value={formData.city}
