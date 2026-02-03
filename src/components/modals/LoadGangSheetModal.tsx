@@ -3,7 +3,7 @@ import { FiFileText } from "react-icons/fi";
 import { FaRegFolderOpen } from "react-icons/fa";
 import { FiSearch } from "react-icons/fi";
 import { RiDeleteBin5Line } from "react-icons/ri";
-import { MdEdit, MdContentCopy, MdDelete } from "react-icons/md";
+import { MdEdit, MdContentCopy } from "react-icons/md";
 interface LoadGangSheetModalProps {
   isOpen: boolean;
   onClose: () => void;

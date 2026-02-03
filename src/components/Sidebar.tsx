@@ -1,9 +1,8 @@
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
     MdSettings,
     MdClose,
-    MdGridOn,
     MdStraighten,
     MdVisibility,
     MdGridView,

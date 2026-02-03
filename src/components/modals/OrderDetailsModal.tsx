@@ -1,15 +1,13 @@
-import React from "react";
 import {
   MdClose,
   MdContentCopy,
   MdCreditCard,
   MdDownload,
 } from "react-icons/md";
-import { LuRefreshCw } from "react-icons/lu";
 import { BsBoxSeam } from "react-icons/bs";
 import { CiDeliveryTruck } from "react-icons/ci";
 import { IoLocationOutline } from "react-icons/io5";
-import { LuFileText } from "react-icons/lu";
+import { LuFileText, LuRefreshCw } from "react-icons/lu";
 interface OrderDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;

@@ -1,7 +1,7 @@
-import React, { useState } from "react";
-import { MdClose, MdDescription, MdSave, MdCheck } from "react-icons/md";
-import { FiFileText } from "react-icons/fi";
+import { useState } from "react";
+import { MdClose } from "react-icons/md";
 import { LiaSave } from "react-icons/lia";
+import { FiFileText } from "react-icons/fi";
 
 interface SaveGangSheetModalProps {
   isOpen: boolean;
@@ -19,22 +19,29 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
   const [designName, setDesignName] = useState("Untitled Design");
 
   const handleSave = async () => {
-    const artboard = document.querySelector('.flex-1.relative.flex.items-center') as HTMLElement;
+    const artboard = document.querySelector(
+      ".flex-1.relative.flex.items-center",
+    ) as HTMLElement;
     if (artboard) {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
       const rect = artboard.getBoundingClientRect();
       canvas.width = rect.width * 0.5;
       canvas.height = rect.height * 0.5;
 
       if (ctx) {
-        const gridBg = artboard.querySelector('.absolute.inset-0.z-0') as HTMLElement;
+        const gridBg = artboard.querySelector(
+          ".absolute.inset-0.z-0",
+        ) as HTMLElement;
         if (gridBg) {
           const bgStyle = window.getComputedStyle(gridBg);
-          ctx.fillStyle = '#ffffff';
+          ctx.fillStyle = "#ffffff";
           ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-          const pattern = ctx.createPattern(await createPatternCanvas(bgStyle), 'repeat');
+          const pattern = ctx.createPattern(
+            await createPatternCanvas(bgStyle),
+            "repeat",
+          );
           if (pattern) {
             ctx.fillStyle = pattern;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -55,20 +62,22 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
           }
         }
 
-        const thumbnail = canvas.toDataURL('image/png');
+        const thumbnail = canvas.toDataURL("image/png");
         onSave(designName, thumbnail, artboardData);
         setDesignName("Untitled Design");
       }
     }
   };
 
-  const createPatternCanvas = async (bgStyle: CSSStyleDeclaration): Promise<HTMLCanvasElement> => {
-    const patternCanvas = document.createElement('canvas');
+  const createPatternCanvas = async (
+    bgStyle: CSSStyleDeclaration,
+  ): Promise<HTMLCanvasElement> => {
+    const patternCanvas = document.createElement("canvas");
     patternCanvas.width = 40;
     patternCanvas.height = 40;
-    const pCtx = patternCanvas.getContext('2d');
+    const pCtx = patternCanvas.getContext("2d");
     if (pCtx) {
-      pCtx.fillStyle = '#E9F2F1';
+      pCtx.fillStyle = "#E9F2F1";
       pCtx.fillRect(0, 0, 10, 10);
       pCtx.fillRect(10, 10, 10, 10);
       pCtx.fillRect(20, 0, 10, 10);
@@ -83,10 +92,15 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
 
   if (!isOpen) return null;
 
-
   return (
-    <div onClick={onClose} className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-xs z-50">
-      <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-[18px] shadow-lg w-full max-w-md mx-4">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-xs z-50"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-[18px] shadow-lg w-full max-w-md mx-4"
+      >
         {/* Top bar */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
           <div className="flex items-center">

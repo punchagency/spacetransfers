@@ -1,4 +1,3 @@
-import React from "react";
 import { MdZoomIn, MdZoomOut } from "react-icons/md";
 
 interface ZoomControlsProps {

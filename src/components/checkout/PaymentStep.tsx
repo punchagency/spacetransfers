@@ -1,6 +1,5 @@
 import { MdCreditCard, MdOutlineLocalShipping } from "react-icons/md";
 import { FaPaypal } from "react-icons/fa";
-import { BsBox } from "react-icons/bs";
 
 interface FormData {
   cardNumber: string;

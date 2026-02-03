@@ -1,5 +1,3 @@
-import React from "react";
-
 export default function EmptyState() {
   return (
     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

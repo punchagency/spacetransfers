@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { gsap } from "gsap";
-import { MdClose, MdShoppingCart, MdCheckCircle } from "react-icons/md";
+import { MdClose, MdCheckCircle } from "react-icons/md";
 import CartStep from "../checkout/CartStep";
 import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
@@ -14,7 +14,11 @@ interface CheckoutModalProps {
 
 const steps = ["Cart", "Checkout", "Payment", "Confirmation"];
 
-export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartItems }: CheckoutModalProps) {
+export default function CheckoutModal({
+  isOpen,
+  onClose,
+  cartItems: initialCartItems,
+}: CheckoutModalProps) {
   const [step, setStep] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const stepperRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -23,25 +27,29 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
   const [shipping, setShipping] = useState<"standard" | "express">("standard");
   const [cartItems, setCartItems] = useState(initialCartItems || []);
   const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
-    email: '',
-    phone: '',
-    street: '',
-    city: '',
-    state: '',
-    postalCode: '',
-    country: ''
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    street: "",
+    city: "",
+    state: "",
+    postalCode: "",
+    country: "",
   });
   const [cardData, setCardData] = useState({
-    cardNumber: '',
-    expiry: '',
-    cvv: '',
-    cardName: ''
+    cardNumber: "",
+    expiry: "",
+    cvv: "",
+    cardName: "",
   });
 
-  const subtotal = cartItems.reduce((sum, item) => sum + ((item.price || 0) * (item.quantity || item.copies || 1)), 0);
-  const shippingCost = shipping === 'standard' ? 8.99 : 24.99;
+  const subtotal = cartItems.reduce(
+    (sum, item) =>
+      sum + (item.price || 0) * (item.quantity || item.copies || 1),
+    0,
+  );
+  const shippingCost = shipping === "standard" ? 8.99 : 24.99;
   const tax = subtotal * 0.08;
   const total = subtotal + shippingCost + tax;
 
@@ -52,18 +60,20 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
   }, [initialCartItems]);
 
   const updateQuantity = (id: number, change: number) => {
-    setCartItems(items => items.map(item => {
-      if (item.id === id) {
-        const currentQty = item.quantity || item.copies || 1;
-        const newQty = Math.max(1, currentQty + change);
-        return { ...item, quantity: newQty, copies: newQty };
-      }
-      return item;
-    }));
+    setCartItems((items) =>
+      items.map((item) => {
+        if (item.id === id) {
+          const currentQty = item.quantity || item.copies || 1;
+          const newQty = Math.max(1, currentQty + change);
+          return { ...item, quantity: newQty, copies: newQty };
+        }
+        return item;
+      }),
+    );
   };
 
   const removeItem = (id: number) => {
-    setCartItems(items => items.filter(item => item.id !== id));
+    setCartItems((items) => items.filter((item) => item.id !== id));
   };
 
   useEffect(() => {
@@ -71,7 +81,7 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
       gsap.fromTo(
         contentRef.current,
         { opacity: 0, x: 20 },
-        { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }
+        { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" },
       );
     }
 
@@ -81,7 +91,7 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
         gsap.fromTo(
           ref,
           { scale: 0.8 },
-          { scale: 1, duration: 0.3, ease: "back.out(1.7)" }
+          { scale: 1, duration: 0.3, ease: "back.out(1.7)" },
         );
       }
     });
@@ -92,7 +102,7 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
         gsap.to(ref, {
           scaleX: 1,
           duration: 0.4,
-          ease: "power2.out"
+          ease: "power2.out",
         });
       }
     });
@@ -135,20 +145,22 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
         {/* Stepper */}
         <div className="flex items-center justify-center gap-2 border-b border-gray-200 px-6 py-4">
           {steps.map((s, i) => (
-            <React.Fragment key={s}>
+            <Fragment key={s}>
               <div className="flex flex-col items-center">
                 <div
                   ref={(el) => (stepperRefs.current[i] = el)}
-                  className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-colors duration-300 ${i <= step
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-200 text-gray-600"
-                    }`}
+                  className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-colors duration-300 ${
+                    i <= step
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-200 text-gray-600"
+                  }`}
                 >
                   {i + 1}
                 </div>
                 <span
-                  className={`mt-2 text-xs font-medium ${i <= step ? "text-gray-900" : "text-gray-400"
-                    }`}
+                  className={`mt-2 text-xs font-medium ${
+                    i <= step ? "text-gray-900" : "text-gray-400"
+                  }`}
                 >
                   {s}
                 </span>
@@ -163,7 +175,7 @@ export default function CheckoutModal({ isOpen, onClose, cartItems: initialCartI
                   />
                 </div>
               )}
-            </React.Fragment>
+            </Fragment>
           ))}
         </div>
 
