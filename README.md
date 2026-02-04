@@ -1,3 +1,5 @@
+# Space Transfers
+
 ## Running React on Replit
 
 [React](https://reactjs.org/) is a popular JavaScript library for building user interfaces.
@@ -10,6 +12,4 @@ Using the two in conjunction is one of the fastest ways to build a web app.
 - Hit run
 - Edit [App.tsx](#src/App.tsx) and watch it live update!
 
-By default, Replit runs the `dev` script, but you can configure it by changing the `run` field in the [configuration file](#.replit). Here are the vite docs for [serving production websites](https://vitejs.dev/guide/build.html)# space-transfers
-# space-transfers
-# space-transfers
+By default, Replit runs the `dev` script, but you can configure it by changing the `run` field in the [configuration file](#.replit). Here are the vite docs for [serving production websites](https://vitejs.dev/guide/build.html).
