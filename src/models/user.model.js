@@ -28,19 +28,28 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    phone: {
+      type: String,
+      trim: true
+    },
     role: {
       type: String,
       enum: Object.values(UserRoles),
       required: true,
       default: UserRoles.CUSTOMER
+    },
+    defaultShippingAddress: {
+      street: String,
+      city: String,
+      state: String,
+      postalCode: String,
+      country: String
     }
   },
   {
     timestamps: true
   }
 );
-
-userSchema.index({ email: 1 });
 
 export const User = mongoose.model("User", userSchema);
 
