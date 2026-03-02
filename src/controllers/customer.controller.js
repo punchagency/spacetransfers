@@ -4,6 +4,9 @@ import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
 import sharp from "sharp";
 import { env } from "../config/env.js";
+import { generatePDF } from "pdf-node";
+import fs from "fs";
+import path from "path";
 
 export const updateAccount = async (req, res, next) => {
   try {
@@ -40,6 +43,77 @@ export const updateAccount = async (req, res, next) => {
     if (updatedUser.defaultShippingAddress) userResponse.defaultShippingAddress = updatedUser.defaultShippingAddress;
 
     res.json({ user: userResponse });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getOrderTracking = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const order = await Order.findOne({ _id: orderId, user: req.user.id });
+
+    if (!order) {
+      const error = new Error("Order not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const isValidTrackingNumber = (tn) => typeof tn === "string" && /^[A-Za-z0-9]{10,35}$/.test(tn);
+    let trackingNumber = order.trackingNumber;
+    let carrier = order.carrier || "UPS";
+    let events = (order.trackingEvents || []).map(event => ({
+      time: event.time,
+      location: event.location,
+      description: event.description
+    }));
+
+    // If no valid tracking number exists, return a mock response only in development; 404 in production
+    if (!isValidTrackingNumber(trackingNumber)) {
+      if (env.nodeEnv !== "production") {
+        trackingNumber = "1Z999AA10123456784"; // Mock valid tracking number
+        carrier = "UPS";
+        
+        if (events.length === 0) {
+          events = [
+            {
+              time: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
+              location: (order.shippingAddress?.city || "Los Angeles") + ", " + (order.shippingAddress?.state || "CA"),
+              description: "Arrived at facility"
+            },
+            {
+              time: new Date(Date.now() - 86400000).toISOString(), // 24 hours ago
+              location: "Los Angeles, CA",
+              description: "Departed facility"
+            }
+          ];
+        }
+      } else {
+        const error = new Error("Tracking not available");
+        error.statusCode = 404;
+        throw error;
+      }
+    }
+
+    const carrierUrls = {
+      UPS: `https://www.ups.com/track?loc=en_US&tracknum=${trackingNumber}`,
+      FedEx: `https://www.fedex.com/apps/fedextrack/?tracknumbers=${trackingNumber}`,
+      USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${trackingNumber}`,
+      DHL: `https://www.dhl.com/en/express/tracking.html?AWB=${trackingNumber}`
+    };
+
+    const trackingUrl = carrierUrls[carrier] || carrierUrls.UPS;
+    const status = order.status === "SHIPPED" ? "In Transit" : (order.status === "COMPLETED" ? "Delivered" : "Pending");
+
+    events.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    res.json({
+      trackingNumber,
+      carrier,
+      trackingUrl,
+      status,
+      events
+    });
   } catch (error) {
     next(error);
   }
@@ -455,7 +529,68 @@ export const listOrders = async (req, res, next) => {
 
 export const getOrderById = async (req, res, next) => {
   try {
-    res.json({ message: "Customer get order by id blueprint" });
+    const { orderId } = req.params;
+    const order = await Order.findOne({ _id: orderId, user: req.user.id });
+
+    if (!order) {
+      const error = new Error("Order not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const apiStatusMap = {
+      PENDING: "Pending",
+      PROCESSING: "Processing",
+      SHIPPED: "Shipped",
+      COMPLETED: "Completed",
+      CANCELLED: "Cancelled"
+    };
+
+    const formattedItems = (order.items || []).map((item) => {
+      let description = "";
+      if (item.widthIn && item.heightIn) {
+        description = `${item.widthIn}" x ${item.heightIn}"`;
+      }
+      
+      return {
+        name: item.name || "Unknown Item",
+        description: description,
+        quantity: item.quantity || 0,
+        unitPrice: item.unitPrice || 0,
+        subtotal: item.subtotal || 0
+      };
+    });
+
+    const pricing = order.pricing || {};
+    const lineItems = [
+      { label: "Subtotal", amount: pricing.subtotal || 0 },
+      { label: `Tax`, amount: pricing.tax || 0 },
+      { label: "Shipping", amount: pricing.shippingCost || 0 }
+    ];
+
+    res.json({
+      orderId: order.id,
+      status: apiStatusMap[order.status] || order.status,
+      items: formattedItems,
+      shippingAddress: {
+        name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
+        street: order.shippingAddress?.street || "N/A",
+        city: order.shippingAddress?.city || "N/A",
+        state: order.shippingAddress?.state || "N/A",
+        postalCode: order.shippingAddress?.postalCode || "N/A",
+        country: order.shippingAddress?.country || "N/A"
+      },
+      payment: {
+        method: order.payment?.method || "N/A",
+        cardBrand: order.payment?.cardBrand || null,
+        cardLast4: order.payment?.cardLast4 || null
+      },
+      pricing: {
+        lineItems,
+        total: pricing.total || 0,
+        currency: pricing.currency || "USD"
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -680,3 +815,150 @@ export const getCartQuote = async (req, res, next) => {
   }
 };
 
+export const downloadInvoice = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const order = await Order.findOne({ _id: orderId, user: req.user.id });
+
+    if (!order) {
+      const error = new Error("Order not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const invoiceTemplatePath = path.join(process.cwd(), "src", "templates", "invoice.html");
+    const htmlTemplate = fs.readFileSync(invoiceTemplatePath, "utf8");
+
+    const formattedItems = (order.items || []).map((item) => {
+      let description = "";
+      if (item.widthIn && item.heightIn) {
+        description = `${item.widthIn}" x ${item.heightIn}"`;
+      }
+      return {
+        name: item.name || "Unknown Item",
+        description: description,
+        quantity: item.quantity || 0,
+        unitPrice: (item.unitPrice || 0).toFixed(2),
+        subtotal: (item.subtotal || 0).toFixed(2)
+      };
+    });
+
+    const pricing = order.pricing || {};
+    const lineItems = [
+      { label: "Subtotal", amount: (pricing.subtotal || 0).toFixed(2) },
+      { label: "Shipping", amount: (pricing.shippingCost || 0).toFixed(2) },
+      { label: "Tax", amount: (pricing.tax || 0).toFixed(2) }
+    ];
+
+    const data = {
+      orderId: order.id,
+      date: (order.createdAt || new Date()).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
+      shippingAddress: {
+        name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
+        street: order.shippingAddress?.street || "N/A",
+        city: order.shippingAddress?.city || "N/A",
+        state: order.shippingAddress?.state || "N/A",
+        postalCode: order.shippingAddress?.postalCode || "N/A",
+        country: order.shippingAddress?.country || "N/A"
+      },
+      items: formattedItems,
+      pricing: {
+        lineItems,
+        total: (pricing.total || 0).toFixed(2),
+        currency: pricing.currency || "USD"
+      }
+    };
+
+    const pdfOptions = {
+      format: "A4",
+      printBackground: true
+    };
+
+    const result = await generatePDF({
+      html: htmlTemplate,
+      data: data,
+      type: "pdf",
+      buffer: true,
+      pdfOptions: pdfOptions
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${order.id}.pdf"`);
+    res.send(result.buffer);
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const reorder = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const { quantityMultiplier = 1 } = req.body || {};
+
+    if (typeof quantityMultiplier !== "number" || quantityMultiplier <= 0) {
+      const error = new Error("quantityMultiplier must be a positive number");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const originalOrder = await Order.findOne({ _id: orderId, user: req.user.id });
+
+    if (!originalOrder) {
+      const error = new Error("Original order not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const newItems = originalOrder.items.map((item) => {
+      const quantity = item.quantity * quantityMultiplier;
+      const subtotal = item.unitPrice * quantity;
+
+      return {
+        type: item.type,
+        designId: item.designId,
+        name: item.name,
+        widthIn: item.widthIn,
+        heightIn: item.heightIn,
+        quantity,
+        unitPrice: item.unitPrice,
+        subtotal
+      };
+    });
+
+    const subtotal = newItems.reduce((sum, item) => sum + item.subtotal, 0);
+    const shippingCost = originalOrder.pricing.shippingCost; // Keep original shipping for now
+    const taxRate = originalOrder.pricing.subtotal > 0 ? originalOrder.pricing.tax / originalOrder.pricing.subtotal : 0;
+    const tax = roundToTwo(subtotal * taxRate);
+    const total = roundToTwo(subtotal + shippingCost + tax);
+
+    const newOrder = new Order({
+      user: req.user.id,
+      items: newItems,
+      customer: originalOrder.customer,
+      shippingAddress: originalOrder.shippingAddress,
+      shippingMethod: originalOrder.shippingMethod,
+      payment: {
+        method: originalOrder.payment.method // Copying payment method but not intent/status
+      },
+      pricing: {
+        subtotal: roundToTwo(subtotal),
+        shippingCost: roundToTwo(shippingCost),
+        tax,
+        total,
+        currency: originalOrder.pricing.currency
+      },
+      status: "PENDING"
+    });
+
+    await newOrder.save();
+
+    res.status(201).json({
+      orderId: newOrder.id,
+      status: "Pending",
+      createdFrom: originalOrder.id
+    });
+  } catch (error) {
+    next(error);
+  }
+};

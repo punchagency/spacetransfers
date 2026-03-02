@@ -78,11 +78,30 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "SHIPPED", "COMPLETED", "CANCELLED"],
-      default: "COMPLETED"
+      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"],
+      default: "PENDING"
     },
     trackingNumber: {
       type: String
+    },
+    carrier: {
+      type: String
+    },
+    trackingEvents: [
+      {
+        time: { type: Date, required: true },
+        location: { type: String, required: true },
+        description: { type: String, required: true }
+      }
+    ],
+    assignedPrinter: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User"
+    },
+    priority: {
+      type: String,
+      enum: ["NORMAL", "URGENT"],
+      default: "NORMAL"
     }
   },
   {
