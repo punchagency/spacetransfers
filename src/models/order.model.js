@@ -78,8 +78,11 @@ const orderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"],
+      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED", "REJECTED", "PAUSED"],
       default: "PENDING"
+    },
+    rejectionReason: {
+      type: String
     },
     trackingNumber: {
       type: String
@@ -102,7 +105,23 @@ const orderSchema = new mongoose.Schema(
       type: String,
       enum: ["NORMAL", "URGENT"],
       default: "NORMAL"
-    }
+    },
+    notes: {
+      type: String,
+      default: ""
+    },
+    specs: {
+      filmType: { type: String, enum: ["DTF", "UV", "Screen", "Sublimation"] },
+      passes: { type: Number },
+      temperatureC: { type: Number },
+      pressSeconds: { type: Number }
+    },
+    statusTimeline: [
+      {
+        status: { type: String, required: true },
+        time: { type: Date, default: Date.now }
+      }
+    ]
   },
   {
     timestamps: true

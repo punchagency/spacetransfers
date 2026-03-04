@@ -197,6 +197,7 @@ export const updateJobStatus = async (req, res, next) => {
     }
 
     job.status = status;
+    job.statusTimeline.push({ status, time: new Date() });
     await job.save();
 
     res.json({
@@ -244,13 +245,253 @@ export const updateJobPriority = async (req, res, next) => {
   }
 };
 
+export const getJobDetails = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const printerId = req.user.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const firstItem = job.items[0] || {};
+    const sheetSize = (firstItem.widthIn && firstItem.heightIn) 
+      ? `${firstItem.widthIn}x${firstItem.heightIn}` 
+      : "N/A";
+
+    res.json({
+      id: job.id,
+      orderId: job.id,
+      status: job.status,
+      specs: {
+        sheetSize,
+        filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown"
+      },
+      notes: job.notes || "No production notes",
+      timeline: job.statusTimeline.map(t => ({
+        status: t.status,
+        time: t.time
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getJobCustomerInfo = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const printerId = req.user.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const customer = job.customer || {};
+    const shippingAddress = job.shippingAddress || {};
+
+    res.json({
+      name: `${customer.firstName || ""} ${customer.lastName || ""}`.trim(),
+      email: customer.email || "N/A",
+      phone: customer.phone || "N/A",
+      shippingAddress: {
+        street: shippingAddress.street || "N/A",
+        city: shippingAddress.city || "N/A",
+        state: shippingAddress.state || "N/A",
+        postalCode: shippingAddress.postalCode || "N/A",
+        country: shippingAddress.country || "N/A"
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateJobNotes = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { notes } = req.body;
+    const printerId = req.user.id;
+
+    if (typeof notes !== "string") {
+      const error = new Error("Notes must be a string");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (notes.length > 2000) {
+      const error = new Error("Notes maximum length is 2000 characters");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    job.notes = notes;
+    await job.save();
+
+    res.json({
+      id: job.id,
+      notes: job.notes,
+      updatedAt: job.updatedAt.toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateJobSpecs = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { filmType, passes, temperatureC, pressSeconds } = req.body;
+    const printerId = req.user.id;
+
+    const allowedFilmTypes = ["DTF", "UV", "Screen", "Sublimation"];
+    if (filmType && !allowedFilmTypes.includes(filmType)) {
+      const error = new Error("Invalid filmType. Must be one of: DTF | UV | Screen | Sublimation.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Initialize specs if it doesn't exist
+    if (!job.specs) {
+      job.specs = {};
+    }
+
+    // Update only allowed fields, ignore unknown fields in req.body
+    if (filmType !== undefined) job.specs.filmType = filmType;
+    if (passes !== undefined) job.specs.passes = passes;
+    if (temperatureC !== undefined) job.specs.temperatureC = temperatureC;
+    if (pressSeconds !== undefined) job.specs.pressSeconds = pressSeconds;
+
+    // Mark as modified to ensure Mongoose saves the nested object
+    job.markModified("specs");
+    await job.save();
+
+    res.json({
+      id: job.id,
+      specs: job.specs,
+      updatedAt: job.updatedAt.toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const executeJobAction = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { action, reason } = req.body;
+    const printerId = req.user.id;
+
+    const allowedActions = ["ACCEPT", "REJECT", "START", "PAUSE", "RESUME"];
+    if (!action || !allowedActions.includes(action)) {
+      const error = new Error("Invalid action. Must be one of: ACCEPT | REJECT | START | PAUSE | RESUME");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (action === "REJECT" && !reason) {
+      const error = new Error("REJECT requires a reason field");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    let nextStatus;
+    switch (action) {
+      case "ACCEPT":
+        if (job.status !== "PENDING") {
+          const error = new Error(`Cannot ACCEPT job in ${job.status} state. ACCEPT transitions Pending -> Processing.`);
+          error.statusCode = 409;
+          throw error;
+        }
+        nextStatus = "PROCESSING";
+        break;
+      case "REJECT":
+        if (job.status !== "PENDING") {
+          const error = new Error(`Cannot REJECT job in ${job.status} state. REJECT transitions Pending -> Rejected.`);
+          error.statusCode = 409;
+          throw error;
+        }
+        nextStatus = "REJECTED";
+        job.rejectionReason = reason;
+        break;
+      case "START":
+        if (job.status !== "PROCESSING") {
+          const error = new Error(`Cannot START job in ${job.status} state. START transitions Processing -> Printing.`);
+          error.statusCode = 409;
+          throw error;
+        }
+        nextStatus = "PRINTING";
+        break;
+      case "PAUSE":
+        if (job.status !== "PRINTING") {
+          const error = new Error(`Cannot PAUSE job in ${job.status} state. PAUSE transitions Printing -> Paused.`);
+          error.statusCode = 409;
+          throw error;
+        }
+        nextStatus = "PAUSED";
+        break;
+      case "RESUME":
+        if (job.status !== "PAUSED") {
+          const error = new Error(`Cannot RESUME job in ${job.status} state. RESUME transitions Paused -> Printing.`);
+          error.statusCode = 409;
+          throw error;
+        }
+        nextStatus = "PRINTING";
+        break;
+    }
+
+    job.status = nextStatus;
+    job.statusTimeline.push({ status: nextStatus, time: new Date() });
+    await job.save();
+
+    res.json({
+      id: job.id,
+      status: job.status
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listPrinterOrders = async (req, res, next) => {
   try {
     res.json({ message: "Printer list orders blueprint" });
   } catch (error) {
     next(error);
   }
-};
+};                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
 export const getPrinterEarnings = async (req, res, next) => {
   try {
@@ -259,4 +500,3 @@ export const getPrinterEarnings = async (req, res, next) => {
     next(error);
   }
 };
-
