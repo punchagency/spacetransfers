@@ -1,4 +1,6 @@
 import { Order } from "../models/order.model.js";
+import { Asset } from "../models/asset.model.js";
+import { Design } from "../models/design.model.js";
 import mongoose from "mongoose";
 
 export const getDashboardStats = async (req, res, next) => {
@@ -479,6 +481,251 @@ export const executeJobAction = async (req, res, next) => {
     res.json({
       id: job.id,
       status: job.status
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getJobAssets = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const printerId = req.user.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // 1. Get all designIds from job items
+    const designIds = job.items
+      .filter(item => item.designId)
+      .map(item => item.designId);
+
+    // 2. Fetch Designs to get assetIds
+    const designs = await Design.find({ _id: { $in: designIds } });
+    
+    // 3. Collect all unique assetIds from those designs
+    const assetIds = new Set();
+    designs.forEach(design => {
+      if (design.artboardData && design.artboardData.items) {
+        design.artboardData.items.forEach(item => {
+          if (item.assetId) assetIds.add(item.assetId);
+        });
+      }
+    });
+
+    // 4. Fetch Assets
+    const assets = await Asset.find({ _id: { $in: Array.from(assetIds) } });
+
+    // 5. Format assets with "signed" URLs (mocking signing logic for now)
+    // In a real scenario, this would involve a service like AWS S3 getSignedUrl
+    const formattedAssets = assets.map(asset => ({
+      id: asset.id,
+      filename: asset.originalFilename,
+      widthPx: asset.widthPx,
+      heightPx: asset.heightPx,
+      dpi: asset.dpi,
+      downloadUrl: asset.url // In production, this would be a signed URL
+    }));
+
+    // 6. Calculate stats
+    const totalBytes = assets.reduce((sum, asset) => sum + (asset.sizeBytes || 0), 0);
+
+    res.json({
+      assets: formattedAssets,
+      counts: {
+        images: assets.length,
+        totalBytes
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createJobAssetBundle = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { include } = req.body;
+    const printerId = req.user.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // 1. Get all designIds from job items
+    const designIds = job.items
+      .filter(item => item.designId)
+      .map(item => item.designId);
+
+    // 2. Fetch Designs to get assetIds
+    const designs = await Design.find({ _id: { $in: designIds } });
+    
+    // 3. Collect all unique assetIds from those designs
+    const allAssetIds = new Set();
+    designs.forEach(design => {
+      if (design.artboardData && design.artboardData.items) {
+        design.artboardData.items.forEach(item => {
+          if (item.assetId) allAssetIds.add(item.assetId);
+        });
+      }
+    });
+
+    let targetAssetIds = Array.from(allAssetIds);
+
+    // 4. Filter if include is a list
+    if (Array.isArray(include)) {
+      targetAssetIds = targetAssetIds.filter(id => include.includes(id));
+      if (targetAssetIds.length === 0) {
+        const error = new Error("None of the specified assets were found in this job");
+        error.statusCode = 400;
+        throw error;
+      }
+    } else if (include !== "ALL") {
+      const error = new Error("Invalid 'include' value. Use 'ALL' or an array of asset IDs.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // 5. Mock ZIP generation
+    // In a real application, this would:
+    // a. Create a ZIP of the files from S3/Storage
+    // b. Upload the ZIP to a temporary location
+    // c. Return a signed URL
+    const port = env.port || 4000;
+    const bundleUrl = `http://localhost:${port}/uploads/bundle-${job.id}.zip`;
+
+    // Simulate async generation (optional, since the requirement says it may take 30s)
+    // For this mock, we just return the URL immediately.
+
+    res.status(201).json({
+      bundleUrl
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const exportJobGangsheet = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { format, resolutionDPI, settings } = req.body;
+    const printerId = req.user.id;
+
+    const allowedFormats = ["PDF", "PNG", "TIFF"];
+    if (!format || !allowedFormats.includes(format)) {
+      const error = new Error("Invalid format. Must be one of: PDF | PNG | TIFF");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Mock gangsheet generation
+    // In a real application, this would:
+    // a. Render the designs according to the job's layout
+    // b. Apply pre-press settings (crop marks, color bars, ICC profiles)
+    // c. Save the file to storage (e.g., S3)
+    // d. Generate a signed URL valid for production access
+    const port = env.port || 4000;
+    const fileExtension = format.toLowerCase();
+    const exportUrl = `http://localhost:${port}/uploads/gangsheet-${job.id}.${fileExtension}`;
+
+    // Return the response immediately (generation is mocked as async)
+    res.status(201).json({
+      exportUrl,
+      format
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getJobGangsheetPreview = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const resolution = parseInt(req.query.resolution) || 150;
+    const printerId = req.user.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Mock preview generation
+    // In a real application, this would:
+    // a. Render a low-res version of the gangsheet
+    // b. Cache the preview for 6 hours
+    // c. Return a signed URL
+    const port = env.port || 4000;
+    const previewUrl = `http://localhost:${port}/uploads/preview-${job.id}-${resolution}.png`;
+
+    res.json({
+      previewUrl,
+      resolutionDPI: resolution
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createJobShippingLabel = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { size, carrier, service } = req.body;
+    const printerId = req.user.id;
+
+    const allowedSizes = ["4x6", "4x4", "2x4"];
+    if (!size || !allowedSizes.includes(size)) {
+      const error = new Error("Invalid size. Must be one of: 4x6 | 4x4 | 2x4");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Mock shipping label generation
+    // In a real application, this would:
+    // a. Call a shipping API (like ShipStation, EasyPost, or direct carrier APIs)
+    // b. Generate a PDF label
+    // c. Save tracking info to the order
+    const mockTrackingNumber = `1Z${Math.random().toString(36).substring(2, 18).toUpperCase()}`;
+    const port = env.port || 4000;
+    const labelUrl = `http://localhost:${port}/uploads/label-${job.id}.pdf`;
+
+    // Update order with tracking information
+    job.trackingNumber = mockTrackingNumber;
+    job.carrier = carrier || "UPS";
+    job.status = "SHIPPED";
+    job.statusTimeline.push({ status: "SHIPPED", time: new Date() });
+    await job.save();
+
+    res.status(201).json({
+      labelUrl,
+      trackingNumber: mockTrackingNumber
     });
   } catch (error) {
     next(error);
