@@ -1,7 +1,7 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
-import { UserRoles } from "../models/user.model.js";
-import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction } from "../controllers/printer.controller.js";
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               import { UserRoles } from "../models/user.model.js";
+import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction, getJobAssets, createJobAssetBundle, exportJobGangsheet, getJobGangsheetPreview, createJobShippingLabel } from "../controllers/printer.controller.js";
 
 const router = express.Router();
 
@@ -11,6 +11,11 @@ router.get("/dashboard/stats", getDashboardStats);
 router.get("/print-queue", listPrintQueue);
 router.get("/jobs/:jobId", getJobDetails);
 router.get("/jobs/:jobId/customer", getJobCustomerInfo);
+router.get("/jobs/:jobId/assets", getJobAssets);
+router.get("/jobs/:jobId/gangsheet/preview", getJobGangsheetPreview);
+router.post("/jobs/:jobId/assets/bundle", createJobAssetBundle);
+router.post("/jobs/:jobId/gangsheet/export", exportJobGangsheet);
+router.post("/jobs/:jobId/label", createJobShippingLabel);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.patch("/jobs/:jobId/specs", updateJobSpecs);
 router.post("/jobs/:jobId/actions", executeJobAction);
