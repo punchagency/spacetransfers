@@ -732,13 +732,288 @@ export const createJobShippingLabel = async (req, res, next) => {
   }
 };
 
+export const updateJobTracking = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const { carrier, trackingNumber, trackingUrl } = req.body;
+    const printerId = req.user.id;
+
+    if (!carrier || !trackingNumber) {
+      const error = new Error("Carrier and trackingNumber are required");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    job.carrier = carrier;
+    job.trackingNumber = trackingNumber;
+    // Note: If the Order model needs to store trackingUrl explicitly, it should be added to the schema.
+    // For now, we update carrier and trackingNumber which are already in the schema.
+    
+    // If the status isn't already SHIPPED or COMPLETED, we might want to update it to SHIPPED
+    if (!["SHIPPED", "COMPLETED"].includes(job.status)) {
+      job.status = "SHIPPED";
+      job.statusTimeline.push({ status: "SHIPPED", time: new Date() });
+    }
+
+    await job.save();
+
+    res.json({
+      orderId: job.id, // Or job.orderId if you have a separate human-readable ID
+      trackingNumber: job.trackingNumber,
+      updatedAt: job.updatedAt.toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listPrinterOrders = async (req, res, next) => {
   try {
-    res.json({ message: "Printer list orders blueprint" });
+    const printerId = req.user.id;
+    const { status } = req.query;
+
+    const query = { assignedPrinter: printerId };
+
+    // Map frontend statuses to backend statuses
+    const statusMap = {
+      "Pending Review": "PENDING",
+      "In Progress": "PROCESSING",
+      "Ready": ["PRINTING", "QUALITY_CHECK"],
+      "Completed": ["SHIPPED", "COMPLETED"]
+    };
+
+    if (status && statusMap[status]) {
+      const backendStatus = statusMap[status];
+      if (Array.isArray(backendStatus)) {
+        query.status = { $in: backendStatus };
+      } else {
+        query.status = backendStatus;
+      }
+    }
+
+    const orders = await Order.find(query).sort({ createdAt: -1 });
+
+    const formattedOrders = await Promise.all(orders.map(async (order) => {
+      // 1. Determine sheetSize (from first item)
+      const firstItem = order.items[0] || {};
+      const sheetSize = (firstItem.widthIn && firstItem.heightIn) 
+        ? `${firstItem.widthIn}x${firstItem.heightIn}` 
+        : "N/A";
+
+      // 2. Determine location
+      const location = order.shippingAddress 
+        ? `${order.shippingAddress.city}, ${order.shippingAddress.state}`
+        : "N/A";
+
+      // 3. Map backend status back to frontend label
+      let displayStatus = order.status;
+      for (const [label, val] of Object.entries(statusMap)) {
+        if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
+          displayStatus = label;
+          break;
+        }
+      }
+
+      // 4. Asset Integrity Check (hasWarning)
+      // hasWarning is true if any linked asset fails the integrity check (below 150 DPI or missing)
+      const designIds = order.items.filter(i => i.designId).map(i => i.designId);
+      const designs = await Design.find({ _id: { $in: designIds } });
+      const assetIds = new Set();
+      designs.forEach(d => {
+        d.artboardData?.items?.forEach(item => {
+          if (item.assetId) assetIds.add(item.assetId);
+        });
+      });
+      const assets = await Asset.find({ _id: { $in: Array.from(assetIds) } });
+      
+      const hasWarning = assets.length < assetIds.size || assets.some(a => !a.dpi || a.dpi < 150);
+
+      return {
+        id: order.id,
+        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        sheetSize,
+        location,
+        status: displayStatus,
+        dueDate: order.createdAt, // Using createdAt as a base for dueDate
+        isUrgent: order.priority === "URGENT",
+        hasWarning
+      };
+    }));
+
+    res.json({ orders: formattedOrders });
   } catch (error) {
     next(error);
   }
 };                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+
+export const getOrderSummary = async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    const printerId = req.user.id;
+
+    const order = await Order.findOne({ _id: orderId, assignedPrinter: printerId });
+
+    if (!order) {
+      const error = new Error("Order not found or not assigned to this printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Map backend status to frontend label (matching listPrinterOrders logic)
+    const statusMap = {
+      "Pending Review": "PENDING",
+      "In Progress": "PROCESSING",
+      "Ready": ["PRINTING", "QUALITY_CHECK"],
+      "Completed": ["SHIPPED", "COMPLETED"]
+    };
+
+    let displayStatus = order.status;
+    for (const [label, val] of Object.entries(statusMap)) {
+      if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
+        displayStatus = label;
+        break;
+      }
+    }
+
+    res.json({
+      id: order.id,
+      status: displayStatus,
+      items: order.items.length,
+      amount: order.pricing?.total || 0,
+      customer: `${order.customer.firstName} ${order.customer.lastName}`,
+      createdAt: order.createdAt
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getEarningsSummary = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const { range = "30d" } = req.query;
+
+    let startDate;
+    const now = new Date();
+    if (range === "7d") {
+      startDate = new Date(now.setDate(now.getDate() - 7));
+    } else if (range === "all") {
+      startDate = new Date(0); // All time
+    } else {
+      // Default 30d
+      startDate = new Date(now.setDate(now.getDate() - 30));
+    }
+
+    const orders = await Order.find({
+      assignedPrinter: printerId,
+      createdAt: { $gte: startDate }
+    });
+
+    // Calculate totals
+    let revenue = 0;
+    let paidOut = 0;
+    let pending = 0;
+
+    const dailyRevenue = {};
+
+    orders.forEach(order => {
+      const amount = order.pricing?.total || 0;
+      revenue += amount;
+
+      if (["COMPLETED", "SHIPPED"].includes(order.status)) {
+        paidOut += amount;
+      } else {
+        pending += amount;
+      }
+
+      // Prepare daily revenue for trend
+      const dateKey = order.createdAt.toISOString().split("T")[0];
+      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
+    });
+
+    // Format trend points
+    const points = [];
+    const dateRange = range === "all" ? 30 : (range === "7d" ? 7 : 30); // Use 30 for 'all' as a fallback for trend visualization
+    
+    // In a real app, we would iterate through every day in the range to ensure zero values are represented
+    // For this mock/blueprint implementation, we'll just return the days that have data or a simple loop
+    const tempDate = new Date();
+    for (let i = 0; i < dateRange; i++) {
+      const d = new Date(tempDate);
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().split("T")[0];
+      points.push({
+        date: key,
+        revenue: dailyRevenue[key] || 0
+      });
+    }
+    points.reverse();
+
+    res.json({
+      totals: {
+        revenue,
+        paidOut,
+        pending
+      },
+      trend: {
+        period: range,
+        points
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listEarningsJobs = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const { status } = req.query;
+
+    const query = { assignedPrinter: printerId };
+
+    if (status) {
+      if (status === "Paid") {
+        query.status = { $in: ["SHIPPED", "COMPLETED"] };
+      } else if (status === "Pending") {
+        query.status = { $nin: ["SHIPPED", "COMPLETED", "CANCELLED", "REJECTED"] };
+      }
+    }
+
+    const orders = await Order.find(query).sort({ updatedAt: -1 });
+
+    const PLATFORM_RATE = 0.20;
+
+    const jobs = orders.map(order => {
+      const amount = order.pricing?.total || 0;
+      const commission = amount * PLATFORM_RATE;
+      const earning = amount - commission;
+      const isPaid = ["SHIPPED", "COMPLETED"].includes(order.status);
+
+      return {
+        id: order.id, // Or a custom job ID format if available
+        customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
+        amount: Number(amount.toFixed(2)),
+        earning: Number(earning.toFixed(2)),
+        commission: Number(commission.toFixed(2)),
+        completed: order.updatedAt.toISOString().split("T")[0],
+        status: isPaid ? "Paid" : "Pending"
+      };
+    });
+
+    res.json({ jobs });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const getPrinterEarnings = async (req, res, next) => {
   try {

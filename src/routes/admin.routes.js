@@ -14,4 +14,4 @@ router.patch("/partners/:partnerId", updatePartner);
 router.get("/earnings/summary", getEarningsSummary);
 
 export default router;
-
+ 
