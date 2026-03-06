@@ -28,6 +28,21 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    website: {
+      type: String,
+      trim: true
+    },
+    regions: [
+      {
+        type: String,
+        trim: true
+      }
+    ],
+    status: {
+      type: String,
+      enum: ["Active", "Suspended", "Under Review"],
+      default: "Active"
+    },
     phone: {
       type: String,
       trim: true
