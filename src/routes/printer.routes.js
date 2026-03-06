@@ -1,7 +1,7 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction, getJobAssets, createJobAssetBundle, exportJobGangsheet, getJobGangsheetPreview, createJobShippingLabel, updateJobTracking, getOrderSummary, getEarningsSummary, listEarningsJobs } from "../controllers/printer.controller.js";
+import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction, getJobAssets, createJobAssetBundle, exportJobGangsheet, getJobGangsheetPreview, createJobShippingLabel, updateJobTracking, getOrderSummary, getEarningsSummary, listEarningsJobs, requestPayout, confirmPayoutRequest, getPrinterProfile, updatePrinterProfile } from "../controllers/printer.controller.js";
 
 const router = express.Router();
 
@@ -9,6 +9,8 @@ router.use(authenticate, requireRoles(UserRoles.PRINTER));
 
 router.get("/dashboard/stats", getDashboardStats);
 router.get("/print-queue", listPrintQueue);
+router.get("/profile", getPrinterProfile);
+router.patch("/profile", updatePrinterProfile);
 router.get("/jobs/:jobId", getJobDetails);
 router.get("/jobs/:jobId/customer", getJobCustomerInfo);
 router.get("/jobs/:jobId/assets", getJobAssets);
@@ -26,6 +28,8 @@ router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);
 router.get("/earnings/summary", getEarningsSummary);
+router.post("/earnings/payout-requests", requestPayout);
+router.post("/earnings/payout-requests/:requestId/confirm", confirmPayoutRequest);
 router.get("/earnings", getPrinterEarnings);
 
 export default router;

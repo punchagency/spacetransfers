@@ -1,6 +1,7 @@
 import { Order } from "../models/order.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
+import { User } from "../models/user.model.js";
 import mongoose from "mongoose";
 
 export const getDashboardStats = async (req, res, next) => {
@@ -1015,6 +1016,90 @@ export const listEarningsJobs = async (req, res, next) => {
   }
 };
 
+export const requestPayout = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const { amount, method, notes } = req.body;
+
+    // 1. Validate method
+    const allowedMethods = ["bank_transfer", "paypal", "check"];
+    if (!method || !allowedMethods.includes(method)) {
+      const error = new Error("Invalid payout method. Must be: bank_transfer | paypal | check");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // 2. Validate amount
+    if (!amount || amount <= 0) {
+      const error = new Error("Payout amount must be greater than zero");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // 3. Calculate available pending earnings
+    // We only allow payouts for orders that are NOT yet paid out but are in a status that qualifies for earnings
+    // Based on previous endpoints, earnings are calculated for all assigned orders.
+    // In a real app, there would likely be a "payoutStatus" or "isPaidOut" flag on the Order or a separate Ledger.
+    // For this blueprint, we'll calculate available balance as total earnings from all non-payout-requested orders.
+    
+    const PLATFORM_RATE = 0.20;
+    const orders = await Order.find({
+      assignedPrinter: printerId,
+      // Logic: Only COMPLETED or SHIPPED orders can be paid out, and they shouldn't have been part of a previous payout
+      status: { $in: ["SHIPPED", "COMPLETED"] }
+      // In a real schema, we'd filter by: payoutStatus: 'PENDING'
+    });
+
+    const totalAvailable = orders.reduce((sum, order) => {
+      const orderAmount = order.pricing?.total || 0;
+      const earning = orderAmount * (1 - PLATFORM_RATE);
+      return sum + earning;
+    }, 0);
+
+    if (amount > totalAvailable) {
+      const error = new Error(`Insufficient balance. Available pending earnings: $${totalAvailable.toFixed(2)}`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // 4. Create payout request record
+    // In a real app, we would have a PayoutRequest model:
+    // const payout = await PayoutRequest.create({ printer: printerId, amount, method, notes, status: 'Requested' });
+    
+    // Mocking the response as if a record was created
+    const requestId = `payout_${Math.random().toString(36).substring(2, 9)}`;
+
+    res.status(201).json({
+      requestId,
+      status: "Requested",
+      amount: Number(amount.toFixed(2))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const confirmPayoutRequest = async (req, res, next) => {
+  try {
+    const { requestId } = req.params;
+    const printerId = req.user.id;
+
+    // In a real app, you would:
+    // 1. Find the payout request by requestId and printerId
+    // 2. Verify its current status is 'Requested' or 'Pending'
+    // 3. Update status to 'Confirmed' or 'Processing'
+    
+    // Mocking the response
+    res.json({
+      requestId,
+      status: "Confirmed",
+      confirmedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getPrinterEarnings = async (req, res, next) => {
   try {
     res.json({ message: "Printer earnings blueprint" });
@@ -1022,3 +1107,56 @@ export const getPrinterEarnings = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getPrinterProfile = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const user = await User.findById(printerId);
+
+    if (!user) {
+      const error = new Error("Printer not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.json({
+      businessName: user.companyName || user.name,
+      email: user.email,
+      phone: user.phone || "N/A",
+      website: user.website || "N/A",
+      regions: user.regions || [],
+      status: user.status || "Active"
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePrinterProfile = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const { businessName, phone, website } = req.body;
+
+    const user = await User.findById(printerId);
+
+    if (!user) {
+      const error = new Error("Printer not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (businessName) user.companyName = businessName;
+    if (phone) user.phone = phone;
+    if (website) user.website = website;
+
+    await user.save();
+
+    res.json({
+      businessName: user.companyName || user.name,
+      phone: user.phone || "N/A",
+      website: user.website || "N/A"
+    });
+  } catch (error) {
+    next(error);
+  }
+}; 
