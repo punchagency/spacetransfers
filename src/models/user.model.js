@@ -47,6 +47,47 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    settings: {
+      businessHours: {
+        monday: { isOpen: Boolean, start: String, end: String },
+        tuesday: { isOpen: Boolean, start: String, end: String },
+        wednesday: { isOpen: Boolean, start: String, end: String },
+        thursday: { isOpen: Boolean, start: String, end: String },
+        friday: { isOpen: Boolean, start: String, end: String },
+        saturday: { isOpen: Boolean, start: String, end: String },
+        sunday: { isOpen: Boolean, start: String, end: String }
+      },
+      jobCapacity: {
+        maxConcurrent: Number,
+        dailyMax: Number,
+        autoAccept: { type: Boolean, default: true }
+      },
+      notifications: {
+        email: {
+          newJobs: { type: Boolean, default: true },
+          jobUpdates: { type: Boolean, default: true },
+          payoutAlerts: { type: Boolean, default: true },
+          systemAlerts: { type: Boolean, default: true }
+        },
+        sms: {
+          urgentJobs: { type: Boolean, default: true },
+          payoutComplete: { type: Boolean, default: false }
+        }
+      },
+      paymentMethod: {
+        type: { type: String, enum: ["bank_transfer", "paypal", "check"] },
+        accountNumber: String, // Encrypted
+        routingNumber: String, // Encrypted
+        paypalEmail: String
+      },
+      printingCapabilities: {
+        maxSheetSizeIn: { width: Number, height: Number },
+        supportedInks: [String],
+        supportedFilms: [String],
+        supportedFormats: [String],
+        maxResolutionDPI: Number
+      }
+    },
     role: {
       type: String,
       enum: Object.values(UserRoles),

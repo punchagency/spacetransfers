@@ -1,7 +1,7 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction, getJobAssets, createJobAssetBundle, exportJobGangsheet, getJobGangsheetPreview, createJobShippingLabel, updateJobTracking, getOrderSummary, getEarningsSummary, listEarningsJobs, requestPayout, confirmPayoutRequest, getPrinterProfile, updatePrinterProfile } from "../controllers/printer.controller.js";
+import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction, getJobAssets, createJobAssetBundle, exportJobGangsheet, getJobGangsheetPreview, createJobShippingLabel, updateJobTracking, getOrderSummary, getEarningsSummary, listEarningsJobs, requestPayout, confirmPayoutRequest, getPrinterProfile, updatePrinterProfile, getPrinterSettings, updatePrinterSettings } from "../controllers/printer.controller.js";
 
 const router = express.Router();
 
@@ -11,6 +11,8 @@ router.get("/dashboard/stats", getDashboardStats);
 router.get("/print-queue", listPrintQueue);
 router.get("/profile", getPrinterProfile);
 router.patch("/profile", updatePrinterProfile);
+router.get("/settings", getPrinterSettings);
+router.patch("/settings", updatePrinterSettings);
 router.get("/jobs/:jobId", getJobDetails);
 router.get("/jobs/:jobId/customer", getJobCustomerInfo);
 router.get("/jobs/:jobId/assets", getJobAssets);

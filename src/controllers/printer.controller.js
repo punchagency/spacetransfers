@@ -1159,4 +1159,153 @@ export const updatePrinterProfile = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+};
+
+export const getPrinterSettings = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const user = await User.findById(printerId);
+
+    if (!user) {
+      const error = new Error("Printer not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const settings = user.settings || {};
+    const paymentMethod = settings.paymentMethod || {};
+
+    // Mask the account number
+    const accountMasked = paymentMethod.accountNumber 
+      ? `****${paymentMethod.accountNumber.slice(-4)}`
+      : (paymentMethod.paypalEmail || "N/A");
+
+    const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
+
+    res.json({
+      businessHours: settings.businessHours || { 
+        monday: { ...defaultHours, isOpen: true }, 
+        tuesday: { ...defaultHours, isOpen: true }, 
+        wednesday: defaultHours, 
+        thursday: defaultHours, 
+        friday: defaultHours, 
+        saturday: defaultHours, 
+        sunday: defaultHours 
+      },
+      jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
+      notifications: settings.notifications || { 
+        email: {
+          newJobs: true,
+          jobUpdates: true,
+          payoutAlerts: true,
+          systemAlerts: true
+        },
+        sms: {
+          urgentJobs: true,
+          payoutComplete: false
+        }
+      },
+      paymentMethod: {
+        type: paymentMethod.type || "bank_transfer",
+        accountMasked,
+      },
+      printingCapabilities: settings.printingCapabilities || {
+        maxSheetSizeIn: { width: 24, height: 19.5 },
+        supportedInks: ["CMYK", "White", "Neon", "Metallic"],
+        supportedFilms: ["Hot Peel", "Cold Peel", "Super Cold Peel"],
+        supportedFormats: ["PNG", "PDF", "TIFF"],
+        maxResolutionDPI: 1200,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePrinterSettings = async (req, res, next) => {
+  try {
+    const printerId = req.user.id;
+    const updateData = req.body;
+
+    const user = await User.findById(printerId);
+    if (!user) {
+      const error = new Error("Printer not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (!user.settings) user.settings = {};
+
+    // Helper for deep partial update
+    const deepMerge = (target, source) => {
+      for (const key in source) {
+        if (source[key] instanceof Object && key in target) {
+          deepMerge(target[key], source[key]);
+        } else {
+          target[key] = source[key];
+        }
+      }
+    };
+
+    // Special handling for paymentMethod structure mapping
+    if (updateData.paymentMethod && updateData.paymentMethod.account) {
+      const { routing, number } = updateData.paymentMethod.account;
+      if (!user.settings.paymentMethod) user.settings.paymentMethod = {};
+      if (routing) user.settings.paymentMethod.routingNumber = routing;
+      if (number) user.settings.paymentMethod.accountNumber = number;
+      delete updateData.paymentMethod.account;
+    }
+
+    deepMerge(user.settings, updateData);
+
+    // Mark settings as modified for Mongoose if it's a Mixed type or needs explicit marking
+    user.markModified("settings");
+    await user.save();
+
+    const settings = user.settings || {};
+    const paymentMethod = settings.paymentMethod || {};
+    const accountMasked = paymentMethod.accountNumber 
+      ? `****${paymentMethod.accountNumber.slice(-4)}`
+      : (paymentMethod.paypalEmail || "N/A");
+
+    const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
+
+    res.json({
+      businessHours: settings.businessHours || { 
+        monday: { ...defaultHours, isOpen: true }, 
+        tuesday: { ...defaultHours, isOpen: true }, 
+        wednesday: defaultHours, 
+        thursday: defaultHours, 
+        friday: defaultHours, 
+        saturday: defaultHours, 
+        sunday: defaultHours 
+      },
+      jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
+      notifications: settings.notifications || { 
+        email: {
+          newJobs: true,
+          jobUpdates: true,
+          payoutAlerts: true,
+          systemAlerts: true
+        },
+        sms: {
+          urgentJobs: true,
+          payoutComplete: false
+        }
+      },
+      paymentMethod: {
+        type: paymentMethod.type || "bank_transfer",
+        accountMasked,
+      },
+      printingCapabilities: settings.printingCapabilities || {
+        maxSheetSizeIn: { width: 24, height: 19.5 },
+        supportedInks: ["CMYK", "White", "Neon", "Metallic"],
+        supportedFilms: ["Hot Peel", "Cold Peel", "Super Cold Peel"],
+        supportedFormats: ["PNG", "PDF", "TIFF"],
+        maxResolutionDPI: 1200,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 }; 
