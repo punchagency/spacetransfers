@@ -35,4 +35,3 @@ router.post("/earnings/payout-requests/:requestId/confirm", confirmPayoutRequest
 router.get("/earnings", getPrinterEarnings);
 
 export default router;
-

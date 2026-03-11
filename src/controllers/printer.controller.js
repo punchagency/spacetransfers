@@ -1111,8 +1111,8 @@ export const getPrinterEarnings = async (req, res, next) => {
 export const getPrinterProfile = async (req, res, next) => {
   try {
     const printerId = req.user.id;
-    const user = await User.findById(printerId);
-
+    const user = await User.findById(printerId);                                                                                                  
+                                   
     if (!user) {
       const error = new Error("Printer not found");
       error.statusCode = 404;
