@@ -1,12 +1,13 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { listOrders, getOrderById, listPartners, updatePartner, getEarningsSummary } from "../controllers/admin.controller.js";
+import { listOrders, getOrderById, listPartners, updatePartner, getEarningsSummary, getAdminDashboardStats } from "../controllers/admin.controller.js";
 
 const router = express.Router();
 
 router.use(authenticate, requireRoles(UserRoles.ADMIN));
 
+router.get("/dashboard/stats", getAdminDashboardStats);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/partners", listPartners);
