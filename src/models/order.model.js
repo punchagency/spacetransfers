@@ -28,8 +28,7 @@ const orderItemSchema = new mongoose.Schema(
       required: true
     },
     subtotal: {
-      type: Number,
-      required: true
+      type: Number
     }
   },
   { _id: false }
@@ -70,15 +69,23 @@ const orderSchema = new mongoose.Schema(
       paymentIntentId: { type: String }
     },
     pricing: {
-      subtotal: { type: Number, required: true },
-      shippingCost: { type: Number, required: true },
-      tax: { type: Number, required: true },
+      subtotal: { type: Number },
+      shippingCost: { type: Number },
+      tax: { type: Number },
       total: { type: Number, required: true },
-      currency: { type: String, required: true }
+      currency: { type: String, required: true },
+      adjustments: [
+        {
+          type: { type: String, enum: ["discount", "surcharge", "credit", "fee"] },
+          amount: { type: Number, required: true },
+          reason: { type: String, required: true },
+          createdAt: { type: Date, default: Date.now }
+        }
+      ]
     },
     status: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED", "REJECTED", "PAUSED"],
+      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED", "REJECTED", "PAUSED", "PAID", "paid"],
       default: "PENDING"
     },
     rejectionReason: {
@@ -88,6 +95,9 @@ const orderSchema = new mongoose.Schema(
       type: String
     },
     carrier: {
+      type: String
+    },
+    trackingUrl: {
       type: String
     },
     trackingEvents: [
@@ -119,6 +129,7 @@ const orderSchema = new mongoose.Schema(
     statusTimeline: [
       {
         status: { type: String, required: true },
+        message: { type: String },
         time: { type: Date, default: Date.now }
       }
     ]

@@ -1277,7 +1277,7 @@ export const updatePrinterSettings = async (req, res, next) => {
         wednesday: defaultHours, 
         thursday: defaultHours, 
         friday: defaultHours, 
-        saturday: defaultHours, 
+        saturday: defaultHours,  
         sunday: defaultHours 
       },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
