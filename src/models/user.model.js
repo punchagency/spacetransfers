@@ -43,6 +43,12 @@ const userSchema = new mongoose.Schema(
       enum: ["Active", "Suspended", "Under Review"],
       default: "Active"
     },
+    rating: {
+      type: Number,
+      default: 5.0,
+      min: 0,
+      max: 5
+    },
     phone: {
       type: String,
       trim: true
@@ -86,6 +92,20 @@ const userSchema = new mongoose.Schema(
         supportedFilms: [String],
         supportedFormats: [String],
         maxResolutionDPI: Number
+      },
+      pricing: {
+        baseRatePerSqFt: { type: Number, default: 18.00 },
+        tiered: [
+          {
+            minSqFt: { type: Number, required: true },
+            maxSqFt: { type: Number }, // null means no upper bound
+            rate: { type: Number, required: true }
+          }
+        ],
+        surcharges: {
+          rushPct: { type: Number, default: 10 },
+          specialInkFlat: { type: Number, default: 5.00 }
+        }
       }
     },
     role: {
