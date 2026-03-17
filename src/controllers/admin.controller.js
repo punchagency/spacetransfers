@@ -1,6 +1,8 @@
 import mongoose from "mongoose";
 import fs from "fs";
 import path from "path";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { generatePDF } from "pdf-node";
 import { Order } from "../models/order.model.js";
 import { User, UserRoles } from "../models/user.model.js";
@@ -301,6 +303,177 @@ export const listOrders = async (req, res, next) => {
   }
 };
 
+export const getPartnerPricing = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER })
+      .select("settings.pricing")
+      .lean();
+
+    if (!partner) {
+      const error = new Error("Partner not found or is not a printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const pricing = partner.settings?.pricing || {
+      baseRatePerSqFt: 18.00,
+      tiered: [
+        { minSqFt: 0, maxSqFt: 2, rate: 20.00 },
+        { minSqFt: 2, maxSqFt: 5, rate: 18.50 },
+        { minSqFt: 5, maxSqFt: null, rate: 17.00 }
+      ],
+      surcharges: {
+        rushPct: 10,
+        specialInkFlat: 5.00
+      }
+    };
+
+    res.status(200).json(pricing);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePartnerPricing = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+    const { baseRatePerSqFt, tiered, surcharges } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const updateData = {};
+    if (baseRatePerSqFt !== undefined) updateData["settings.pricing.baseRatePerSqFt"] = baseRatePerSqFt;
+    if (tiered !== undefined) updateData["settings.pricing.tiered"] = tiered;
+    if (surcharges !== undefined) updateData["settings.pricing.surcharges"] = surcharges;
+
+    const partner = await User.findOneAndUpdate(
+      { _id: partnerId, role: UserRoles.PRINTER },
+      { $set: updateData },
+      { new: true, runValidators: true }
+    ).select("settings.pricing").lean();
+
+    if (!partner) {
+      const error = new Error("Partner not found or is not a printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({
+      id: partner._id,
+      updated: true,
+      pricing: partner.settings?.pricing
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPartnerSettings = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER })
+      .select("settings")
+      .lean();
+
+    if (!partner) {
+      const error = new Error("Partner not found or is not a printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const settings = partner.settings || {};
+
+    // Map the detailed notification settings to the simplified format
+    const notifications = {
+      orderAssigned: settings.notifications?.email?.newJobs || false,
+      jobCompleted: settings.notifications?.email?.jobUpdates || false
+    };
+
+    const capabilities = {
+      maxSheetSizeIn: settings.printingCapabilities?.maxSheetSizeIn || { width: 0, height: 0 },
+      formats: settings.printingCapabilities?.supportedFormats || [],
+      maxDPI: settings.printingCapabilities?.maxResolutionDPI || 0
+    };
+
+    res.status(200).json({
+      jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0 },
+      notifications,
+      capabilities
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePartnerSettings = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+    const { jobCapacity, notifications, capabilities } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const updateData = {};
+
+    // Map jobCapacity
+    if (jobCapacity) {
+      if (jobCapacity.maxConcurrent !== undefined) updateData["settings.jobCapacity.maxConcurrent"] = jobCapacity.maxConcurrent;
+      if (jobCapacity.dailyMax !== undefined) updateData["settings.jobCapacity.dailyMax"] = jobCapacity.dailyMax;
+    }
+
+    // Map notifications
+    if (notifications) {
+      if (notifications.orderAssigned !== undefined) updateData["settings.notifications.email.newJobs"] = notifications.orderAssigned;
+      if (notifications.jobCompleted !== undefined) updateData["settings.notifications.email.jobUpdates"] = notifications.jobCompleted;
+    }
+
+    // Map capabilities
+    if (capabilities) {
+      if (capabilities.maxDPI !== undefined) updateData["settings.printingCapabilities.maxResolutionDPI"] = capabilities.maxDPI;
+      if (capabilities.maxSheetSizeIn !== undefined) updateData["settings.printingCapabilities.maxSheetSizeIn"] = capabilities.maxSheetSizeIn;
+      if (capabilities.formats !== undefined) updateData["settings.printingCapabilities.supportedFormats"] = capabilities.formats;
+    }
+
+    const partner = await User.findOneAndUpdate(
+      { _id: partnerId, role: UserRoles.PRINTER },
+      { $set: updateData },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (!partner) {
+      const error = new Error("Partner not found or is not a printer");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({ updated: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const setOrderTracking = async (req, res, next) => {
   try {
     const { orderId } = req.params;
@@ -582,30 +755,332 @@ export const getOrderById = async (req, res, next) => {
   }
 };
 
+export const exportOrders = async (req, res, next) => {
+  try {
+    const { from, to, status } = req.query;
+
+    const query = {};
+    if (from || to) {
+      query.createdAt = {};
+      if (from) query.createdAt.$gte = new Date(from);
+      if (to) query.createdAt.$lte = new Date(to);
+    }
+    if (status) {
+      // Mapping common UI statuses to DB statuses if they differ
+      const statusMap = {
+        "Pending": "PENDING",
+        "Assigned": "PROCESSING",
+        "In Progress": "PRINTING",
+        "Shipped": "SHIPPED",
+        "Completed": "COMPLETED",
+        "Cancelled": "CANCELLED"
+      };
+      query.status = statusMap[status] || status.toUpperCase();
+    }
+
+    // Set headers for CSV download
+    const filename = `orders-export-${new Date().toISOString().split('T')[0]}.csv`;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    // Write CSV Header
+    const columns = ['orderId', 'customer', 'email', 'status', 'total', 'partner', 'sheetSize', 'createdAt', 'completedAt'];
+    res.write(columns.join(',') + '\n');
+
+    // Cursor for large data sets
+    const cursor = Order.find(query)
+      .populate('assignedPrinter', 'companyName')
+      .sort({ createdAt: -1 })
+      .cursor();
+
+    for (let order = await cursor.next(); order != null; order = await cursor.next()) {
+      const customerName = `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim();
+      const firstItem = order.items?.[0] || {};
+      const sheetSize = firstItem.widthIn && firstItem.heightIn 
+        ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
+        : 'N/A';
+      
+      const completedAt = order.status === 'COMPLETED' ? (order.updatedAt || order.createdAt).toISOString() : 'N/A';
+
+      const row = [
+        order._id,
+        `"${customerName.replace(/"/g, '""')}"`,
+        order.customer?.email || 'N/A',
+        order.status,
+        order.pricing?.total || 0,
+        `"${(order.assignedPrinter?.companyName || 'N/A').replace(/"/g, '""')}"`,
+        `"${sheetSize}"`,
+        order.createdAt.toISOString(),
+        completedAt
+      ];
+
+      res.write(row.join(',') + '\n');
+    }
+
+    res.end();
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createPartner = async (req, res, next) => {
+  try {
+    const { name, email, phone, regions, capabilities } = req.body;
+
+    // 1. Check if email already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      const error = new Error("Partner with this email already exists");
+      error.statusCode = 409;
+      throw error;
+    }
+
+    // 2. Generate temporary password
+    const tempPassword = crypto.randomBytes(8).toString('hex');
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+    // 3. Create Partner (PRINTER role)
+    const newPartner = new User({
+      name,
+      companyName: name, // Using name as companyName if not provided
+      email,
+      phone,
+      regions,
+      role: UserRoles.PRINTER,
+      status: "Active",
+      passwordHash,
+      settings: {
+        printingCapabilities: {
+          maxSheetSizeIn: capabilities?.maxSheetSizeIn || { width: 24, height: 19.5 },
+          supportedFormats: capabilities?.formats || ["PNG", "PDF", "TIFF"],
+          maxResolutionDPI: capabilities?.maxDPI || 1200
+        }
+      }
+    });
+
+    await newPartner.save();
+
+    // 4. Send Welcome Email (Mocked)
+    console.log(`[EMAIL MOCK] Welcome email sent to ${email} with temporary password: ${tempPassword}`);
+
+    res.status(201).json({
+      id: newPartner._id,
+      status: newPartner.status
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listPartners = async (req, res, next) => {
   try {
-    const { status, search } = req.query;
-    const query = { role: UserRoles.PRINTER };
+    const { status, search, cursor, limit = 20 } = req.query;
+    const pageSize = parseInt(limit);
+
+    // Initial match query
+    const matchQuery = { role: UserRoles.PRINTER };
 
     if (status) {
-      query.status = status;
+      matchQuery.status = status;
     }
 
     if (search) {
       const searchRegex = new RegExp(search, "i");
-      query.$or = [
+      matchQuery.$or = [
         { name: searchRegex },
         { companyName: searchRegex },
         { email: searchRegex }
       ];
     }
 
-    const partners = await User.find(query)
+    // Aggregation pipeline to get ordersCompleted
+    const pipeline = [
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: "orders",
+          let: { partnerId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$assignedPrinter", "$$partnerId"] },
+                    { $eq: ["$status", "COMPLETED"] }
+                  ]
+                }
+              }
+            },
+            { $count: "count" }
+          ],
+          as: "completedCountArr"
+        }
+      },
+      {
+        $addFields: {
+          ordersCompleted: { $ifNull: [{ $arrayElemAt: ["$completedCountArr.count", 0] }, 0] }
+        }
+      },
+      { $project: { passwordHash: 0, completedCountArr: 0 } },
+      // Sorting: ordersCompleted DESC, then _id DESC for stability
+      { $sort: { ordersCompleted: -1, _id: -1 } }
+    ];
+
+    // Cursor-based pagination logic within aggregation
+    if (cursor) {
+      const [cursorValue, cursorId] = cursor.split("_");
+      pipeline.push({
+        $match: {
+          $or: [
+            { ordersCompleted: { $lt: parseInt(cursorValue) } },
+            {
+              ordersCompleted: parseInt(cursorValue),
+              _id: { $lt: new mongoose.Types.ObjectId(cursorId) }
+            }
+          ]
+        }
+      });
+    }
+
+    // Limit to pageSize + 1 to check for next page
+    pipeline.push({ $limit: pageSize + 1 });
+
+    const partners = await User.aggregate(pipeline);
+
+    const hasNextPage = partners.length > pageSize;
+    const results = hasNextPage ? partners.slice(0, pageSize) : partners;
+
+    // Map _id to id for the response
+    const formattedPartners = results.map(p => ({
+      id: p._id,
+      name: p.companyName || p.name,
+      status: p.status,
+      regions: p.regions || [],
+      rating: p.rating || 5.0,
+      ordersCompleted: p.ordersCompleted
+    }));
+
+    let nextCursor = null;
+    if (hasNextPage) {
+      const lastPartner = results[results.length - 1];
+      nextCursor = `${lastPartner.ordersCompleted}_${lastPartner._id}`;
+    }
+
+    res.status(200).json({
+      partners: formattedPartners,
+      nextCursor
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPartnerById = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER })
       .select("-passwordHash")
-      .sort({ companyName: 1 })
       .lean();
 
-    res.status(200).json({ partners });
+    if (!partner) {
+      const error = new Error("Partner not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Calculate completed orders count
+    const ordersCompleted = await Order.countDocuments({
+      assignedPrinter: partnerId,
+      status: "COMPLETED"
+    });
+
+    res.status(200).json({
+      id: partner._id,
+      name: partner.companyName || partner.name,
+      status: partner.status,
+      regions: partner.regions || [],
+      ordersCompleted,
+      rating: partner.rating || 5.0,
+      email: partner.email,
+      phone: partner.phone || "N/A"
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPartnerOrders = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+    const { status, cursor, limit = 20 } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const query = { assignedPrinter: partnerId };
+
+    if (status) {
+      // Map common UI status to DB status if needed
+      const statusMap = {
+        "Pending": "PENDING",
+        "Assigned": "PROCESSING",
+        "In Progress": "PRINTING",
+        "Shipped": "SHIPPED",
+        "Completed": "COMPLETED",
+        "Cancelled": "CANCELLED"
+      };
+      query.status = statusMap[status] || status.toUpperCase();
+    }
+
+    // Cursor-based pagination logic
+    if (cursor) {
+      const [cursorTime, cursorId] = cursor.split("_");
+      query.$or = [
+        { createdAt: { $lt: new Date(Number(cursorTime)) } },
+        { 
+          createdAt: new Date(Number(cursorTime)), 
+          _id: { $lt: cursorId } 
+        }
+      ];
+    }
+
+    const pageSize = parseInt(limit);
+    const orders = await Order.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pageSize + 1)
+      .lean();
+
+    const hasNextPage = orders.length > pageSize;
+    const results = hasNextPage ? orders.slice(0, pageSize) : orders;
+
+    const formattedOrders = results.map(order => ({
+      id: order._id,
+      status: order.status, // Can be mapped to UI label if preferred
+      customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
+      total: order.pricing?.total || 0,
+      createdAt: order.createdAt
+    }));
+
+    let nextCursor = null;
+    if (hasNextPage) {
+      const lastOrder = results[results.length - 1];
+      nextCursor = `${lastOrder.createdAt.getTime()}_${lastOrder._id}`;
+    }
+
+    res.status(200).json({
+      orders: formattedOrders,
+      nextCursor
+    });
   } catch (error) {
     next(error);
   }
@@ -640,8 +1115,8 @@ export const updatePartner = async (req, res, next) => {
     }
 
     res.status(200).json({
-      message: "Partner updated successfully",
-      partner
+      id: partner._id,
+      updated: true
     });
   } catch (error) {
     next(error);
