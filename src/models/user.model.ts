@@ -1,12 +1,98 @@
-import mongoose from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
+
+export enum UserRole {
+  CUSTOMER = "CUSTOMER",
+  PRINTER = "PRINTER",
+  ADMIN = "ADMIN"
+}
 
 export const UserRoles = {
-  CUSTOMER: "CUSTOMER",
-  PRINTER: "PRINTER",
-  ADMIN: "ADMIN"
+  CUSTOMER: UserRole.CUSTOMER,
+  PRINTER: UserRole.PRINTER,
+  ADMIN: UserRole.ADMIN
 };
 
-const userSchema = new mongoose.Schema(
+export interface IUser extends Document {
+  email: string;
+  passwordHash: string;
+  name: string;
+  companyName?: string;
+  website?: string;
+  regions?: string[];
+  status: string;
+  rating: number;
+  phone?: string;
+  avatarUrl?: string | null;
+  settings: {
+    businessHours?: {
+      monday?: { isOpen: boolean; start: string; end: string };
+      tuesday?: { isOpen: boolean; start: string; end: string };
+      wednesday?: { isOpen: boolean; start: string; end: string };
+      thursday?: { isOpen: boolean; start: string; end: string };
+      friday?: { isOpen: boolean; start: string; end: string };
+      saturday?: { isOpen: boolean; start: string; end: string };
+      sunday?: { isOpen: boolean; start: string; end: string };
+    };
+    jobCapacity?: {
+      maxConcurrent?: number;
+      dailyMax?: number;
+      autoAccept?: boolean;
+    };
+    notifications?: {
+      email?: {
+        newJobs?: boolean;
+        jobUpdates?: boolean;
+        payoutAlerts?: boolean;
+        systemAlerts?: boolean;
+      };
+      sms?: {
+        urgentJobs?: boolean;
+        payoutComplete?: boolean;
+      };
+    };
+    paymentMethod?: {
+      type?: "bank_transfer" | "paypal" | "check";
+      accountNumber?: string;
+      routingNumber?: string;
+      paypalEmail?: string;
+    };
+    printingCapabilities?: {
+      maxSheetSizeIn?: { width: number; height: number };
+      supportedInks?: string[];
+      supportedFilms?: string[];
+      supportedFormats?: string[];
+      maxResolutionDPI?: number;
+    };
+    pricing?: {
+      baseRatePerSqFt: number;
+      tiered?: {
+        minSqFt: number;
+        maxSqFt?: number | null;
+        rate: number;
+      }[];
+      surcharges?: {
+        rushPct: number;
+        specialInkFlat: number;
+      };
+    };
+    security?: {
+      twoFactorEnabled: boolean;
+      lastPasswordChange?: Date;
+    };
+  };
+  role: UserRole;
+  defaultShippingAddress?: {
+    street: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const userSchema = new Schema<IUser>(
   {
     email: {
       type: String,
@@ -86,8 +172,8 @@ const userSchema = new mongoose.Schema(
       },
       paymentMethod: {
         type: { type: String, enum: ["bank_transfer", "paypal", "check"] },
-        accountNumber: String, // Encrypted
-        routingNumber: String, // Encrypted
+        accountNumber: String,
+        routingNumber: String,
         paypalEmail: String
       },
       printingCapabilities: {
@@ -102,7 +188,7 @@ const userSchema = new mongoose.Schema(
         tiered: [
           {
             minSqFt: { type: Number, required: true },
-            maxSqFt: { type: Number }, // null means no upper bound
+            maxSqFt: { type: Number },
             rate: { type: Number, required: true }
           }
         ],
@@ -118,12 +204,12 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: Object.values(UserRoles),
+      enum: Object.values(UserRole),
       required: true,
-      default: UserRoles.CUSTOMER
+      default: UserRole.CUSTOMER
     },
     defaultShippingAddress: {
-      street: String, 
+      street: String,
       city: String,
       state: String,
       postalCode: String,
@@ -135,5 +221,4 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-export const User = mongoose.model("User", userSchema);
-
+export const User = mongoose.model<IUser>("User", userSchema);

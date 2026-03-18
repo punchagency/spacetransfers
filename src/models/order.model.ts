@@ -1,6 +1,87 @@
-import mongoose from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
 
-const orderItemSchema = new mongoose.Schema(
+export interface IOrderItem {
+  type: string;
+  designId?: string;
+  name: string;
+  widthIn?: number;
+  heightIn?: number;
+  quantity: number;
+  unitPrice: number;
+  subtotal?: number;
+}
+
+export interface IOrderAdjustment {
+  type: "discount" | "surcharge" | "credit" | "fee";
+  amount: number;
+  reason: string;
+  createdAt: Date;
+}
+
+export interface ITrackingEvent {
+  time: Date;
+  location: string;
+  description: string;
+}
+
+export interface IStatusTimeline {
+  status: string;
+  message?: string;
+  time: Date;
+}
+
+export interface IOrder extends Document {
+  user: mongoose.Types.ObjectId;
+  items: IOrderItem[];
+  customer: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone?: string;
+  };
+  shippingAddress: {
+    street: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+  };
+  shippingMethod: string;
+  payment: {
+    method: string;
+    cardLast4?: string;
+    cardBrand?: string;
+    paymentIntentId?: string;
+  };
+  pricing: {
+    subtotal?: number;
+    shippingCost?: number;
+    tax?: number;
+    total: number;
+    currency: string;
+    adjustments?: IOrderAdjustment[];
+  };
+  status: "PENDING" | "PROCESSING" | "PRINTING" | "QUALITY_CHECK" | "SHIPPED" | "COMPLETED" | "CANCELLED" | "REJECTED" | "PAUSED" | "PAID" | "paid";
+  rejectionReason?: string;
+  trackingNumber?: string;
+  carrier?: string;
+  trackingUrl?: string;
+  trackingEvents?: ITrackingEvent[];
+  assignedPrinter?: mongoose.Types.ObjectId;
+  priority: "NORMAL" | "URGENT";
+  notes?: string;
+  specs?: {
+    filmType?: "DTF" | "UV" | "Screen" | "Sublimation";
+    passes?: number;
+    temperatureC?: number;
+    pressSeconds?: number;
+  };
+  statusTimeline?: IStatusTimeline[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const orderItemSchema = new Schema<IOrderItem>(
   {
     type: {
       type: String,
@@ -34,10 +115,10 @@ const orderItemSchema = new mongoose.Schema(
   { _id: false }
 );
 
-const orderSchema = new mongoose.Schema(
+const orderSchema = new Schema<IOrder>(
   {
     user: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
       required: true
     },
@@ -108,7 +189,7 @@ const orderSchema = new mongoose.Schema(
       }
     ],
     assignedPrinter: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User"
     },
     priority: {
@@ -141,5 +222,4 @@ const orderSchema = new mongoose.Schema(
 
 orderSchema.index({ user: 1, createdAt: -1 });
 
-export const Order = mongoose.model("Order", orderSchema);
-
+export const Order = mongoose.model<IOrder>("Order", orderSchema);

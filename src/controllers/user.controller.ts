@@ -1,7 +1,9 @@
-export const getCurrentUser = async (req, res, next) => {
+import { Request, Response, NextFunction } from "express";
+
+export const getCurrentUser = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = req.user;
-    const userResponse = {
+    const user = req.user!;
+    const userResponse: any = {
       id: user.id,
       name: user.name,
       email: user.email,
@@ -17,4 +19,3 @@ export const getCurrentUser = async (req, res, next) => {
     next(error);
   }
 };
-

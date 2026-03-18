@@ -1,7 +1,39 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { listOrders, assignOrder, updateOrderStatus, setOrderTracking, downloadOrderInvoice, getOrderById, getOrderTimeline, getOrderFinancials, adjustOrderFinancials, listPartners, getPartnerById, getPartnerOrders, getPartnerPricing, updatePartnerPricing, getPartnerSettings, updatePartnerSettings, updatePartnerStatus, createPartner, updatePartner, getEarningsSummary, getAdminDashboardStats, getRevenueChart, exportOrders, getGlobalPricing, updateGlobalPricing, getAdminNotificationSettings, updateAdminNotificationSettings, getAdminSecuritySettings, updateAdminSecuritySettings, getAdminProfile, updateAdminProfile } from "../controllers/admin.controller.js";
+import { 
+  listOrders, 
+  assignOrder, 
+  updateOrderStatus, 
+  setOrderTracking, 
+  downloadOrderInvoice, 
+  getOrderById, 
+  getOrderTimeline, 
+  getOrderFinancials, 
+  adjustOrderFinancials, 
+  listPartners, 
+  getPartnerById, 
+  getPartnerOrders, 
+  getPartnerPricing, 
+  updatePartnerPricing, 
+  getPartnerSettings, 
+  updatePartnerSettings, 
+  updatePartnerStatus, 
+  createPartner, 
+  updatePartner, 
+  getEarningsSummary, 
+  getAdminDashboardStats, 
+  getRevenueChart, 
+  exportOrders, 
+  getGlobalPricing, 
+  updateGlobalPricing, 
+  getAdminNotificationSettings, 
+  updateAdminNotificationSettings, 
+  getAdminSecuritySettings, 
+  updateAdminSecuritySettings, 
+  getAdminProfile, 
+  updateAdminProfile 
+} from "../controllers/admin.controller.js";
 
 const router = express.Router();
 
@@ -41,4 +73,3 @@ router.patch("/partners/:partnerId", updatePartner);
 router.get("/earnings/summary", getEarningsSummary);  
 
 export default router;
- 

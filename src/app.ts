@@ -1,8 +1,7 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import path from "path";
 import apiRouter from "./routes/index.js";
-import { env } from "./config/env.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 
 const app = express();
@@ -11,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 // Request Logger (Professional logging for debugging)
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
   
   // Capture original send/json methods to intercept response body
@@ -19,14 +18,14 @@ app.use((req, res, next) => {
   const originalJson = res.json;
 
   // Intercept response body for logging errors or important responses
-  res.send = function (body) {
+  res.send = function (body?: any): Response {
     res.locals.responseBody = body;
-    return originalSend.apply(this, arguments);
+    return originalSend.apply(this, arguments as any);
   };
 
-  res.json = function (body) {
+  res.json = function (body?: any): Response {
     res.locals.responseBody = body;
-    return originalJson.apply(this, arguments);
+    return originalJson.apply(this, arguments as any);
   };
 
   res.on('finish', () => {
@@ -40,7 +39,7 @@ app.use((req, res, next) => {
     // Log response body for BOTH success and error (limited to 500 chars for success to avoid clutter)
     const bodyToLog = res.locals.responseBody;
     if (bodyToLog) {
-      let formattedBody;
+      let formattedBody: string;
       try {
         formattedBody = typeof bodyToLog === 'object' ? JSON.stringify(bodyToLog, null, 2) : String(bodyToLog);
       } catch (e) {
@@ -72,7 +71,7 @@ app.use((req, res, next) => {
 const uploadsDir = path.join(process.cwd(), "uploads");
 app.use("/uploads", express.static(uploadsDir));
 
-app.get("/health", (req, res) => {
+app.get("/health", (req: Request, res: Response) => {
   res.json({ status: "ok" });
 });
 
@@ -82,4 +81,3 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 export default app;
-

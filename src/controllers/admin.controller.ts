@@ -1,20 +1,25 @@
+import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { generatePDF } from "pdf-node";
-import { Order } from "../models/order.model.js";
-import { User, UserRoles } from "../models/user.model.js";
+import { Order, IOrder } from "../models/order.model.js";
+import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
 
-export const getAdminDashboardStats = async (req, res, next) => {
+interface CustomError extends Error {
+  statusCode?: number;
+}
+
+export const getAdminDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { range = "30d" } = req.query;
 
-    let startDate;
-    let priorStartDate;
-    let priorEndDate;
+    let startDate: Date;
+    let priorStartDate: Date;
+    let priorEndDate: Date;
     const now = new Date();
 
     if (range === "7d") {
@@ -27,17 +32,14 @@ export const getAdminDashboardStats = async (req, res, next) => {
       priorEndDate = startDate;
     } else if (range === "ytd") {
       startDate = new Date(new Date().getFullYear(), 0, 1);
-      // Trend for YTD compares to same period last year
       priorStartDate = new Date(new Date().getFullYear() - 1, 0, 1);
       priorEndDate = new Date(new Date().getFullYear() - 1, now.getMonth(), now.getDate());
     } else {
-      // Default 30d
       startDate = new Date(new Date().setDate(now.getDate() - 30));
       priorStartDate = new Date(new Date().setDate(now.getDate() - 60));
       priorEndDate = startDate;
     }
 
-    // 1. Order Stats (All time or filtered by range? The prompt says "Stats aggregate across all partners and customers", usually dashboard totals are for the selected range)
     const orderStats = await Order.aggregate([
       { $match: { createdAt: { $gte: startDate } } },
       {
@@ -52,9 +54,7 @@ export const getAdminDashboardStats = async (req, res, next) => {
     ]);
 
     const orders = orderStats[0] || { total: 0, pending: 0, completed: 0, cancelled: 0 };
-    delete orders._id;
 
-    // 2. Revenue Stats
     const revenueStats = await Order.aggregate([
       {
         $facet: {
@@ -71,7 +71,6 @@ export const getAdminDashboardStats = async (req, res, next) => {
     ]);
 
     const currentRevenue = revenueStats[0].current[0]?.total || 0;
-    const currentCount = revenueStats[0].current[0]?.count || 0;
     const priorRevenue = revenueStats[0].prior[0]?.total || 0;
 
     let trendPct = 0;
@@ -81,7 +80,6 @@ export const getAdminDashboardStats = async (req, res, next) => {
       trendPct = 100;
     }
 
-    // 3. Partner Stats
     const partnerStats = await User.aggregate([
       { $match: { role: UserRoles.PRINTER } },
       {
@@ -94,15 +92,13 @@ export const getAdminDashboardStats = async (req, res, next) => {
     ]);
 
     const partners = partnerStats[0] || { active: 0, suspended: 0 };
-    delete partners._id;
 
-    // 4. Recent Orders
     const recentOrdersRaw = await Order.find()
       .sort({ createdAt: -1 })
       .limit(5)
-      .populate("assignedPrinter", "companyName regions");
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
 
-    const calculateOrderFinancials = (order) => {
+        const calculateOrderFinancials = (order: Pick<IOrder, "pricing" | "items">) => {
       const customerCharge = order.pricing?.total || 0;
       
       const partnerPayout = (order.items || []).reduce((total, item) => {
@@ -129,7 +125,7 @@ export const getAdminDashboardStats = async (req, res, next) => {
         profits: Number(profit.toFixed(2)),
         status: order.status,
         createdAt: order.createdAt,
-        assignedPartner: order.assignedPrinter?.companyName || null
+        assignedPartner: (order.assignedPrinter as unknown as IUser)?.companyName || null
       };
     });
 
@@ -150,12 +146,11 @@ export const getAdminDashboardStats = async (req, res, next) => {
   } 
 };
 
-export const getGlobalPricing = async (req, res, next) => {
+export const getGlobalPricing = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    let settings = await Settings.findOne({ key: "global_pricing" });
+    const settings = await Settings.findOne({ key: "global_pricing" });
 
     if (!settings) {
-      // Return defaults if not found in DB
       return res.status(200).json({
         baseRatePerSqFt: 24.00,
         shipping: {
@@ -172,7 +167,7 @@ export const getGlobalPricing = async (req, res, next) => {
   }
 };
 
-export const updateGlobalPricing = async (req, res, next) => {
+export const updateGlobalPricing = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { baseRatePerSqFt, shipping, taxRatePct } = req.body;
 
@@ -190,18 +185,17 @@ export const updateGlobalPricing = async (req, res, next) => {
       { upsert: true, new: true, runValidators: true }
     );
 
-    res.status(200).json(settings.value);
+    res.status(200).json(settings?.value);
   } catch (error) {
     next(error);
   }
 };
 
-export const getAdminNotificationSettings = async (req, res, next) => {
+export const getAdminNotificationSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    let settings = await Settings.findOne({ key: "admin_notifications" });
+    const settings = await Settings.findOne({ key: "admin_notifications" });
 
     if (!settings) {
-      // Default notification settings based on the UI requirements
       return res.status(200).json({
         email: {
           newOrderPlaced: true,
@@ -225,11 +219,10 @@ export const getAdminNotificationSettings = async (req, res, next) => {
   }
 };
 
-export const updateAdminNotificationSettings = async (req, res, next) => {
+export const updateAdminNotificationSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, sms } = req.body;
 
-    // Use findOneAndUpdate with upsert to create or update the settings document
     const settings = await Settings.findOneAndUpdate(
       { key: "admin_notifications" },
       {
@@ -243,24 +236,24 @@ export const updateAdminNotificationSettings = async (req, res, next) => {
       { upsert: true, new: true, runValidators: true }
     );
 
-    res.status(200).json(settings.value);
+    res.status(200).json(settings?.value);
   } catch (error) {
     next(error);
   }
 };
 
-export const getAdminSecuritySettings = async (req, res, next) => {
+export const getAdminSecuritySettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = req.user.id;
+    const adminId = req.user?.id;
     const admin = await User.findById(adminId).select("settings.security updatedAt");
 
     if (!admin) {
-      const error = new Error("Admin not found");
+      const error = new Error("Admin not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const security = admin.settings?.security || {};
+    const security = admin.settings?.security || { twoFactorEnabled: false };
 
     res.status(200).json({
        twoFactorEnabled: security.twoFactorEnabled || false,
@@ -271,36 +264,33 @@ export const getAdminSecuritySettings = async (req, res, next) => {
    }
  };
  
- export const updateAdminSecuritySettings = async (req, res, next) => {
+ export const updateAdminSecuritySettings = async (req: Request, res: Response, next: NextFunction) => {
    try {
-     const adminId = req.user.id;
+     const adminId = req.user?.id;
      const { twoFactorEnabled } = req.body;
  
      if (twoFactorEnabled === undefined) {
-       const error = new Error("twoFactorEnabled is required");
+       const error = new Error("twoFactorEnabled is required") as CustomError;
        error.statusCode = 400;
        throw error;
      }
  
      const admin = await User.findById(adminId);
      if (!admin) {
-       const error = new Error("Admin not found");
+       const error = new Error("Admin not found") as CustomError;
        error.statusCode = 404;
        throw error;
      }
  
-     // Ensure the security object exists
-     if (!admin.settings) admin.settings = {};
-     if (!admin.settings.security) admin.settings.security = {};
+     if (!admin.settings) admin.settings = { pricing: { baseRatePerSqFt: 18, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } }, security: { twoFactorEnabled: false } };
+     if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
  
      const previous2FA = admin.settings.security.twoFactorEnabled;
      admin.settings.security.twoFactorEnabled = twoFactorEnabled;
  
-     // Mark modified to ensure nested update
      admin.markModified("settings.security");
      await admin.save();
  
-     // Simulation: If 2FA is being enabled for the first time, initiate TOTP setup
      if (twoFactorEnabled && !previous2FA) {
        const mockQrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=otpauth://totp/SpaceTransfers:${admin.email}?secret=MOCKSECRET&issuer=SpaceTransfers`;
        console.log(`[TOTP MOCK] Setup flow initiated for ${admin.email}. QR Code URL sent: ${mockQrCodeUrl}`);
@@ -312,13 +302,13 @@ export const getAdminSecuritySettings = async (req, res, next) => {
    }
  };
 
-export const getAdminProfile = async (req, res, next) => {
+export const getAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = req.user.id;
+    const adminId = req.user?.id;
     const admin = await User.findById(adminId).select("name email phone avatarUrl");
 
     if (!admin) {
-      const error = new Error("Admin not found");
+      const error = new Error("Admin not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -334,18 +324,18 @@ export const getAdminProfile = async (req, res, next) => {
   }
 };
 
-export const updateAdminProfile = async (req, res, next) => {
+export const updateAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = req.user.id;
+    const adminId = req.user?.id;
     const { name, phone, avatarUrl } = req.body;
 
-    const updateData = {};
+    const updateData: any = {};
     if (name !== undefined) updateData.name = name;
     if (phone !== undefined) updateData.phone = phone;
     if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
 
     if (Object.keys(updateData).length === 0) {
-      const error = new Error("No update data provided");
+      const error = new Error("No update data provided") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -357,7 +347,7 @@ export const updateAdminProfile = async (req, res, next) => {
     );
 
     if (!admin) {
-      const error = new Error("Admin not found");
+      const error = new Error("Admin not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -368,13 +358,13 @@ export const updateAdminProfile = async (req, res, next) => {
   }
 };
 
-export const getRevenueChart = async (req, res, next) => {
+export const getRevenueChart = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { range = "30d" } = req.query;
 
-    let startDate;                                                                                                                                     
+    let startDate: Date;                                                                                                                                     
     const now = new Date();
-    now.setHours(23, 59, 59, 999); // End of today
+    now.setHours(23, 59, 59, 999);
 
     if (range === "7d") {
       startDate = new Date(new Date().setDate(now.getDate() - 6));
@@ -383,7 +373,6 @@ export const getRevenueChart = async (req, res, next) => {
     } else if (range === "ytd") {
       startDate = new Date(now.getFullYear(), 0, 1);
     } else {
-      // Default 30d
       startDate = new Date(new Date().setDate(now.getDate() - 29));
     }
     startDate.setHours(0, 0, 0, 0);
@@ -393,13 +382,13 @@ export const getRevenueChart = async (req, res, next) => {
       status: { $nin: ["CANCELLED", "REJECTED"] }
     }).select("pricing.total createdAt");
 
-    const dailyRevenue = {};
+    const dailyRevenue: { [key: string]: number } = {};
     orders.forEach(order => {
       const dateKey = order.createdAt.toISOString().split("T")[0];
       dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + (order.pricing?.total || 0);
     });
 
-    const points = [];
+    const points: { date: string, revenue: number }[] = [];
     const tempDate = new Date(startDate);
     while (tempDate <= now) {
       const key = tempDate.toISOString().split("T")[0];
@@ -419,66 +408,55 @@ export const getRevenueChart = async (req, res, next) => {
   }
 };
 
-export const listOrders = async (req, res, next) => {
+export const listOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { 
       status, 
       partnerId, 
       search, 
-      cursor, 
-      limit = 20 
+      limit = "20" 
     } = req.query;
 
-    const query = {};
+    const query: any = {};
 
-    // 1. Filtering by Status
     if (status) {
-      // Mapping common UI statuses to DB statuses if they differ
-      const statusMap = {
+      const statusMap: { [key: string]: string } = {
         "Pending": "PENDING",
-        "Assigned": "PROCESSING", // Assuming assigned means processing
+        "Assigned": "PROCESSING",
         "In Progress": "PRINTING",
         "Shipped": "SHIPPED",
         "Completed": "COMPLETED",
         "Cancelled": "CANCELLED"
       };
-      query.status = statusMap[status] || status.toUpperCase();
+      query.status = statusMap[status as string] || (status as string).toUpperCase();
     }
 
-    // 2. Filtering by Partner
     if (partnerId) {
       query.assignedPrinter = partnerId;
     }
 
-    // 3. Search by Order ID or Customer Name
     if (search) {
-      const searchRegex = new RegExp(search, "i");
+      const searchRegex = new RegExp(search as string, "i");
       query.$or = [
         { "customer.firstName": searchRegex },
         { "customer.lastName": searchRegex },
         { "customer.email": searchRegex }
       ];
       
-      // If it looks like a MongoDB ObjectId or a specific order ID pattern
-      if (mongoose.Types.ObjectId.isValid(search)) {
-        query.$or.push({ _id: search });
+      if (mongoose.Types.ObjectId.isValid(search as string)) {
+        query.$or.push({ _id: search as string });
       }
     }
 
-    // 4. Cursor-based Pagination
-   
-
-    // 5. Fetch Orders
-    const pageSize = parseInt(limit);
+    const pageSize = parseInt(limit as string);
     const orders = await Order.find(query)
       .sort({ createdAt: -1, _id: -1 })
-      .limit(pageSize + 1) // Fetch one extra to check if there's a next page
+      .limit(pageSize + 1)
       .lean();
 
     const hasNextPage = orders.length > pageSize;
     const results = hasNextPage ? orders.slice(0, pageSize) : orders;
 
-    // 6. Format Response
     const formattedOrders = results.map(order => {
       const firstItem = order.items?.[0] || {};
       const sheetSize = firstItem.widthIn && firstItem.heightIn 
@@ -497,7 +475,6 @@ export const listOrders = async (req, res, next) => {
       };
     });
 
-    // 7. Generate Next Cursor
     let nextCursor = null;
     if (hasNextPage) {
       const lastOrder = results[results.length - 1];
@@ -513,22 +490,23 @@ export const listOrders = async (req, res, next) => {
   }
 };
 
-export const getPartnerPricing = async (req, res, next) => {
+export const getPartnerPricing = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER })
+    const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
       .select("settings.pricing")
       .lean();
 
     if (!partner) {
-      const error = new Error("Partner not found or is not a printer");
+      const error = new Error("Partner not found or is not a printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -552,30 +530,31 @@ export const getPartnerPricing = async (req, res, next) => {
   }
 };
 
-export const updatePartnerPricing = async (req, res, next) => {
+export const updatePartnerPricing = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
     const { baseRatePerSqFt, tiered, surcharges } = req.body;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const updateData = {};
+    const updateData: any = {};
     if (baseRatePerSqFt !== undefined) updateData["settings.pricing.baseRatePerSqFt"] = baseRatePerSqFt;
     if (tiered !== undefined) updateData["settings.pricing.tiered"] = tiered;
     if (surcharges !== undefined) updateData["settings.pricing.surcharges"] = surcharges;
 
     const partner = await User.findOneAndUpdate(
-      { _id: partnerId, role: UserRoles.PRINTER },
+      { _id: partnerIdString, role: UserRoles.PRINTER },
       { $set: updateData },
       { new: true, runValidators: true }
     ).select("settings.pricing").lean();
 
     if (!partner) {
-      const error = new Error("Partner not found or is not a printer");
+      const error = new Error("Partner not found or is not a printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -590,29 +569,29 @@ export const updatePartnerPricing = async (req, res, next) => {
   }
 };
 
-export const getPartnerSettings = async (req, res, next) => {
+export const getPartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER })
+    const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
       .select("settings")
       .lean();
 
     if (!partner) {
-      const error = new Error("Partner not found or is not a printer");
+      const error = new Error("Partner not found or is not a printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     const settings = partner.settings || {};
 
-    // Map the detailed notification settings to the simplified format
     const notifications = {
       orderAssigned: settings.notifications?.email?.newJobs || false,
       jobCompleted: settings.notifications?.email?.jobUpdates || false
@@ -634,32 +613,30 @@ export const getPartnerSettings = async (req, res, next) => {
   }
 };
 
-export const updatePartnerSettings = async (req, res, next) => {
+export const updatePartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
     const { jobCapacity, notifications, capabilities } = req.body;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const updateData = {};
+    const updateData: any = {};
 
-    // Map jobCapacity
     if (jobCapacity) {
       if (jobCapacity.maxConcurrent !== undefined) updateData["settings.jobCapacity.maxConcurrent"] = jobCapacity.maxConcurrent;
       if (jobCapacity.dailyMax !== undefined) updateData["settings.jobCapacity.dailyMax"] = jobCapacity.dailyMax;
     }
 
-    // Map notifications
     if (notifications) {
       if (notifications.orderAssigned !== undefined) updateData["settings.notifications.email.newJobs"] = notifications.orderAssigned;
       if (notifications.jobCompleted !== undefined) updateData["settings.notifications.email.jobUpdates"] = notifications.jobCompleted;
     }
 
-    // Map capabilities
     if (capabilities) {
       if (capabilities.maxDPI !== undefined) updateData["settings.printingCapabilities.maxResolutionDPI"] = capabilities.maxDPI;
       if (capabilities.maxSheetSizeIn !== undefined) updateData["settings.printingCapabilities.maxSheetSizeIn"] = capabilities.maxSheetSizeIn;
@@ -667,13 +644,13 @@ export const updatePartnerSettings = async (req, res, next) => {
     }
 
     const partner = await User.findOneAndUpdate(
-      { _id: partnerId, role: UserRoles.PRINTER },
+      { _id: partnerIdString, role: UserRoles.PRINTER },
       { $set: updateData },
       { new: true, runValidators: true }
     ).lean();
 
     if (!partner) {
-      const error = new Error("Partner not found or is not a printer");
+      const error = new Error("Partner not found or is not a printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -684,12 +661,13 @@ export const updatePartnerSettings = async (req, res, next) => {
   }
 };
 
-export const setOrderTracking = async (req, res, next) => {
+export const setOrderTracking = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -697,25 +675,24 @@ export const setOrderTracking = async (req, res, next) => {
     const { carrier, trackingNumber, trackingUrl } = req.body;
 
     if (!carrier || !trackingNumber) {
-      const error = new Error("Carrier and trackingNumber are required");
+      const error = new Error("Carrier and trackingNumber are required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderIdString);
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // 1. Update Tracking Info
     order.carrier = carrier;
     order.trackingNumber = trackingNumber;
     order.trackingUrl = trackingUrl;
     order.status = "SHIPPED";
 
-    // 2. Add Timeline Event
+    if (!order.statusTimeline) order.statusTimeline = [];
     order.statusTimeline.push({
       status: "SHIPPED",
       time: new Date(),
@@ -734,12 +711,13 @@ export const setOrderTracking = async (req, res, next) => {
   }
 };
 
-export const updateOrderStatus = async (req, res, next) => {
+export const updateOrderStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -747,12 +725,12 @@ export const updateOrderStatus = async (req, res, next) => {
     const { status } = req.body;
 
     if (!status) {
-      const error = new Error("Status is required");
+      const error = new Error("Status is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const statusMap = {
+    const statusMap: { [key: string]: string } = {
       "Pending": "PENDING",
       "Assigned": "PROCESSING",
       "In Progress": "PRINTING",
@@ -761,24 +739,23 @@ export const updateOrderStatus = async (req, res, next) => {
       "Cancelled": "CANCELLED"
     };
 
-    const dbStatus = statusMap[status];
+    const dbStatus = statusMap[status] as any;
     if (!dbStatus) {
-      const error = new Error(`Invalid status value: ${status}`);
+      const error = new Error(`Invalid status value: ${status}`) as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderIdString);
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // 1. Update Status
     order.status = dbStatus;
 
-    // 2. Add Timeline Event
+    if (!order.statusTimeline) order.statusTimeline = [];
     order.statusTimeline.push({
       status: dbStatus,
       time: new Date(),
@@ -789,7 +766,7 @@ export const updateOrderStatus = async (req, res, next) => {
 
     res.status(200).json({
       orderId: order._id,
-      status: status, // Return the user-friendly status
+      status: status,
       updatedAt: order.updatedAt
     });
   } catch (error) {
@@ -797,12 +774,13 @@ export const updateOrderStatus = async (req, res, next) => {
   }
 };
 
-export const assignOrder = async (req, res, next) => {
+export const assignOrder = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -810,21 +788,21 @@ export const assignOrder = async (req, res, next) => {
     const { partnerId, priority = "Normal" } = req.body;
 
     if (!partnerId) {
-      const error = new Error("partnerId is required");
+      const error = new Error("partnerId is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderIdString);
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER });
     if (!partner) {
-      const error = new Error("Partner not found or is not a printer");
+      const error = new Error("Partner not found or is not a printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -832,16 +810,15 @@ export const assignOrder = async (req, res, next) => {
     const previousPartnerId = order.assignedPrinter;
     const isReassignment = previousPartnerId && previousPartnerId.toString() !== partnerId;
 
-    // 1. Update Order
     order.assignedPrinter = partnerId;
-    order.priority = priority.toUpperCase();
-    order.status = "PROCESSING"; // "Assigned" in UI
+    order.priority = priority.toUpperCase() as any;
+    order.status = "PROCESSING";
 
-    // 2. Add Timeline Event
     const message = isReassignment 
       ? `Order reassigned from previous partner to ${partner.companyName || partner.name}`
       : `Order assigned to ${partner.companyName || partner.name}`;
 
+    if (!order.statusTimeline) order.statusTimeline = [];
     order.statusTimeline.push({
       status: "PROCESSING",
       time: new Date(),
@@ -860,28 +837,28 @@ export const assignOrder = async (req, res, next) => {
   }
 };
 
-export const getOrderById = async (req, res, next) => {
+export const getOrderById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const order = await Order.findById(orderId)
-      .populate("assignedPrinter", "companyName email regions")
+    const order = await Order.findById(orderIdString)
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName email regions")
       .lean();
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Helper to calculate cost for financials section
-    const calculateItemCost = (item) => {
+    const calculateItemCost = (item: any) => {
       const { widthIn, heightIn, quantity = 1 } = item;
       if (widthIn && heightIn) {
         const areaSqFt = (widthIn * heightIn) / 144;
@@ -909,7 +886,6 @@ export const getOrderById = async (req, res, next) => {
     const processingFees = customerPaid > 0 ? (customerPaid * 0.029) + 0.30 : 0;
     const adminProfit = customerPaid - totalPartnerCost - processingFees;
 
-    // Format the response according to the UI requirements
     const orderSummary = {
       id: order._id,
       status: order.status,
@@ -927,12 +903,11 @@ export const getOrderById = async (req, res, next) => {
         state: order.shippingAddress?.state || "N/A",
         postalCode: order.shippingAddress?.postalCode || "N/A",
         country: order.shippingAddress?.country || "N/A",
-        region: order.assignedPrinter?.regions?.[0] || "Unknown" // Mapping assigned printer region to shipping region for UI
+        region: (order.assignedPrinter as unknown as IUser)?.regions?.[0] || "Unknown"
       },
 
       items: formattedItems,
 
-      // Timeline based on actual statusTimeline from DB
       statusTimeline: (order.statusTimeline || []).map(entry => ({
         status: entry.status,
         time: entry.time
@@ -947,12 +922,11 @@ export const getOrderById = async (req, res, next) => {
       },
 
       assignedPartner: order.assignedPrinter ? {
-        id: order.assignedPrinter._id,
-        name: order.assignedPrinter.companyName,
-        email: order.assignedPrinter.email
+        id: (order.assignedPrinter as unknown as IUser)._id,
+        name: (order.assignedPrinter as unknown as IUser).companyName,
+        email: (order.assignedPrinter as unknown as IUser).email
       } : null,
 
-      // For Gang Sheet Preview (assuming first item's design if available)
       preview: {
         designId: order.items?.[0]?.designId || null,
         sheetSize: formattedItems[0]?.size || "N/A"
@@ -965,19 +939,18 @@ export const getOrderById = async (req, res, next) => {
   }
 };
 
-export const exportOrders = async (req, res, next) => {
+export const exportOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { from, to, status } = req.query;
 
-    const query = {};
+    const query: any = {};
     if (from || to) {
       query.createdAt = {};
-      if (from) query.createdAt.$gte = new Date(from);
-      if (to) query.createdAt.$lte = new Date(to);
+      if (from) query.createdAt.$gte = new Date(from as string);
+      if (to) query.createdAt.$lte = new Date(to as string);
     }
     if (status) {
-      // Mapping common UI statuses to DB statuses if they differ
-      const statusMap = {
+      const statusMap: { [key: string]: string } = {
         "Pending": "PENDING",
         "Assigned": "PROCESSING",
         "In Progress": "PRINTING",
@@ -985,21 +958,18 @@ export const exportOrders = async (req, res, next) => {
         "Completed": "COMPLETED",
         "Cancelled": "CANCELLED"
       };
-      query.status = statusMap[status] || status.toUpperCase();
+      query.status = statusMap[status as string] || (status as string).toUpperCase();
     }
 
-    // Set headers for CSV download
     const filename = `orders-export-${new Date().toISOString().split('T')[0]}.csv`;
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    // Write CSV Header
     const columns = ['orderId', 'customer', 'email', 'status', 'total', 'partner', 'sheetSize', 'createdAt', 'completedAt'];
     res.write(columns.join(',') + '\n');
 
-    // Cursor for large data sets
     const cursor = Order.find(query)
-      .populate('assignedPrinter', 'companyName')
+      .populate<{ assignedPrinter: IUser }>('assignedPrinter', 'companyName')
       .sort({ createdAt: -1 })
       .cursor();
 
@@ -1018,7 +988,7 @@ export const exportOrders = async (req, res, next) => {
         order.customer?.email || 'N/A',
         order.status,
         order.pricing?.total || 0,
-        `"${(order.assignedPrinter?.companyName || 'N/A').replace(/"/g, '""')}"`,
+        `"${((order.assignedPrinter as unknown as IUser)?.companyName || 'N/A').replace(/"/g, '""')}"`,
         `"${sheetSize}"`,
         order.createdAt.toISOString(),
         completedAt
@@ -1033,26 +1003,23 @@ export const exportOrders = async (req, res, next) => {
   }
 };
 
-export const createPartner = async (req, res, next) => {
+export const createPartner = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, email, phone, regions, capabilities } = req.body;
 
-    // 1. Check if email already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      const error = new Error("Partner with this email already exists");
+      const error = new Error("Partner with this email already exists") as CustomError;
       error.statusCode = 409;
       throw error;
     }
 
-    // 2. Generate temporary password
     const tempPassword = crypto.randomBytes(8).toString('hex');
     const passwordHash = await bcrypt.hash(tempPassword, 10);
 
-    // 3. Create Partner (PRINTER role)
     const newPartner = new User({
       name,
-      companyName: name, // Using name as companyName if not provided
+      companyName: name,
       email,
       phone,
       regions,
@@ -1070,7 +1037,6 @@ export const createPartner = async (req, res, next) => {
 
     await newPartner.save();
 
-    // 4. Send Welcome Email (Mocked)
     console.log(`[EMAIL MOCK] Welcome email sent to ${email} with temporary password: ${tempPassword}`);
 
     res.status(201).json({
@@ -1082,20 +1048,19 @@ export const createPartner = async (req, res, next) => {
   }
 };
 
-export const listPartners = async (req, res, next) => {
+export const listPartners = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { status, search, cursor, limit = 20 } = req.query;
-    const pageSize = parseInt(limit);
+    const { status, search, cursor, limit = "20" } = req.query;
+    const pageSize = parseInt(limit as string);
 
-    // Initial match query
-    const matchQuery = { role: UserRoles.PRINTER };
+    const matchQuery: any = { role: UserRoles.PRINTER };
 
     if (status) {
       matchQuery.status = status;
     }
 
     if (search) {
-      const searchRegex = new RegExp(search, "i");
+      const searchRegex = new RegExp(search as string, "i");
       matchQuery.$or = [
         { name: searchRegex },
         { companyName: searchRegex },
@@ -1103,8 +1068,7 @@ export const listPartners = async (req, res, next) => {
       ];
     }
 
-    // Aggregation pipeline to get ordersCompleted
-    const pipeline = [
+    const pipeline: any[] = [
       { $match: matchQuery },
       {
         $lookup: {
@@ -1132,13 +1096,11 @@ export const listPartners = async (req, res, next) => {
         }
       },
       { $project: { passwordHash: 0, completedCountArr: 0 } },
-      // Sorting: ordersCompleted DESC, then _id DESC for stability
       { $sort: { ordersCompleted: -1, _id: -1 } }
     ];
 
-    // Cursor-based pagination logic within aggregation
     if (cursor) {
-      const [cursorValue, cursorId] = cursor.split("_");
+      const [cursorValue, cursorId] = (cursor as string).split("_");
       pipeline.push({
         $match: {
           $or: [
@@ -1152,7 +1114,6 @@ export const listPartners = async (req, res, next) => {
       });
     }
 
-    // Limit to pageSize + 1 to check for next page
     pipeline.push({ $limit: pageSize + 1 });
 
     const partners = await User.aggregate(pipeline);
@@ -1160,7 +1121,6 @@ export const listPartners = async (req, res, next) => {
     const hasNextPage = partners.length > pageSize;
     const results = hasNextPage ? partners.slice(0, pageSize) : partners;
 
-    // Map _id to id for the response
     const formattedPartners = results.map(p => ({
       id: p._id,
       name: p.companyName || p.name,
@@ -1185,29 +1145,29 @@ export const listPartners = async (req, res, next) => {
   }
 };
 
-export const getPartnerById = async (req, res, next) => {
+export const getPartnerById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const partner = await User.findOne({ _id: partnerId, role: UserRoles.PRINTER })
+    const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
       .select("-passwordHash")
       .lean();
 
     if (!partner) {
-      const error = new Error("Partner not found");
+      const error = new Error("Partner not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Calculate completed orders count
     const ordersCompleted = await Order.countDocuments({
-      assignedPrinter: partnerId,
+      assignedPrinter: partnerIdString,
       status: "COMPLETED"
     });
 
@@ -1226,22 +1186,22 @@ export const getPartnerById = async (req, res, next) => {
   }
 };
 
-export const getPartnerOrders = async (req, res, next) => {
+export const getPartnerOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { status, cursor, limit = 20 } = req.query;
+    const { status, cursor, limit = "20" } = req.query;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const query = { assignedPrinter: partnerId };
+    const query: any = { assignedPrinter: partnerIdString };
 
     if (status) {
-      // Map common UI status to DB status if needed
-      const statusMap = {
+      const statusMap: { [key: string]: string } = {
         "Pending": "PENDING",
         "Assigned": "PROCESSING",
         "In Progress": "PRINTING",
@@ -1249,12 +1209,11 @@ export const getPartnerOrders = async (req, res, next) => {
         "Completed": "COMPLETED",
         "Cancelled": "CANCELLED"
       };
-      query.status = statusMap[status] || status.toUpperCase();
+      query.status = statusMap[status as string] || (status as string).toUpperCase();
     }
 
-    // Cursor-based pagination logic
     if (cursor) {
-      const [cursorTime, cursorId] = cursor.split("_");
+      const [cursorTime, cursorId] = (cursor as string).split("_");
       query.$or = [
         { createdAt: { $lt: new Date(Number(cursorTime)) } },
         { 
@@ -1264,7 +1223,7 @@ export const getPartnerOrders = async (req, res, next) => {
       ];
     }
 
-    const pageSize = parseInt(limit);
+    const pageSize = parseInt(limit as string);
     const orders = await Order.find(query)
       .sort({ createdAt: -1, _id: -1 })
       .limit(pageSize + 1)
@@ -1275,7 +1234,7 @@ export const getPartnerOrders = async (req, res, next) => {
 
     const formattedOrders = results.map(order => ({
       id: order._id,
-      status: order.status, // Can be mapped to UI label if preferred
+      status: order.status,
       customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
       total: order.pricing?.total || 0,
       createdAt: order.createdAt
@@ -1296,30 +1255,30 @@ export const getPartnerOrders = async (req, res, next) => {
   }
 };
 
-export const updatePartner = async (req, res, next) => {
+export const updatePartner = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     const updateData = req.body;
 
-    // Prevent updating sensitive fields via this endpoint if necessary
     delete updateData.passwordHash;
     delete updateData.role;
 
     const partner = await User.findOneAndUpdate(
-      { _id: partnerId, role: UserRoles.PRINTER },
+      { _id: partnerIdString, role: UserRoles.PRINTER },
       { $set: updateData },
       { new: true, runValidators: true }
     ).select("-passwordHash");
 
     if (!partner) {
-      const error = new Error("Partner not found");
+      const error = new Error("Partner not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1333,31 +1292,32 @@ export const updatePartner = async (req, res, next) => {
   }
 };
 
-export const updatePartnerStatus = async (req, res, next) => {
+export const updatePartnerStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
     const { status } = req.body;
 
-    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
-      const error = new Error("Invalid Partner ID");
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     if (!["Active", "Suspended", "Under Review"].includes(status)) {
-      const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review");
+      const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     const partner = await User.findOneAndUpdate(
-      { _id: partnerId, role: UserRoles.PRINTER },
+      { _id: partnerIdString, role: UserRoles.PRINTER },
       { $set: { status } },
       { new: true, runValidators: true }
     ).select("-passwordHash");
 
     if (!partner) {
-      const error = new Error("Partner not found");
+      const error = new Error("Partner not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1372,12 +1332,13 @@ export const updatePartnerStatus = async (req, res, next) => {
   }
 };
 
-export const adjustOrderFinancials = async (req, res, next) => {
+export const adjustOrderFinancials = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1385,20 +1346,19 @@ export const adjustOrderFinancials = async (req, res, next) => {
     const { adjustments } = req.body;
 
     if (!Array.isArray(adjustments) || adjustments.length === 0) {
-      const error = new Error("Adjustments array is required and cannot be empty");
+      const error = new Error("Adjustments array is required and cannot be empty") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderIdString);
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // 1. Apply adjustments to pricing
     if (!order.pricing.adjustments) {
       order.pricing.adjustments = [];
     }
@@ -1408,41 +1368,38 @@ export const adjustOrderFinancials = async (req, res, next) => {
       const { type, amount, reason } = adj;
       
       if (!["discount", "surcharge", "credit", "fee"].includes(type)) {
-        const error = new Error(`Invalid adjustment type: ${type}`);
+        const error = new Error(`Invalid adjustment type: ${type}`) as CustomError;
         error.statusCode = 400;
         throw error;
       }
 
       if (typeof amount !== "number" || amount <= 0) {
-        const error = new Error("Adjustment amount must be a positive number");
+        const error = new Error("Adjustment amount must be a positive number") as CustomError;
         error.statusCode = 400;
         throw error;
       }
 
-      order.pricing.adjustments.push({ type, amount, reason, createdAt: new Date() });
+      order.pricing.adjustments!.push({ type, amount, reason, createdAt: new Date() });
 
-      // Calculate the net impact on the total
       if (type === "discount" || type === "credit") {
         totalAdjustment -= amount;
       } else {
         totalAdjustment += amount;
       }
 
-      // 2. Log to timeline
+      if (!order.statusTimeline) order.statusTimeline = [];
       order.statusTimeline.push({
-        status: order.status, // Keep current status but log the event
+        status: order.status,
         time: new Date(),
         message: `Financial adjustment: ${type.toUpperCase()} of ${amount} applied. Reason: ${reason}`
       });
     });
 
-    // 3. Update the total
     order.pricing.total = Math.max(0, order.pricing.total + totalAdjustment);
     
     await order.save();
 
-    // 4. Calculate new margin
-    const calculateItemCost = (item) => {
+    const calculateItemCost = (item: any) => {
       const { widthIn, heightIn, quantity = 1 } = item;
       if (widthIn && heightIn) {
         const areaSqFt = (widthIn * heightIn) / 144;
@@ -1466,29 +1423,28 @@ export const adjustOrderFinancials = async (req, res, next) => {
   }
 };
 
-export const getOrderFinancials = async (req, res, next) => {
+export const getOrderFinancials = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const order = await Order.findById(orderId).lean();
+    const order = await Order.findById(orderIdString).lean();
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // 1. Customer Charge (Total from pricing)
     const customerCharge = order.pricing?.total || 0;
 
-    // 2. Partner Payout (Calculated using $3.50/sq ft base cost)
-    const calculateItemCost = (item) => {
+    const calculateItemCost = (item: any) => {
       const { widthIn, heightIn, quantity = 1 } = item;
       if (widthIn && heightIn) {
         const areaSqFt = (widthIn * heightIn) / 144;
@@ -1499,11 +1455,7 @@ export const getOrderFinancials = async (req, res, next) => {
     };
 
     const partnerPayout = (order.items || []).reduce((total, item) => total + calculateItemCost(item), 0);
-
-    // 3. Fees (Standard payment processing fee: 2.9% + $0.30)
     const fees = customerCharge > 0 ? (customerCharge * 0.029) + 0.30 : 0;
-
-    // 4. Admin Margin (customerCharge - partnerPayout - fees)
     const margin = customerCharge - partnerPayout - fees;
 
     res.status(200).json({
@@ -1518,20 +1470,21 @@ export const getOrderFinancials = async (req, res, next) => {
   }
 };
 
-export const downloadOrderInvoice = async (req, res, next) => {
+export const downloadOrderInvoice = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderIdString);
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1560,7 +1513,6 @@ export const downloadOrderInvoice = async (req, res, next) => {
       { label: "Tax", amount: (pricing.tax || 0).toFixed(2) }
     ];
 
-    // Include adjustments in the invoice if any
     if (pricing.adjustments && pricing.adjustments.length > 0) {
       pricing.adjustments.forEach(adj => {
         const label = adj.type.charAt(0).toUpperCase() + adj.type.slice(1);
@@ -1596,7 +1548,6 @@ export const downloadOrderInvoice = async (req, res, next) => {
     const result = await generatePDF({
       html: htmlTemplate,
       data: data,
-      type: "pdf",
       buffer: true,
       pdfOptions: pdfOptions
     });
@@ -1610,29 +1561,29 @@ export const downloadOrderInvoice = async (req, res, next) => {
   }
 };
 
-export const getOrderTimeline = async (req, res, next) => {
+export const getOrderTimeline = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(orderId)) {
-      const error = new Error("Invalid Order ID");
+    const orderIdString = Array.isArray(orderId) ? orderId[0] : orderId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(orderIdString) || !mongoose.Types.ObjectId.isValid(orderIdString)) {
+      const error = new Error("Invalid Order ID") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const order = await Order.findById(orderId)
-      .populate("assignedPrinter", "companyName")
+    const order = await Order.findById(orderIdString)
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName")
       .lean();
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
  
-    let events = [];
+    let events: any[] = [];
 
-    // 1. Order Creation Event
     events.push({
       time: order.createdAt,
       who: "Customer",
@@ -1640,7 +1591,6 @@ export const getOrderTimeline = async (req, res, next) => {
       message: "Order placed"
     });
 
-    // 2. Status Change Events
     if (order.statusTimeline && order.statusTimeline.length > 0) {
       order.statusTimeline.forEach(entry => {
         let who = "System";
@@ -1648,7 +1598,7 @@ export const getOrderTimeline = async (req, res, next) => {
 
         if (entry.status === "PROCESSING" && order.assignedPrinter) {
           who = "Admin";
-          message = `Assigned to ${order.assignedPrinter.companyName}`;
+          message = `Assigned to ${(order.assignedPrinter as unknown as IUser).companyName}`;
         } else if (["PRINTING", "QUALITY_CHECK"].includes(entry.status)) {
           who = "Printer";
         } else if (entry.status === "REJECTED") {
@@ -1665,7 +1615,6 @@ export const getOrderTimeline = async (req, res, next) => {
       });
     }
 
-    // 3. Tracking Events
     if (order.trackingEvents && order.trackingEvents.length > 0) {
       order.trackingEvents.forEach(event => {
         events.push({
@@ -1677,8 +1626,7 @@ export const getOrderTimeline = async (req, res, next) => {
       });
     }
 
-    // 4. Sort all events chronologically
-    events.sort((a, b) => new Date(a.time) - new Date(b.time));
+    events.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
     res.status(200).json({ events });
 
@@ -1686,14 +1634,14 @@ export const getOrderTimeline = async (req, res, next) => {
     next(error);
   }
 };
-export const getEarningsSummary = async (req, res, next) => {
+
+export const getEarningsSummary = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { range = "30d" } = req.query;
 
-    // 1. Calculate date ranges
-    let startDate;
-    let priorStartDate;
-    let priorEndDate;
+    let startDate: Date;
+    let priorStartDate: Date;
+    let priorEndDate: Date;
     const now = new Date();
 
     if (range === "7d") {
@@ -1714,29 +1662,27 @@ export const getEarningsSummary = async (req, res, next) => {
       priorEndDate = startDate;
     }
 
-    // 2. Fetch Orders for KPIs and Table
     const orders = await Order.find({
       createdAt: { $gte: startDate },
       status: { $nin: ["CANCELLED", "REJECTED"] }
-    }).populate("assignedPrinter", "companyName regions");
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
 
     const priorOrders = await Order.find({
       createdAt: { $gte: priorStartDate, $lt: priorEndDate },
       status: { $nin: ["CANCELLED", "REJECTED"] }
     });
 
-    // KPI Calculations
-    const calculateItemCost = (item) => {
+    const calculateItemCost = (item: any) => {
       const { widthIn, heightIn, quantity = 1 } = item;
       if (widthIn && heightIn) {
         const areaSqFt = (widthIn * heightIn) / 144;
-        const costPerSqFt = 3.50; // More realistic base cost
+        const costPerSqFt = 3.50; 
         return areaSqFt * costPerSqFt * quantity;
       }
-      return 5.00 * quantity; // Fallback per item cost
+      return 5.00 * quantity;
     };
 
-    const calculateTotals = (orderList) => {
+    const calculateTotals = (orderList: any[]) => {
       let revenue = 0;
       let payout = 0;
       let fees = 0;
@@ -1745,12 +1691,10 @@ export const getEarningsSummary = async (req, res, next) => {
         const orderRevenue = (o.pricing?.total || 0);
         revenue += orderRevenue;
         
-        // Partner payout
-        o.items.forEach(item => {
+        o.items.forEach((item: any) => {
           payout += calculateItemCost(item);
         });
 
-        // Processing fees
         if (orderRevenue > 0) {
           fees += (orderRevenue * 0.029) + 0.30;
         }
@@ -1763,15 +1707,14 @@ export const getEarningsSummary = async (req, res, next) => {
     const currentTotals = calculateTotals(orders);
     const priorTotals = calculateTotals(priorOrders);
 
-    const calculateTrend = (curr, prior) => {
+    const calculateTrend = (curr: number, prior: number) => {
       if (prior === 0) return curr > 0 ? 100 : 0;
       return Number(((curr - prior) / prior * 100).toFixed(1));
     };
 
-    // 3. Revenue by Region
-    const regionMap = {};
+    const regionMap: { [key: string]: number } = {};
     orders.forEach(o => {
-      const region = o.assignedPrinter?.regions?.[0] || "Unknown";
+      const region = (o.assignedPrinter as unknown as IUser)?.regions?.[0] || "Unknown";
       regionMap[region] = (regionMap[region] || 0) + (o.pricing?.total || 0);
     });
     const revenueByRegion = Object.entries(regionMap).map(([region, value]) => ({
@@ -1780,15 +1723,14 @@ export const getEarningsSummary = async (req, res, next) => {
       percentage: Number(((value / (currentTotals.revenue || 1)) * 100).toFixed(0))
     })).sort((a, b) => b.value - a.value);
 
-    // 4. Products Table
-    const productMap = {};
+    const productMap: { [key: string]: any } = {};
     orders.forEach(o => {
-      o.items.forEach(item => {
+      o.items.forEach((item: any) => {
         const key = item.name || "Custom Print";
         if (!productMap[key]) {
           productMap[key] = {
             name: key,
-            sku: `DTF-${o.id.toString().slice(-4).toUpperCase()}`,
+            sku: `DTF-${o._id.toString().slice(-4).toUpperCase()}`,
             quantity: 0,
             totalRevenue: 0,
             totalCost: 0
@@ -1821,44 +1763,39 @@ export const getEarningsSummary = async (req, res, next) => {
       };
     });
 
-    // 5. Revenue Chart (Actual data grouped by time)
-    const getTimeLabel = (date) => {
+    const getTimeLabel = (date: Date) => {
       if (range === "7d") return date.toLocaleDateString("en-US", { weekday: "short" });
       if (range === "ytd") return date.toLocaleDateString("en-US", { month: "short" });
       return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     };
 
-    const currentPointsMap = {};
-    const priorPointsMap = {};
+    const currentPointsMap: { [key: string]: number } = {};
+    const priorPointsMap: { [key: string]: number } = {};
 
-    // Group current period orders by time label
     orders.forEach(o => {
       const label = getTimeLabel(o.createdAt);
       currentPointsMap[label] = (currentPointsMap[label] || 0) + (o.pricing?.total || 0);
     });
 
-    // Group prior period orders by time label
     priorOrders.forEach(o => {
       const label = getTimeLabel(o.createdAt);
       priorPointsMap[label] = (priorPointsMap[label] || 0) + (o.pricing?.total || 0);
     });
 
-    // Generate consistent labels for the chart based on the selected range
-    const labels = [];
+    const labels: string[] = [];
     let tempDate = new Date(startDate);
     const endChartDate = new Date(now);
     
-    // Ensure we include the last day/month
     while (tempDate <= endChartDate) {
       labels.push(getTimeLabel(tempDate));
       if (range === "7d") {
         tempDate.setDate(tempDate.getDate() + 1);
       } else if (range === "90d") {
-        tempDate.setDate(tempDate.getDate() + 7); // Weekly points for 90d
+        tempDate.setDate(tempDate.getDate() + 7); 
       } else if (range === "ytd") {
         tempDate.setMonth(tempDate.getMonth() + 1);
       } else {
-        tempDate.setDate(tempDate.getDate() + 2); // Every 2 days for 30d
+        tempDate.setDate(tempDate.getDate() + 2); 
       }
     }
 
@@ -1899,4 +1836,3 @@ export const getEarningsSummary = async (req, res, next) => {
     next(error);
   }
 };
-

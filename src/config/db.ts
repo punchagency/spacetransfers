@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import { env } from "./env.js";
 
-export const connectToDatabase = async () => {
+export const connectToDatabase = async (): Promise<void> => {
   try {
     await mongoose.connect(env.mongoUri, {
       autoIndex: true
@@ -12,4 +12,3 @@ export const connectToDatabase = async () => {
     process.exit(1);
   }
 };
-

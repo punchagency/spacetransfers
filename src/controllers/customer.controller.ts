@@ -1,4 +1,5 @@
-import { User } from "../models/user.model.js";
+import { Request, Response, NextFunction } from "express";
+import { User, UserRoles } from "../models/user.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
@@ -8,12 +9,16 @@ import { generatePDF } from "pdf-node";
 import fs from "fs";
 import path from "path";
 
-export const updateAccount = async (req, res, next) => {
+interface CustomError extends Error {
+  statusCode?: number;
+}
+
+export const updateAccount = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, defaultShippingAddress, companyName, phone } = req.body;
-    const userId = req.user.id;
+    const userId = req.user?.id;
 
-    const updateData = {};
+    const updateData: any = {};
     if (name) updateData.name = name;
     if (companyName) updateData.companyName = companyName;
     if (phone) updateData.phone = phone;
@@ -26,12 +31,12 @@ export const updateAccount = async (req, res, next) => {
     ).select("-passwordHash");
 
     if (!updatedUser) {
-      const error = new Error("User not found");
+      const error = new Error("User not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const userResponse = {
+    const userResponse: any = {
       id: updatedUser.id,
       name: updatedUser.name,
       email: updatedUser.email,
@@ -48,18 +53,18 @@ export const updateAccount = async (req, res, next) => {
   }
 };
 
-export const getOrderTracking = async (req, res, next) => {
+export const getOrderTracking = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
-    const order = await Order.findOne({ _id: orderId, user: req.user.id });
+    const order = await Order.findOne({ _id: orderId, user: req.user?.id });
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const isValidTrackingNumber = (tn) => typeof tn === "string" && /^[A-Za-z0-9]{10,35}$/.test(tn);
+    const isValidTrackingNumber = (tn: any) => typeof tn === "string" && /^[A-Za-z0-9]{10,35}$/.test(tn);
     let trackingNumber = order.trackingNumber;
     let carrier = order.carrier || "UPS";
     let events = (order.trackingEvents || []).map(event => ({
@@ -68,34 +73,33 @@ export const getOrderTracking = async (req, res, next) => {
       description: event.description
     }));
 
-    // If no valid tracking number exists, return a mock response only in development; 404 in production
     if (!isValidTrackingNumber(trackingNumber)) {
       if (env.nodeEnv !== "production") {
-        trackingNumber = "1Z999AA10123456784"; // Mock valid tracking number
+        trackingNumber = "1Z999AA10123456784";
         carrier = "UPS";
         
         if (events.length === 0) {
           events = [
             {
-              time: new Date(Date.now() - 3600000).toISOString(), // 1 hour ago
+              time: new Date(Date.now() - 3600000),
               location: (order.shippingAddress?.city || "Los Angeles") + ", " + (order.shippingAddress?.state || "CA"),
               description: "Arrived at facility"
             },
             {
-              time: new Date(Date.now() - 86400000).toISOString(), // 24 hours ago
+              time: new Date(Date.now() - 86400000),
               location: "Los Angeles, CA",
               description: "Departed facility"
             }
           ];
         }
       } else {
-        const error = new Error("Tracking not available");
+        const error = new Error("Tracking not available") as CustomError;
         error.statusCode = 404;
         throw error;
       }
     }
 
-    const carrierUrls = {
+    const carrierUrls: { [key: string]: string } = {
       UPS: `https://www.ups.com/track?loc=en_US&tracknum=${trackingNumber}`,
       FedEx: `https://www.fedex.com/apps/fedextrack/?tracknumbers=${trackingNumber}`,
       USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${trackingNumber}`,
@@ -105,7 +109,7 @@ export const getOrderTracking = async (req, res, next) => {
     const trackingUrl = carrierUrls[carrier] || carrierUrls.UPS;
     const status = order.status === "SHIPPED" ? "In Transit" : (order.status === "COMPLETED" ? "Delivered" : "Pending");
 
-    events.sort((a, b) => new Date(b.time) - new Date(a.time));
+    events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
 
     res.json({
       trackingNumber,
@@ -119,18 +123,15 @@ export const getOrderTracking = async (req, res, next) => {
   }
 };
 
-export const logout = async (req, res, next) => {
+export const logout = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // In a stateless JWT system, logout is handled client-side by discarding the token.
-    // However, if we were using cookies or a token blacklist, we would handle that here.
-    // For now, we'll just return a success response.
     res.status(200).json({ message: "Logged out successfully" });
   } catch (error) {
     next(error);
   }
 };
 
-export const createOrder = async (req, res, next) => {
+export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       items,
@@ -142,13 +143,13 @@ export const createOrder = async (req, res, next) => {
     } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
-      const error = new Error("items array is required");
+      const error = new Error("items array is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (!customer || !customer.firstName || !customer.lastName || !customer.email) {
-      const error = new Error("customer.firstName, customer.lastName and customer.email are required");
+      const error = new Error("customer.firstName, customer.lastName and customer.email are required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -161,25 +162,25 @@ export const createOrder = async (req, res, next) => {
       !shippingAddress.postalCode ||
       !shippingAddress.country
     ) {
-      const error = new Error("shippingAddress.street, city, state, postalCode and country are required");
+      const error = new Error("shippingAddress.street, city, state, postalCode and country are required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (!shippingMethod) {
-      const error = new Error("shippingMethod is required");
+      const error = new Error("shippingMethod is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (!payment || !payment.method) {
-      const error = new Error("payment.method is required");
+      const error = new Error("payment.method is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (payment.method === "card" && !payment.paymentIntentId) {
-      const error = new Error("payment.paymentIntentId is required for card payments");
+      const error = new Error("payment.paymentIntentId is required for card payments") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -192,13 +193,13 @@ export const createOrder = async (req, res, next) => {
       typeof pricing.total !== "number" ||
       !pricing.currency
     ) {
-      const error = new Error("pricing with subtotal, shippingCost, tax, total and currency is required");
+      const error = new Error("pricing with subtotal, shippingCost, tax, total and currency is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     let computedSubtotal = 0;
-    const orderItems = items.map((item) => {
+    const orderItems = items.map((item: any) => {
       const {
         type,
         designId,
@@ -210,7 +211,7 @@ export const createOrder = async (req, res, next) => {
       } = item || {};
 
       if (!type || !name || typeof quantity !== "number" || typeof unitPrice !== "number") {
-        const error = new Error("Each item requires type, name, quantity and unitPrice");
+        const error = new Error("Each item requires type, name, quantity and unitPrice") as CustomError;
         error.statusCode = 400;
         throw error;
       }
@@ -230,24 +231,24 @@ export const createOrder = async (req, res, next) => {
       };
     });
 
-    const roundToTwo = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+    const roundToTwo = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
     const roundedComputedSubtotal = roundToTwo(computedSubtotal);
 
     if (roundToTwo(pricing.subtotal) !== roundedComputedSubtotal) {
-      const error = new Error("pricing.subtotal does not match computed items subtotal");
+      const error = new Error("pricing.subtotal does not match computed items subtotal") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     const expectedTotal = roundToTwo(pricing.subtotal + pricing.shippingCost + pricing.tax);
     if (roundToTwo(pricing.total) !== expectedTotal) {
-      const error = new Error("pricing.total does not match subtotal + shippingCost + tax");
+      const error = new Error("pricing.total does not match subtotal + shippingCost + tax") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     const order = new Order({
-      user: req.user.id,
+      user: req.user?.id,
       items: orderItems,
       customer,
       shippingAddress,
@@ -270,12 +271,12 @@ export const createOrder = async (req, res, next) => {
   }
 };
 
-export const createDesign = async (req, res, next) => {
+export const createDesign = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { title, thumbnail, size, pricing, artboardData } = req.body;
 
     const design = new Design({
-      user: req.user.id,
+      user: req.user?.id,
       title,
       thumbnail,
       size,
@@ -296,9 +297,9 @@ export const createDesign = async (req, res, next) => {
   }
 };
 
-export const listDesigns = async (req, res, next) => {
+export const listDesigns = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const designs = await Design.find({ user: req.user.id })
+    const designs = await Design.find({ user: req.user?.id })
       .select("title size thumbnail createdAt updatedAt")
       .sort({ updatedAt: -1 });
 
@@ -317,13 +318,13 @@ export const listDesigns = async (req, res, next) => {
   }
 };
 
-export const getDesignById = async (req, res, next) => {
+export const getDesignById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { designId } = req.params;
-    const design = await Design.findOne({ _id: designId, user: req.user.id });
+    const design = await Design.findOne({ _id: designId, user: req.user?.id });
 
     if (!design) {
-      const error = new Error("Design not found");
+      const error = new Error("Design not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -340,14 +341,14 @@ export const getDesignById = async (req, res, next) => {
   }
 };
 
-export const deleteDesign = async (req, res, next) => {
+export const deleteDesign = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { designId } = req.params;
 
-    const design = await Design.findOneAndDelete({ _id: designId, user: req.user.id });
+    const design = await Design.findOneAndDelete({ _id: designId, user: req.user?.id });
 
     if (!design) {
-      const error = new Error("Design not found");
+      const error = new Error("Design not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -358,30 +359,30 @@ export const deleteDesign = async (req, res, next) => {
   }
 };
 
-export const updateDesign = async (req, res, next) => {
+export const updateDesign = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { designId } = req.params;
     const { title, thumbnail, artboardData } = req.body;
 
-    const updateData = {};
+    const updateData: any = {};
     if (title !== undefined) updateData.title = title;
     if (thumbnail !== undefined) updateData.thumbnail = thumbnail;
     if (artboardData !== undefined) updateData.artboardData = artboardData;
 
     if (Object.keys(updateData).length === 0) {
-      const error = new Error("No fields provided to update");
+      const error = new Error("No fields provided to update") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     const design = await Design.findOneAndUpdate(
-      { _id: designId, user: req.user.id },
+      { _id: designId, user: req.user?.id },
       { $set: updateData },
       { new: true, runValidators: true }
     );
 
     if (!design) {
-      const error = new Error("Design not found");
+      const error = new Error("Design not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -396,26 +397,26 @@ export const updateDesign = async (req, res, next) => {
   }
 };
 
-export const duplicateDesign = async (req, res, next) => {
+export const duplicateDesign = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { designId } = req.params;
     const { newTitle } = req.body;
 
     if (!newTitle || !newTitle.trim()) {
-      const error = new Error("newTitle is required");
+      const error = new Error("newTitle is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const source = await Design.findOne({ _id: designId, user: req.user.id });
+    const source = await Design.findOne({ _id: designId, user: req.user?.id });
     if (!source) {
-      const error = new Error("Design not found");
+      const error = new Error("Design not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     const copy = new Design({
-      user: req.user.id,
+      user: req.user?.id,
       title: newTitle.trim(),
       thumbnail: source.thumbnail,
       size: source.size,
@@ -435,28 +436,27 @@ export const duplicateDesign = async (req, res, next) => {
   }
 };
 
-export const listOrders = async (req, res, next) => {
+export const listOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { status, limit, cursor } = req.query || {};
 
-    const query = {
-      user: req.user.id
+    const query: any = {
+      user: req.user?.id
     };
 
     if (status) {
       const normalized = status.toString().trim().toLowerCase();
-      const statusMap = {
+      const statusMap: { [key: string]: string[] } = {
         pending: ["PENDING"],
         processing: ["PROCESSING"],
         shipped: ["SHIPPED"],
-        // Include legacy "paid" orders under Completed filter
         completed: ["COMPLETED", "PAID", "paid"],
         cancelled: ["CANCELLED"]
       };
 
       const mappedStatuses = statusMap[normalized];
       if (!mappedStatuses) {
-        const error = new Error("Invalid status filter");
+        const error = new Error("Invalid status filter") as CustomError;
         error.statusCode = 400;
         throw error;
       }
@@ -474,7 +474,7 @@ export const listOrders = async (req, res, next) => {
 
     let parsedLimit = 20;
     if (limit !== undefined) {
-      const n = parseInt(limit, 10);
+      const n = parseInt(limit as string, 10);
       if (!Number.isNaN(n) && n > 0) {
         parsedLimit = Math.min(n, 100);
       }
@@ -487,7 +487,7 @@ export const listOrders = async (req, res, next) => {
     const hasMore = results.length > parsedLimit;
     const orders = hasMore ? results.slice(0, parsedLimit) : results;
 
-    const apiStatusMap = {
+    const apiStatusMap: { [key: string]: string } = {
       PENDING: "Pending",
       PROCESSING: "Processing",
       SHIPPED: "Shipped",
@@ -495,7 +495,7 @@ export const listOrders = async (req, res, next) => {
       CANCELLED: "Cancelled"
     };
 
-    const formatSheetSize = (order) => {
+    const formatSheetSize = (order: any) => {
       if (!order.items || order.items.length === 0) return null;
       const firstItem = order.items[0];
       if (
@@ -527,18 +527,18 @@ export const listOrders = async (req, res, next) => {
   }
 };
 
-export const getOrderById = async (req, res, next) => {
+export const getOrderById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
-    const order = await Order.findOne({ _id: orderId, user: req.user.id });
+    const order = await Order.findOne({ _id: orderId, user: req.user?.id });
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404; 
       throw error;
     }
 
-    const apiStatusMap = {
+    const apiStatusMap: { [key: string]: string } = {
       PENDING: "Pending",
       PROCESSING: "Processing",
       SHIPPED: "Shipped",
@@ -596,31 +596,24 @@ export const getOrderById = async (req, res, next) => {
   }
 };
 
-export const uploadAsset = async (req, res, next) => {
+export const uploadAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!req.file) {
-      const error = new Error("No file uploaded");
+      const error = new Error("No file uploaded") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    // In a real app, we would upload to S3 or similar and get the URL.
-    // Here we'll simulate it by using the local path or a dummy URL.
-    // Assuming the upload middleware stores the file in 'uploads/' and sets req.file.path
-
-    // For this simulation, we'll create a dummy URL based on the filename
     const port = env.port || 4000;
     const fileUrl = `http://localhost:${port}/uploads/${req.file.filename}`;
 
-    // Get image metadata using sharp
     let widthPx, heightPx, dpi;
     try {
       const metadata = await sharp(req.file.path).metadata();
       widthPx = metadata.width;
       heightPx = metadata.height;
-      dpi = metadata.density || 72; // Default to 72 if not present
-    } catch (err) {
-      // Suppress "unsupported image format" errors (e.g. for PSDs) to avoid noise
+      dpi = metadata.density || 72;
+    } catch (err: any) {
       if (err.message && err.message.includes('unsupported image format')) {
         console.log(`Metadata extraction skipped for ${req.file.originalname}: Unsupported format`);
       } else {
@@ -629,7 +622,7 @@ export const uploadAsset = async (req, res, next) => {
     }
 
     const asset = new Asset({
-      user: req.user.id,
+      user: req.user?.id,
       url: fileUrl,
       originalFilename: req.file.originalname,
       mimeType: req.file.mimetype,
@@ -655,9 +648,9 @@ export const uploadAsset = async (req, res, next) => {
   }
 };
 
-export const listAssets = async (req, res, next) => {
+export const listAssets = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const assets = await Asset.find({ user: req.user.id })
+    const assets = await Asset.find({ user: req.user?.id })
       .sort({ _id: -1 });
 
     const responseItems = assets.map(asset => ({
@@ -678,39 +671,39 @@ export const listAssets = async (req, res, next) => {
   }
 };
 
-const roundToTwo = (value) => {
+const roundToTwo = (value: number) => {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 };
 
-export const getCartQuote = async (req, res, next) => {
+export const getCartQuote = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { items, shippingMethod, shippingCountry, shippingPostalCode } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
-      const error = new Error("items array is required");
+      const error = new Error("items array is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (!shippingMethod) {
-      const error = new Error("shippingMethod is required");
+      const error = new Error("shippingMethod is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (!shippingCountry) {
-      const error = new Error("shippingCountry is required");
+      const error = new Error("shippingCountry is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (!shippingPostalCode) {
-      const error = new Error("shippingPostalCode is required");
+      const error = new Error("shippingPostalCode is required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const quoteItems = [];
+    const quoteItems: any[] = [];
     let subtotal = 0;
 
     for (const item of items) {
@@ -724,13 +717,13 @@ export const getCartQuote = async (req, res, next) => {
       } = item || {};
 
       if (!name) {
-        const error = new Error("Each item must have a name");
+        const error = new Error("Each item must have a name") as CustomError;
         error.statusCode = 400;
         throw error;
       }
 
       if (!type) {
-        const error = new Error("Each item must have a type");
+        const error = new Error("Each item must have a type") as CustomError;
         error.statusCode = 400;
         throw error;
       }
@@ -739,15 +732,15 @@ export const getCartQuote = async (req, res, next) => {
 
       if (type === "gangsheet") {
         if (!designId) {
-          const error = new Error("designId is required for gangsheet items");
+          const error = new Error("designId is required for gangsheet items") as CustomError;
           error.statusCode = 400;
           throw error;
         }
 
-        const design = await Design.findOne({ _id: designId, user: req.user.id });
+        const design = await Design.findOne({ _id: designId, user: req.user?.id });
 
         if (!design) {
-          const error = new Error("Design not found for cart item");
+          const error = new Error("Design not found for cart item") as CustomError;
           error.statusCode = 404;
           throw error;
         }
@@ -755,19 +748,19 @@ export const getCartQuote = async (req, res, next) => {
         if (design.pricing && typeof design.pricing.price === "number") {
           unitPrice = design.pricing.price;
         } else if (design.pricing && typeof design.pricing.areaSqFt === "number") {
-          const baseRatePerSqFt = 10; // fallback heuristic
+          const baseRatePerSqFt = 10;
           unitPrice = design.pricing.areaSqFt * baseRatePerSqFt;
         } else if (typeof widthIn === "number" && typeof heightIn === "number") {
           const areaSqFt = (widthIn * heightIn) / 144;
           const baseRatePerSqFt = 10;
           unitPrice = areaSqFt * baseRatePerSqFt;
         } else {
-          const error = new Error("Unable to determine price for gangsheet item");
+          const error = new Error("Unable to determine price for gangsheet item") as CustomError;
           error.statusCode = 400;
           throw error;
         }
       } else {
-        const error = new Error(`Unsupported cart item type: ${type}`);
+        const error = new Error(`Unsupported cart item type: ${type}`) as CustomError;
         error.statusCode = 400;
         throw error;
       }
@@ -815,13 +808,13 @@ export const getCartQuote = async (req, res, next) => {
   }
 };
 
-export const downloadInvoice = async (req, res, next) => {
+export const downloadInvoice = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
-    const order = await Order.findOne({ _id: orderId, user: req.user.id });
+    const order = await Order.findOne({ _id: orderId, user: req.user?.id });
 
     if (!order) {
-      const error = new Error("Order not found");
+      const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -874,10 +867,9 @@ export const downloadInvoice = async (req, res, next) => {
       printBackground: true
     };
 
-    const result = await generatePDF({
+        const result = await generatePDF({
       html: htmlTemplate,
       data: data,
-      type: "pdf",
       buffer: true,
       pdfOptions: pdfOptions
     });
@@ -891,21 +883,21 @@ export const downloadInvoice = async (req, res, next) => {
   }
 };
 
-export const reorder = async (req, res, next) => {
+export const reorder = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
     const { quantityMultiplier = 1 } = req.body || {};
 
     if (typeof quantityMultiplier !== "number" || quantityMultiplier <= 0) {
-      const error = new Error("quantityMultiplier must be a positive number");
+      const error = new Error("quantityMultiplier must be a positive number") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const originalOrder = await Order.findOne({ _id: orderId, user: req.user.id });
+    const originalOrder = await Order.findOne({ _id: orderId, user: req.user?.id });
 
     if (!originalOrder) {
-      const error = new Error("Original order not found");
+      const error = new Error("Original order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -926,20 +918,20 @@ export const reorder = async (req, res, next) => {
       };
     });
 
-    const subtotal = newItems.reduce((sum, item) => sum + item.subtotal, 0);
-    const shippingCost = originalOrder.pricing.shippingCost; // Keep original shipping for now
-    const taxRate = originalOrder.pricing.subtotal > 0 ? originalOrder.pricing.tax / originalOrder.pricing.subtotal : 0;
+    const subtotal = newItems.reduce((sum, item) => sum + item.subtotal!, 0);
+    const shippingCost = originalOrder.pricing.shippingCost || 0;
+    const taxRate = originalOrder.pricing.subtotal && originalOrder.pricing.subtotal > 0 ? (originalOrder.pricing.tax || 0) / originalOrder.pricing.subtotal : 0;
     const tax = roundToTwo(subtotal * taxRate);
     const total = roundToTwo(subtotal + shippingCost + tax);
 
     const newOrder = new Order({
-      user: req.user.id,
+      user: req.user?.id,
       items: newItems,
       customer: originalOrder.customer,
       shippingAddress: originalOrder.shippingAddress,
       shippingMethod: originalOrder.shippingMethod,
       payment: {
-        method: originalOrder.payment.method // Copying payment method but not intent/status
+        method: originalOrder.payment.method
       },
       pricing: {
         subtotal: roundToTwo(subtotal),

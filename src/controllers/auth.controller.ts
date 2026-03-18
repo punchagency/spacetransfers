@@ -1,6 +1,7 @@
+import { Request, Response, NextFunction } from "express";
 import { loginUser, registerUser } from "../services/auth.service.js";
 
-export const register = async (req, res, next) => {
+export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, email, password, role, companyName, phone } = req.body;
     const result = await registerUser({ name, email, password, role, companyName, phone });
@@ -10,7 +11,7 @@ export const register = async (req, res, next) => {
   }
 };
 
-export const login = async (req, res, next) => {
+export const login = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = req.body;
     const result = await loginUser({ email, password });
@@ -19,4 +20,3 @@ export const login = async (req, res, next) => {
     next(error);
   }
 };
-
