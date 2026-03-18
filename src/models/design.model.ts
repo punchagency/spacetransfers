@@ -1,6 +1,37 @@
-import mongoose from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
 
-const designItemSchema = new mongoose.Schema({
+export interface IDesignItem {
+  id: number;
+  assetId: string;
+  widthIn: number;
+  heightIn: number;
+  posX: number;
+  posY: number;
+  rotation: number;
+  copies: number;
+  linked: boolean;
+}
+
+export interface IDesign extends Document {
+  user: mongoose.Types.ObjectId;
+  title: string;
+  thumbnail: string;
+  size: {
+    widthIn: number;
+    heightIn: number;
+  };
+  pricing: {
+    areaSqFt: number;
+    price: number;
+  };
+  artboardData: {
+    items: IDesignItem[];
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const designItemSchema = new Schema<IDesignItem>({
   id: {
     type: Number,
     required: true
@@ -39,10 +70,10 @@ const designItemSchema = new mongoose.Schema({
   }
 });
 
-const designSchema = new mongoose.Schema(
+const designSchema = new Schema<IDesign>(
   {
     user: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
       required: true
     },
@@ -86,4 +117,4 @@ const designSchema = new mongoose.Schema(
 
 designSchema.index({ user: 1, updatedAt: -1 });
 
-export const Design = mongoose.model("Design", designSchema);
+export const Design = mongoose.model<IDesign>("Design", designSchema);

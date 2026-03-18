@@ -1,12 +1,18 @@
+import { Request, Response, NextFunction } from "express";
 import { Order } from "../models/order.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { User } from "../models/user.model.js";
 import mongoose from "mongoose";
+import { env } from "../config/env.js";
 
-export const getDashboardStats = async (req, res, next) => {
+interface CustomError extends Error {
+  statusCode?: number;
+}
+
+export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const now = new Date();
     const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
@@ -16,24 +22,20 @@ export const getDashboardStats = async (req, res, next) => {
     const yesterdayEnd = new Date(todayStart);
     yesterdayEnd.setMilliseconds(-1);
 
-    // Fetch orders for stats calculation (Today and Yesterday)
     const printerOrders = await Order.find({ 
       assignedPrinter: printerId,
       updatedAt: { $gte: yesterdayStart }
     });
 
-    // 1. Today's Earnings
     const todayCompleted = printerOrders.filter(o => o.status === "COMPLETED" && o.updatedAt >= todayStart);
     const todayEarnings = todayCompleted.reduce((sum, o) => sum + (o.pricing?.total || 0), 0);
 
     const yesterdayCompleted = printerOrders.filter(o => o.status === "COMPLETED" && o.updatedAt >= yesterdayStart && o.updatedAt <= yesterdayEnd);
     const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + (o.pricing?.total || 0), 0);
 
-    // 2. Completed Orders
     const completedTodayCount = todayCompleted.length;
     const completedYesterdayCount = yesterdayCompleted.length;
 
-    // 3. Pending Orders
     const totalPendingCount = await Order.countDocuments({ assignedPrinter: printerId, status: "PENDING" });
     const yesterdayPendingCount = await Order.countDocuments({ 
       assignedPrinter: printerId, 
@@ -41,15 +43,12 @@ export const getDashboardStats = async (req, res, next) => {
       createdAt: { $lt: todayStart }
     });
 
-    // 4. Total Revenue
     const totalRevenueResult = await Order.aggregate([
       { $match: { assignedPrinter: new mongoose.Types.ObjectId(printerId), status: "COMPLETED" } },
       { $group: { _id: null, total: { $sum: "$pricing.total" } } }
     ]);
     const totalRevenue = totalRevenueResult[0]?.total || 0;
 
-    const lastMonthStart = new Date(now);
-    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
     const totalRevenueLastMonthResult = await Order.aggregate([
       { $match: { 
           assignedPrinter: new mongoose.Types.ObjectId(printerId), 
@@ -60,8 +59,7 @@ export const getDashboardStats = async (req, res, next) => {
     ]);
     const totalRevenueBeforeToday = totalRevenueLastMonthResult[0]?.total || 0;
 
-    // Helper to calculate trend
-    const getTrend = (current, previous) => {
+    const getTrend = (current: number, previous: number) => {
       if (!previous || previous === 0) return { trend: "0%", trendUp: true };
       const diff = ((current - previous) / previous) * 100;
       const prefix = diff > 0 ? "+" : "";
@@ -75,7 +73,6 @@ export const getDashboardStats = async (req, res, next) => {
     const completedTrend = getTrend(completedTodayCount, completedYesterdayCount);
     const revenueTrend = getTrend(totalRevenue, totalRevenueBeforeToday);
 
-    // Urgent Jobs
     const urgentJobs = await Order.find({ 
       assignedPrinter: printerId,
       priority: "URGENT",
@@ -121,26 +118,25 @@ export const getDashboardStats = async (req, res, next) => {
   }
 };
 
-export const listPrintQueue = async (req, res, next) => {
+export const listPrintQueue = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const { status } = req.query;
 
-    const query = {
+    const query: any = {
       assignedPrinter: printerId
     };
 
     if (status) {
-      const normalizedStatus = status.trim().toLowerCase();
+      const normalizedStatus = (status as string).trim().toLowerCase();
       if (normalizedStatus === "urgent") {
         query.priority = "URGENT";
       } else {
-        // Map frontend statuses to backend Order statuses
-        const statusMap = {
+        const statusMap: { [key: string]: string } = {
           pending: "PENDING",
           processing: "PROCESSING",
-          printing: "PRINTING", // Assuming PRINTING is a valid status
-          "quality-check": "QUALITY_CHECK", // Assuming QUALITY_CHECK is a valid status
+          printing: "PRINTING",
+          "quality-check": "QUALITY_CHECK",
           completed: "COMPLETED"
         };
         const backendStatus = statusMap[normalizedStatus];
@@ -151,8 +147,8 @@ export const listPrintQueue = async (req, res, next) => {
     }
 
     const jobs = await Order.find(query)
-      .sort({ createdAt: 1, priority: -1 }) // Deadline ASC (using createdAt), Priority DESC
-      .limit(100); // Add a reasonable limit
+      .sort({ createdAt: 1, priority: -1 })
+      .limit(100);
 
     const formattedJobs = jobs.map(job => {
       const firstItem = job.items[0] || {};
@@ -162,12 +158,12 @@ export const listPrintQueue = async (req, res, next) => {
 
       return {
         id: job.id,
-        orderId: job.id, // Using job.id as orderId for now
+        orderId: job.id,
         customer: `${job.customer.firstName} ${job.customer.lastName}`,
         sheetSize,
         orderDescription: firstItem.name || "N/A",
         status: job.status,
-        deadline: job.createdAt.toISOString(), // Using createdAt as deadline
+        deadline: job.createdAt.toISOString(),
         priority: job.priority
       };
     });
@@ -178,15 +174,15 @@ export const listPrintQueue = async (req, res, next) => {
   }
 };
 
-export const updateJobStatus = async (req, res, next) => {
+export const updateJobStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const { status } = req.body;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const allowedStatuses = ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "COMPLETED"];
     if (!status || !allowedStatuses.includes(status)) {
-      const error = new Error("Invalid status provided");
+      const error = new Error("Invalid status provided") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -194,13 +190,14 @@ export const updateJobStatus = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    job.status = status;
-    job.statusTimeline.push({ status, time: new Date() });
+    job.status = status as any;
+    if (!job.statusTimeline) job.statusTimeline = [];
+    job.statusTimeline.push({ status: status as any, time: new Date() });
     await job.save();
 
     res.json({
@@ -213,16 +210,16 @@ export const updateJobStatus = async (req, res, next) => {
   }
 };
 
-export const updateJobPriority = async (req, res, next) => {
+export const updateJobPriority = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const { priority } = req.body;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -232,7 +229,7 @@ export const updateJobPriority = async (req, res, next) => {
     } else if (priority === null) {
       job.priority = "NORMAL";
     } else {
-      const error = new Error("Invalid priority value. Must be 'Urgent' or null.");
+      const error = new Error("Invalid priority value. Must be 'Urgent' or null.") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -248,15 +245,15 @@ export const updateJobPriority = async (req, res, next) => {
   }
 };
 
-export const getJobDetails = async (req, res, next) => {
+export const getJobDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -275,7 +272,7 @@ export const getJobDetails = async (req, res, next) => {
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown"
       },
       notes: job.notes || "No production notes",
-      timeline: job.statusTimeline.map(t => ({
+      timeline: (job.statusTimeline || []).map(t => ({
         status: t.status,
         time: t.time
       }))
@@ -285,15 +282,15 @@ export const getJobDetails = async (req, res, next) => {
   }
 };
 
-export const getJobCustomerInfo = async (req, res, next) => {
+export const getJobCustomerInfo = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -318,20 +315,20 @@ export const getJobCustomerInfo = async (req, res, next) => {
   }
 };
 
-export const updateJobNotes = async (req, res, next) => {
+export const updateJobNotes = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const { notes } = req.body;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     if (typeof notes !== "string") {
-      const error = new Error("Notes must be a string");
+      const error = new Error("Notes must be a string") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (notes.length > 2000) {
-      const error = new Error("Notes maximum length is 2000 characters");
+      const error = new Error("Notes maximum length is 2000 characters") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -339,7 +336,7 @@ export const updateJobNotes = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -357,15 +354,15 @@ export const updateJobNotes = async (req, res, next) => {
   }
 };
 
-export const updateJobSpecs = async (req, res, next) => {
+export const updateJobSpecs = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const { filmType, passes, temperatureC, pressSeconds } = req.body;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const allowedFilmTypes = ["DTF", "UV", "Screen", "Sublimation"];
     if (filmType && !allowedFilmTypes.includes(filmType)) {
-      const error = new Error("Invalid filmType. Must be one of: DTF | UV | Screen | Sublimation.");
+      const error = new Error("Invalid filmType. Must be one of: DTF | UV | Screen | Sublimation.") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -373,23 +370,20 @@ export const updateJobSpecs = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Initialize specs if it doesn't exist
     if (!job.specs) {
       job.specs = {};
     }
 
-    // Update only allowed fields, ignore unknown fields in req.body
     if (filmType !== undefined) job.specs.filmType = filmType;
     if (passes !== undefined) job.specs.passes = passes;
     if (temperatureC !== undefined) job.specs.temperatureC = temperatureC;
     if (pressSeconds !== undefined) job.specs.pressSeconds = pressSeconds;
 
-    // Mark as modified to ensure Mongoose saves the nested object
     job.markModified("specs");
     await job.save();
 
@@ -403,21 +397,21 @@ export const updateJobSpecs = async (req, res, next) => {
   }
 };
 
-export const executeJobAction = async (req, res, next) => {
+export const executeJobAction = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const { action, reason } = req.body;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const allowedActions = ["ACCEPT", "REJECT", "START", "PAUSE", "RESUME"];
     if (!action || !allowedActions.includes(action)) {
-      const error = new Error("Invalid action. Must be one of: ACCEPT | REJECT | START | PAUSE | RESUME");
+      const error = new Error("Invalid action. Must be one of: ACCEPT | REJECT | START | PAUSE | RESUME") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
     if (action === "REJECT" && !reason) {
-      const error = new Error("REJECT requires a reason field");
+      const error = new Error("REJECT requires a reason field") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -425,16 +419,16 @@ export const executeJobAction = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    let nextStatus;
+    let nextStatus: any;
     switch (action) {
       case "ACCEPT":
         if (job.status !== "PENDING") {
-          const error = new Error(`Cannot ACCEPT job in ${job.status} state. ACCEPT transitions Pending -> Processing.`);
+          const error = new Error(`Cannot ACCEPT job in ${job.status} state. ACCEPT transitions Pending -> Processing.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -442,7 +436,7 @@ export const executeJobAction = async (req, res, next) => {
         break;
       case "REJECT":
         if (job.status !== "PENDING") {
-          const error = new Error(`Cannot REJECT job in ${job.status} state. REJECT transitions Pending -> Rejected.`);
+          const error = new Error(`Cannot REJECT job in ${job.status} state. REJECT transitions Pending -> Rejected.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -451,7 +445,7 @@ export const executeJobAction = async (req, res, next) => {
         break;
       case "START":
         if (job.status !== "PROCESSING") {
-          const error = new Error(`Cannot START job in ${job.status} state. START transitions Processing -> Printing.`);
+          const error = new Error(`Cannot START job in ${job.status} state. START transitions Processing -> Printing.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -459,7 +453,7 @@ export const executeJobAction = async (req, res, next) => {
         break;
       case "PAUSE":
         if (job.status !== "PRINTING") {
-          const error = new Error(`Cannot PAUSE job in ${job.status} state. PAUSE transitions Printing -> Paused.`);
+          const error = new Error(`Cannot PAUSE job in ${job.status} state. PAUSE transitions Printing -> Paused.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -467,7 +461,7 @@ export const executeJobAction = async (req, res, next) => {
         break;
       case "RESUME":
         if (job.status !== "PAUSED") {
-          const error = new Error(`Cannot RESUME job in ${job.status} state. RESUME transitions Paused -> Printing.`);
+          const error = new Error(`Cannot RESUME job in ${job.status} state. RESUME transitions Paused -> Printing.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -476,7 +470,8 @@ export const executeJobAction = async (req, res, next) => {
     }
 
     job.status = nextStatus;
-    job.statusTimeline.push({ status: nextStatus, time: new Date() });
+    if (!job.statusTimeline) job.statusTimeline = [];
+    job.statusTimeline.push({ status: nextStatus as any, time: new Date() });
     await job.save();
 
     res.json({
@@ -488,29 +483,26 @@ export const executeJobAction = async (req, res, next) => {
   }
 };
 
-export const getJobAssets = async (req, res, next) => {
+export const getJobAssets = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // 1. Get all designIds from job items
     const designIds = job.items
       .filter(item => item.designId)
       .map(item => item.designId);
 
-    // 2. Fetch Designs to get assetIds
     const designs = await Design.find({ _id: { $in: designIds } });
     
-    // 3. Collect all unique assetIds from those designs
-    const assetIds = new Set();
+    const assetIds = new Set<string>();
     designs.forEach(design => {
       if (design.artboardData && design.artboardData.items) {
         design.artboardData.items.forEach(item => {
@@ -519,21 +511,17 @@ export const getJobAssets = async (req, res, next) => {
       }
     });
 
-    // 4. Fetch Assets
     const assets = await Asset.find({ _id: { $in: Array.from(assetIds) } });
 
-    // 5. Format assets with "signed" URLs (mocking signing logic for now)
-    // In a real scenario, this would involve a service like AWS S3 getSignedUrl
     const formattedAssets = assets.map(asset => ({
       id: asset.id,
       filename: asset.originalFilename,
       widthPx: asset.widthPx,
       heightPx: asset.heightPx,
       dpi: asset.dpi,
-      downloadUrl: asset.url // In production, this would be a signed URL
+      downloadUrl: asset.url
     }));
 
-    // 6. Calculate stats
     const totalBytes = assets.reduce((sum, asset) => sum + (asset.sizeBytes || 0), 0);
 
     res.json({
@@ -548,30 +536,27 @@ export const getJobAssets = async (req, res, next) => {
   }
 };
 
-export const createJobAssetBundle = async (req, res, next) => {
+export const createJobAssetBundle = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const { include } = req.body;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // 1. Get all designIds from job items
     const designIds = job.items
       .filter(item => item.designId)
       .map(item => item.designId);
 
-    // 2. Fetch Designs to get assetIds
     const designs = await Design.find({ _id: { $in: designIds } });
     
-    // 3. Collect all unique assetIds from those designs
-    const allAssetIds = new Set();
+    const allAssetIds = new Set<string>();
     designs.forEach(design => {
       if (design.artboardData && design.artboardData.items) {
         design.artboardData.items.forEach(item => {
@@ -582,30 +567,21 @@ export const createJobAssetBundle = async (req, res, next) => {
 
     let targetAssetIds = Array.from(allAssetIds);
 
-    // 4. Filter if include is a list
     if (Array.isArray(include)) {
       targetAssetIds = targetAssetIds.filter(id => include.includes(id));
       if (targetAssetIds.length === 0) {
-        const error = new Error("None of the specified assets were found in this job");
+        const error = new Error("None of the specified assets were found in this job") as CustomError;
         error.statusCode = 400;
         throw error;
       }
     } else if (include !== "ALL") {
-      const error = new Error("Invalid 'include' value. Use 'ALL' or an array of asset IDs.");
+      const error = new Error("Invalid 'include' value. Use 'ALL' or an array of asset IDs.") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    // 5. Mock ZIP generation
-    // In a real application, this would:
-    // a. Create a ZIP of the files from S3/Storage
-    // b. Upload the ZIP to a temporary location
-    // c. Return a signed URL
     const port = env.port || 4000;
     const bundleUrl = `http://localhost:${port}/uploads/bundle-${job.id}.zip`;
-
-    // Simulate async generation (optional, since the requirement says it may take 30s)
-    // For this mock, we just return the URL immediately.
 
     res.status(201).json({
       bundleUrl
@@ -615,15 +591,15 @@ export const createJobAssetBundle = async (req, res, next) => {
   }
 };
 
-export const exportJobGangsheet = async (req, res, next) => {
+export const exportJobGangsheet = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const { format, resolutionDPI, settings } = req.body;
-    const printerId = req.user.id;
+    const { format } = req.body;
+    const printerId = req.user?.id;
 
     const allowedFormats = ["PDF", "PNG", "TIFF"];
     if (!format || !allowedFormats.includes(format)) {
-      const error = new Error("Invalid format. Must be one of: PDF | PNG | TIFF");
+      const error = new Error("Invalid format. Must be one of: PDF | PNG | TIFF") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -631,22 +607,15 @@ export const exportJobGangsheet = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Mock gangsheet generation
-    // In a real application, this would:
-    // a. Render the designs according to the job's layout
-    // b. Apply pre-press settings (crop marks, color bars, ICC profiles)
-    // c. Save the file to storage (e.g., S3)
-    // d. Generate a signed URL valid for production access
     const port = env.port || 4000;
     const fileExtension = format.toLowerCase();
     const exportUrl = `http://localhost:${port}/uploads/gangsheet-${job.id}.${fileExtension}`;
 
-    // Return the response immediately (generation is mocked as async)
     res.status(201).json({
       exportUrl,
       format
@@ -656,25 +625,20 @@ export const exportJobGangsheet = async (req, res, next) => {
   }
 };
 
-export const getJobGangsheetPreview = async (req, res, next) => {
+export const getJobGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const resolution = parseInt(req.query.resolution) || 150;
-    const printerId = req.user.id;
+    const resolution = parseInt(req.query.resolution as string) || 150;
+    const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Mock preview generation
-    // In a real application, this would:
-    // a. Render a low-res version of the gangsheet
-    // b. Cache the preview for 6 hours
-    // c. Return a signed URL
     const port = env.port || 4000;
     const previewUrl = `http://localhost:${port}/uploads/preview-${job.id}-${resolution}.png`;
 
@@ -687,15 +651,15 @@ export const getJobGangsheetPreview = async (req, res, next) => {
   }
 };
 
-export const createJobShippingLabel = async (req, res, next) => {
+export const createJobShippingLabel = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const { size, carrier, service } = req.body;
-    const printerId = req.user.id;
+    const { size, carrier } = req.body;
+    const printerId = req.user?.id;
 
     const allowedSizes = ["4x6", "4x4", "2x4"];
     if (!size || !allowedSizes.includes(size)) {
-      const error = new Error("Invalid size. Must be one of: 4x6 | 4x4 | 2x4");
+      const error = new Error("Invalid size. Must be one of: 4x6 | 4x4 | 2x4") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -703,25 +667,20 @@ export const createJobShippingLabel = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Mock shipping label generation
-    // In a real application, this would:
-    // a. Call a shipping API (like ShipStation, EasyPost, or direct carrier APIs)
-    // b. Generate a PDF label
-    // c. Save tracking info to the order
     const mockTrackingNumber = `1Z${Math.random().toString(36).substring(2, 18).toUpperCase()}`;
     const port = env.port || 4000;
     const labelUrl = `http://localhost:${port}/uploads/label-${job.id}.pdf`;
 
-    // Update order with tracking information
     job.trackingNumber = mockTrackingNumber;
     job.carrier = carrier || "UPS";
-    job.status = "SHIPPED";
-    job.statusTimeline.push({ status: "SHIPPED", time: new Date() });
+    job.status = "SHIPPED" as any;
+    if (!job.statusTimeline) job.statusTimeline = [];
+    job.statusTimeline.push({ status: "SHIPPED" as any, time: new Date() });
     await job.save();
 
     res.status(201).json({
@@ -733,14 +692,14 @@ export const createJobShippingLabel = async (req, res, next) => {
   }
 };
 
-export const updateJobTracking = async (req, res, next) => {
+export const updateJobTracking = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const { carrier, trackingNumber, trackingUrl } = req.body;
-    const printerId = req.user.id;
+    const { carrier, trackingNumber } = req.body;
+    const printerId = req.user?.id;
 
     if (!carrier || !trackingNumber) {
-      const error = new Error("Carrier and trackingNumber are required");
+      const error = new Error("Carrier and trackingNumber are required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -748,26 +707,24 @@ export const updateJobTracking = async (req, res, next) => {
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
 
     if (!job) {
-      const error = new Error("Job not found or not assigned to this printer");
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     job.carrier = carrier;
     job.trackingNumber = trackingNumber;
-    // Note: If the Order model needs to store trackingUrl explicitly, it should be added to the schema.
-    // For now, we update carrier and trackingNumber which are already in the schema.
     
-    // If the status isn't already SHIPPED or COMPLETED, we might want to update it to SHIPPED
     if (!["SHIPPED", "COMPLETED"].includes(job.status)) {
-      job.status = "SHIPPED";
-      job.statusTimeline.push({ status: "SHIPPED", time: new Date() });
+      job.status = "SHIPPED" as any;
+      if (!job.statusTimeline) job.statusTimeline = [];
+      job.statusTimeline.push({ status: "SHIPPED" as any, time: new Date() });
     }
 
     await job.save();
 
     res.json({
-      orderId: job.id, // Or job.orderId if you have a separate human-readable ID
+      orderId: job.id,
       trackingNumber: job.trackingNumber,
       updatedAt: job.updatedAt.toISOString()
     });
@@ -776,23 +733,22 @@ export const updateJobTracking = async (req, res, next) => {
   }
 };
 
-export const listPrinterOrders = async (req, res, next) => {
+export const listPrinterOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const { status } = req.query;
 
-    const query = { assignedPrinter: printerId };
+    const query: any = { assignedPrinter: printerId };
 
-    // Map frontend statuses to backend statuses
-    const statusMap = {
+    const statusMap: { [key: string]: any } = {
       "Pending Review": "PENDING",
       "In Progress": "PROCESSING",
       "Ready": ["PRINTING", "QUALITY_CHECK"],
       "Completed": ["SHIPPED", "COMPLETED"]
     };
 
-    if (status && statusMap[status]) {
-      const backendStatus = statusMap[status];
+    if (status && statusMap[status as string]) {
+      const backendStatus = statusMap[status as string];
       if (Array.isArray(backendStatus)) {
         query.status = { $in: backendStatus };
       } else {
@@ -803,19 +759,16 @@ export const listPrinterOrders = async (req, res, next) => {
     const orders = await Order.find(query).sort({ createdAt: -1 });
 
     const formattedOrders = await Promise.all(orders.map(async (order) => {
-      // 1. Determine sheetSize (from first item)
       const firstItem = order.items[0] || {};
       const sheetSize = (firstItem.widthIn && firstItem.heightIn) 
         ? `${firstItem.widthIn}x${firstItem.heightIn}` 
         : "N/A";
 
-      // 2. Determine location
       const location = order.shippingAddress 
         ? `${order.shippingAddress.city}, ${order.shippingAddress.state}`
         : "N/A";
 
-      // 3. Map backend status back to frontend label
-      let displayStatus = order.status;
+            let displayStatus: any = order.status;
       for (const [label, val] of Object.entries(statusMap)) {
         if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
           displayStatus = label;
@@ -823,11 +776,9 @@ export const listPrinterOrders = async (req, res, next) => {
         }
       }
 
-      // 4. Asset Integrity Check (hasWarning)
-      // hasWarning is true if any linked asset fails the integrity check (below 150 DPI or missing)
       const designIds = order.items.filter(i => i.designId).map(i => i.designId);
       const designs = await Design.find({ _id: { $in: designIds } });
-      const assetIds = new Set();
+      const assetIds = new Set<string>();
       designs.forEach(d => {
         d.artboardData?.items?.forEach(item => {
           if (item.assetId) assetIds.add(item.assetId);
@@ -843,7 +794,7 @@ export const listPrinterOrders = async (req, res, next) => {
         sheetSize,
         location,
         status: displayStatus,
-        dueDate: order.createdAt, // Using createdAt as a base for dueDate
+        dueDate: order.createdAt,
         isUrgent: order.priority === "URGENT",
         hasWarning
       };
@@ -855,28 +806,27 @@ export const listPrinterOrders = async (req, res, next) => {
   }
 };                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
-export const getOrderSummary = async (req, res, next) => {
+export const getOrderSummary = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
 
     const order = await Order.findOne({ _id: orderId, assignedPrinter: printerId });
 
     if (!order) {
-      const error = new Error("Order not found or not assigned to this printer");
+      const error = new Error("Order not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    // Map backend status to frontend label (matching listPrinterOrders logic)
-    const statusMap = {
+    const statusMap: { [key: string]: any } = {
       "Pending Review": "PENDING",
       "In Progress": "PROCESSING",
       "Ready": ["PRINTING", "QUALITY_CHECK"],
       "Completed": ["SHIPPED", "COMPLETED"]
     };
 
-    let displayStatus = order.status;
+        let displayStatus: any = order.status;
     for (const [label, val] of Object.entries(statusMap)) {
       if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
         displayStatus = label;
@@ -897,19 +847,18 @@ export const getOrderSummary = async (req, res, next) => {
   }
 };
 
-export const getEarningsSummary = async (req, res, next) => {
+export const getEarningsSummary = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const { range = "30d" } = req.query;
 
-    let startDate;
+    let startDate: Date;
     const now = new Date();
     if (range === "7d") {
       startDate = new Date(now.setDate(now.getDate() - 7));
     } else if (range === "all") {
-      startDate = new Date(0); // All time
+      startDate = new Date(0);
     } else {
-      // Default 30d
       startDate = new Date(now.setDate(now.getDate() - 30));
     }
 
@@ -918,12 +867,11 @@ export const getEarningsSummary = async (req, res, next) => {
       createdAt: { $gte: startDate }
     });
 
-    // Calculate totals
     let revenue = 0;
     let paidOut = 0;
     let pending = 0;
 
-    const dailyRevenue = {};
+    const dailyRevenue: { [key: string]: number } = {};
 
     orders.forEach(order => {
       const amount = order.pricing?.total || 0;
@@ -935,17 +883,13 @@ export const getEarningsSummary = async (req, res, next) => {
         pending += amount;
       }
 
-      // Prepare daily revenue for trend
       const dateKey = order.createdAt.toISOString().split("T")[0];
       dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
     });
 
-    // Format trend points
-    const points = [];
-    const dateRange = range === "all" ? 30 : (range === "7d" ? 7 : 30); // Use 30 for 'all' as a fallback for trend visualization
+    const points: { date: string, revenue: number }[] = [];
+    const dateRange = range === "all" ? 30 : (range === "7d" ? 7 : 30);
     
-    // In a real app, we would iterate through every day in the range to ensure zero values are represented
-    // For this mock/blueprint implementation, we'll just return the days that have data or a simple loop
     const tempDate = new Date();
     for (let i = 0; i < dateRange; i++) {
       const d = new Date(tempDate);
@@ -974,12 +918,12 @@ export const getEarningsSummary = async (req, res, next) => {
   }
 };
 
-export const listEarningsJobs = async (req, res, next) => {
+export const listEarningsJobs = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const { status } = req.query;
 
-    const query = { assignedPrinter: printerId };
+    const query: any = { assignedPrinter: printerId };
 
     if (status) {
       if (status === "Paid") {
@@ -1000,7 +944,7 @@ export const listEarningsJobs = async (req, res, next) => {
       const isPaid = ["SHIPPED", "COMPLETED"].includes(order.status);
 
       return {
-        id: order.id, // Or a custom job ID format if available
+        id: order.id,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         amount: Number(amount.toFixed(2)),
         earning: Number(earning.toFixed(2)),
@@ -1016,38 +960,28 @@ export const listEarningsJobs = async (req, res, next) => {
   }
 };
 
-export const requestPayout = async (req, res, next) => {
+export const requestPayout = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
-    const { amount, method, notes } = req.body;
+    const printerId = req.user?.id;
+    const { amount, method } = req.body;
 
-    // 1. Validate method
     const allowedMethods = ["bank_transfer", "paypal", "check"];
     if (!method || !allowedMethods.includes(method)) {
-      const error = new Error("Invalid payout method. Must be: bank_transfer | paypal | check");
+      const error = new Error("Invalid payout method. Must be: bank_transfer | paypal | check") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    // 2. Validate amount
     if (!amount || amount <= 0) {
-      const error = new Error("Payout amount must be greater than zero");
+      const error = new Error("Payout amount must be greater than zero") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    // 3. Calculate available pending earnings
-    // We only allow payouts for orders that are NOT yet paid out but are in a status that qualifies for earnings
-    // Based on previous endpoints, earnings are calculated for all assigned orders.
-    // In a real app, there would likely be a "payoutStatus" or "isPaidOut" flag on the Order or a separate Ledger.
-    // For this blueprint, we'll calculate available balance as total earnings from all non-payout-requested orders.
-    
     const PLATFORM_RATE = 0.20;
     const orders = await Order.find({
       assignedPrinter: printerId,
-      // Logic: Only COMPLETED or SHIPPED orders can be paid out, and they shouldn't have been part of a previous payout
       status: { $in: ["SHIPPED", "COMPLETED"] }
-      // In a real schema, we'd filter by: payoutStatus: 'PENDING'
     });
 
     const totalAvailable = orders.reduce((sum, order) => {
@@ -1057,16 +991,11 @@ export const requestPayout = async (req, res, next) => {
     }, 0);
 
     if (amount > totalAvailable) {
-      const error = new Error(`Insufficient balance. Available pending earnings: $${totalAvailable.toFixed(2)}`);
+      const error = new Error(`Insufficient balance. Available pending earnings: $${totalAvailable.toFixed(2)}`) as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    // 4. Create payout request record
-    // In a real app, we would have a PayoutRequest model:
-    // const payout = await PayoutRequest.create({ printer: printerId, amount, method, notes, status: 'Requested' });
-    
-    // Mocking the response as if a record was created
     const requestId = `payout_${Math.random().toString(36).substring(2, 9)}`;
 
     res.status(201).json({
@@ -1079,17 +1008,10 @@ export const requestPayout = async (req, res, next) => {
   }
 };
 
-export const confirmPayoutRequest = async (req, res, next) => {
+export const confirmPayoutRequest = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { requestId } = req.params;
-    const printerId = req.user.id;
 
-    // In a real app, you would:
-    // 1. Find the payout request by requestId and printerId
-    // 2. Verify its current status is 'Requested' or 'Pending'
-    // 3. Update status to 'Confirmed' or 'Processing'
-    
-    // Mocking the response
     res.json({
       requestId,
       status: "Confirmed",
@@ -1100,7 +1022,7 @@ export const confirmPayoutRequest = async (req, res, next) => {
   }
 };
 
-export const getPrinterEarnings = async (req, res, next) => {
+export const getPrinterEarnings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     res.json({ message: "Printer earnings blueprint" });
   } catch (error) {
@@ -1108,13 +1030,13 @@ export const getPrinterEarnings = async (req, res, next) => {
   }
 };
 
-export const getPrinterProfile = async (req, res, next) => {
+export const getPrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const user = await User.findById(printerId);                                                                                                  
                                    
     if (!user) {
-      const error = new Error("Printer not found");
+      const error = new Error("Printer not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1132,15 +1054,15 @@ export const getPrinterProfile = async (req, res, next) => {
   }
 };
 
-export const updatePrinterProfile = async (req, res, next) => {
+export const updatePrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const { businessName, phone, website } = req.body;
 
     const user = await User.findById(printerId);
 
     if (!user) {
-      const error = new Error("Printer not found");
+      const error = new Error("Printer not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1161,13 +1083,13 @@ export const updatePrinterProfile = async (req, res, next) => {
   }
 };
 
-export const getPrinterSettings = async (req, res, next) => {
+export const getPrinterSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const user = await User.findById(printerId);
 
     if (!user) {
-      const error = new Error("Printer not found");
+      const error = new Error("Printer not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
@@ -1175,7 +1097,6 @@ export const getPrinterSettings = async (req, res, next) => {
     const settings = user.settings || {};
     const paymentMethod = settings.paymentMethod || {};
 
-    // Mask the account number
     const accountMasked = paymentMethod.accountNumber 
       ? `****${paymentMethod.accountNumber.slice(-4)}`
       : (paymentMethod.paypalEmail || "N/A");
@@ -1222,22 +1143,21 @@ export const getPrinterSettings = async (req, res, next) => {
   }
 };
 
-export const updatePrinterSettings = async (req, res, next) => {
+export const updatePrinterSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user.id;
+    const printerId = req.user?.id;
     const updateData = req.body;
 
     const user = await User.findById(printerId);
     if (!user) {
-      const error = new Error("Printer not found");
+      const error = new Error("Printer not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    if (!user.settings) user.settings = {};
+    if (!user.settings) user.settings = {} as any;
 
-    // Helper for deep partial update
-    const deepMerge = (target, source) => {
+    const deepMerge = (target: any, source: any) => {
       for (const key in source) {
         if (source[key] instanceof Object && key in target) {
           deepMerge(target[key], source[key]);
@@ -1247,7 +1167,6 @@ export const updatePrinterSettings = async (req, res, next) => {
       }
     };
 
-    // Special handling for paymentMethod structure mapping
     if (updateData.paymentMethod && updateData.paymentMethod.account) {
       const { routing, number } = updateData.paymentMethod.account;
       if (!user.settings.paymentMethod) user.settings.paymentMethod = {};
@@ -1258,7 +1177,6 @@ export const updatePrinterSettings = async (req, res, next) => {
 
     deepMerge(user.settings, updateData);
 
-    // Mark settings as modified for Mongoose if it's a Mixed type or needs explicit marking
     user.markModified("settings");
     await user.save();
 

@@ -1,9 +1,22 @@
-import mongoose from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
 
-const assetSchema = new mongoose.Schema(
+export interface IAsset extends Document {
+  user: mongoose.Types.ObjectId;
+  url: string;
+  originalFilename: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  widthPx?: number;
+  heightPx?: number;
+  dpi?: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const assetSchema = new Schema<IAsset>(
   {
     user: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: "User",
       required: true
     },
@@ -39,4 +52,4 @@ const assetSchema = new mongoose.Schema(
 // Index for pagination (cursor-based usually on _id or createdAt)
 assetSchema.index({ user: 1, _id: -1 });
 
-export const Asset = mongoose.model("Asset", assetSchema);
+export const Asset = mongoose.model<IAsset>("Asset", assetSchema);

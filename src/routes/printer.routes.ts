@@ -1,7 +1,34 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { listPrintQueue, updateJobStatus, listPrinterOrders, getPrinterEarnings, getDashboardStats, updateJobPriority, getJobDetails, getJobCustomerInfo, updateJobNotes, updateJobSpecs, executeJobAction, getJobAssets, createJobAssetBundle, exportJobGangsheet, getJobGangsheetPreview, createJobShippingLabel, updateJobTracking, getOrderSummary, getEarningsSummary, listEarningsJobs, requestPayout, confirmPayoutRequest, getPrinterProfile, updatePrinterProfile, getPrinterSettings, updatePrinterSettings } from "../controllers/printer.controller.js";
+import { 
+  listPrintQueue, 
+  updateJobStatus, 
+  listPrinterOrders, 
+  getPrinterEarnings, 
+  getDashboardStats, 
+  updateJobPriority, 
+  getJobDetails, 
+  getJobCustomerInfo, 
+  updateJobNotes, 
+  updateJobSpecs, 
+  executeJobAction, 
+  getJobAssets, 
+  createJobAssetBundle, 
+  exportJobGangsheet, 
+  getJobGangsheetPreview, 
+  createJobShippingLabel, 
+  updateJobTracking, 
+  getOrderSummary, 
+  getEarningsSummary, 
+  listEarningsJobs, 
+  requestPayout, 
+  confirmPayoutRequest, 
+  getPrinterProfile, 
+  updatePrinterProfile, 
+  getPrinterSettings, 
+  updatePrinterSettings 
+} from "../controllers/printer.controller.js";
 
 const router = express.Router();
 

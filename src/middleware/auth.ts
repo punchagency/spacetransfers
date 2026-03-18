@@ -1,7 +1,16 @@
+import { Request, Response, NextFunction } from "express";
 import { verifyJwt } from "../utils/jwt.js";
-import { User } from "../models/user.model.js";
+import { User, IUser } from "../models/user.model.js";
 
-export const authenticate = async (req, res, next) => {
+declare global {
+  namespace Express {
+    interface Request {
+      user?: IUser;
+    }
+  }
+}
+
+export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const header = req.headers.authorization;
     if (!header || !header.startsWith("Bearer ")) {
@@ -27,8 +36,8 @@ export const authenticate = async (req, res, next) => {
   }
 };
 
-export const requireRoles = (...roles) => {
-  return (req, res, next) => {
+export const requireRoles = (...roles: string[]) => {
+  return (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ message: "Authentication required" });
     }
@@ -40,4 +49,3 @@ export const requireRoles = (...roles) => {
     next();
   };
 };
-
