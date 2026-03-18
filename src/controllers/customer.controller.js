@@ -534,7 +534,7 @@ export const getOrderById = async (req, res, next) => {
 
     if (!order) {
       const error = new Error("Order not found");
-      error.statusCode = 404;
+      error.statusCode = 404; 
       throw error;
     }
 

@@ -53,6 +53,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
+    avatarUrl: {
+      type: String,
+      default: null
+    },
     settings: {
       businessHours: {
         monday: { isOpen: Boolean, start: String, end: String },
@@ -106,6 +110,10 @@ const userSchema = new mongoose.Schema(
           rushPct: { type: Number, default: 10 },
           specialInkFlat: { type: Number, default: 5.00 }
         }
+      },
+      security: {
+        twoFactorEnabled: { type: Boolean, default: false },
+        lastPasswordChange: { type: Date }
       }
     },
     role: {
@@ -115,7 +123,7 @@ const userSchema = new mongoose.Schema(
       default: UserRoles.CUSTOMER
     },
     defaultShippingAddress: {
-      street: String,
+      street: String, 
       city: String,
       state: String,
       postalCode: String,
