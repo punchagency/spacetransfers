@@ -6,6 +6,7 @@ import crypto from "crypto";
 import { generatePDF } from "pdf-node";
 import { Order } from "../models/order.model.js";
 import { User, UserRoles } from "../models/user.model.js";
+import { Settings } from "../models/settings.model.js";
 
 export const getAdminDashboardStats = async (req, res, next) => {
   try {
@@ -118,7 +119,7 @@ export const getAdminDashboardStats = async (req, res, next) => {
       
       return { customerCharge, partnerPayout, fees, profit };
     };
-
+ 
     const recentOrders = recentOrdersRaw.map(order => {
       const { profit } = calculateOrderFinancials(order);
       return {
@@ -146,6 +147,224 @@ export const getAdminDashboardStats = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  } 
+};
+
+export const getGlobalPricing = async (req, res, next) => {
+  try {
+    let settings = await Settings.findOne({ key: "global_pricing" });
+
+    if (!settings) {
+      // Return defaults if not found in DB
+      return res.status(200).json({
+        baseRatePerSqFt: 24.00,
+        shipping: {
+          standard: 8.99,
+          express: 24.99
+        },
+        taxRatePct: 8.0
+      });
+    }
+
+    res.status(200).json(settings.value);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateGlobalPricing = async (req, res, next) => {
+  try {
+    const { baseRatePerSqFt, shipping, taxRatePct } = req.body;
+
+    const settings = await Settings.findOneAndUpdate(
+      { key: "global_pricing" },
+      {
+        $set: {
+          value: {
+            baseRatePerSqFt,
+            shipping,
+            taxRatePct
+          }
+        }
+      },
+      { upsert: true, new: true, runValidators: true }
+    );
+
+    res.status(200).json(settings.value);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAdminNotificationSettings = async (req, res, next) => {
+  try {
+    let settings = await Settings.findOne({ key: "admin_notifications" });
+
+    if (!settings) {
+      // Default notification settings based on the UI requirements
+      return res.status(200).json({
+        email: {
+          newOrderPlaced: true,
+          lowPartnerBalance: true,
+          printErrorReported: true,
+          orderShipped: true,
+          paymentFailed: true,
+          newPartnerSignup: false,
+          dailySummaryReport: false
+        },
+        sms: {
+          urgentOrders: true,
+          systemCritical: false
+        }
+      });
+    }
+
+    res.status(200).json(settings.value);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminNotificationSettings = async (req, res, next) => {
+  try {
+    const { email, sms } = req.body;
+
+    // Use findOneAndUpdate with upsert to create or update the settings document
+    const settings = await Settings.findOneAndUpdate(
+      { key: "admin_notifications" },
+      {
+        $set: {
+          value: {
+            email: email || {},
+            sms: sms || {}
+          }
+        }
+      },
+      { upsert: true, new: true, runValidators: true }
+    );
+
+    res.status(200).json(settings.value);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAdminSecuritySettings = async (req, res, next) => {
+  try {
+    const adminId = req.user.id;
+    const admin = await User.findById(adminId).select("settings.security updatedAt");
+
+    if (!admin) {
+      const error = new Error("Admin not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const security = admin.settings?.security || {};
+
+    res.status(200).json({
+       twoFactorEnabled: security.twoFactorEnabled || false,
+       lastPasswordChange: security.lastPasswordChange || admin.updatedAt || new Date()
+     });
+   } catch (error) {
+     next(error);
+   }
+ };
+ 
+ export const updateAdminSecuritySettings = async (req, res, next) => {
+   try {
+     const adminId = req.user.id;
+     const { twoFactorEnabled } = req.body;
+ 
+     if (twoFactorEnabled === undefined) {
+       const error = new Error("twoFactorEnabled is required");
+       error.statusCode = 400;
+       throw error;
+     }
+ 
+     const admin = await User.findById(adminId);
+     if (!admin) {
+       const error = new Error("Admin not found");
+       error.statusCode = 404;
+       throw error;
+     }
+ 
+     // Ensure the security object exists
+     if (!admin.settings) admin.settings = {};
+     if (!admin.settings.security) admin.settings.security = {};
+ 
+     const previous2FA = admin.settings.security.twoFactorEnabled;
+     admin.settings.security.twoFactorEnabled = twoFactorEnabled;
+ 
+     // Mark modified to ensure nested update
+     admin.markModified("settings.security");
+     await admin.save();
+ 
+     // Simulation: If 2FA is being enabled for the first time, initiate TOTP setup
+     if (twoFactorEnabled && !previous2FA) {
+       const mockQrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=otpauth://totp/SpaceTransfers:${admin.email}?secret=MOCKSECRET&issuer=SpaceTransfers`;
+       console.log(`[TOTP MOCK] Setup flow initiated for ${admin.email}. QR Code URL sent: ${mockQrCodeUrl}`);
+     }
+ 
+     res.status(200).json({ updated: true });
+   } catch (error) {
+     next(error);
+   }
+ };
+
+export const getAdminProfile = async (req, res, next) => {
+  try {
+    const adminId = req.user.id;
+    const admin = await User.findById(adminId).select("name email phone avatarUrl");
+
+    if (!admin) {
+      const error = new Error("Admin not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({
+      name: admin.name,
+      email: admin.email,
+      phone: admin.phone || null,
+      avatarUrl: admin.avatarUrl || null
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminProfile = async (req, res, next) => {
+  try {
+    const adminId = req.user.id;
+    const { name, phone, avatarUrl } = req.body;
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (phone !== undefined) updateData.phone = phone;
+    if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
+
+    if (Object.keys(updateData).length === 0) {
+      const error = new Error("No update data provided");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const admin = await User.findOneAndUpdate(
+      { _id: adminId, role: UserRoles.ADMIN },
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
+
+    if (!admin) {
+      const error = new Error("Admin not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({ updated: true });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -153,7 +372,7 @@ export const getRevenueChart = async (req, res, next) => {
   try {
     const { range = "30d" } = req.query;
 
-    let startDate;
+    let startDate;                                                                                                                                     
     const now = new Date();
     now.setHours(23, 59, 59, 999); // End of today
 
@@ -191,7 +410,7 @@ export const getRevenueChart = async (req, res, next) => {
       tempDate.setDate(tempDate.getDate() + 1);
     }
 
-    res.json({
+    res.json({  
       points,
       currency: "USD"
     });
@@ -247,16 +466,7 @@ export const listOrders = async (req, res, next) => {
     }
 
     // 4. Cursor-based Pagination
-    if (cursor) {
-      const [cursorTime, cursorId] = cursor.split("_");
-      query.$or = [
-        { createdAt: { $lt: new Date(Number(cursorTime)) } },
-        { 
-          createdAt: new Date(Number(cursorTime)), 
-          _id: { $lt: cursorId } 
-        }
-      ];
-    }
+   
 
     // 5. Fetch Orders
     const pageSize = parseInt(limit);
@@ -274,7 +484,7 @@ export const listOrders = async (req, res, next) => {
       const sheetSize = firstItem.widthIn && firstItem.heightIn 
         ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
         : "N/A";
-
+  
       return {
         id: order._id,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
@@ -1116,6 +1326,45 @@ export const updatePartner = async (req, res, next) => {
 
     res.status(200).json({
       id: partner._id,
+      updated: true
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePartnerStatus = async (req, res, next) => {
+  try {
+    const { partnerId } = req.params;
+    const { status } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(partnerId)) {
+      const error = new Error("Invalid Partner ID");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (!["Active", "Suspended", "Under Review"].includes(status)) {
+      const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const partner = await User.findOneAndUpdate(
+      { _id: partnerId, role: UserRoles.PRINTER },
+      { $set: { status } },
+      { new: true, runValidators: true }
+    ).select("-passwordHash");
+
+    if (!partner) {
+      const error = new Error("Partner not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({
+      id: partner._id,
+      status: partner.status,
       updated: true
     });
   } catch (error) {
