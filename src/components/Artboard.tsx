@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useItemActions,
   useMouseInteractions,
@@ -47,7 +47,6 @@ export default function Artboard({
       autoNestStickers,
       spacing,
       marginSize,
-      showRulers,
     );
   const itemActions = useItemActions(
     items,
@@ -84,6 +83,20 @@ export default function Artboard({
     onDataChange,
     counter,
   );
+
+  useEffect(() => {
+    const initItems = Array.isArray(initialData?.items) ? initialData.items : [];
+    if (initItems.length) {
+      const maxId = initItems.reduce(
+        (m: number, it: any) => Math.max(m, Number(it?.id) || 0),
+        0,
+      );
+      const initCounter =
+        typeof initialData?.counter === "number" ? initialData.counter : 0;
+      const target = Math.max(maxId, initCounter);
+      setCounter((prev) => (prev < target ? target : prev));
+    }
+  }, [initialData]);
 
   const duplicateSelected = () => {
     if (selectedId == null) return;

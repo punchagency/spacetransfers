@@ -165,11 +165,8 @@ export const useArtboardEffects = (
         (item.name || `Item #${item.id}`).replace(/\.[^/.]+$/, "")
       );
 
-      // Get selected item name or default to "Gang Sheet"
-      const selectedItem = selectedId ? items.find(item => item.id === selectedId) : null;
-      const displayName = selectedItem
-        ? (selectedItem.name || `Item #${selectedItem.id}`).replace(/\.[^/.]+$/, "")
-        : 'Instant hot peel';
+      // Default to "Instant hot peel" and do not change when items are selected
+      const displayName = 'Instant hot peel';
 
       onHeaderInfoChange({
         hasItem: items.length > 0,

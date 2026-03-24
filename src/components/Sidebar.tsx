@@ -1,4 +1,3 @@
-
 import { useState } from 'react';
 import {
     MdSettings,
@@ -11,7 +10,8 @@ import {
     MdPerson,
     MdLogout,
     MdKeyboardArrowDown,
-    MdKeyboardArrowUp
+    MdKeyboardArrowUp,
+    MdDeleteOutline
 } from 'react-icons/md';
 
 
@@ -72,9 +72,25 @@ type SidebarProps = {
     onOpenSaveModal: () => void;
     onOpenLoadModal: () => void;
     onOpenAccountModal: () => void;
+    onOpenAuthModal: (view: "login" | "register") => void;
+    onClearArtboard: () => void;
+    onSignOut: () => void;
+    isLoggedIn: boolean;
 };
 
-export default function Sidebar({ isOpen, onClose, settings, onUpdateSetting, onOpenSaveModal, onOpenLoadModal, onOpenAccountModal }: SidebarProps) {
+export default function Sidebar({
+    isOpen,
+    onClose,
+    settings,
+    onUpdateSetting,
+    onOpenSaveModal,
+    onOpenLoadModal,
+    onOpenAccountModal,
+    onOpenAuthModal,
+    onClearArtboard,
+    onSignOut,
+    isLoggedIn
+}: SidebarProps) {
     // State for sections
     const [sections, setSections] = useState({
         canvasDisplay: true,
@@ -127,7 +143,7 @@ export default function Sidebar({ isOpen, onClose, settings, onUpdateSetting, on
                                     icon={MdGridOn}
                                     label="Show Grid"
                                     action={<Toggle checked={settings.showGrid} onChange={() => onUpdateSetting('showGrid', !settings.showGrid)} />}
-                                /> */}
+                                /> */} 
                                 <IconRow
                                     icon={MdStraighten}
                                     label="Show Rulers"
@@ -213,13 +229,34 @@ export default function Sidebar({ isOpen, onClose, settings, onUpdateSetting, on
 
                         {sections.gangSheets && (
                             <div className="space-y-1 mb-4">
-                                <button className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left" onClick={onOpenSaveModal}>
+                                <button
+                                    className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={onOpenSaveModal}
+                                    disabled={!isLoggedIn}
+                                >
                                     <MdSave size={20} />
                                     <span className="text-[12px] font-medium">Save GangSheet</span>
                                 </button>
-                                <button className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left" onClick={onOpenLoadModal}>
+                                <button
+                                    className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={onOpenLoadModal}
+                                    disabled={!isLoggedIn}
+                                >
                                     <MdFolderOpen size={20} />
                                     <span className="text-[12px] font-medium">Load GangSheet</span>
+                                </button>
+                                <button
+                                    className="flex items-center gap-3 w-full py-2 text-red-500 hover:text-red-700 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                    onClick={() => {
+                                        if (window.confirm("Are you sure you want to clear the artboard? This cannot be undone.")) {
+                                            onClearArtboard();
+                                            onClose();
+                                        }
+                                    }}
+                                    disabled={!isLoggedIn}
+                                >
+                                    <MdDeleteOutline size={20} />
+                                    <span className="text-[12px] font-medium">Clear Artboard</span>
                                 </button>
                             </div>
                         )}
@@ -235,14 +272,29 @@ export default function Sidebar({ isOpen, onClose, settings, onUpdateSetting, on
 
                         {sections.account && (
                             <div className="space-y-1 mb-4">
-                                <button onClick={onOpenAccountModal} className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left">
-                                    <MdPerson size={20} />
-                                    <span className="text-[12px] font-medium">Account Settings</span>
-                                </button>
-                                <button className="flex items-center gap-3 w-full py-2 text-red-500 hover:text-red-700 text-left">
-                                    <MdLogout size={20} className="transform rotate-180" />
-                                    <span className="text-[12px] font-medium">Sign Out</span>
-                                </button>
+                                {!isLoggedIn ? (
+                                    <>
+                                        <button onClick={() => { onClose(); onOpenAuthModal("login"); }} className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left">
+                                            <MdPerson size={20} />
+                                            <span className="text-[12px] font-medium">Sign In</span>
+                                        </button>
+                                        <button onClick={() => { onClose(); onOpenAuthModal("register"); }} className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left">
+                                            <MdPerson size={20} />
+                                            <span className="text-[12px] font-medium">Create Account</span>
+                                        </button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <button onClick={() => { onClose(); onOpenAccountModal(); }} className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left">
+                                            <MdPerson size={20} />
+                                            <span className="text-[12px] font-medium">Account Settings</span>
+                                        </button>
+                                        <button onClick={() => { onSignOut(); onClose(); }} className="flex items-center gap-3 w-full py-2 text-red-500 hover:text-red-700 text-left">
+                                            <MdLogout size={20} className="transform rotate-180" />
+                                            <span className="text-[12px] font-medium">Sign Out</span>
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         )}
                     </div>

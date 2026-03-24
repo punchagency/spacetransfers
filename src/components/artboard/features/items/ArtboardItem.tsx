@@ -208,6 +208,7 @@ export default function ArtboardItem({
           <img
             key={index}
             src={item.url}
+            crossOrigin="anonymous"
             alt={`copy-${index}`}
             className={`object-contain cursor-move transition-all duration-300 ease-out rounded-sm ${
               isSelected && item.copies > 1 ? "border border-blue-500" : ""

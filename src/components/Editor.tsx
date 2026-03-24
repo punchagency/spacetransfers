@@ -1,23 +1,89 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import toast from "react-hot-toast";
 import Header from "./Header";
 import Artboard from "./Artboard";
 import Sidebar from "./Sidebar";
 import SaveGangSheetModal from "./modals/SaveGangSheetModal";
 import LoadGangSheetModal from "./modals/LoadGangSheetModal";
 import AccountSettingsModal from "./modals/AccountSettingsModal";
+import AuthModal from "./modals/AuthModal";
 import OrderHistoryModal from "./modals/OrderHistoryModal";
 import OrderDetailsModal from "./modals/OrderDetailsModal";
 import CheckoutModal from "./modals/CheckoutModal";
 import { captureArtboard } from "./artboard/lib/utils";
+import { apiFetch } from "../lib/utils/api";
 
 export default function Editor() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
   const [showAccountModal, setShowAccountModal] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authView, setAuthView] = useState<"login" | "register">("login");
+  const [isSubAccountCreation, setIsSubAccountCreation] = useState(false);
+  const [resetToken, setResetToken] = useState<string | null>(null);
+  const [resetEmail, setResetEmail] = useState<string | null>(null);
   const [showOrderHistoryModal, setShowOrderHistoryModal] = useState(false);
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [user, setUser] = useState<any>(null);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("resetToken");
+      const email = params.get("email");
+      if (token) {
+        setResetToken(token);
+        setResetEmail(email);
+        setAuthView("login");
+        setIsSubAccountCreation(false);
+        setShowAuthModal(true);
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    } catch {
+    }
+  }, []);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (token) {
+      apiFetch("/auth/me")
+        .then((userData) => {
+          setUser(userData);
+          setIsLoggedIn(true);
+        })
+        .catch(() => {
+          localStorage.removeItem("token");
+          setIsLoggedIn(false);
+          setUser(null);
+        });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn || !user?.id) {
+      prevUserIdRef.current = null;
+      return;
+    }
+
+    if (prevUserIdRef.current && prevUserIdRef.current !== user.id) {
+      setArtboardData({ items: [], counter: Date.now() });
+      setLoadedDesignData({ items: [], counter: Date.now() });
+      setCurrentLoadedDesignId(null);
+      setCurrentLoadedDesignString(null);
+      setCurrentLoadedDesignTitle(null);
+      setSavedDesigns([]);
+      setLastAction(null);
+      setDeletedItems({});
+      setCartWarning(null);
+      setShowLoadModal(false);
+      setShowSaveModal(false);
+    }
+
+    prevUserIdRef.current = user.id;
+  }, [isLoggedIn, user?.id]);
   const [cartItems, setCartItems] = useState<any[]>([]);
   const [headerInfo, setHeaderInfo] = useState<{
     hasItem: boolean;
@@ -29,12 +95,11 @@ export default function Editor() {
   }>();
   const [savedDesigns, setSavedDesigns] = useState<
     Array<{
-      id: number;
+      id: string;
       title: string;
       time: string;
       size: string;
       thumbnail: string;
-      data?: any;
     }>
   >([]);
   const [artboardData, setArtboardData] = useState<any>(null);
@@ -46,6 +111,87 @@ export default function Editor() {
   const [deletedItems, setDeletedItems] = useState<Record<number, any>>({});
   const [loadedDesignData, setLoadedDesignData] = useState<any>(null);
   const [cartWarning, setCartWarning] = useState<string | null>(null);
+  const [currentLoadedDesignId, setCurrentLoadedDesignId] = useState<string | null>(null);
+  const [currentLoadedDesignString, setCurrentLoadedDesignString] = useState<string | null>(null);
+  const [currentLoadedDesignTitle, setCurrentLoadedDesignTitle] = useState<string | null>(null);
+  const prevUserIdRef = useRef<string | null>(null);
+
+  const ensureUniqueItemIds = (items: any[]) => {
+    const list = Array.isArray(items) ? items : [];
+    const seen = new Set<number>();
+    let nextId =
+      list.reduce((m: number, it: any) => Math.max(m, Number(it?.id) || 0), 0) +
+      1;
+
+    return list.map((it: any) => {
+      const raw = Number(it?.id);
+      let id = Number.isFinite(raw) ? raw : nextId++;
+
+      if (seen.has(id)) {
+        while (seen.has(nextId)) nextId++;
+        id = nextId++;
+      }
+
+      seen.add(id);
+
+      if (it?.id === id) return it;
+      return { ...it, id };
+    });
+  };
+
+  const updateSavedDesignSnapshot = (designId: string, patch: Partial<{
+    title: string;
+    thumbnail: string;
+    time: string;
+  }>) => {
+    setSavedDesigns((prev) =>
+      prev.map((d) => (d.id === designId ? { ...d, ...patch } : d)),
+    );
+  };
+
+  const getDesignSnapshot = (items: any[]) => {
+    if (!Array.isArray(items)) return "[]";
+    return JSON.stringify(items.map((it: any) => ({
+      assetId: it.originalUrl || it.assetId || it.url,
+      widthIn: Math.round((it.widthIn || 0) * 1000) / 1000,
+      heightIn: Math.round((it.heightIn || 0) * 1000) / 1000,
+      posX: Math.round((it.posX || 0) * 1000) / 1000,
+      posY: Math.round((it.posY || 0) * 1000) / 1000,
+      rotation: it.rotation || 0,
+      copies: it.copies || 1,
+      linked: Boolean(it.linked),
+    })));
+  };
+
+  const hasUnsavedChanges = currentLoadedDesignId != null &&
+    getDesignSnapshot(artboardData?.items || []) !== currentLoadedDesignString;
+
+  const formatDesignTime = (iso: string) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString();
+  };
+
+  const fetchDesigns = async (searchQuery?: string) => {
+    if (!isLoggedIn) return;
+    try {
+      const endpoint = searchQuery
+        ? `/customer/designs/search?q=${encodeURIComponent(searchQuery)}`
+        : "/customer/designs";
+      const res = await apiFetch(endpoint);
+      const designs = Array.isArray(res?.designs) ? res.designs : [];
+      setSavedDesigns(
+        designs.map((d: any) => ({
+          id: String(d.id),
+          title: d.title,
+          time: formatDesignTime(d.updatedAt || d.createdAt),
+          size: d.size,
+          thumbnail: d.thumbnail,
+        }))
+      );
+    } catch {
+    }
+  };
 
   // Settings State lifted from Sidebar
   const [settings, setSettings] = useState({
@@ -63,6 +209,12 @@ export default function Editor() {
   };
 
   const handleAddGangSheetToCart = async () => {
+    if (!isLoggedIn) {
+      setAuthView("register");
+      setShowAuthModal(true);
+      return;
+    }
+
     try {
       // Prevent adding duplicate gang sheet to cart
       const existingGangSheet = cartItems.find(
@@ -88,8 +240,7 @@ export default function Editor() {
         price: headerInfo?.price || 0,
         widthIn: headerInfo?.widthIn || 24,
         heightIn: headerInfo?.heightIn || 19.5,
-        size: `${(headerInfo?.widthIn || 24).toFixed(1)}" × ${(
-          headerInfo?.heightIn || 19.5
+        size: `${(headerInfo?.widthIn || 24).toFixed(1)}" × ${(headerInfo?.heightIn || 19.5
         ).toFixed(1)}"`,
         copies: 1,
         color: "N/A",
@@ -125,12 +276,37 @@ export default function Editor() {
   return (
     <div className="relative flex flex-col h-screen w-screen bg-white">
       <Header
-        info={headerInfo}
+        info={headerInfo ? { ...headerInfo, name: currentLoadedDesignTitle || headerInfo.name } : undefined}
         canRedo={!!lastAction}
         onMenuClick={() => setIsSidebarOpen(true)}
         onCartClick={() => setShowCheckoutModal(true)}
         cartCount={cartItems.length}
         onAddGangSheetToCart={handleAddGangSheetToCart}
+        isLoggedIn={isLoggedIn}
+        canSaveLoaded={hasUnsavedChanges}
+        canRenameDesign={Boolean(isLoggedIn && currentLoadedDesignId)}
+        onRenameDesign={async (newTitle) => {
+          if (!currentLoadedDesignId) return;
+          try {
+            await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ title: newTitle }),
+            });
+            setCurrentLoadedDesignTitle(newTitle);
+            updateSavedDesignSnapshot(currentLoadedDesignId, {
+              title: newTitle,
+              time: formatDesignTime(new Date().toISOString()),
+            });
+            toast.success(`Renamed to "${newTitle}" gangsheet`);
+            fetchDesigns();
+          } catch {
+            toast.error("Failed to rename gangsheet");
+          }
+        }}
+        onSignInClick={() => {
+          setAuthView("login");
+          setShowAuthModal(true);
+        }}
         onRedo={() => {
           if (!lastAction) return;
           const sourceItems =
@@ -208,6 +384,76 @@ export default function Editor() {
           setLoadedDesignData(nextData);
           setLastAction(null);
         }}
+        onSaveLoaded={
+          currentLoadedDesignId
+            ? async () => {
+              const items = Array.isArray(artboardData?.items)
+                ? artboardData.items
+                : Array.isArray(loadedDesignData?.items)
+                  ? loadedDesignData.items
+                  : [];
+              const normalizedItems = ensureUniqueItemIds(items);
+              const mappedItems = normalizedItems.map((it: any) => ({
+                id: it.id,
+                assetId: it.originalUrl || it.assetId || it.url,
+                widthIn: it.widthIn,
+                heightIn: it.heightIn,
+                posX: it.posX,
+                posY: it.posY,
+                rotation: it.rotation || 0,
+                copies: it.copies || 1,
+                linked: Boolean(it.linked),
+              }));
+
+              try {
+                let thumbnail;
+                try {
+                  thumbnail = await captureArtboard();
+                } catch (err) {
+                  console.warn("Could not capture thumbnail:", err);
+                }
+
+                await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    ...(thumbnail ? { thumbnail } : {}),
+                    artboardData: { items: mappedItems },
+                  }),
+                });
+                toast.success(
+                  `Saved "${(currentLoadedDesignTitle || "Gang Sheet").trim()}"`,
+                );
+
+                // Keep the current design loaded and update snapshot baseline
+                const newSnapshot = getDesignSnapshot(normalizedItems);
+                setCurrentLoadedDesignString(newSnapshot);
+                setLoadedDesignData({ items: normalizedItems as any[], counter: Date.now() });
+                setArtboardData({ items: normalizedItems as any[], counter: Date.now() });
+
+                // Update the designs list to reflect the new snapshot
+                if (thumbnail) {
+                  updateSavedDesignSnapshot(currentLoadedDesignId, {
+                    thumbnail,
+                    time: formatDesignTime(new Date().toISOString()),
+                  });
+                } else {
+                  updateSavedDesignSnapshot(currentLoadedDesignId, {
+                    time: formatDesignTime(new Date().toISOString()),
+                  });
+                }
+                fetchDesigns();
+
+                setCurrentLoadedDesignId(null);
+                setCurrentLoadedDesignString(null);
+                setCurrentLoadedDesignTitle(null);
+                setArtboardData({ items: [], counter: Date.now() });
+                setLoadedDesignData({ items: [], counter: Date.now() });
+              } catch (err) {
+                toast.error("Failed to save gangsheet");
+              }
+            }
+            : undefined
+        }
       />
       {cartWarning && (
         <div className="absolute mt-10 top-10 left-1/2 -translate-x-1/2 z-50">
@@ -262,10 +508,23 @@ export default function Editor() {
         settings={settings}
         onUpdateSetting={updateSetting}
         onOpenSaveModal={() => {
+          if (!isLoggedIn) {
+            setAuthView("login");
+            setShowAuthModal(true);
+            setIsSidebarOpen(false);
+            return;
+          }
           setShowSaveModal(true);
           setIsSidebarOpen(false);
         }}
         onOpenLoadModal={() => {
+          if (!isLoggedIn) {
+            setAuthView("login");
+            setShowAuthModal(true);
+            setIsSidebarOpen(false);
+            return;
+          }
+          fetchDesigns();
           setShowLoadModal(true);
           setIsSidebarOpen(false);
         }}
@@ -273,59 +532,171 @@ export default function Editor() {
           setShowAccountModal(true);
           setIsSidebarOpen(false);
         }}
+        onOpenAuthModal={(view) => {
+          setAuthView(view);
+          setShowAuthModal(true);
+          setIsSidebarOpen(false);
+        }}
+        onClearArtboard={() => {
+          setArtboardData({ items: [], counter: Date.now() });
+          setLoadedDesignData({ items: [], counter: Date.now() });
+          setCurrentLoadedDesignId(null);
+          setCurrentLoadedDesignString(null);
+          setCurrentLoadedDesignTitle(null);
+          setLastAction(null);
+        }}
+        isLoggedIn={isLoggedIn}
+        onSignOut={() => {
+          setIsLoggedIn(false);
+          setUser(null);
+          localStorage.removeItem("token");
+          toast.success("Successfully signed out");
+        }}
       />
       <SaveGangSheetModal
         isOpen={showSaveModal}
         onClose={() => setShowSaveModal(false)}
         artboardData={artboardData}
-        onSave={(title: string, thumbnail: string, data: any) => {
-          const newDesign = {
-            id: Date.now(),
-            title,
-            time: "Just now",
-            size: '24" × 19.5"',
-            thumbnail,
-            data,
-          };
-          setSavedDesigns((prev) => [newDesign, ...prev]);
-          setShowSaveModal(false);
+        initialTitle={currentLoadedDesignTitle}
+        onSave={async (title: string, thumbnail: string, data: any) => {
+          if (!isLoggedIn) {
+            setAuthView("login");
+            setShowAuthModal(true);
+            return;
+          }
+
+          const widthIn = headerInfo?.widthIn || 24;
+          const heightIn = headerInfo?.heightIn || 19.5;
+          const areaSqFt = headerInfo?.areaSf ?? (widthIn * heightIn) / 144;
+          const price = headerInfo?.price ?? 0;
+
+          const items = Array.isArray(data?.items) ? data.items : [];
+          const normalizedItems = ensureUniqueItemIds(items);
+          const mappedItems = normalizedItems.map((it: any) => ({
+            id: it.id,
+            assetId: it.originalUrl || it.assetId || it.url,
+            widthIn: it.widthIn,
+            heightIn: it.heightIn,
+            posX: it.posX,
+            posY: it.posY,
+            rotation: it.rotation || 0,
+            copies: it.copies || 1,
+            linked: Boolean(it.linked),
+          }));
+
+          try {
+            if (currentLoadedDesignId) {
+              await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  title,
+                  thumbnail,
+                  artboardData: { items: mappedItems },
+                }),
+              });
+              setCurrentLoadedDesignTitle(title);
+              setCurrentLoadedDesignString(getDesignSnapshot(normalizedItems));
+              toast.success(`Saved "${title.trim() || "Gang Sheet"}"`);
+              updateSavedDesignSnapshot(currentLoadedDesignId, {
+                title,
+                thumbnail,
+                time: formatDesignTime(new Date().toISOString()),
+              });
+              setCurrentLoadedDesignId(null);
+              setCurrentLoadedDesignString(null);
+              setCurrentLoadedDesignTitle(null);
+              setArtboardData({ items: [], counter: Date.now() });
+              setLoadedDesignData({ items: [], counter: Date.now() });
+            } else {
+              await apiFetch("/customer/designs", {
+                method: "POST",
+                body: JSON.stringify({
+                  title,
+                  thumbnail,
+                  size: { widthIn, heightIn },
+                  pricing: { areaSqFt, price },
+                  artboardData: { items: mappedItems },
+                }),
+              });
+              toast.success("Design saved");
+            }
+            setShowSaveModal(false);
+            fetchDesigns();
+          } catch {
+            toast.error(
+              currentLoadedDesignId
+                ? "Failed to update gangsheet"
+                : "Failed to save gangsheet",
+            );
+          }
         }}
       />
       <LoadGangSheetModal
         isOpen={showLoadModal}
-        onClose={() => setShowLoadModal(false)}
-        designs={savedDesigns}
-        onLoad={(id) => {
-          const design = savedDesigns.find((d) => d.id === id);
-          if (design && design.data) {
-            setLoadedDesignData(design.data);
-            setShowLoadModal(false);
-          }
+        onClose={() => {
+          setShowLoadModal(false);
+          fetchDesigns(); // reset list on close
         }}
-        onRename={(id, newTitle) => {
+        designs={savedDesigns}
+        onSearch={(term: string) => fetchDesigns(term)}
+        onLoad={async (id) => {
+          const res = await apiFetch(`/customer/designs/${id}`);
+          const items = Array.isArray(res?.artboardData?.items)
+            ? res.artboardData.items
+            : [];
+
+          const mappedItems = ensureUniqueItemIds(
+            items.map((it: any) => ({
+            id: it.id,
+            url: it.assetId,
+            rotation: it.rotation || 0,
+            locked: false,
+            expanded: false,
+            flipped: false,
+            autoCrop: false,
+            copies: it.copies || 1,
+            widthIn: it.widthIn,
+            heightIn: it.heightIn,
+            posX: it.posX,
+            posY: it.posY,
+            linked: Boolean(it.linked),
+            price: 0,
+          })),
+          );
+
+          setLoadedDesignData({ items: mappedItems, counter: Date.now() });
+          setCurrentLoadedDesignId(id);
+          setCurrentLoadedDesignString(getDesignSnapshot(mappedItems));
+          setCurrentLoadedDesignTitle(res?.title || null);
+          setShowLoadModal(false);
+        }}
+        onRename={async (id, newTitle) => {
+          await apiFetch(`/customer/designs/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ title: newTitle }),
+          });
           setSavedDesigns((prev) =>
             prev.map((d) => (d.id === id ? { ...d, title: newTitle } : d))
           );
         }}
-        onDuplicate={(id) => {
+        onDuplicate={async (id) => {
           const design = savedDesigns.find((d) => d.id === id);
-          if (design) {
-            const newDesign = {
-              ...design,
-              id: Date.now(),
-              title: `${design.title} (Copy)`,
-              time: "Just now",
-            };
-            setSavedDesigns((prev) => [newDesign, ...prev]);
-          }
+          const newTitle = design ? `${design.title} (Copy)` : "Untitled (Copy)";
+          await apiFetch(`/customer/designs/${id}/duplicate`, {
+            method: "POST",
+            body: JSON.stringify({ newTitle }),
+          });
+          fetchDesigns();
         }}
-        onDelete={(id) => {
+        onDelete={async (id) => {
+          await apiFetch(`/customer/designs/${id}`, { method: "DELETE" });
           setSavedDesigns((prev) => prev.filter((d) => d.id !== id));
         }}
       />
       <AccountSettingsModal
         isOpen={showAccountModal}
         onClose={() => setShowAccountModal(false)}
+        user={user}
         onOpenOrderHistory={() => {
           setShowAccountModal(false);
           setShowOrderHistoryModal(true);
@@ -333,6 +704,24 @@ export default function Editor() {
         onViewOrderDetails={() => {
           setShowAccountModal(false);
           setShowOrderDetailsModal(true);
+        }}
+        onSignOut={() => {
+          setIsLoggedIn(false);
+          setUser(null);
+          localStorage.removeItem("token");
+          toast.success("Successfully signed out");
+          setShowAccountModal(false);
+        }}
+        onAuthSuccess={(userData) => {
+          setIsLoggedIn(true);
+          setUser(userData);
+          setShowAccountModal(false);
+        }}
+        onAddAccount={() => {
+          setIsSubAccountCreation(true);
+          setAuthView("register");
+          setShowAuthModal(true);
+          setShowAccountModal(false);
         }}
       />
       <OrderHistoryModal
@@ -351,6 +740,34 @@ export default function Editor() {
         isOpen={showCheckoutModal}
         onClose={() => setShowCheckoutModal(false)}
         cartItems={cartItems}
+      />
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => {
+          setShowAuthModal(false);
+          setIsSubAccountCreation(false);
+          setResetToken(null);
+          setResetEmail(null);
+        }}
+        initialView={authView}
+        isSubAccountCreation={isSubAccountCreation}
+        resetToken={resetToken}
+        resetEmail={resetEmail}
+        onAuthSuccess={(user) => {
+          setIsLoggedIn(true);
+          setUser(user);
+          setShowAuthModal(false);
+          setIsSubAccountCreation(false);
+          setResetToken(null);
+          setResetEmail(null);
+        }}
+        onSubAccountCreated={() => {
+          setShowAuthModal(false);
+          setIsSubAccountCreation(false);
+          setResetToken(null);
+          setResetEmail(null);
+          setShowAccountModal(true);
+        }}
       />
     </div>
   );

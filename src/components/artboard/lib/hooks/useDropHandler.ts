@@ -4,6 +4,7 @@ import { animateBounce, animateShake, animateItemPosition } from "../utils";
 import { calculateGridLayout } from "../utils";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
+import { apiFetch } from "../../../../lib/utils/api";
 
 export const useDropHandler = (
   items: ArtboardItem[],
@@ -15,8 +16,7 @@ export const useDropHandler = (
   zoom: number,
   autoNestStickers: boolean,
   spacing: number,
-  marginSize: number,
-  showRulers: boolean
+  marginSize: number
 ) => {
   const [isDragging, setIsDragging] = useState(false);
   const [lowDpiCount, setLowDpiCount] = useState(0);
@@ -36,7 +36,9 @@ export const useDropHandler = (
     const dropped = Array.from(e.dataTransfer.files || []).filter((f) =>
       f.type.startsWith("image/")
     );
-    if (dropped.length === 0) return;
+    const jsonData = e.dataTransfer.getData("application/json") || e.dataTransfer.getData("text/plain");
+    const droppedUrl = dropped.length === 0 ? jsonData : "";
+    if (dropped.length === 0 && !droppedUrl) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const zoomVal = zoom || 1;
@@ -131,54 +133,141 @@ export const useDropHandler = (
 
     const start = counter + 1;
     let lowDpiImages = 0;
-    const created = await Promise.all(
-      dropped.map(async (file, idx) => {
-        const [{ dpiX, dpiY }, { widthPx, heightPx, url }] = await Promise.all([
-          readDPI(file),
-          loadImageSize(file),
-        ]);
-        const dpi = Math.max(1, Math.round(dpiX || dpiY || 150));
-        if (dpi < 300) lowDpiImages++;
-        const widthIn = widthPx / dpi;
-        const heightIn = heightPx / dpi;
 
-        const baseItem: ArtboardItem = {
-          id: start + idx,
-          url,
-          rotation: 0,
-          locked: false,
-          expanded: false,
-          flipped: false,
-          autoCrop: true,
-          copies: 1,
-          widthIn,
-          heightIn,
-          posX: dropX - widthIn / 2,
-          posY: dropY - heightIn / 2,
-          linked: true,
-          price: 12.34,
-          name: file.name,
-          gravityActive: false,
-          isDropping: true,
-          originalUrl: url,
-          originalWidthIn: widthIn,
-          originalHeightIn: heightIn,
-        };
+    const createItemFromUrl = async (url: string, idx: number, name?: string, dpiOverride?: number) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      const loaded = await new Promise<{ widthPx: number; heightPx: number }>((resolve, reject) => {
+        img.onload = () => resolve({ widthPx: img.naturalWidth, heightPx: img.naturalHeight });
+        img.onerror = reject;
+        img.src = url;
+      });
 
-        const cropped = await cropImage(url, dpi);
-        if (cropped) {
-          const deltaX = (widthIn - cropped.widthIn) / 2;
-          const deltaY = (heightIn - cropped.heightIn) / 2;
-          baseItem.url = cropped.url;
-          baseItem.widthIn = cropped.widthIn;
-          baseItem.heightIn = cropped.heightIn;
-          baseItem.posX = baseItem.posX + deltaX;
-          baseItem.posY = baseItem.posY + deltaY;
-        }
+      const dpi = Math.max(1, Math.round(dpiOverride || 300));
+      const widthIn = loaded.widthPx / dpi;
+      const heightIn = loaded.heightPx / dpi;
 
-        return baseItem;
-      })
-    );
+      const baseItem: ArtboardItem = {
+        id: start + idx,
+        url,
+        rotation: 0,
+        locked: false,
+        expanded: false,
+        flipped: false,
+        autoCrop: true,
+        copies: 1,
+        widthIn,
+        heightIn,
+        posX: dropX - widthIn / 2,
+        posY: dropY - heightIn / 2,
+        linked: true,
+        price: 12.34,
+        name,
+        gravityActive: false,
+        isDropping: true,
+        originalUrl: url,
+        originalWidthIn: widthIn,
+        originalHeightIn: heightIn,
+      };
+
+      const cropped = await cropImage(url, dpi);
+      if (cropped) {
+        const deltaX = (widthIn - cropped.widthIn) / 2;
+        const deltaY = (heightIn - cropped.heightIn) / 2;
+        baseItem.url = cropped.url;
+        baseItem.widthIn = cropped.widthIn;
+        baseItem.heightIn = cropped.heightIn;
+        baseItem.posX = baseItem.posX + deltaX;
+        baseItem.posY = baseItem.posY + deltaY;
+      }
+
+      return baseItem;
+    };
+
+    let created: ArtboardItem[] = [];
+
+    if (dropped.length > 0) {
+      created = await Promise.all(
+        dropped.map(async (file, idx) => {
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const [dpiInfo, localInfo] = await Promise.all([
+            readDPI(file),
+            loadImageSize(file),
+          ]);
+
+          let assetResponse: any = null;
+          try {
+            assetResponse = await apiFetch("/customer/assets", {
+              method: "POST",
+              body: formData,
+            });
+          } catch {
+            assetResponse = null;
+          }
+
+          const dpi = Math.max(
+            1,
+            Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 150)
+          );
+          if (dpi < 300) lowDpiImages++;
+
+          const serverUrl = assetResponse?.url || localInfo.url;
+          const widthPx = assetResponse?.widthPx || localInfo.widthPx;
+          const heightPx = assetResponse?.heightPx || localInfo.heightPx;
+
+          const widthIn = widthPx / dpi;
+          const heightIn = heightPx / dpi;
+
+          const baseItem: ArtboardItem = {
+            id: start + idx,
+            url: serverUrl,
+            rotation: 0,
+            locked: false,
+            expanded: false,
+            flipped: false,
+            autoCrop: true,
+            copies: 1,
+            widthIn,
+            heightIn,
+            posX: dropX - widthIn / 2,
+            posY: dropY - heightIn / 2,
+            linked: true,
+            price: 12.34,
+            name: file.name,
+            gravityActive: false,
+            isDropping: true,
+            originalUrl: serverUrl,
+            originalWidthIn: widthIn,
+            originalHeightIn: heightIn,
+          };
+
+          const cropped = await cropImage(serverUrl, dpi);
+          if (cropped) {
+            const deltaX = (widthIn - cropped.widthIn) / 2;
+            const deltaY = (heightIn - cropped.heightIn) / 2;
+            baseItem.url = cropped.url;
+            baseItem.widthIn = cropped.widthIn;
+            baseItem.heightIn = cropped.heightIn;
+            baseItem.posX = baseItem.posX + deltaX;
+            baseItem.posY = baseItem.posY + deltaY;
+          }
+
+          return baseItem;
+        })
+      );
+    } else {
+      let asset: any = null;
+      try {
+        asset = JSON.parse(droppedUrl);
+      } catch {
+      }
+
+      const url = asset?.url || droppedUrl;
+      const dpi = asset?.dpi;
+      created = [await createItemFromUrl(url, 0, asset?.originalFilename, dpi)];
+    }
 
     if (lowDpiImages > 0) {
       setLowDpiCount(lowDpiImages);
