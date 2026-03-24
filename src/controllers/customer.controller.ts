@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { User, UserRoles } from "../models/user.model.js";
+import { User } from "../models/user.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
@@ -77,7 +77,7 @@ export const getOrderTracking = async (req: Request, res: Response, next: NextFu
       if (env.nodeEnv !== "production") {
         trackingNumber = "1Z999AA10123456784";
         carrier = "UPS";
-        
+
         if (events.length === 0) {
           events = [
             {
@@ -285,6 +285,7 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
     });
 
     await design.save();
+    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
 
     res.status(201).json({
       id: design.id,
@@ -297,9 +298,66 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+export const getArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await User.findById(req.user?.id).select("artboardDraft");
+    res.json({ draft: user?.artboardDraft || null });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const upsertArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { draft } = req.body || {};
+    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: draft || null } });
+    res.json({ message: "Draft saved" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const clearArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
+    res.json({ message: "Draft cleared" });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const listDesigns = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const designs = await Design.find({ user: req.user?.id })
+      .select("title size thumbnail createdAt updatedAt")
+      .sort({ updatedAt: -1 });
+
+    const formattedDesigns = designs.map((design) => ({
+      id: design.id,
+      title: design.title,
+      size: `${design.size.widthIn}" x ${design.size.heightIn}"`,
+      thumbnail: design.thumbnail,
+      createdAt: design.createdAt,
+      updatedAt: design.updatedAt
+    }));
+
+    res.json({ designs: formattedDesigns });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const searchDesigns = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { q } = req.query;
+    if (!q || typeof q !== "string") {
+      return res.json({ designs: [] });
+    }
+
+    const designs = await Design.find({
+      user: req.user?.id,
+      title: { $regex: q, $options: "i" }
+    })
       .select("title size thumbnail createdAt updatedAt")
       .sort({ updatedAt: -1 });
 
@@ -534,7 +592,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     if (!order) {
       const error = new Error("Order not found") as CustomError;
-      error.statusCode = 404; 
+      error.statusCode = 404;
       throw error;
     }
 
@@ -551,7 +609,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       if (item.widthIn && item.heightIn) {
         description = `${item.widthIn}" x ${item.heightIn}"`;
       }
-      
+
       return {
         name: item.name || "Unknown Item",
         description: description,
@@ -867,7 +925,7 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
       printBackground: true
     };
 
-        const result = await generatePDF({
+    const result = await generatePDF({
       html: htmlTemplate,
       data: data,
       buffer: true,

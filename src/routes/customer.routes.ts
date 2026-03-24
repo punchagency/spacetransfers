@@ -1,24 +1,28 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { 
-  createOrder, 
-  listOrders, 
-  getOrderById, 
-  uploadAsset, 
-  updateAccount, 
-  logout, 
-  listAssets, 
-  createDesign, 
-  listDesigns, 
-  getDesignById, 
-  deleteDesign, 
-  updateDesign, 
-  duplicateDesign, 
-  getCartQuote, 
-  downloadInvoice, 
-  reorder, 
-  getOrderTracking 
+import {
+  createOrder,
+  listOrders,
+  getOrderById,
+  uploadAsset,
+  updateAccount,
+  logout,
+  listAssets,
+  createDesign,
+  listDesigns,
+  getDesignById,
+  deleteDesign,
+  updateDesign,
+  duplicateDesign,
+  searchDesigns,
+  getArtboardDraft,
+  upsertArtboardDraft,
+  clearArtboardDraft,
+  getCartQuote,
+  downloadInvoice,
+  reorder,
+  getOrderTracking
 } from "../controllers/customer.controller.js";
 import { upload } from "../middleware/upload.js";
 
@@ -36,8 +40,12 @@ router.get("/orders/:orderId/tracking", getOrderTracking);
 router.post("/orders/:orderId/reorder", reorder);
 router.post("/assets", upload.single("file"), uploadAsset);
 router.get("/assets", listAssets);
+router.get("/artboard-draft", getArtboardDraft);
+router.put("/artboard-draft", upsertArtboardDraft);
+router.delete("/artboard-draft", clearArtboardDraft);
 router.post("/designs", createDesign);
 router.get("/designs", listDesigns);
+router.get("/designs/search", searchDesigns);
 router.get("/designs/:designId", getDesignById);
 router.patch("/designs/:designId", updateDesign);
 router.delete("/designs/:designId", deleteDesign);

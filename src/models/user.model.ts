@@ -23,6 +23,9 @@ export interface IUser extends Document {
   rating: number;
   phone?: string;
   avatarUrl?: string | null;
+  resetPasswordTokenHash?: string | null;
+  resetPasswordExpiresAt?: Date | null;
+  artboardDraft?: any;
   settings: {
     businessHours?: {
       monday?: { isOpen: boolean; start: string; end: string };
@@ -81,6 +84,8 @@ export interface IUser extends Document {
     };
   };
   role: UserRole;
+  parentAccount?: mongoose.Types.ObjectId;
+  isSubAccount: boolean;
   defaultShippingAddress?: {
     street: string;
     city: string;
@@ -141,6 +146,18 @@ const userSchema = new Schema<IUser>(
     },
     avatarUrl: {
       type: String,
+      default: null
+    },
+    resetPasswordTokenHash: {
+      type: String,
+      default: null
+    },
+    resetPasswordExpiresAt: {
+      type: Date,
+      default: null
+    },
+    artboardDraft: {
+      type: Schema.Types.Mixed,
       default: null
     },
     settings: {
@@ -207,6 +224,15 @@ const userSchema = new Schema<IUser>(
       enum: Object.values(UserRole),
       required: true,
       default: UserRole.CUSTOMER
+    },
+    parentAccount: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null
+    },
+    isSubAccount: {
+      type: Boolean,
+      default: false
     },
     defaultShippingAddress: {
       street: String,

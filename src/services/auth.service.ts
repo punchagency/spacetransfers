@@ -1,6 +1,9 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
+import crypto from "crypto";
+import { env } from "../config/env.js";
+import nodemailer from "nodemailer";
 
 interface RegisterParams {
   name: string;
@@ -18,6 +21,8 @@ interface UserResponse {
   role: string;
   companyName?: string;
   phone?: string;
+  isSubAccount?: boolean;
+  parentAccount?: string | null;
 }
 
 interface AuthResponse {
@@ -95,6 +100,199 @@ export const registerUser = async ({
   };
 };
 
+export const getCurrentUser = async (userId: string): Promise<UserResponse> => {
+  const user = await User.findById(userId);
+  if (!user) {
+    const error = new Error("User not found") as any;
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const userResponse: UserResponse = {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role
+  };
+
+  if (user.companyName) userResponse.companyName = user.companyName;
+  if (user.phone) userResponse.phone = user.phone;
+
+  return userResponse;
+};
+
+export const listSubAccounts = async (userId: string): Promise<UserResponse[]> => {
+  const currentUser = await User.findById(userId);
+  if (!currentUser) {
+    const error = new Error("User not found") as any;
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const parentId = currentUser.isSubAccount
+    ? currentUser.parentAccount
+    : currentUser._id;
+
+  if (!parentId) {
+    const error = new Error("Account relationship is invalid") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const linkedUsers = await User.find({
+    $or: [{ _id: parentId }, { parentAccount: parentId }],
+  }).select("name email role companyName phone parentAccount isSubAccount");
+
+  const currentId = currentUser._id.toString();
+
+  return linkedUsers
+    .filter((u) => u._id.toString() !== currentId)
+    .map((user) => ({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      companyName: user.companyName,
+      phone: user.phone,
+      isSubAccount: Boolean((user as any).isSubAccount),
+      parentAccount: (user as any).parentAccount ? String((user as any).parentAccount) : null,
+    }));
+};
+
+export const createSubAccount = async (parentId: string, subAccountData: RegisterParams): Promise<AuthResponse> => {
+  const parent = await User.findById(parentId);
+  if (!parent) {
+    const error = new Error("Parent user not found") as any;
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const actualParentId = parent.isSubAccount ? parent.parentAccount : parent._id;
+  if (!actualParentId) {
+    const error = new Error("Parent account relationship is invalid") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const linkedCount = await User.countDocuments({
+    $or: [{ _id: actualParentId }, { parentAccount: actualParentId }]
+  });
+  if (linkedCount >= 5) {
+    const error = new Error("Linked accounts limit reached (max 5).") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const existing = await User.findOne({ email: subAccountData.email });
+  if (existing) {
+    const error = new Error("Email already in use") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (subAccountData.password.length < 8) {
+    const error = new Error("Password must be at least 8 characters long") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const passwordHash = await hashPassword(subAccountData.password);
+
+  const subAccount = await User.create({
+    name: subAccountData.name,
+    email: subAccountData.email,
+    passwordHash,
+    role: UserRoles.CUSTOMER,
+    companyName: subAccountData.companyName,
+    phone: subAccountData.phone,
+    parentAccount: actualParentId,
+    isSubAccount: true
+  });
+
+  const token = signJwt({ sub: subAccount.id, role: subAccount.role });
+
+  return {
+    user: {
+      id: subAccount.id,
+      name: subAccount.name,
+      email: subAccount.email,
+      role: subAccount.role,
+      companyName: subAccount.companyName
+    },
+    token
+  };
+};
+
+export const deleteSubAccount = async (actorUserId: string, subAccountId: string): Promise<void> => {
+  const actor = await User.findById(actorUserId);
+  if (!actor) {
+    const error = new Error("User not found") as any;
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (actor.isSubAccount) {
+    const error = new Error("Only the main account can delete sub-accounts.") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const sub = await User.findById(subAccountId);
+  if (!sub) {
+    const error = new Error("Sub-account not found") as any;
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (!sub.isSubAccount) {
+    const error = new Error("Only sub-accounts can be deleted via this endpoint.") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!sub.parentAccount || sub.parentAccount.toString() !== actor._id.toString()) {
+    const error = new Error("Forbidden") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+
+  await User.deleteOne({ _id: sub._id });
+};
+
+export const switchSubAccount = async (currentUserId: string, targetUserId: string): Promise<AuthResponse> => {
+  const currentUser = await User.findById(currentUserId);
+  const targetUser = await User.findById(targetUserId);
+
+  if (!currentUser || !targetUser) {
+    const error = new Error("User not found") as any;
+    error.statusCode = 404;
+    throw error;
+  }
+
+  // Check if they are related
+  const currentParentId = currentUser.isSubAccount ? currentUser.parentAccount?.toString() : currentUser.id.toString();
+  const targetParentId = targetUser.isSubAccount ? targetUser.parentAccount?.toString() : targetUser.id.toString();
+
+  if (currentParentId !== targetParentId) {
+    const error = new Error("Unauthorized to switch to this account") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const token = signJwt({ sub: targetUser.id, role: targetUser.role });
+
+  return {
+    user: {
+      id: targetUser.id,
+      name: targetUser.name,
+      email: targetUser.email,
+      role: targetUser.role,
+      companyName: targetUser.companyName
+    },
+    token
+  };
+};
+
 export const loginUser = async ({ email, password }: Partial<RegisterParams>): Promise<AuthResponse> => {
   const user = await User.findOne({ email });
   if (!user) {
@@ -122,4 +320,108 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
     },
     token
   };
+};
+
+export const requestPasswordReset = async (email: string): Promise<{ resetToken?: string }> => {
+  const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+  if (!user) {
+    return {};
+  }
+
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+  user.resetPasswordTokenHash = tokenHash;
+  user.resetPasswordExpiresAt = new Date(Date.now() + 1000 * 60 * 15);
+  await user.save();
+
+  const resetUrl = `${env.appUrl.replace(/\/$/, "")}/?resetToken=${encodeURIComponent(
+    rawToken
+  )}&email=${encodeURIComponent(user.email)}`;
+
+  const hasSmtp =
+    Boolean(env.smtpHost) &&
+    Boolean(env.smtpPort) &&
+    Boolean(env.smtpUser) &&
+    Boolean(env.smtpPass) &&
+    Boolean(env.smtpFrom);
+
+  if (hasSmtp) {
+    const transporter = nodemailer.createTransport({
+      host: env.smtpHost,
+      port: env.smtpPort!,
+      secure: env.smtpSecure ?? env.smtpPort === 465,
+      auth: {
+        user: env.smtpUser,
+        pass: env.smtpPass
+      }
+    });
+
+    await transporter.sendMail({
+      from: env.smtpFrom,
+      to: user.email,
+      subject: "Reset your Space Transfers password",
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+          <h2 style="margin: 0 0 12px 0;">Reset your password</h2>
+          <p style="margin: 0 0 12px 0;">We received a request to reset your password.</p>
+          <p style="margin: 0 0 16px 0;">
+            <a href="${resetUrl}" style="display: inline-block; padding: 10px 14px; background: #0f172a; color: #ffffff; text-decoration: none; border-radius: 10px;">
+              Reset Password
+            </a>
+          </p>
+          <p style="margin: 0 0 12px 0; font-size: 12px; color: #6b7280;">
+            This link expires in 15 minutes. If you didn’t request this, you can ignore this email.
+          </p>
+        </div>
+      `
+    });
+
+    return {};
+  }
+
+  if (env.nodeEnv !== "production") {
+    return { resetToken: rawToken };
+  }
+
+  return {};
+};
+
+export const resetPassword = async ({
+  token,
+  newPassword
+}: {
+  token: string;
+  newPassword: string;
+}): Promise<void> => {
+  if (newPassword.length < 8) {
+    const error = new Error("Password must be at least 8 characters long") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+  const user = await User.findOne({
+    resetPasswordTokenHash: tokenHash,
+    resetPasswordExpiresAt: { $gt: new Date() }
+  });
+
+  if (!user) {
+    const error = new Error("Invalid or expired reset token") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  user.passwordHash = await hashPassword(newPassword);
+  user.resetPasswordTokenHash = null;
+  user.resetPasswordExpiresAt = null;
+  const settings: any = (user as any).settings || {};
+  const security: any = settings.security || {};
+  security.lastPasswordChange = new Date();
+  settings.security = security;
+  (user as any).settings = settings;
+
+  await user.save();
 };
