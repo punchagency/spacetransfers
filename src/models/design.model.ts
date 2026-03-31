@@ -3,6 +3,8 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface IDesignItem {
   id: number;
   assetId: string;
+  croppedUrl?: string;
+  autoCrop?: boolean;
   widthIn: number;
   heightIn: number;
   posX: number;
@@ -39,6 +41,13 @@ const designItemSchema = new Schema<IDesignItem>({
   assetId: {
     type: String,
     required: true
+  },
+  croppedUrl: {
+    type: String
+  },
+  autoCrop: {
+    type: Boolean,
+    default: true
   },
   widthIn: {
     type: Number,
