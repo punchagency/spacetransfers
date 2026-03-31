@@ -33,6 +33,7 @@ export interface ArtboardProps {
   marginSize?: number;
   autoNestStickers?: boolean;
   spacing?: number;
+  onRequestAutoNest?: (enabled: boolean) => void;
   onDataChange?: (data: any) => void;
   initialData?: any;
   onAddToCart?: (item: any) => void;

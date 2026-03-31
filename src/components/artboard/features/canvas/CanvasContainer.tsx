@@ -38,6 +38,11 @@ interface CanvasContainerProps {
   isDraggingItem: boolean;
   canvasWidth: number;
   emptyOffsetY?: number;
+  onBrowseFiles: () => void;
+  isUploading: boolean;
+  uploadProgress: number;
+  uploadFileName: string | null;
+  onCancelUpload: () => void;
 }
 
 export default function CanvasContainer({
@@ -71,7 +76,14 @@ export default function CanvasContainer({
   isDraggingItem,
   canvasWidth,
   emptyOffsetY = 0,
+  onBrowseFiles,
+  isUploading,
+  uploadProgress,
+  uploadFileName,
+  onCancelUpload,
 }: CanvasContainerProps) {
+  const pct = Math.max(0, Math.min(100, uploadProgress));
+
   return (
     <div
       className="flex-1 relative flex items-center justify-center bg-white overflow-hidden"
@@ -135,14 +147,13 @@ export default function CanvasContainer({
             ))
           ) : (
             <div
-              className="pointer-events-none"
               style={{
                 transform: emptyOffsetY
                   ? `translateY(${emptyOffsetY}px)`
                   : undefined,
               }}
             >
-              <EmptyState />
+              {!isUploading ? <EmptyState onBrowse={onBrowseFiles} /> : null}
             </div>
           )}
         </div>
@@ -150,6 +161,39 @@ export default function CanvasContainer({
       {isDragging && (
         <div className="absolute inset-0 z-20 pointer-events-none">
           <div className="w-full h-full border-2 border-dashed border-blue-400 rounded" />
+        </div>
+      )}
+      {isUploading && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center">
+          <div className="w-[420px] max-w-[92vw] rounded-2xl border border-gray-200 bg-white px-10 py-10 text-center shadow-lg">
+            <div className="mx-auto mb-4 flex items-center justify-center">
+              <div
+                className="relative h-14 w-14 rounded-full"
+                style={{
+                  background: `conic-gradient(#8CAFAB ${pct * 3.6}deg, #e5e7eb 0deg)`,
+                }}
+              >
+                <div className="absolute inset-[6px] rounded-full bg-white" />
+                <div className="absolute inset-0 flex items-center justify-center text-[11px] font-semibold text-slate-700">
+                  {Math.round(pct)}%
+                </div>
+              </div>
+            </div>
+            <div className="text-[16px] font-semibold text-slate-900">
+              Uploading...
+            </div>
+            {uploadFileName ? (
+              <div className="mt-1 text-[12px] text-slate-500">
+                {uploadFileName}
+              </div>
+            ) : null}
+            <button
+              onClick={onCancelUpload}
+              className="mx-auto mt-6 rounded-lg border border-slate-200 bg-white px-5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
       <ZoomControls zoom={zoom} onZoomIn={onZoomIn} onZoomOut={onZoomOut} />

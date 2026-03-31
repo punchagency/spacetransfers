@@ -5,6 +5,7 @@ import {
     MdStraighten,
     MdVisibility,
     MdGridView,
+    MdAdd,
     MdSave,
     MdFolderOpen,
     MdPerson,
@@ -73,6 +74,7 @@ type SidebarProps = {
     onOpenLoadModal: () => void;
     onOpenAccountModal: () => void;
     onOpenAuthModal: (view: "login" | "register") => void;
+    onCreateGangSheet: () => void;
     onClearArtboard: () => void;
     onSignOut: () => void;
     isLoggedIn: boolean;
@@ -87,6 +89,7 @@ export default function Sidebar({
     onOpenLoadModal,
     onOpenAccountModal,
     onOpenAuthModal,
+    onCreateGangSheet,
     onClearArtboard,
     onSignOut,
     isLoggedIn
@@ -98,6 +101,26 @@ export default function Sidebar({
         gangSheets: true,
         account: true,
     });
+
+    const [hoverHint, setHoverHint] = useState<{
+        visible: boolean;
+        top: number;
+        left: number;
+        text: string;
+    }>({ visible: false, top: 0, left: 0, text: '' });
+
+    const showHint = (e: React.MouseEvent<HTMLElement>, text: string) => {
+        setHoverHint({
+            visible: true,
+            top: e.clientY + 14,
+            left: e.clientX + 14,
+            text
+        });
+    };
+
+    const hideHint = () => {
+        setHoverHint((prev) => ({ ...prev, visible: false }));
+    };
 
 
     const toggleSection = (key: keyof typeof sections) => {
@@ -209,18 +232,35 @@ export default function Sidebar({
                                         <input
                                             type="number"
                                             value={settings.spacing}
-                                            onChange={(e) => onUpdateSetting('spacing', parseFloat(e.target.value))}
+                                            onChange={(e) => {
+                                                const next = parseFloat(e.target.value);
+                                                onUpdateSetting('spacing', Number.isFinite(next) ? next : 0.1);
+                                            }}
+                                            disabled={settings.autoNestStickers}
                                             className="w-full bg-gray-100 border-none rounded-md py-2 px-3 text-[12px] font-medium focus:outline-none focus:ring-1 focus:ring-black"
                                         />
                                     </div>
-                                    <p className="text-[12px] text-gray-500 mt-2">Space between stickers when auto-nesting</p>
+                                    <p className="text-[12px] text-gray-500 mt-2">
+                                        {settings.autoNestStickers
+                                            ? "Disabled while Auto-Nest is ON"
+                                            : "Space between items"}
+                                    </p>
                                 </div>
                             </div>
                         )}
                     </div>
 
                     {/* Gang Sheets Section */}
-                    <div className="border-b border-gray-100 py-2">
+                    <div
+                        className="border-b border-gray-100 py-2"
+                        onMouseEnter={(e) => {
+                            if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                        }}
+                        onMouseMove={(e) => {
+                            if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                        }}
+                        onMouseLeave={hideHint}
+                    >
                         <SectionHeader
                             title="Gang Sheets"
                             expanded={sections.gangSheets}
@@ -229,35 +269,81 @@ export default function Sidebar({
 
                         {sections.gangSheets && (
                             <div className="space-y-1 mb-4">
-                                <button
-                                    className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={onOpenSaveModal}
-                                    disabled={!isLoggedIn}
+                                <div
+                                    onMouseEnter={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseMove={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseLeave={hideHint}
                                 >
-                                    <MdSave size={20} />
-                                    <span className="text-[12px] font-medium">Save GangSheet</span>
-                                </button>
-                                <button
-                                    className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={onOpenLoadModal}
-                                    disabled={!isLoggedIn}
+                                    <button
+                                        className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={() => { onCreateGangSheet(); onClose(); }}
+                                        disabled={!isLoggedIn}
+                                    >
+                                        <MdAdd size={20} />
+                                        <span className="text-[12px] font-medium">Create GangSheet</span>
+                                    </button>
+                                </div>
+                                <div
+                                    onMouseEnter={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseMove={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseLeave={hideHint}
                                 >
-                                    <MdFolderOpen size={20} />
-                                    <span className="text-[12px] font-medium">Load GangSheet</span>
-                                </button>
-                                <button
-                                    className="flex items-center gap-3 w-full py-2 text-red-500 hover:text-red-700 text-left disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={() => {
-                                        if (window.confirm("Are you sure you want to clear the artboard? This cannot be undone.")) {
+                                    <button
+                                        className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={onOpenSaveModal}
+                                        disabled={!isLoggedIn}
+                                    >
+                                        <MdSave size={20} />
+                                        <span className="text-[12px] font-medium">Save GangSheet</span>
+                                    </button>
+                                </div>
+                                <div
+                                    onMouseEnter={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseMove={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseLeave={hideHint}
+                                >
+                                    <button
+                                        className="flex items-center gap-3 w-full py-2 text-gray-600 hover:text-slate-900 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={onOpenLoadModal}
+                                        disabled={!isLoggedIn}
+                                    >
+                                        <MdFolderOpen size={20} />
+                                        <span className="text-[12px] font-medium">Load GangSheet</span>
+                                    </button>
+                                </div>
+                                <div
+                                    onMouseEnter={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseMove={(e) => {
+                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
+                                    }}
+                                    onMouseLeave={hideHint}
+                                >
+                                    <button
+                                        className="flex items-center gap-3 w-full py-2 text-red-500 hover:text-red-700 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={() => {
                                             onClearArtboard();
                                             onClose();
-                                        }
-                                    }}
-                                    disabled={!isLoggedIn}
-                                >
-                                    <MdDeleteOutline size={20} />
-                                    <span className="text-[12px] font-medium">Clear Artboard</span>
-                                </button>
+                                        }}
+                                        disabled={!isLoggedIn}
+                                    >
+                                        <MdDeleteOutline size={20} />
+                                        <span className="text-[12px] font-medium">Clear Artboard</span>
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -299,6 +385,18 @@ export default function Sidebar({
                         )}
                     </div>
 
+                </div>
+            </div>
+            <div
+                className={`fixed z-[60] pointer-events-none transition-all duration-200 ease-out ${hoverHint.visible ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-1"}`}
+                style={{
+                    top: hoverHint.top,
+                    left: hoverHint.left,
+                    transform: hoverHint.visible ? "translateX(0)" : "translateX(-4px)"
+                }}
+            >
+                <div className="rounded-lg bg-slate-900 text-white text-[12px] font-medium px-3 py-2 shadow-lg">
+                    {hoverHint.text}
                 </div>
             </div>
         </>

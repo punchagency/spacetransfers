@@ -1,20 +1,150 @@
 import { MdCreditCard, MdOutlineLocalShipping } from "react-icons/md";
 import { FaPaypal } from "react-icons/fa";
-
-interface FormData {
-  cardNumber: string;
-  expiry: string;
-  cvv: string;
-  cardName: string;
-}
+import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
+import { PayPalButtons, PayPalScriptProvider } from "@paypal/react-paypal-js";
+import { apiFetch } from "../../lib/utils/api";
+import { useEffect, useMemo } from "react";
 
 interface PaymentStepProps {
   payment: "card" | "paypal";
   setPayment: (method: "card" | "paypal") => void;
   shipping: "standard" | "express";
   setShipping: (method: "standard" | "express") => void;
-  formData: FormData;
-  setFormData: (data: any) => void;
+  cartItems: any[];
+  customer: { firstName: string; lastName: string; email: string; phone?: string };
+  shippingAddress: {
+    street: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+  };
+  isSubmitting: boolean;
+  onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
+  onPaypalCaptured: (data: { paypalOrderId: string; paypalCaptureId: string }) => void;
+  paypalClientId?: string;
+  stripeEnabled: boolean;
+}
+
+function StripeCardSection({
+  mappedItems,
+  shipping,
+  customer,
+  shippingAddress,
+  onCardHandlerReady,
+}: {
+  mappedItems: any[];
+  shipping: "standard" | "express";
+  customer: { firstName: string; lastName: string; email: string; phone?: string };
+  shippingAddress: {
+    street: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+  };
+  onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+
+  const cardHandler = useMemo(() => {
+    return async () => {
+      if (!stripe || !elements) {
+        throw new Error("Card payments are not ready yet");
+      }
+
+      const card = elements.getElement(CardElement);
+      if (!card) {
+        throw new Error("Card input is missing");
+      }
+
+      const intent = await apiFetch("/customer/payments/stripe/create-intent", {
+        method: "POST",
+        body: JSON.stringify({
+          items: mappedItems,
+          shippingMethod: shipping,
+        }),
+      });
+
+      const clientSecret = intent?.clientSecret;
+      const paymentIntentId = intent?.paymentIntentId;
+      if (!clientSecret || !paymentIntentId) {
+        throw new Error("Failed to initialize card payment");
+      }
+
+      const confirm = await stripe.confirmCardPayment(clientSecret, {
+        payment_method: {
+          card,
+          billing_details: {
+            name: `${customer.firstName} ${customer.lastName}`.trim(),
+            email: customer.email,
+            phone: customer.phone,
+            address: {
+              line1: shippingAddress.street,
+              city: shippingAddress.city,
+              state: shippingAddress.state,
+              postal_code: shippingAddress.postalCode,
+              country: shippingAddress.country,
+            },
+          },
+        },
+      });
+
+      if (confirm.error) {
+        throw new Error(confirm.error.message || "Card payment failed");
+      }
+
+      if (confirm.paymentIntent?.status !== "succeeded") {
+        throw new Error("Card payment was not completed");
+      }
+
+      return { paymentIntentId };
+    };
+  }, [
+    customer.email,
+    customer.firstName,
+    customer.lastName,
+    customer.phone,
+    elements,
+    mappedItems,
+    shipping,
+    shippingAddress.city,
+    shippingAddress.country,
+    shippingAddress.postalCode,
+    shippingAddress.state,
+    shippingAddress.street,
+    stripe,
+  ]);
+
+  useEffect(() => {
+    onCardHandlerReady(cardHandler);
+    return () => onCardHandlerReady(null);
+  }, [cardHandler, onCardHandlerReady]);
+
+  return (
+    <div className=" space-y-4 mt-4">
+      <div className="rounded-lg border border-gray-200 bg-white px-3 py-3">
+        <CardElement
+          options={{
+            style: {
+              base: {
+                fontSize: "14px",
+                color: "#111827",
+                fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+                "::placeholder": { color: "#9CA3AF" },
+              },
+            },
+          }}
+        />
+      </div>
+      {!stripe || !elements ? (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+          Card payments are not configured yet.
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function PaymentStep({
@@ -22,9 +152,29 @@ export default function PaymentStep({
   setPayment,
   shipping,
   setShipping,
-  formData,
-  setFormData,
+  cartItems,
+  customer,
+  shippingAddress,
+  isSubmitting,
+  onCardHandlerReady,
+  onPaypalCaptured,
+  paypalClientId,
+  stripeEnabled,
 }: PaymentStepProps) {
+  const mappedItems = cartItems.map((item) => ({
+    type: item.type || "gangsheet",
+    designId: item.designId || item.id?.toString(),
+    name: item.name || "Gang Sheet",
+    widthIn: item.widthIn || 0,
+    heightIn: item.heightIn || 0,
+    quantity: item.quantity || item.copies || 1,
+    unitPrice: item.price || 0,
+  }));
+
+  useEffect(() => {
+    if (payment !== "card") onCardHandlerReady(null);
+  }, [onCardHandlerReady, payment]);
+
   return (
     <>
       <div className="bg-white rounded-lg border mb-5 border-gray-200 p-6">
@@ -57,72 +207,19 @@ export default function PaymentStep({
           </label>
 
           {payment === "card" && (
-            <div className=" space-y-4 mt-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Card Number <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.cardNumber}
-                  onChange={(e) =>
-                    setFormData({ ...formData, cardNumber: e.target.value })
-                  }
-                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                    formData.cardNumber ? "bg-[#F3F3F5]" : "bg-white"
-                  }`}
-                />
+            stripeEnabled ? (
+              <StripeCardSection
+                mappedItems={mappedItems}
+                shipping={shipping}
+                customer={customer}
+                shippingAddress={shippingAddress}
+                onCardHandlerReady={onCardHandlerReady}
+              />
+            ) : (
+              <div className="mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                Card payments are not configured yet.
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">
-                    Expiry Date <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="MM / YY"
-                    value={formData.expiry}
-                    onChange={(e) =>
-                      setFormData({ ...formData, expiry: e.target.value })
-                    }
-                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                      formData.expiry ? "bg-[#F3F3F5]" : "bg-white"
-                    }`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">
-                    CVV <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="123"
-                    value={formData.cvv}
-                    onChange={(e) =>
-                      setFormData({ ...formData, cvv: e.target.value })
-                    }
-                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                      formData.cvv ? "bg-[#F3F3F5]" : "bg-white"
-                    }`}
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Cardholder Name <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.cardName}
-                  onChange={(e) =>
-                    setFormData({ ...formData, cardName: e.target.value })
-                  }
-                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                    formData.cardName ? "bg-[#F3F3F5]" : "bg-white"
-                  }`}
-                />
-              </div>
-            </div>
+            )
           )}
 
           <label
@@ -150,12 +247,45 @@ export default function PaymentStep({
           {payment === "paypal" && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 ">
               <p className="text-sm text-gray-700 mb-4">
-                You will be redirected to PayPal to complete your purchase
-                securely.
+                Complete your payment with PayPal to place your order.
               </p>
-              <button className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700">
-                Continue with PayPal
-              </button>
+              {paypalClientId ? (
+                <PayPalScriptProvider options={{ clientId: paypalClientId, currency: "USD", intent: "capture" }}>
+                  <PayPalButtons
+                    style={{ layout: "vertical" }}
+                    disabled={isSubmitting}
+                    createOrder={async () => {
+                      const result = await apiFetch("/customer/payments/paypal/create-order", {
+                        method: "POST",
+                        body: JSON.stringify({
+                          items: mappedItems,
+                          shippingMethod: shipping,
+                        }),
+                      });
+                      const id = result?.paypalOrderId;
+                      if (!id) throw new Error("Failed to create PayPal order");
+                      return id;
+                    }}
+                    onApprove={async (data) => {
+                      const captured = await apiFetch("/customer/payments/paypal/capture-order", {
+                        method: "POST",
+                        body: JSON.stringify({ paypalOrderId: data.orderID }),
+                      });
+                      if (!captured?.paypalCaptureId) {
+                        throw new Error("Failed to capture PayPal payment");
+                      }
+                      onPaypalCaptured({
+                        paypalOrderId: data.orderID,
+                        paypalCaptureId: captured.paypalCaptureId,
+                      });
+                    }}
+                  />
+                </PayPalScriptProvider>
+              ) : (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  PayPal is not configured yet.
+                </div>
+              )}
             </div>
           )}
         </div>

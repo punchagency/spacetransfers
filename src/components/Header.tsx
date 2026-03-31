@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson } from "react-icons/md";
 import { GrRedo } from "react-icons/gr";
 type HeaderInfo = {
   hasItem: boolean;
@@ -17,6 +17,7 @@ export default function Header({
   onCartClick,
   cartCount,
   onAddGangSheetToCart,
+  canAddGangSheetToCart,
   onRedo,
   canRedo,
   onSignInClick,
@@ -25,12 +26,16 @@ export default function Header({
   canSaveLoaded,
   canRenameDesign,
   onRenameDesign,
+  onProfileClick,
+  profileLabel,
+  profileBgClass,
 }: {
   info?: HeaderInfo;
   onMenuClick?: () => void;
   onCartClick?: () => void;
   cartCount?: number;
   onAddGangSheetToCart?: () => void;
+  canAddGangSheetToCart?: boolean;
   onRedo?: () => void;
   canRedo?: boolean;
   onSignInClick?: () => void;
@@ -39,6 +44,9 @@ export default function Header({
   canSaveLoaded?: boolean;
   canRenameDesign?: boolean;
   onRenameDesign?: (newTitle: string) => void;
+  onProfileClick?: () => void;
+  profileLabel?: string;
+  profileBgClass?: string;
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -101,7 +109,7 @@ export default function Header({
               <span className="text-gray-300">|</span>
             </>
           )}
-          <span>{(info?.areaSf ?? 3.25).toFixed(2)}sf</span>
+          <span>{(info?.areaSf ?? 0).toFixed(2)}sf</span>
           <span className="text-gray-300">|</span>
           <span>
             {(info?.widthIn ?? 24).toFixed(2)}in wide x{" "}
@@ -144,10 +152,21 @@ export default function Header({
         ) : null}
         <button
           onClick={onAddGangSheetToCart}
-          className="px-3 text-xs font-medium rounded-2xl text-black bg-white border border-gray-300 hover:bg-gray-50 transition-colors"
+          disabled={canAddGangSheetToCart === false}
+          title={
+            canAddGangSheetToCart === false
+              ? "Add items to the artboard before adding to cart"
+              : "Add current gangsheet to cart"
+          }
+          className={`px-3 text-xs font-medium rounded-2xl border transition-colors ${
+            canAddGangSheetToCart === false
+              ? "text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed"
+              : "text-black bg-white border-gray-300 hover:bg-gray-50"
+          }`}
         >
           Add to Cart
         </button>
+
         {isLoggedIn ? (
           <button
             onClick={onCartClick}
@@ -161,7 +180,22 @@ export default function Header({
             )}
           </button>
         ) : null}
-
+        {isLoggedIn ? (
+          <button 
+            onClick={onProfileClick}
+            className="p-2 text-gray-600 hover:text-gray-900 transition-colors"
+            aria-label="Account"
+            title="Account"
+          >
+            {profileLabel ? (
+              <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-white text-[11px] font-semibold ${profileBgClass || "bg-slate-900"}`}>
+                {profileLabel}
+              </span>
+            ) : (
+              <MdPerson size={22} />
+            )}
+          </button>
+        ) : null}
         <button
           onClick={onMenuClick}
           className="p-2 text-gray-600 hover:text-gray-900 transition-colors"

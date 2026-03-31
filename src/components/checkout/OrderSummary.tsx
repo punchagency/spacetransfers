@@ -22,9 +22,23 @@ interface OrderSummaryProps {
   tax: number;
   total: number;
   onNext: () => void;
+  isSubmitting?: boolean;
+  disableNext?: boolean;
+  nextLabel?: string;
 }
 
-export default function OrderSummary({ cartItems, step, subtotal, shippingCost, tax, total, onNext }: OrderSummaryProps) {
+export default function OrderSummary({
+  cartItems,
+  step,
+  subtotal,
+  shippingCost,
+  tax,
+  total,
+  onNext,
+  isSubmitting = false,
+  disableNext = false,
+  nextLabel,
+}: OrderSummaryProps) {
   const renderItemPreview = (item: CartItem) => {
     if (item.type === 'gangsheet') {
       return (
@@ -115,9 +129,14 @@ export default function OrderSummary({ cartItems, step, subtotal, shippingCost, 
       {step < 3 && (
         <button
           onClick={onNext}
-          className="w-full mt-4 rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+          disabled={isSubmitting || disableNext}
+          className={`w-full mt-4 rounded-lg py-3 text-sm font-semibold text-white transition-colors ${
+            isSubmitting || disableNext ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+          }`}
         >
-          {step === 0 ? 'Proceed to Checkout' : step === 1 ? 'Continue to Payment' : 'Place Order'}
+          {isSubmitting
+            ? "Processing..."
+            : nextLabel || (step === 0 ? 'Proceed to Checkout' : step === 1 ? 'Continue to Payment' : 'Place Order')}
         </button>
       )}
     </div>

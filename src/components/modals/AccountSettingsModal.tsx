@@ -175,7 +175,18 @@ export default function AccountSettingsModal({
           ) : (
             <div className="space-y-2">
               {linkedMainAccount && (
-                <div className="flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3">
+                <div
+                  className={`flex items-center justify-between rounded-xl border px-4 py-3 transition-colors ${
+                    linkedMainAccount.id === user?.id
+                      ? "border-blue-500 bg-blue-50"
+                      : "border-gray-200 hover:border-blue-300 hover:bg-gray-50 cursor-pointer"
+                  }`}
+                  onClick={() => {
+                    if (switchingAccountId === linkedMainAccount.id) return;
+                    if (linkedMainAccount.id === user?.id) return;
+                    handleSwitchAccount(linkedMainAccount.id);
+                  }}
+                >
                   <div className="flex items-center gap-3">
                     <div className={`flex h-10 w-10 items-center justify-center rounded-full ${getAvatarBgClass(linkedMainAccount.name)} text-white text-sm font-medium uppercase`}>
                       {linkedMainAccount.name?.[0] || "?"}
@@ -190,21 +201,37 @@ export default function AccountSettingsModal({
                   <button
                     type="button"
                     disabled={Boolean(switchingAccountId === linkedMainAccount.id)}
-                    onClick={() => handleSwitchAccount(linkedMainAccount.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSwitchAccount(linkedMainAccount.id);
+                    }}
                     className="text-sm font-medium text-blue-600 hover:underline disabled:opacity-50"
                   >
-                    {switchingAccountId === linkedMainAccount.id ? "Switching..." : "Main"}
+                    {switchingAccountId === linkedMainAccount.id
+                      ? "Switching..."
+                      : linkedMainAccount.id === user?.id
+                        ? "Current"
+                        : "Main"}
                   </button>
                 </div>
               )}
 
               {linkedSubAccounts.map((account) => {
                 const isSwitching = switchingAccountId === account.id;
+                const isCurrent = account.id === user?.id;
 
                 return (
                   <div
                     key={account.id}
-                    className="flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3"
+                    className={`flex items-center justify-between rounded-xl border px-4 py-3 transition-colors ${
+                      isCurrent
+                        ? "border-blue-500 bg-blue-50"
+                        : "border-gray-200 hover:border-blue-300 hover:bg-gray-50 cursor-pointer"
+                    }`}
+                    onClick={() => {
+                      if (isSwitching || isCurrent) return;
+                      handleSwitchAccount(account.id);
+                    }}
                   >
                     <div className="flex items-center gap-3">
                       <div className={`flex h-10 w-10 items-center justify-center rounded-full ${getAvatarBgClass(account.name)} text-white text-sm font-medium uppercase`}>
@@ -220,10 +247,13 @@ export default function AccountSettingsModal({
                     <button
                       type="button"
                       disabled={Boolean(isSwitching)}
-                      onClick={() => handleSwitchAccount(account.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSwitchAccount(account.id);
+                      }}
                       className="text-sm font-medium text-blue-600 hover:underline disabled:opacity-50"
                     >
-                      {isSwitching ? "Switching..." : "Switch"}
+                      {isSwitching ? "Switching..." : isCurrent ? "Current" : "Switch"}
                     </button>
                   </div>
                 );

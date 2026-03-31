@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useItemActions,
   useMouseInteractions,
@@ -20,6 +20,7 @@ export default function Artboard({
   marginSize = 0.25,
   autoNestStickers = false,
   spacing = 0.5,
+  onRequestAutoNest,
   onDataChange,
   initialData,
   onAddToCart,
@@ -33,9 +34,21 @@ export default function Artboard({
     {},
   );
   const [addedToCart, setAddedToCart] = useState<Set<number>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const canvasWidth = useCanvasWidth();
-  const { isDragging, lowDpiCount, onDragOver, onDragLeave, onDropEvent } =
+  const {
+    isDragging,
+    lowDpiCount,
+    isUploading,
+    uploadProgress,
+    uploadFileName,
+    cancelUploads,
+    dropFilesAtCenter,
+    onDragOver,
+    onDragLeave,
+    onDropEvent,
+  } =
     useDropHandler(
       items,
       setItems,
@@ -45,6 +58,7 @@ export default function Artboard({
       canvasWidth,
       zoom,
       autoNestStickers,
+      onRequestAutoNest,
       spacing,
       marginSize,
     );
@@ -158,6 +172,20 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
     >
       <DpiWarning count={lowDpiCount} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,.svg,.pdf"
+        multiple
+        className="hidden"
+        onChange={async (e) => {
+          const files = e.target.files;
+          if (files && files.length) {
+            await dropFilesAtCenter(files);
+          }
+          e.target.value = "";
+        }}
+      />
       <div className="flex-1 flex overflow-hidden">
         <CanvasContainer
           zoom={zoom}
@@ -166,6 +194,11 @@ export default function Artboard({
           marginSize={marginSize}
           canvasWidth={canvasWidth}
           isDragging={isDragging}
+          isUploading={isUploading}
+          uploadProgress={uploadProgress}
+          uploadFileName={uploadFileName}
+          onCancelUpload={cancelUploads}
+          onBrowseFiles={() => fileInputRef.current?.click()}
           items={items}
           selectedId={selectedId}
           selectedIds={selectedIds}

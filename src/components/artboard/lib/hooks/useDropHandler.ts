@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { readDPI, loadImageSize } from "../utils";
 import { animateBounce, animateShake, animateItemPosition } from "../utils";
 import { calculateGridLayout } from "../utils";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
-import { apiFetch } from "../../../../lib/utils/api";
 
 export const useDropHandler = (
   items: ArtboardItem[],
@@ -15,11 +14,79 @@ export const useDropHandler = (
   canvasWidth: number,
   zoom: number,
   autoNestStickers: boolean,
+  onRequestAutoNest: ((enabled: boolean) => void) | undefined,
   spacing: number,
   marginSize: number
 ) => {
   const [isDragging, setIsDragging] = useState(false);
   const [lowDpiCount, setLowDpiCount] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadFileName, setUploadFileName] = useState<string | null>(null);
+
+  const activeUploadsRef = useRef<XMLHttpRequest[]>([]);
+  const canceledRef = useRef(false);
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  const cancelUploads = () => {
+    canceledRef.current = true;
+    activeUploadsRef.current.forEach((xhr) => {
+      try {
+        xhr.abort();
+      } catch {
+      }
+    });
+    activeUploadsRef.current = [];
+    setIsUploading(false);
+    setUploadProgress(0);
+    setUploadFileName(null);
+  };
+
+  const uploadAssetWithProgress = (file: File, onProgress: (pct: number) => void) => {
+    const API_BASE_URL = "http://localhost:4000/api";
+    const token = localStorage.getItem("token");
+
+    return new Promise<any>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      activeUploadsRef.current.push(xhr);
+
+      xhr.open("POST", `${API_BASE_URL}/customer/assets`);
+      if (token) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          onProgress(Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100)));
+        }
+      };
+
+      xhr.onload = () => {
+        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
+        try {
+          const json = JSON.parse(xhr.responseText || "{}");
+          if (xhr.status >= 200 && xhr.status < 300) resolve(json);
+          else reject(new Error(json.message || "Upload failed"));
+        } catch {
+          reject(new Error("Upload failed"));
+        }
+      };
+
+      xhr.onerror = () => {
+        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
+        reject(new Error("Upload failed"));
+      };
+
+      xhr.onabort = () => {
+        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
+        reject(new Error("Upload canceled"));
+      };
+
+      const formData = new FormData();
+      formData.append("file", file);
+      xhr.send(formData);
+    });
+  };
 
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -30,20 +97,20 @@ export const useDropHandler = (
     setIsDragging(false);
   };
 
-  const onDropEvent = async (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
+  const processDrop = async ({
+    droppedFiles,
+    droppedUrl,
+    dropX,
+    dropY,
+  }: {
+    droppedFiles: File[];
+    droppedUrl: string;
+    dropX: number;
+    dropY: number;
+  }) => {
     setIsDragging(false);
-    const dropped = Array.from(e.dataTransfer.files || []).filter((f) =>
-      f.type.startsWith("image/")
-    );
-    const jsonData = e.dataTransfer.getData("application/json") || e.dataTransfer.getData("text/plain");
-    const droppedUrl = dropped.length === 0 ? jsonData : "";
+    const dropped = droppedFiles;
     if (dropped.length === 0 && !droppedUrl) return;
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const zoomVal = zoom || 1;
-    const dropX = (e.clientX - rect.left) / (96 * zoomVal);
-    const dropY = (e.clientY - rect.top) / (96 * zoomVal);
 
     const cropImage = async (url: string, dpi: number) => {
       return new Promise<{
@@ -75,10 +142,11 @@ export const useDropHandler = (
             maxY = 0;
           let found = false;
 
+          const alphaThreshold = 10;
           for (let y = 0; y < canvas.height; y++) {
             for (let x = 0; x < canvas.width; x++) {
               const alpha = data[(y * canvas.width + x) * 4 + 3];
-              if (alpha > 10) {
+              if (alpha > alphaThreshold) {
                 found = true;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
@@ -134,7 +202,13 @@ export const useDropHandler = (
     const start = counter + 1;
     let lowDpiImages = 0;
 
-    const createItemFromUrl = async (url: string, idx: number, name?: string, dpiOverride?: number) => {
+    const createItemFromUrl = async (
+      url: string,
+      idx: number,
+      name?: string,
+      dpiOverride?: number,
+      originalUrlOverride?: string
+    ) => {
       const img = new Image();
       img.crossOrigin = "anonymous";
       const loaded = await new Promise<{ widthPx: number; heightPx: number }>((resolve, reject) => {
@@ -165,7 +239,7 @@ export const useDropHandler = (
         name,
         gravityActive: false,
         isDropping: true,
-        originalUrl: url,
+        originalUrl: originalUrlOverride || url,
         originalWidthIn: widthIn,
         originalHeightIn: heightIn,
       };
@@ -187,62 +261,95 @@ export const useDropHandler = (
     let created: ArtboardItem[] = [];
 
     if (dropped.length > 0) {
-      created = await Promise.all(
-        dropped.map(async (file, idx) => {
-          const formData = new FormData();
-          formData.append("file", file);
+      canceledRef.current = false;
+      const uploadUiStart = Date.now();
+      setIsUploading(true);
+      setUploadProgress(0);
+      setUploadFileName(dropped[0]?.name || null);
+      await sleep(200);
+      if (canceledRef.current) {
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadFileName(null);
+        return;
+      }
 
-          const [dpiInfo, localInfo] = await Promise.all([
-            readDPI(file),
-            loadImageSize(file),
-          ]);
+      created = [];
+      for (let idx = 0; idx < dropped.length; idx++) {
+        if (canceledRef.current) {
+          setIsUploading(false);
+          setUploadProgress(0);
+          setUploadFileName(null);
+          return;
+        }
 
-          let assetResponse: any = null;
-          try {
-            assetResponse = await apiFetch("/customer/assets", {
-              method: "POST",
-              body: formData,
-            });
-          } catch {
-            assetResponse = null;
+        const file = dropped[idx];
+        setUploadFileName(file.name);
+
+        const [dpiInfo, localInfo] = await Promise.all([
+          readDPI(file),
+          loadImageSize(file),
+        ]);
+
+        let assetResponse: any = null;
+        try {
+          assetResponse = await uploadAssetWithProgress(file, (pct) => {
+            const overall =
+              ((idx + pct / 100) / dropped.length) * 100;
+            setUploadProgress(Math.max(0, Math.min(100, overall)));
+          });
+        } catch (err: any) {
+          if (canceledRef.current || err?.message === "Upload canceled") {
+            setIsUploading(false);
+            setUploadProgress(0);
+            setUploadFileName(null);
+            return;
           }
+          assetResponse = null;
+        }
 
-          const dpi = Math.max(
-            1,
-            Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 150)
-          );
-          if (dpi < 300) lowDpiImages++;
+        const dpi = Math.max(
+          1,
+          Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300)
+        );
+        if (dpi < 300) lowDpiImages++;
 
-          const serverUrl = assetResponse?.url || localInfo.url;
-          const widthPx = assetResponse?.widthPx || localInfo.widthPx;
-          const heightPx = assetResponse?.heightPx || localInfo.heightPx;
+        const serverUrl = assetResponse?.url || localInfo.url;
+        const trimmedUrl = assetResponse?.trimmedUrl || null;
+        const widthPx = assetResponse?.widthPx || localInfo.widthPx;
+        const heightPx = assetResponse?.heightPx || localInfo.heightPx;
 
-          const widthIn = widthPx / dpi;
-          const heightIn = heightPx / dpi;
+        const originalWidthIn = assetResponse?.widthIn || (widthPx / dpi);
+        const originalHeightIn = assetResponse?.heightIn || (heightPx / dpi);
+        const widthIn =
+          (trimmedUrl ? assetResponse?.trimmedWidthIn : null) || originalWidthIn;
+        const heightIn =
+          (trimmedUrl ? assetResponse?.trimmedHeightIn : null) || originalHeightIn;
 
-          const baseItem: ArtboardItem = {
-            id: start + idx,
-            url: serverUrl,
-            rotation: 0,
-            locked: false,
-            expanded: false,
-            flipped: false,
-            autoCrop: true,
-            copies: 1,
-            widthIn,
-            heightIn,
-            posX: dropX - widthIn / 2,
-            posY: dropY - heightIn / 2,
-            linked: true,
-            price: 12.34,
-            name: file.name,
-            gravityActive: false,
-            isDropping: true,
-            originalUrl: serverUrl,
-            originalWidthIn: widthIn,
-            originalHeightIn: heightIn,
-          };
+        const baseItem: ArtboardItem = {
+          id: start + idx,
+          url: trimmedUrl || serverUrl,
+          rotation: 0,
+          locked: false,
+          expanded: false,
+          flipped: false,
+          autoCrop: true,
+          copies: 1,
+          widthIn,
+          heightIn,
+          posX: dropX - widthIn / 2,
+          posY: dropY - heightIn / 2,
+          linked: true,
+          price: 12.34,
+          name: file.name,
+          gravityActive: false,
+          isDropping: true,
+          originalUrl: serverUrl,
+          originalWidthIn,
+          originalHeightIn,
+        };
 
+        if (!trimmedUrl) {
           const cropped = await cropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;
@@ -253,10 +360,16 @@ export const useDropHandler = (
             baseItem.posX = baseItem.posX + deltaX;
             baseItem.posY = baseItem.posY + deltaY;
           }
+        }
 
-          return baseItem;
-        })
-      );
+        created.push(baseItem);
+      }
+
+      setUploadProgress(100);
+      const elapsed = Date.now() - uploadUiStart;
+      if (elapsed < 700) await sleep(700 - elapsed);
+      setIsUploading(false);
+      setUploadFileName(null);
     } else {
       let asset: any = null;
       try {
@@ -264,15 +377,25 @@ export const useDropHandler = (
       } catch {
       }
 
-      const url = asset?.url || droppedUrl;
+      const url = asset?.trimmedUrl || asset?.url || droppedUrl;
       const dpi = asset?.dpi;
-      created = [await createItemFromUrl(url, 0, asset?.originalFilename, dpi)];
+      created = [
+        await createItemFromUrl(
+          url,
+          0,
+          asset?.originalFilename,
+          dpi,
+          asset?.url
+        ),
+      ];
     }
 
     if (lowDpiImages > 0) {
       setLowDpiCount(lowDpiImages);
       setTimeout(() => setLowDpiCount(0), 8000);
     }
+
+    const autoNestForDrop = autoNestStickers || dropped.length >= 2;
 
     // 1. Calculate the final intended layout for ALL items immediately
     setTimeout(() => {
@@ -291,7 +414,7 @@ export const useDropHandler = (
         allItems,
         currentCanvasWidth,
         spacing,
-        autoNestStickers,
+        autoNestForDrop,
         effectiveMargin
       );
 
@@ -437,5 +560,58 @@ export const useDropHandler = (
     setSelectedId(null);
   };
 
-  return { isDragging, lowDpiCount, onDragOver, onDragLeave, onDropEvent };
+  const onDropEvent = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFiles = Array.from(e.dataTransfer.files || []).filter((f) =>
+      f.type.startsWith("image/")
+    );
+    const jsonData =
+      e.dataTransfer.getData("application/json") ||
+      e.dataTransfer.getData("text/plain");
+    const droppedUrl = droppedFiles.length === 0 ? jsonData : "";
+    if (droppedFiles.length === 0 && !droppedUrl) return;
+    if (droppedFiles.length >= 2 && !autoNestStickers) {
+      onRequestAutoNest?.(true);
+    }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const zoomVal = zoom || 1;
+    const dropX = (e.clientX - rect.left) / (96 * zoomVal);
+    const dropY = (e.clientY - rect.top) / (96 * zoomVal);
+
+    await processDrop({ droppedFiles, droppedUrl, dropX, dropY });
+  };
+
+  const dropFilesAtCenter = async (files: FileList | File[]) => {
+    const arr = Array.isArray(files) ? files : Array.from(files);
+    const droppedFiles = arr.filter((f) => f.type.startsWith("image/"));
+    if (droppedFiles.length === 0) return;
+    if (droppedFiles.length >= 2 && !autoNestStickers) {
+      onRequestAutoNest?.(true);
+    }
+
+    const artboardContainer = document.querySelector(
+      "#artboard-main-container"
+    ) as HTMLElement;
+    const currentCanvasWidth = artboardContainer
+      ? artboardContainer.offsetWidth / 96
+      : canvasWidth || 24;
+    const dropX = currentCanvasWidth / 2;
+    const dropY = 6;
+    await processDrop({ droppedFiles, droppedUrl: "", dropX, dropY });
+  };
+
+  return {
+    isDragging,
+    lowDpiCount,
+    isUploading,
+    uploadProgress,
+    uploadFileName,
+    cancelUploads,
+    dropFilesAtCenter,
+    onDragOver,
+    onDragLeave,
+    onDropEvent,
+  };
 };

@@ -1,4 +1,5 @@
 import { ArtboardItem } from "../../types";
+import { apiFetch } from "../../../../lib/utils/api";
 
 export const useItemActions = (
   items: ArtboardItem[],
@@ -54,12 +55,48 @@ export const useItemActions = (
     emit({ type: "flip", id: selectedId });
   };
 
-  const toggleAutoCrop = () => {
+  const toggleAutoCrop = async () => {
     if (selectedId == null) return;
     const item = items.find((it) => it.id === selectedId);
     if (!item) return;
 
     if (!item.autoCrop) {
+      const sourceUrl = (item.originalUrl || item.url) as string;
+
+      if (
+        typeof sourceUrl === "string" &&
+        sourceUrl.includes("/uploads/") &&
+        !sourceUrl.includes("-trim.png")
+      ) {
+        try {
+          const trimmed = await apiFetch("/customer/assets/trim", {
+            method: "POST",
+            body: JSON.stringify({ url: sourceUrl }),
+          });
+          if (trimmed?.trimmedUrl) {
+            setItems((prev) =>
+              prev.map((it) =>
+                it.id === selectedId
+                  ? {
+                      ...it,
+                      autoCrop: true,
+                      url: trimmed.trimmedUrl,
+                      widthIn: trimmed.trimmedWidthIn || it.widthIn,
+                      heightIn: trimmed.trimmedHeightIn || it.heightIn,
+                      originalUrl: it.originalUrl || it.url,
+                      originalWidthIn: it.originalWidthIn || it.widthIn,
+                      originalHeightIn: it.originalHeightIn || it.heightIn,
+                    }
+                  : it
+              )
+            );
+            emit({ type: "toggleAutoCrop", id: selectedId });
+            return;
+          }
+        } catch {
+        }
+      }
+
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.onload = () => {
@@ -82,7 +119,7 @@ export const useItemActions = (
         for (let y = 0; y < canvas.height; y++) {
           for (let x = 0; x < canvas.width; x++) {
             const alpha = data[(y * canvas.width + x) * 4 + 3];
-            if (alpha > 10) {
+            if (alpha > 1) {
               if (x < minX) minX = x;
               if (x > maxX) maxX = x;
               if (y < minY) minY = y;
@@ -118,7 +155,14 @@ export const useItemActions = (
         // Convert to data URL
         const croppedImageUrl = croppedCanvas.toDataURL("image/png");
 
-        const dpi = Math.max(1, Math.round(150));
+        const originalWidthIn = item.originalWidthIn || item.widthIn;
+        const originalHeightIn = item.originalHeightIn || item.heightIn;
+        const dpi = Math.max(
+          1,
+          Math.round(
+            img.width && originalWidthIn ? img.width / originalWidthIn : 300
+          )
+        );
         const newWidthIn = cropWidth / dpi;
         const newHeightIn = cropHeight / dpi;
 

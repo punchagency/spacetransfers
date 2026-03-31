@@ -1,15 +1,27 @@
 import { useState, useEffect, useRef, Fragment } from "react";
 import { gsap } from "gsap";
-import { MdClose, MdCheckCircle } from "react-icons/md";
+import { MdClose, MdCheckCircle, MdArrowBack } from "react-icons/md";
 import CartStep from "../checkout/CartStep";
 import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
 import OrderSummary from "../checkout/OrderSummary";
 import { LuShoppingCart } from "react-icons/lu";
+import { apiFetch } from "../../lib/utils/api";
+import toast from "react-hot-toast";
+import { Elements } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
+
+const stripePublishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as
+  | string
+  | undefined;
+const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
+const paypalClientId = (import.meta as any).env?.VITE_PAYPAL_CLIENT_ID as string | undefined;
+
 interface CheckoutModalProps {
   isOpen: boolean;
   onClose: () => void;
   cartItems?: any[];
+  onCheckoutSuccess?: () => void;
 }
 
 const steps = ["Cart", "Checkout", "Payment", "Confirmation"];
@@ -18,8 +30,10 @@ export default function CheckoutModal({
   isOpen,
   onClose,
   cartItems: initialCartItems,
+  onCheckoutSuccess,
 }: CheckoutModalProps) {
   const [step, setStep] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const stepperRefs = useRef<(HTMLDivElement | null)[]>([]);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -37,12 +51,7 @@ export default function CheckoutModal({
     postalCode: "",
     country: "",
   });
-  const [cardData, setCardData] = useState({
-    cardNumber: "",
-    expiry: "",
-    cvv: "",
-    cardName: "",
-  });
+  const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
 
   const subtotal = cartItems.reduce(
     (sum, item) =>
@@ -52,6 +61,84 @@ export default function CheckoutModal({
   const shippingCost = shipping === "standard" ? 8.99 : 24.99;
   const tax = subtotal * 0.08;
   const total = subtotal + shippingCost + tax;
+
+  const mapItems = () =>
+    cartItems.map((item) => ({
+      name: item.name || "Gang Sheet",
+      widthIn: item.widthIn || 0,
+      heightIn: item.heightIn || 0,
+      quantity: item.quantity || item.copies || 1,
+      unitPrice: item.price || 0,
+      designId: item.designId || item.id?.toString(),
+      type: item.type || "gangsheet",
+    }));
+
+  const placeOrder = async (paymentPayload: any) => {
+    const payload = {
+      items: mapItems(),
+      customer: {
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+        email: formData.email,
+        phone: formData.phone || undefined,
+      },
+      shippingAddress: {
+        street: formData.street,
+        city: formData.city,
+        state: formData.state,
+        postalCode: formData.postalCode,
+        country: formData.country || "US",
+      },
+      shippingMethod: shipping,
+      payment: paymentPayload,
+      pricing: {
+        subtotal,
+        shippingCost,
+        tax,
+        total,
+        currency: "USD",
+      },
+    };
+
+    await apiFetch("/customer/orders", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    setStep(3);
+    if (onCheckoutSuccess) {
+      onCheckoutSuccess();
+    }
+  };
+
+  const handleNextStep = async () => {
+    if (step < 2) {
+      setStep(step + 1);
+      return;
+    }
+
+    if (step === 2) {
+      if (payment === "paypal") {
+        toast.error("Complete PayPal payment to place your order");
+        return;
+      }
+
+      setIsSubmitting(true);
+      try {
+        const handler = cardHandlerRef.current;
+        if (!handler) {
+          throw new Error("Card payment is not configured");
+        }
+
+        const { paymentIntentId } = await handler();
+        await placeOrder({ method: "card", paymentIntentId });
+      } catch (err: any) {
+        toast.error(err.message || "Failed to place order");
+      } finally {
+        setIsSubmitting(false);
+      }
+    }
+  };
 
   useEffect(() => {
     if (initialCartItems) {
@@ -134,12 +221,30 @@ export default function CheckoutModal({
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600"
-          >
-            <MdClose className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {step < 3 ? (
+              <button
+                onClick={() => setStep((s) => Math.max(0, s - 1))}
+                disabled={isSubmitting || step === 0}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm ${
+                  isSubmitting || step === 0
+                    ? "text-gray-300 cursor-not-allowed"
+                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+                }`}
+                aria-label="Go back"
+              >
+                <MdArrowBack className="h-5 w-5" />
+                <span className="hidden sm:inline">Back</span>
+              </button>
+            ) : null}
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600"
+              aria-label="Close checkout"
+            >
+              <MdClose className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Stepper */}
@@ -197,14 +302,91 @@ export default function CheckoutModal({
                 )}
 
                 {step === 2 && (
-                  <PaymentStep
-                    payment={payment}
-                    setPayment={setPayment}
-                    shipping={shipping}
-                    setShipping={setShipping}
-                    formData={cardData}
-                    setFormData={setCardData}
-                  />
+                  (stripePromise ? (
+                    <Elements stripe={stripePromise}>
+                      <PaymentStep
+                        payment={payment}
+                        setPayment={setPayment}
+                        shipping={shipping}
+                        setShipping={setShipping}
+                        cartItems={cartItems}
+                        customer={{
+                          firstName: formData.firstName,
+                          lastName: formData.lastName,
+                          email: formData.email,
+                          phone: formData.phone || undefined,
+                        }}
+                        shippingAddress={{
+                          street: formData.street,
+                          city: formData.city,
+                          state: formData.state,
+                          postalCode: formData.postalCode,
+                          country: formData.country || "US",
+                        }}
+                        isSubmitting={isSubmitting}
+                        stripeEnabled={true}
+                        paypalClientId={paypalClientId}
+                        onCardHandlerReady={(handler) => {
+                          cardHandlerRef.current = handler;
+                        }}
+                        onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
+                          setIsSubmitting(true);
+                          try {
+                            await placeOrder({
+                              method: "paypal",
+                              paypalOrderId,
+                              paypalCaptureId,
+                            });
+                          } catch (err: any) {
+                            toast.error(err?.message || "Failed to place order");
+                          } finally {
+                            setIsSubmitting(false);
+                          }
+                        }}
+                      />
+                    </Elements>
+                  ) : (
+                    <PaymentStep
+                      payment={payment}
+                      setPayment={setPayment}
+                      shipping={shipping}
+                      setShipping={setShipping}
+                      cartItems={cartItems}
+                      customer={{
+                        firstName: formData.firstName,
+                        lastName: formData.lastName,
+                        email: formData.email,
+                        phone: formData.phone || undefined,
+                      }}
+                      shippingAddress={{
+                        street: formData.street,
+                        city: formData.city,
+                        state: formData.state,
+                        postalCode: formData.postalCode,
+                        country: formData.country || "US",
+                      }}
+                      isSubmitting={isSubmitting}
+                      stripeEnabled={false}
+                      paypalClientId={paypalClientId}
+                      onCardHandlerReady={(handler) => {
+                        cardHandlerRef.current = handler;
+                      }}
+                      onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
+                        setIsSubmitting(true);
+                        try {
+                          await placeOrder({
+                            method: "paypal",
+                            paypalOrderId,
+                            paypalCaptureId,
+                          });
+                        } catch (err: any) {
+                          toast.error(err?.message || "Failed to place order");
+                        } finally {
+                          setIsSubmitting(false);
+                        }
+                      }}
+                    />
+                  ))
                 )}
 
                 {step === 3 && (
@@ -268,7 +450,10 @@ export default function CheckoutModal({
                   shippingCost={shippingCost}
                   tax={tax}
                   total={total}
-                  onNext={() => setStep(step + 1)}
+                  onNext={handleNextStep}
+                  isSubmitting={isSubmitting}
+                  disableNext={step === 2 && payment === "paypal"}
+                  nextLabel={step === 2 && payment === "paypal" ? "Complete with PayPal" : undefined}
                 />
               )}
             </div>

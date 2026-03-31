@@ -142,13 +142,21 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      // Use exact ruler dimensions
-      // Top ruler: 24 inches
-      // Left ruler: 19.5 inches (24 inches height - ruler offset)
-      const gangSheetWidthIn = 24;
-      const gangSheetHeightIn = 19.5;
+      const areaSf = +items
+        .reduce((sum, item) => {
+          const itemWidthIn = +item.widthIn.toFixed(2);
+          const itemHeightIn = +item.heightIn.toFixed(2);
+          const itemAreaSf = +((itemWidthIn * itemHeightIn) / 144).toFixed(2);
+          return sum + itemAreaSf * (item.copies || 1);
+        }, 0)
+        .toFixed(2);
 
-      const areaSf = +((gangSheetWidthIn * gangSheetHeightIn) / 144).toFixed(2);
+      const focusItem =
+        selectedId != null
+          ? items.find((it) => it.id === selectedId)
+          : items[items.length - 1];
+      const focusWidthIn = focusItem?.widthIn ?? 0;
+      const focusHeightIn = focusItem?.heightIn ?? 0;
 
       // Calculate total price based on all items on the artboard
       const totalPrice = items.reduce((sum, item) => {
@@ -171,8 +179,8 @@ export const useArtboardEffects = (
       onHeaderInfoChange({
         hasItem: items.length > 0,
         areaSf,
-        widthIn: gangSheetWidthIn,
-        heightIn: gangSheetHeightIn,
+        widthIn: focusWidthIn,
+        heightIn: focusHeightIn,
         name: displayName,
         price: totalPrice,
         imageNames,

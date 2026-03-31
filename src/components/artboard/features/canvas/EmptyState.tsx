@@ -1,17 +1,40 @@
-export default function EmptyState() {
+import { MdOutlineFileUpload } from "react-icons/md";
+
+export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-      <div className="flex flex-col items-center">
-        <div className="w-24 h-24 bg-transparent rounded-xl flex items-center justify-center">
-          <img
-            src="/folder-icon.svg"
-            alt="folder"
-            className="w-[122px] h-[122px] drop-shadow-lg"
-          />
+    <div className="absolute inset-0 flex items-center justify-center">
+      <div className="w-[420px] max-w-[92vw]">
+        <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-white px-10 py-10 text-center shadow-sm">
+          <div className="mx-auto mb-5 flex   items-center justify-center rounded-xl  ">
+            <img src="/upload.svg" alt="Upload" className="h-10 w-10 text-slate-500" />
+          </div>
+          <div className="text-[18px] font-semibold text-slate-900">
+            Upload your artwork
+          </div>
+          <div className="mt-2 text-[13px] leading-5 text-slate-500">
+            Drag and drop files here or browse <br />
+            from your device
+          </div>
+          <button
+            onClick={onBrowse}
+            className="mx-auto mt-6 rounded-lg border border-slate-200 bg-white px-5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Browse files
+          </button>
+          <div className="mt-5 text-[11px] tracking-wide text-slate-400">
+            PNG • JPG • SVG • PDF
+          </div>
         </div>
-        <p className="text-[20px] text-gray-800 italic font-light">
-          Just drop your files directly to the artboard
-        </p>
+        <div className="mt-3 flex items-center justify-center gap-6 text-[11px] text-slate-400">
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-4 w-4 rounded-full border border-slate-300" />
+            <span>Max file size: 50MB</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-4 w-4 rounded-full border border-slate-300" />
+            <span>Recommended: 300 DPI</span>
+          </div>
+        </div>
       </div>
     </div>
   );
