@@ -6,6 +6,7 @@ import {
   listOrders,
   getOrderById,
   uploadAsset,
+  trimAsset,
   updateAccount,
   logout,
   listAssets,
@@ -24,6 +25,11 @@ import {
   reorder,
   getOrderTracking
 } from "../controllers/customer.controller.js";
+import {
+  createStripePaymentIntent,
+  createPaypalOrder,
+  capturePaypalOrder
+} from "../controllers/payments.controller.js";
 import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
@@ -39,6 +45,7 @@ router.get("/orders/:orderId/invoice", downloadInvoice);
 router.get("/orders/:orderId/tracking", getOrderTracking);
 router.post("/orders/:orderId/reorder", reorder);
 router.post("/assets", upload.single("file"), uploadAsset);
+router.post("/assets/trim", trimAsset);
 router.get("/assets", listAssets);
 router.get("/artboard-draft", getArtboardDraft);
 router.put("/artboard-draft", upsertArtboardDraft);
@@ -51,5 +58,8 @@ router.patch("/designs/:designId", updateDesign);
 router.delete("/designs/:designId", deleteDesign);
 router.post("/designs/:designId/duplicate", duplicateDesign);
 router.post("/cart/quote", getCartQuote);
+router.post("/payments/stripe/create-intent", createStripePaymentIntent);
+router.post("/payments/paypal/create-order", createPaypalOrder);
+router.post("/payments/paypal/capture-order", capturePaypalOrder);
 
 export default router;

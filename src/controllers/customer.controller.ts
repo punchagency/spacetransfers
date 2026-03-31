@@ -8,10 +8,186 @@ import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
 import fs from "fs";
 import path from "path";
+import { alphaTrimToFile } from "../utils/aiCrop.js";
+import { isRembgEnabled, runRembg } from "../utils/rembg.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
+
+export const trimAsset = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { url } = req.body || {};
+    if (!url || typeof url !== "string") {
+      const error = new Error("url is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+  
+    const marker = "/uploads/";
+    const idx = url.lastIndexOf(marker);
+    if (idx === -1) {
+      const error = new Error("Invalid asset url") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const filename = url.substring(idx + marker.length);
+    const safeFilename = path.basename(filename);
+    const sourcePath = path.join(process.cwd(), "uploads", safeFilename);
+
+    if (!fs.existsSync(sourcePath)) {
+      const error = new Error("Asset file not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const computeTrimRegion = async (filePath: string) => {
+      const meta = await sharp(filePath).metadata();
+      const originalWidth = meta.width || 0;
+      const originalHeight = meta.height || 0;
+      if (!originalWidth || !originalHeight) return null;
+
+      const maxProbe = 800;
+      const probe = await sharp(filePath)
+        .ensureAlpha()
+        .resize({
+          width: Math.min(originalWidth, maxProbe),
+          height: Math.min(originalHeight, maxProbe),
+          fit: "inside",
+        })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      const probeWidth = probe.info.width;
+      const probeHeight = probe.info.height;
+      const buf = probe.data;
+
+      const idxAt = (x: number, y: number) => (y * probeWidth + x) * 4;
+      const corners = [
+        idxAt(0, 0),
+        idxAt(probeWidth - 1, 0),
+        idxAt(0, probeHeight - 1),
+        idxAt(probeWidth - 1, probeHeight - 1),
+      ];
+
+      const bg = corners.reduce(
+        (acc, i) => {
+          acc.r += buf[i];
+          acc.g += buf[i + 1];
+          acc.b += buf[i + 2];
+          acc.a += buf[i + 3];
+          return acc;
+        },
+        { r: 0, g: 0, b: 0, a: 0 }
+      );
+
+      const bgR = bg.r / corners.length;
+      const bgG = bg.g / corners.length;
+      const bgB = bg.b / corners.length;
+      const bgA = bg.a / corners.length;
+      const bgIsTransparent = bgA < 10;
+
+      const colorThreshold = 25;
+      const alphaThreshold = 10;
+
+      let minX = probeWidth;
+      let minY = probeHeight;
+      let maxX = -1;
+      let maxY = -1;
+
+      for (let y = 0; y < probeHeight; y++) {
+        for (let x = 0; x < probeWidth; x++) {
+          const i = idxAt(x, y);
+          const r = buf[i];
+          const g = buf[i + 1];
+          const b = buf[i + 2];
+          const a = buf[i + 3];
+
+          let isForeground = false;
+          if (bgIsTransparent) {
+            isForeground = a > alphaThreshold;
+          } else {
+            const dr = r - bgR;
+            const dg = g - bgG;
+            const db = b - bgB;
+            const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+            isForeground = dist > colorThreshold;
+          }
+
+          if (isForeground) {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      if (maxX < 0 || maxY < 0) return null;
+
+      const scaleX = originalWidth / probeWidth;
+      const scaleY = originalHeight / probeHeight;
+      const left = Math.max(0, Math.floor(minX * scaleX));
+      const top = Math.max(0, Math.floor(minY * scaleY));
+      const right = Math.min(originalWidth, Math.ceil((maxX + 1) * scaleX));
+      const bottom = Math.min(originalHeight, Math.ceil((maxY + 1) * scaleY));
+
+      const width = Math.max(1, right - left);
+      const height = Math.max(1, bottom - top);
+
+      return { left, top, width, height };
+    };
+
+    const port = env.port || 4000;
+    const parsed = path.parse(safeFilename);
+    const trimmedFilename = `${parsed.name}-trim.png`;
+    const trimmedPath = path.join(process.cwd(), "uploads", trimmedFilename);
+
+    const alphaThreshold =
+      parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
+    const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
+
+    if (isRembgEnabled()) {
+      const rembgPath = path.join(process.cwd(), "uploads", `${parsed.name}-rembg.png`);
+      await runRembg(sourcePath, rembgPath);
+      await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
+    } else {
+      const region = await computeTrimRegion(sourcePath);
+      if (region) {
+        await sharp(sourcePath)
+          .ensureAlpha()
+          .extract(region)
+          .png()
+          .toFile(trimmedPath);
+      } else {
+        await sharp(sourcePath)
+          .ensureAlpha()
+          .png()
+          .toFile(trimmedPath);
+      }
+    }
+
+    const meta = await sharp(trimmedPath).metadata();
+    const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
+    const trimmedWidthPx = meta.width || null;
+    const trimmedHeightPx = meta.height || null;
+    const trimmedWidthIn =
+      trimmedWidthPx ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : null;
+    const trimmedHeightIn =
+      trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
+
+    res.json({
+      trimmedUrl: `http://localhost:${port}/uploads/${trimmedFilename}`,
+      trimmedWidthPx,
+      trimmedHeightPx,
+      trimmedWidthIn,
+      trimmedHeightIn,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const updateAccount = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -181,6 +357,12 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 
     if (payment.method === "card" && !payment.paymentIntentId) {
       const error = new Error("payment.paymentIntentId is required for card payments") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (payment.method === "paypal" && (!payment.paypalOrderId || !payment.paypalCaptureId)) {
+      const error = new Error("payment.paypalOrderId and payment.paypalCaptureId are required for PayPal payments") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -665,12 +847,12 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     const port = env.port || 4000;
     const fileUrl = `http://localhost:${port}/uploads/${req.file.filename}`;
 
-    let widthPx, heightPx, dpi;
+    let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
     try {
       const metadata = await sharp(req.file.path).metadata();
       widthPx = metadata.width;
       heightPx = metadata.height;
-      dpi = metadata.density || 72;
+      dpi = metadata.density || 300;
     } catch (err: any) {
       if (err.message && err.message.includes('unsupported image format')) {
         console.log(`Metadata extraction skipped for ${req.file.originalname}: Unsupported format`);
@@ -679,15 +861,167 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
+    const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
+    const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
+    const heightIn = heightPx && normalizedDpi ? +(heightPx / normalizedDpi).toFixed(4) : undefined;
+
+    const computeTrimRegion = async (filePath: string) => {
+      const meta = await sharp(filePath).metadata();
+      const originalWidth = meta.width || 0;
+      const originalHeight = meta.height || 0;
+      if (!originalWidth || !originalHeight) return null;
+
+      const maxProbe = 800;
+      const probe = await sharp(filePath)
+        .ensureAlpha()
+        .resize({
+          width: Math.min(originalWidth, maxProbe),
+          height: Math.min(originalHeight, maxProbe),
+          fit: "inside",
+        })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      const probeWidth = probe.info.width;
+      const probeHeight = probe.info.height;
+      const buf = probe.data;
+
+      const idxAt = (x: number, y: number) => (y * probeWidth + x) * 4;
+      const corners = [
+        idxAt(0, 0),
+        idxAt(probeWidth - 1, 0),
+        idxAt(0, probeHeight - 1),
+        idxAt(probeWidth - 1, probeHeight - 1),
+      ];
+
+      const bg = corners.reduce(
+        (acc, i) => {
+          acc.r += buf[i];
+          acc.g += buf[i + 1];
+          acc.b += buf[i + 2];
+          acc.a += buf[i + 3];
+          return acc;
+        },
+        { r: 0, g: 0, b: 0, a: 0 }
+      );
+
+      const bgR = bg.r / corners.length;
+      const bgG = bg.g / corners.length;
+      const bgB = bg.b / corners.length;
+      const bgA = bg.a / corners.length;
+      const bgIsTransparent = bgA < 10;
+
+      const colorThreshold = 25;
+      const alphaThreshold = 10;
+
+      let minX = probeWidth;
+      let minY = probeHeight;
+      let maxX = -1;
+      let maxY = -1;
+
+      for (let y = 0; y < probeHeight; y++) {
+        for (let x = 0; x < probeWidth; x++) {
+          const i = idxAt(x, y);
+          const r = buf[i];
+          const g = buf[i + 1];
+          const b = buf[i + 2];
+          const a = buf[i + 3];
+
+          let isForeground = false;
+          if (bgIsTransparent) {
+            isForeground = a > alphaThreshold;
+          } else {
+            const dr = r - bgR;
+            const dg = g - bgG;
+            const db = b - bgB;
+            const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+            isForeground = dist > colorThreshold;
+          }
+
+          if (isForeground) {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      if (maxX < 0 || maxY < 0) return null;
+
+      const scaleX = originalWidth / probeWidth;
+      const scaleY = originalHeight / probeHeight;
+      const left = Math.max(0, Math.floor(minX * scaleX));
+      const top = Math.max(0, Math.floor(minY * scaleY));
+      const right = Math.min(originalWidth, Math.ceil((maxX + 1) * scaleX));
+      const bottom = Math.min(originalHeight, Math.ceil((maxY + 1) * scaleY));
+
+      const width = Math.max(1, right - left);
+      const height = Math.max(1, bottom - top);
+
+      return { left, top, width, height };
+    };
+
+    let trimmedUrl: string | undefined;
+    let trimmedWidthPx: number | undefined;
+    let trimmedHeightPx: number | undefined;
+    let trimmedWidthIn: number | undefined;
+    let trimmedHeightIn: number | undefined;
+    try {
+      const dir = path.dirname(req.file.path);
+      const parsed = path.parse(req.file.filename);
+      const trimmedFilename = `${parsed.name}-trim.png`;
+      const trimmedPath = path.join(dir, trimmedFilename);
+
+      const alphaThreshold =
+        parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
+      const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
+
+      if (isRembgEnabled()) {
+        const rembgPath = path.join(dir, `${parsed.name}-rembg.png`);
+        await runRembg(req.file.path, rembgPath);
+        await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
+      } else {
+        const region = await computeTrimRegion(req.file.path);
+        if (region) {
+          await sharp(req.file.path)
+            .ensureAlpha()
+            .extract(region)
+            .png()
+            .toFile(trimmedPath);
+        } else {
+          await sharp(req.file.path)
+            .ensureAlpha()
+            .png()
+            .toFile(trimmedPath);
+        }
+      }
+
+      const trimmedMeta = await sharp(trimmedPath).metadata();
+      trimmedWidthPx = trimmedMeta.width;
+      trimmedHeightPx = trimmedMeta.height;
+      trimmedWidthIn =
+        trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
+      trimmedHeightIn =
+        trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
+
+      trimmedUrl = `http://localhost:${port}/uploads/${trimmedFilename}`;
+    } catch {
+      trimmedUrl = undefined;
+    }
+
     const asset = new Asset({
       user: req.user?.id,
       url: fileUrl,
+      trimmedUrl,
       originalFilename: req.file.originalname,
       mimeType: req.file.mimetype,
       sizeBytes: req.file.size,
       widthPx,
       heightPx,
-      dpi
+      trimmedWidthPx,
+      trimmedHeightPx,
+      dpi: normalizedDpi
     });
 
     await asset.save();
@@ -695,11 +1029,18 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     res.status(201).json({
       id: asset.id,
       url: asset.url,
+      trimmedUrl: asset.trimmedUrl || null,
       originalFilename: asset.originalFilename,
       sizeBytes: asset.sizeBytes,
       widthPx: asset.widthPx,
       heightPx: asset.heightPx,
-      dpi: asset.dpi
+      dpi: asset.dpi,
+      widthIn,
+      heightIn,
+      trimmedWidthPx: asset.trimmedWidthPx || null,
+      trimmedHeightPx: asset.trimmedHeightPx || null,
+      trimmedWidthIn: trimmedWidthIn || null,
+      trimmedHeightIn: trimmedHeightIn || null
     });
   } catch (error) {
     next(error);
@@ -714,10 +1055,13 @@ export const listAssets = async (req: Request, res: Response, next: NextFunction
     const responseItems = assets.map(asset => ({
       id: asset.id,
       url: asset.url,
+      trimmedUrl: asset.trimmedUrl || null,
       originalFilename: asset.originalFilename,
       sizeBytes: asset.sizeBytes,
       widthPx: asset.widthPx,
       heightPx: asset.heightPx,
+      trimmedWidthPx: asset.trimmedWidthPx || null,
+      trimmedHeightPx: asset.trimmedHeightPx || null,
       dpi: asset.dpi
     }));
 

@@ -3,11 +3,14 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface IAsset extends Document {
   user: mongoose.Types.ObjectId;
   url: string;
+  trimmedUrl?: string;
   originalFilename: string;
   mimeType?: string;
   sizeBytes?: number;
   widthPx?: number;
   heightPx?: number;
+  trimmedWidthPx?: number;
+  trimmedHeightPx?: number;
   dpi?: number;
   createdAt: Date;
   updatedAt: Date;
@@ -24,6 +27,9 @@ const assetSchema = new Schema<IAsset>(
       type: String,
       required: true
     },
+    trimmedUrl: {
+      type: String
+    },
     originalFilename: {
       type: String,
       required: true
@@ -38,6 +44,12 @@ const assetSchema = new Schema<IAsset>(
       type: Number
     },
     heightPx: {
+      type: Number
+    },
+    trimmedWidthPx: {
+      type: Number
+    },
+    trimmedHeightPx: {
       type: Number
     },
     dpi: {
