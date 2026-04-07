@@ -1150,11 +1150,11 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
         if (design.pricing && typeof design.pricing.price === "number") {
           unitPrice = design.pricing.price;
         } else if (design.pricing && typeof design.pricing.areaSqFt === "number") {
-          const baseRatePerSqFt = 10;
+          const baseRatePerSqFt = 3.5;
           unitPrice = design.pricing.areaSqFt * baseRatePerSqFt;
         } else if (typeof widthIn === "number" && typeof heightIn === "number") {
           const areaSqFt = (widthIn * heightIn) / 144;
-          const baseRatePerSqFt = 10;
+          const baseRatePerSqFt = 3.5;
           unitPrice = areaSqFt * baseRatePerSqFt;
         } else {
           const error = new Error("Unable to determine price for gangsheet item") as CustomError;
