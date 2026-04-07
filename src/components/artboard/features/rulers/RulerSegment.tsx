@@ -1,11 +1,13 @@
+import { CANVAS } from "../../../../config/artboard.config";
+
 export default function RulerSegment({ vertical = false, label }: { vertical?: boolean; label: number }) {
   // Positions are defined as fractions of the segment (0–1),
-  // mapped from the original 12/24/.../84 values over a 96px base.
-  const base = 96;
-  const rawTicks = [12, 24, 36, 48, 60, 72, 84];
+  // mapped from the original ticks over a base (PPI).
+  const base = CANVAS.PIXELS_PER_INCH;
+  const rawTicks = [12, 24, 36, 48, 60, 72, 84].map(t => t * (base / 96));
   const ticks = rawTicks.map((pos) => ({
     pos: pos / base,
-    size: pos === 48 ? "large" : pos === 24 || pos === 72 ? "medium" : "small",
+    size: pos === base / 2 ? "large" : pos === base / 4 || pos === (3 * base) / 4 ? "medium" : "small",
   }));
 
   return (

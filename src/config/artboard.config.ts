@@ -8,11 +8,26 @@ export const ZOOM = {
 } as const;
 
 // Canvas configuration
-export const CANVAS = {
+export const CANVAS = { 
   PIXELS_PER_INCH: 96,
   DEFAULT_MARGIN: 0.15,
   DEFAULT_SPACING: 0.1,
   TOP_CENTER_Y: 1.0,
+  RULER_OFFSET_PX: 32,
+  GRID_GAP_IN: 0.06,
+  SELECTION_BUFFER_IN: 0.084,
+} as const;
+
+// Unit configuration
+export const UNIT = {
+  INCH: {
+    LABEL: "in",
+    DECIMALS: 2,
+  },
+  PIXEL: {
+    LABEL: "px",
+    DECIMALS: 0,
+  },
 } as const;
 
 // DPI configuration
@@ -40,7 +55,7 @@ export const ANIMATION = {
 // Pricing configuration
 export const PRICING = {
   DEFAULT_ITEM_PRICE: 12.34,
-  PRICE_PER_SQ_FT: 5.5,
+  PRICE_PER_SQ_FT: 3.5,
   SQUARE_INCHES_PER_SQ_FT: 144,
 } as const;
 

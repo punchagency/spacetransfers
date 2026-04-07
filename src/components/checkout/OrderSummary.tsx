@@ -20,12 +20,13 @@ interface OrderSummaryProps {
   subtotal: number;
   shippingCost: number;
   tax: number;
+  taxRate?: number;
   total: number;
   onNext: () => void;
   isSubmitting?: boolean;
   disableNext?: boolean;
   nextLabel?: string;
-}
+}     
 
 export default function OrderSummary({
   cartItems,
@@ -33,12 +34,15 @@ export default function OrderSummary({
   subtotal,
   shippingCost,
   tax,
+  taxRate = 0.094,
   total,
   onNext,
   isSubmitting = false,
   disableNext = false,
   nextLabel,
 }: OrderSummaryProps) {
+  if (!cartItems || cartItems.length === 0) return null;
+
   const renderItemPreview = (item: CartItem) => {
     if (item.type === 'gangsheet') {
       return (
@@ -55,7 +59,7 @@ export default function OrderSummary({
                     <div key={idx} className="relative aspect-square">
                       <img src={subItem.url} alt="" className="w-full h-full object-contain" />
                     </div>
-                  ))}
+                  ))} 
                 </div>
               </div>
             </div>
@@ -108,21 +112,17 @@ export default function OrderSummary({
           <span className="text-gray-600">Subtotal ({cartItems.length} items)</span>
           <span className="font-medium">${subtotal.toFixed(2)}</span>
         </div>
-        {step > 1 && (
-          <>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-600">Shipping</span>
-              <span className="font-medium">${shippingCost.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-600">Tax (8%)</span>
-              <span className="font-medium">${tax.toFixed(2)}</span>
-            </div>
-          </>
-        )}
+        <div className="flex justify-between text-sm">
+          <span className="text-gray-600">Shipping</span>
+          <span className="font-medium">${shippingCost.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-gray-600">Tax ({(taxRate * 100).toFixed(1)}%)</span>
+          <span className="font-medium">${tax.toFixed(2)}</span>
+        </div>
         <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
           <span>Total</span>
-          <span>${step > 1 ? total.toFixed(2) : subtotal.toFixed(2)}</span>
+          <span>${total.toFixed(2)}</span>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ import { animateBounce, animateShake, animateItemPosition } from "../utils";
 import { calculateGridLayout } from "../utils";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
+import { CANVAS } from "../../../../config/artboard.config";
 
 export const useDropHandler = (
   items: ArtboardItem[],
@@ -403,12 +404,12 @@ export const useDropHandler = (
         "#artboard-main-container"
       ) as HTMLElement;
       const currentCanvasWidth = artboardContainer
-        ? artboardContainer.offsetWidth / 96
+        ? artboardContainer.offsetWidth / CANVAS.PIXELS_PER_INCH
         : canvasWidth || 24;
 
       const allItems = [...created, ...items];
-      const offsetInches = 20 / 96;
-      const effectiveMargin = marginSize + offsetInches;
+      const rulerOffsetIn = CANVAS.RULER_OFFSET_PX / CANVAS.PIXELS_PER_INCH;
+      const effectiveMargin = marginSize + rulerOffsetIn;
 
       const finalUpdates = calculateGridLayout(
         allItems,
@@ -432,7 +433,7 @@ export const useDropHandler = (
 
       // 3. Perform the physical interaction sequence
       setTimeout(() => {
-        const PPI = 96;
+        const PPI = CANVAS.PIXELS_PER_INCH;
 
         // Calculate items that need to be pushed
         const itemsToPush = finalUpdates.filter((u) => {
@@ -577,8 +578,11 @@ export const useDropHandler = (
 
     const rect = e.currentTarget.getBoundingClientRect();
     const zoomVal = zoom || 1;
-    const dropX = (e.clientX - rect.left) / (96 * zoomVal);
-    const dropY = (e.clientY - rect.top) / (96 * zoomVal);
+    const offset = CANVAS.RULER_OFFSET_PX;
+    const ppi = CANVAS.PIXELS_PER_INCH;
+    
+    const dropX = (e.clientX - rect.left - offset) / (ppi * zoomVal);
+    const dropY = (e.clientY - rect.top - offset) / (ppi * zoomVal);
 
     await processDrop({ droppedFiles, droppedUrl, dropX, dropY });
   };
@@ -595,7 +599,7 @@ export const useDropHandler = (
       "#artboard-main-container"
     ) as HTMLElement;
     const currentCanvasWidth = artboardContainer
-      ? artboardContainer.offsetWidth / 96
+      ? artboardContainer.offsetWidth / CANVAS.PIXELS_PER_INCH
       : canvasWidth || 24;
     const dropX = currentCanvasWidth / 2;
     const dropY = 6;

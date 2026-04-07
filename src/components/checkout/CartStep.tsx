@@ -162,8 +162,13 @@ export default function CartStep({
                   </div>
                   <div>
                     <div className="text-lg font-semibold text-right">
-                      ${item.price}
+                      ${((item.price || 0) * (item.quantity || item.copies || 1)).toFixed(2)}
                     </div>
+                    {(item.quantity || item.copies || 1) > 1 && (
+                      <div className="text-xs text-gray-500 text-right">
+                        ${(item.price || 0).toFixed(2)} each
+                      </div>
+                    )}
                     <div className="flex flex-col items-end gap-2 mt-2">
                       <div className="flex items-center border border-gray-300 rounded overflow-hidden">
                         <button

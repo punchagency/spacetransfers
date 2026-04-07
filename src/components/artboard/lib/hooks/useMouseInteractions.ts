@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { ArtboardItem } from "../../types";
+import { CANVAS } from "../../../../config/artboard.config";
 
 export const useMouseInteractions = (
   items: ArtboardItem[],
@@ -49,33 +50,31 @@ export const useMouseInteractions = (
     if (!isResizing || !resizeStart || selectedId == null) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      const item = items.find((it) => it.id === selectedId);
-      if (!item) return;
+      setItems((prevItems) => {
+        const item = prevItems.find((it) => it.id === selectedId);
+        if (!item) return prevItems;
 
-      const deltaX = (e.clientX - resizeStart.x) / (96 * zoom);
-      const deltaY = (e.clientY - resizeStart.y) / (96 * zoom);
-      const newWidth = Math.max(0.5, resizeStart.width + deltaX);
-      const newHeight = Math.max(0.5, resizeStart.height + deltaY);
+        const deltaX = (e.clientX - resizeStart.x) / (CANVAS.PIXELS_PER_INCH * zoom);
+        const deltaY = (e.clientY - resizeStart.y) / (CANVAS.PIXELS_PER_INCH * zoom);
+        const newWidth = Math.max(0.5, resizeStart.width + deltaX);
+        const newHeight = Math.max(0.5, resizeStart.height + deltaY);
 
-      if (item.linked) {
-        const ratio = resizeStart.height / resizeStart.width;
-        const avgDelta = (deltaX + deltaY / ratio) / 2;
-        const finalWidth = Math.max(0.5, resizeStart.width + avgDelta);
-        const finalHeight = finalWidth * ratio;
-        setItems((prev) =>
-          prev.map((it) =>
+        if (item.linked) {
+          const ratio = resizeStart.height / resizeStart.width;
+          const avgDelta = (deltaX + deltaY / ratio) / 2;
+          const finalWidth = Math.max(0.5, resizeStart.width + avgDelta);
+          const finalHeight = finalWidth * ratio;
+          return prevItems.map((it) =>
             it.id === selectedId
               ? { ...it, widthIn: finalWidth, heightIn: finalHeight }
               : it
-          )
-        );
-      } else {
-        setItems((prev) =>
-          prev.map((it) =>
+          );
+        } else {
+          return prevItems.map((it) =>
             it.id === selectedId ? { ...it, widthIn: newWidth, heightIn: newHeight } : it
-          )
-        );
-      }
+          );
+        }
+      });
     };
 
     const handleMouseUp = () => {
@@ -95,60 +94,58 @@ export const useMouseInteractions = (
     if (!isDraggingItem || !dragStart || selectedId == null) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = (e.clientX - dragStart.x) / (96 * zoom);
-      const deltaY = (e.clientY - dragStart.y) / (96 * zoom);
+      const deltaX = (e.clientX - dragStart.x) / (CANVAS.PIXELS_PER_INCH * zoom);
+      const deltaY = (e.clientY - dragStart.y) / (CANVAS.PIXELS_PER_INCH * zoom);
       const newPosX = dragStart.posX + deltaX;
       const newPosY = dragStart.posY + deltaY;
 
-      if (autoNestStickers) {
-        setItems((prev) => {
-          const others = prev.filter(it => it.id !== selectedId);
-          const dragged = prev.find(it => it.id === selectedId);
-          if (!dragged) return prev;
+      setItems((prev) => {
+        if (autoNestStickers) {
+            const others = prev.filter(it => it.id !== selectedId);
+            const dragged = prev.find(it => it.id === selectedId);
+            if (!dragged) return prev;
 
-          // Find the best new index based on center-point proximity
-          let targetIndex = 0;
-          let minDistance = Infinity;
+            // Find the best new index based on center-point proximity
+            let targetIndex = 0;
+            let minDistance = Infinity;
 
-          others.forEach((it, idx) => {
-            const dist = Math.sqrt(
-              Math.pow(it.posX + it.widthIn / 2 - (newPosX + dragged.widthIn / 2), 2) +
-              Math.pow(it.posY + it.heightIn / 2 - (newPosY + dragged.heightIn / 2), 2)
-            );
+            others.forEach((it, idx) => {
+              const dist = Math.sqrt(
+                Math.pow(it.posX + it.widthIn / 2 - (newPosX + dragged.widthIn / 2), 2) +
+                Math.pow(it.posY + it.heightIn / 2 - (newPosY + dragged.heightIn / 2), 2)
+              );
 
-            if (dist < minDistance) {
-              minDistance = dist;
-              // If mouse center is more towards the right of this item's center, it goes after
-              targetIndex = (newPosX + dragged.widthIn / 2) > (it.posX + it.widthIn / 2) ? idx + 1 : idx;
+              if (dist < minDistance) {
+                minDistance = dist;
+                // If mouse center is more towards the right of this item's center, it goes after
+                targetIndex = (newPosX + dragged.widthIn / 2) > (it.posX + it.widthIn / 2) ? idx + 1 : idx;
+              }
+            });
+
+            const oldIndex = prev.findIndex(it => it.id === selectedId);
+            if (oldIndex === targetIndex) {
+              return prev.map(it => it.id === selectedId ? { ...it, posX: newPosX, posY: newPosY } : it);
             }
-          });
 
-          const oldIndex = prev.findIndex(it => it.id === selectedId);
-          if (oldIndex === targetIndex) {
-            return prev.map(it => it.id === selectedId ? { ...it, posX: newPosX, posY: newPosY } : it);
-          }
+            // Order changed! Create new array order
+            const newItems = [...others];
+            newItems.splice(targetIndex, 0, { ...dragged, posX: newPosX, posY: newPosY, gravityActive: false });
 
-          // Order changed! Create new array order
-          const newItems = [...others];
-          newItems.splice(targetIndex, 0, { ...dragged, posX: newPosX, posY: newPosY, gravityActive: false });
-
-          return newItems.map((it, idx) => {
-            const indexChanged = idx !== prev.findIndex(p => p.id === it.id);
-            return {
-              ...it,
-              gravityActive: it.id !== selectedId && indexChanged
-            };
-          });
-        });
-      } else {
-        const finalX = snapToGrid ? snapToGridPoint(newPosX) : newPosX;
-        const finalY = snapToGrid ? snapToGridPoint(newPosY) : newPosY;
-        setItems((prev) =>
-          prev.map((it) =>
+            return newItems.map((it, idx) => {
+              const indexChanged = idx !== prev.findIndex(p => p.id === it.id);
+              return {
+                ...it,
+                gravityActive: it.id !== selectedId && indexChanged
+              };
+            });
+        } else {
+          const finalX = snapToGrid ? snapToGridPoint(newPosX) : newPosX;
+          const finalY = snapToGrid ? snapToGridPoint(newPosY) : newPosY;
+          return prev.map((it) =>
             it.id === selectedId ? { ...it, posX: finalX, posY: finalY } : it
-          )
-        );
-      }
+          );
+        }
+      });
     };
 
     const handleMouseUp = () => {

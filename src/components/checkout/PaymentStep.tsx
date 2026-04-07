@@ -24,6 +24,7 @@ interface PaymentStepProps {
   onPaypalCaptured: (data: { paypalOrderId: string; paypalCaptureId: string }) => void;
   paypalClientId?: string;
   stripeEnabled: boolean;
+  onCardCompleteChange?: (complete: boolean) => void;
 }
 
 function StripeCardSection({
@@ -32,6 +33,7 @@ function StripeCardSection({
   customer,
   shippingAddress,
   onCardHandlerReady,
+  onCardCompleteChange,
 }: {
   mappedItems: any[];
   shipping: "standard" | "express";
@@ -44,6 +46,7 @@ function StripeCardSection({
     country: string;
   };
   onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
+  onCardCompleteChange?: (complete: boolean) => void;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -136,6 +139,9 @@ function StripeCardSection({
               },
             },
           }}
+          onChange={(e) => {
+            onCardCompleteChange?.(Boolean(e.complete));
+          }}
         />
       </div>
       {!stripe || !elements ? (
@@ -160,6 +166,7 @@ export default function PaymentStep({
   onPaypalCaptured,
   paypalClientId,
   stripeEnabled,
+  onCardCompleteChange,
 }: PaymentStepProps) {
   const mappedItems = cartItems.map((item) => ({
     type: item.type || "gangsheet",
@@ -214,6 +221,7 @@ export default function PaymentStep({
                 customer={customer}
                 shippingAddress={shippingAddress}
                 onCardHandlerReady={onCardHandlerReady}
+                onCardCompleteChange={onCardCompleteChange}
               />
             ) : (
               <div className="mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">

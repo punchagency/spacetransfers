@@ -3,6 +3,7 @@ import { ArtboardItem } from "../../types";
 import { animateItemPosition } from "../utils";
 import { calculateGridLayout } from "../utils";
 import { snapToGridPoint } from "../utils";
+import { CANVAS, PRICING, UNIT } from "../../../../config/artboard.config";
 
 export const useArtboardEffects = (
   items: ArtboardItem[],
@@ -74,9 +75,8 @@ export const useArtboardEffects = (
       setLastConfig({ marginSize, spacing });
     }
 
-    // Add fixed 20px offset to match CanvasMargins visual position
-    const offsetInches = 20 / 96;
-    const effectiveMargin = marginSize + offsetInches;
+    // Layout is now relative to ruler "0" (which is the container origin)
+    const effectiveMargin = marginSize;
 
     const updates = calculateGridLayout(items, canvasWidth, spacing, autoNestStickers, effectiveMargin);
 
@@ -142,31 +142,61 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      const areaSf = +items
-        .reduce((sum, item) => {
-          const itemWidthIn = +item.widthIn.toFixed(2);
-          const itemHeightIn = +item.heightIn.toFixed(2);
-          const itemAreaSf = +((itemWidthIn * itemHeightIn) / 144).toFixed(2);
-          return sum + itemAreaSf * (item.copies || 1);
-        }, 0)
-        .toFixed(2);
+      const bounds = items.reduce(
+        (acc, item) => {
+          const copies = item.copies || 1;
+          const gap = CANVAS.GRID_GAP_IN;
+          const effectiveMargin = marginSize;
+          const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
 
-      const focusItem =
-        selectedId != null
-          ? items.find((it) => it.id === selectedId)
-          : items[items.length - 1];
-      const focusWidthIn = focusItem?.widthIn ?? 0;
-      const focusHeightIn = focusItem?.heightIn ?? 0;
+          const scaledWidth = item.widthIn;
+          const scaledHeight = item.heightIn;
+          const capacityCols = Math.max(
+            1,
+            Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
+          );
+          const visibleCols = Math.min(copies, capacityCols);
+          const rows = Math.ceil(copies / capacityCols);
 
-      // Calculate total price based on all items on the artboard
-      const totalPrice = items.reduce((sum, item) => {
-        const itemWidthIn = +item.widthIn.toFixed(2);
-        const itemHeightIn = +item.heightIn.toFixed(2);
-        const itemAreaSf = +((itemWidthIn * itemHeightIn) / 144).toFixed(2);
-        const pricePerSqFt = 5.5;
-        const itemPrice = +(itemAreaSf * pricePerSqFt * (item.copies || 1)).toFixed(2);
-        return sum + itemPrice;
-      }, 0);
+          const groupWidthRaw =
+            visibleCols * scaledWidth + (visibleCols - 1) * gap;
+          const maxGroupWidth = Math.max(0, maxAvailableWidth);
+          const groupWidth = Math.min(groupWidthRaw, maxGroupWidth);
+
+          const groupHeight =
+            rows * scaledHeight + (rows - 1) * gap;
+
+          const centeredLeft =
+            effectiveMargin + (maxAvailableWidth - groupWidth) / 2;
+          const rightBoundLeft = canvasWidth - effectiveMargin - groupWidth;
+          const clampedLeft =
+            copies > 1
+              ? Math.max(
+                  effectiveMargin,
+                  Math.min(centeredLeft, rightBoundLeft),
+                )
+              : Math.max(effectiveMargin, item.posX);
+          const clampedTop = Math.max(effectiveMargin, item.posY);
+
+          const left = clampedLeft;
+          const top = clampedTop;
+          const right = clampedLeft + groupWidth;
+          const bottom = clampedTop + groupHeight;
+          return {
+            minX: Math.min(acc.minX, left),
+            minY: Math.min(acc.minY, top),
+            maxX: Math.max(acc.maxX, right),
+            maxY: Math.max(acc.maxY, bottom),
+          };
+        },
+        { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: 0, maxY: 0 },
+      );
+
+      const usedWidthIn = items.length > 0 ? Math.max(0, bounds.maxX) : 0;
+      const usedHeightIn = items.length > 0 ? Math.max(0, bounds.maxY) : 0;
+
+      const totalAreaSf = +((usedWidthIn * usedHeightIn) / PRICING.SQUARE_INCHES_PER_SQ_FT).toFixed(UNIT.INCH.DECIMALS);
+      const totalPrice = +(totalAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(UNIT.INCH.DECIMALS);
 
       // Collect all image names
       const imageNames = items.map(item =>
@@ -178,13 +208,13 @@ export const useArtboardEffects = (
 
       onHeaderInfoChange({
         hasItem: items.length > 0,
-        areaSf,
-        widthIn: focusWidthIn,
-        heightIn: focusHeightIn,
+        areaSf: totalAreaSf,
+        widthIn: +usedWidthIn.toFixed(UNIT.INCH.DECIMALS),
+        heightIn: +usedHeightIn.toFixed(UNIT.INCH.DECIMALS),
         name: displayName,
         price: totalPrice,
         imageNames,
       });
     }
-  }, [items, selectedId, onHeaderInfoChange]);
+  }, [items, canvasWidth, marginSize, onHeaderInfoChange]);
 };

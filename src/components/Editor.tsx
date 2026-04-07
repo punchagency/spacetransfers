@@ -87,7 +87,19 @@ export default function Editor() {
 
     prevUserIdRef.current = user.id;
   }, [isLoggedIn, user?.id]);
-  const [cartItems, setCartItems] = useState<any[]>([]);
+  const [cartItems, setCartItems] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem("cart");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem("cart", JSON.stringify(cartItems));
+  }, [cartItems]);
+
   const [headerInfo, setHeaderInfo] = useState<{
     hasItem: boolean;
     areaSf?: number;
@@ -495,12 +507,17 @@ export default function Editor() {
         return;
       }
 
-      // Prevent adding duplicate gang sheet to cart
-      const existingGangSheet = cartItems.find(
-        (item) => item.type === "gangsheet"
+      const normalized = ensureUniqueItemIds(currentItems);
+      const designSignature = getGangsheetSnapshot(normalized);
+      const isDuplicate = cartItems.some(
+        (item) =>
+          item.type === "gangsheet" &&
+          typeof (item as any).designSignature === "string" &&
+          (item as any).designSignature === designSignature
       );
-      if (existingGangSheet) {
-        setCartWarning("This gang sheet has already been added to your cart.");
+      if (isDuplicate) {
+        const msg = "This exact gang sheet is already in your cart.";
+        setCartWarning(msg);
         setTimeout(() => setCartWarning(null), 8000);
         return;
       }
@@ -515,7 +532,8 @@ export default function Editor() {
         name: "Gang Sheet",
         type: "gangsheet",
         image: "/placeholder-gangsheet.png",
-        items: currentItems,
+        items: normalized,
+        designSignature,
         price: headerInfo?.price || 0,
         widthIn: headerInfo?.widthIn || 24,
         heightIn: headerInfo?.heightIn || 19.5,
@@ -1015,7 +1033,12 @@ export default function Editor() {
         isOpen={showCheckoutModal}
         onClose={() => setShowCheckoutModal(false)}
         cartItems={cartItems}
-        onCheckoutSuccess={() => setCartItems([])}
+        onUpdateCart={setCartItems}
+        onCheckoutSuccess={() => {
+          setCartItems([]);
+          setShowCheckoutModal(false);
+          toast.success("Order placed successfully!");
+        }}
       />
       <AuthModal
         isOpen={showAuthModal}

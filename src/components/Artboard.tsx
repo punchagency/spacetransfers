@@ -103,7 +103,7 @@ export default function Artboard({
     if (initItems.length) {
       const maxId = initItems.reduce(
         (m: number, it: any) => Math.max(m, Number(it?.id) || 0),
-        0,
+        0, 
       );
       const initCounter =
         typeof initialData?.counter === "number" ? initialData.counter : 0;
@@ -192,6 +192,8 @@ export default function Artboard({
           showRulers={showRulers}
           showMargins={showMargins}
           marginSize={marginSize}
+          spacing={spacing}
+          autoNestStickers={autoNestStickers}
           canvasWidth={canvasWidth}
           isDragging={isDragging}
           isUploading={isUploading}

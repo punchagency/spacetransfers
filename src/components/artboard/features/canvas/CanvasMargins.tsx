@@ -1,3 +1,5 @@
+import { CANVAS } from "../../../../config/artboard.config";
+
 interface CanvasMarginsProps {
   showMargins: boolean;
   showRulers: boolean;
@@ -13,10 +15,11 @@ export default function CanvasMargins({
 }: CanvasMarginsProps) {
   if (!showMargins) return null;
 
-  const offset = showRulers ? 20 : 20;
-  const marginTop = `${offset + marginSize * 96}px`;
-  const marginLeft = `${offset + marginSize * 96}px`;
-  const marginRight = `${offset + marginSize * 96}px`;
+  const offset = 0; // Relative to scaled container
+  const ppi = CANVAS.PIXELS_PER_INCH;
+  const marginTop = `${offset + marginSize * ppi}px`;
+  const marginLeft = `${offset + marginSize * ppi}px`;
+  const marginRight = `${offset + marginSize * ppi}px`;
 
   return (
     <div className="absolute inset-0 pointer-events-none z-15">

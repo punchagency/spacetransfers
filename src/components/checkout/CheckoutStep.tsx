@@ -17,11 +17,13 @@ interface FormData {
 interface CheckoutStepProps {
   formData: FormData;
   setFormData: (data: FormData) => void;
+  errors?: Partial<Record<keyof FormData, string>>;
 }
 
 export default function CheckoutStep({
   formData,
   setFormData,
+  errors,
 }: CheckoutStepProps) {
   return (
     <>
@@ -41,10 +43,13 @@ export default function CheckoutStep({
               onChange={(e) =>
                 setFormData({ ...formData, firstName: e.target.value })
               }
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                formData.firstName ? "bg-[#F3F3F5]" : "bg-white"
-              }`}
+              className={`w-full px-3 py-2 border rounded-lg ${
+                errors?.firstName ? "border-red-500" : "border-gray-300"
+              } ${formData.firstName ? "bg-[#F3F3F5]" : "bg-white"}`}
             />
+            {errors?.firstName ? (
+              <div className="mt-1 text-xs text-red-600">{errors.firstName}</div>
+            ) : null}
           </div>
           <div>
             <label className="block text-sm font-medium mb-1">
@@ -56,10 +61,13 @@ export default function CheckoutStep({
               onChange={(e) =>
                 setFormData({ ...formData, lastName: e.target.value })
               }
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                formData.lastName ? "bg-[#F3F3F5]" : "bg-white"
-              }`}
+              className={`w-full px-3 py-2 border rounded-lg ${
+                errors?.lastName ? "border-red-500" : "border-gray-300"
+              } ${formData.lastName ? "bg-[#F3F3F5]" : "bg-white"}`}
             />
+            {errors?.lastName ? (
+              <div className="mt-1 text-xs text-red-600">{errors.lastName}</div>
+            ) : null}
           </div>
           <div className="col-span-2">
             <label className="block text-sm font-medium mb-1">
@@ -71,10 +79,13 @@ export default function CheckoutStep({
               onChange={(e) =>
                 setFormData({ ...formData, email: e.target.value })
               }
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                formData.email ? "bg-[#F3F3F5]" : "bg-white"
-              }`}
+              className={`w-full px-3 py-2 border rounded-lg ${
+                errors?.email ? "border-red-500" : "border-gray-300"
+              } ${formData.email ? "bg-[#F3F3F5]" : "bg-white"}`}
             />
+            {errors?.email ? (
+              <div className="mt-1 text-xs text-red-600">{errors.email}</div>
+            ) : null}
           </div>
           <div className="col-span-2">
             <label className="block text-sm font-medium mb-1">
@@ -86,10 +97,13 @@ export default function CheckoutStep({
               onChange={(e) =>
                 setFormData({ ...formData, phone: e.target.value })
               }
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                formData.phone ? "bg-[#F3F3F5]" : "bg-white"
-              }`}
+              className={`w-full px-3 py-2 border rounded-lg ${
+                errors?.phone ? "border-red-500" : "border-gray-300"
+              } ${formData.phone ? "bg-[#F3F3F5]" : "bg-white"}`}
             />
+            {errors?.phone ? (
+              <div className="mt-1 text-xs text-red-600">{errors.phone}</div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -110,10 +124,13 @@ export default function CheckoutStep({
               onChange={(e) =>
                 setFormData({ ...formData, street: e.target.value })
               }
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                formData.street ? "bg-[#F3F3F5]" : "bg-white"
-              }`}
+              className={`w-full px-3 py-2 border rounded-lg ${
+                errors?.street ? "border-red-500" : "border-gray-300"
+              } ${formData.street ? "bg-[#F3F3F5]" : "bg-white"}`}
             />
+            {errors?.street ? (
+              <div className="mt-1 text-xs text-red-600">{errors.street}</div>
+            ) : null}
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -126,10 +143,13 @@ export default function CheckoutStep({
                 onChange={(e) =>
                   setFormData({ ...formData, city: e.target.value })
                 }
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                  formData.city ? "bg-[#F3F3F5]" : "bg-white"
-                }`}
+                className={`w-full px-3 py-2 border rounded-lg ${
+                  errors?.city ? "border-red-500" : "border-gray-300"
+                } ${formData.city ? "bg-[#F3F3F5]" : "bg-white"}`}
               />
+              {errors?.city ? (
+                <div className="mt-1 text-xs text-red-600">{errors.city}</div>
+              ) : null}
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">
@@ -141,10 +161,13 @@ export default function CheckoutStep({
                 onChange={(e) =>
                   setFormData({ ...formData, state: e.target.value })
                 }
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                  formData.state ? "bg-[#F3F3F5]" : "bg-white"
-                }`}
+                className={`w-full px-3 py-2 border rounded-lg ${
+                  errors?.state ? "border-red-500" : "border-gray-300"
+                } ${formData.state ? "bg-[#F3F3F5]" : "bg-white"}`}
               />
+              {errors?.state ? (
+                <div className="mt-1 text-xs text-red-600">{errors.state}</div>
+              ) : null}
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -158,10 +181,13 @@ export default function CheckoutStep({
                 onChange={(e) =>
                   setFormData({ ...formData, postalCode: e.target.value })
                 }
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                  formData.postalCode ? "bg-[#F3F3F5]" : "bg-white"
-                }`}
+                className={`w-full px-3 py-2 border rounded-lg ${
+                  errors?.postalCode ? "border-red-500" : "border-gray-300"
+                } ${formData.postalCode ? "bg-[#F3F3F5]" : "bg-white"}`}
               />
+              {errors?.postalCode ? (
+                <div className="mt-1 text-xs text-red-600">{errors.postalCode}</div>
+              ) : null}
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">
@@ -173,10 +199,13 @@ export default function CheckoutStep({
                 onChange={(e) =>
                   setFormData({ ...formData, country: e.target.value })
                 }
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg ${
-                  formData.country ? "bg-[#F3F3F5]" : "bg-white"
-                }`}
+                className={`w-full px-3 py-2 border rounded-lg ${
+                  errors?.country ? "border-red-500" : "border-gray-300"
+                } ${formData.country ? "bg-[#F3F3F5]" : "bg-white"}`}
               />
+              {errors?.country ? (
+                <div className="mt-1 text-xs text-red-600">{errors.country}</div>
+              ) : null}
             </div>
           </div>
         </div>

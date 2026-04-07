@@ -3,6 +3,7 @@ import { FiLink } from "react-icons/fi";
 import ItemToolbar from "./ItemToolbar";
 import PropertiesPanel from "./PropertiesPanel";
 import { gsap } from "gsap";
+  import { CANVAS } from "../../../../config/artboard.config";
 
 interface ArtboardItemProps {
   item: {
@@ -78,11 +79,10 @@ export default function ArtboardItem({
   marginSize,
 }: ArtboardItemProps) {
   const panelWidth = 2.625;
-  const offsetInches = 20 / 96;
-  const effectiveMargin = marginSize + offsetInches;
+  const effectiveMargin = marginSize;
   const isTooCloseToRight =
     item.posX + item.widthIn + panelWidth > canvasWidth - effectiveMargin;
-  const gap = 0.06;
+  const gap = CANVAS.GRID_GAP_IN;
   const aspectRatio = item.heightIn / item.widthIn;
   const maxAvailableWidth = canvasWidth - 2 * effectiveMargin;
   const scaledWidth = item.widthIn;
@@ -92,12 +92,11 @@ export default function ArtboardItem({
     Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap))
   );
   const visibleCols = Math.min(item.copies, capacityCols);
-  const selectionBufferIn = 0.084;
   const groupWidthInchesRaw =
-    visibleCols * scaledWidth + (visibleCols - 1) * gap + selectionBufferIn;
+    visibleCols * scaledWidth + (visibleCols - 1) * gap;
   const maxGroupWidthInches = Math.max(
     0,
-    maxAvailableWidth - selectionBufferIn
+    maxAvailableWidth
   );
   const groupWidthInches = Math.min(groupWidthInchesRaw, maxGroupWidthInches);
   const centeredLeftInches =
@@ -118,7 +117,7 @@ export default function ArtboardItem({
     ? "left"
     : "right";
 
-  const groupWidthPx = groupWidthInches * 96;
+  const groupWidthPx = groupWidthInches * CANVAS.PIXELS_PER_INCH;
   const prevCopiesRef = useRef<number>(item.copies);
 
   useEffect(() => {
@@ -128,7 +127,7 @@ export default function ArtboardItem({
       ) as HTMLElement;
       if (element) {
         const baseLeftInches = Math.max(effectiveMargin, item.posX);
-        const deltaPx = (clampedLeft - baseLeftInches) * 96;
+        const deltaPx = (clampedLeft - baseLeftInches) * CANVAS.PIXELS_PER_INCH;
         gsap.fromTo(
           element,
           { x: -deltaPx },
@@ -146,8 +145,8 @@ export default function ArtboardItem({
         isSelected ? "ring-4 ring-blue-500 z-40" : "z-10"
       }`}
       style={{
-        left: `${clampedLeft * 96}px`,
-        top: `${clampedTop * 96}px`,
+        left: `${clampedLeft * CANVAS.PIXELS_PER_INCH}px`,
+        top: `${clampedTop * CANVAS.PIXELS_PER_INCH}px`,
         touchAction: "none",
       }}
       onClick={(e) => {
@@ -201,8 +200,8 @@ export default function ArtboardItem({
       )}
       {/* Group Layout for Copies */}
       <div
-        className="flex flex-wrap justify-center transition-all duration-300 ease-out"
-        style={{ gap: `${gap * 96}px`, width: `${groupWidthPx}px` }}
+        className="flex flex-wrap justify-start transition-all duration-300 ease-out"
+        style={{ gap: `${gap * CANVAS.PIXELS_PER_INCH}px`, width: `${groupWidthPx}px` }}
       >
         {Array.from({ length: item.copies }).map((_, index) => (
           <img
@@ -214,8 +213,8 @@ export default function ArtboardItem({
               isSelected && item.copies > 1 ? "border border-blue-500" : ""
             }`}
             style={{
-              width: `${scaledWidth * 96}px`,
-              height: `${scaledHeight * 96}px`,
+              width: `${scaledWidth * CANVAS.PIXELS_PER_INCH}px`,
+              height: `${scaledHeight * CANVAS.PIXELS_PER_INCH}px`,
               transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${
                 item.rotation
               }deg)`,
