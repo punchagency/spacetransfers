@@ -28,6 +28,7 @@ export default function Editor() {
   const [resetEmail, setResetEmail] = useState<string | null>(null);
   const [showOrderHistoryModal, setShowOrderHistoryModal] = useState(false);
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState<any>(null);
@@ -1020,14 +1021,19 @@ export default function Editor() {
       <OrderHistoryModal
         isOpen={showOrderHistoryModal}
         onClose={() => setShowOrderHistoryModal(false)}
-        onViewDetails={() => {
+        onViewDetails={(orderId) => {
+          setSelectedOrderId(orderId);
           setShowOrderHistoryModal(false);
           setShowOrderDetailsModal(true);
         }}
       />
       <OrderDetailsModal
         isOpen={showOrderDetailsModal}
-        onClose={() => setShowOrderDetailsModal(false)}
+        onClose={() => {
+          setShowOrderDetailsModal(false);
+          setSelectedOrderId(null);
+        }}
+        orderId={selectedOrderId}
       />
       <CheckoutModal
         isOpen={showCheckoutModal}
@@ -1036,8 +1042,6 @@ export default function Editor() {
         onUpdateCart={setCartItems}
         onCheckoutSuccess={() => {
           setCartItems([]);
-          setShowCheckoutModal(false);
-          toast.success("Order placed successfully!");
         }}
       />
       <AuthModal

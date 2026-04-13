@@ -92,6 +92,9 @@ describe('OrderSummary', () => {
     expect(screen.getByText('Continue to Payment')).toBeInTheDocument();
     
     rerender(<OrderSummary {...defaultProps} step={2} />);
+    expect(screen.getByText('Continue to Review')).toBeInTheDocument();
+    
+    rerender(<OrderSummary {...defaultProps} step={3} />);
     expect(screen.getByText('Place Order')).toBeInTheDocument();
   });
 });

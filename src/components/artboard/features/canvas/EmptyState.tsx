@@ -20,20 +20,13 @@ export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
             className="mx-auto mt-6 rounded-lg border border-slate-200 bg-white px-5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
           >
             Browse files
-          </button>
+          </button>      
           <div className="mt-5 text-[11px] tracking-wide text-slate-400">
-            PNG • JPG • SVG • PDF
+            PNG • JPG • SVG  
           </div>
         </div>
         <div className="mt-3 flex items-center justify-center gap-6 text-[11px] text-slate-400">
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-4 w-4 rounded-full border border-slate-300" />
-            <span>Max file size: 50MB</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-4 w-4 rounded-full border border-slate-300" />
-            <span>Recommended: 300 DPI</span>
-          </div>
+  
         </div>
       </div>
     </div>

@@ -126,7 +126,7 @@ export default function OrderSummary({
         </div>
       </div>
 
-      {step < 3 && (
+      {step < 4 && (
         <button
           onClick={onNext}
           disabled={isSubmitting || disableNext}
@@ -136,7 +136,7 @@ export default function OrderSummary({
         >
           {isSubmitting
             ? "Processing..."
-            : nextLabel || (step === 0 ? 'Proceed to Checkout' : step === 1 ? 'Continue to Payment' : 'Place Order')}
+            : nextLabel || (step === 0 ? 'Proceed to Checkout' : step === 1 ? 'Continue to Payment' : step === 2 ? 'Continue to Review' : 'Place Order')}
         </button>
       )}
     </div>

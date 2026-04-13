@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff } from "react-icons/md";
+import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff, MdExpandMore } from "react-icons/md";
+import { FiMapPin } from "react-icons/fi";
 import { apiFetch } from "../../lib/utils/api";
 import toast from "react-hot-toast";
 
@@ -35,6 +36,7 @@ export default function AuthModal({
     name: "",
     email: "",
     password: "",
+    region: "West-Coast",
   });
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
 
@@ -57,6 +59,7 @@ export default function AuthModal({
       name: "",
       email: resetEmail || "",
       password: "",
+      region: "West-Coast",
     });
   }, [isOpen, initialView, isSubAccountCreation, resetToken, resetEmail]);
 
@@ -92,7 +95,7 @@ export default function AuthModal({
         setActiveResetToken(null);
         setMode("auth");
         setView("login");
-        setFormData({ name: "", email: formData.email, password: "" });
+        setFormData({ name: "", email: formData.email, password: "", region: "West-Coast" });
         return;
       }
 
@@ -132,7 +135,7 @@ export default function AuthModal({
     }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
@@ -142,7 +145,7 @@ export default function AuthModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -231,7 +234,7 @@ export default function AuthModal({
                   <MdPerson size={18} />
                 </div>
                 <input
-                  type="text"
+                  type="text"  
                   name="name"
                   required
                   value={formData.name}
@@ -262,6 +265,34 @@ export default function AuthModal({
               />
             </div>
           </div>
+
+          {mode === "auth" && view === "register" && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Region
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                  <FiMapPin size={18} />
+                </div>
+                <select
+                  name="region"
+                  required
+                  value={formData.region}
+                  onChange={handleChange}
+                  className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                >
+                  <option value="Mid-West">Mid-West</option>
+                  <option value="West-Coast">West-Coast</option>
+                  <option value="North-East">North-East</option>
+                  <option value="WestCoast">WestCoast</option>
+                </select>
+                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-gray-400">
+                  <MdExpandMore size={20} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {mode === "auth" && (
             <div>
@@ -336,7 +367,7 @@ export default function AuthModal({
                 setMode("auth");
                 setView("login");
                 setError(null);
-                setFormData({ name: "", email: "", password: "" });
+                setFormData({ name: "", email: "", password: "", region: "West-Coast" });
               }}
               className="text-sm font-bold text-blue-600 hover:text-blue-700"
             >

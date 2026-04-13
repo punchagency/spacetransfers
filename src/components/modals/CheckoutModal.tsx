@@ -4,6 +4,7 @@ import { MdClose, MdCheckCircle, MdArrowBack } from "react-icons/md";
 import CartStep from "../checkout/CartStep";
 import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
+import ReviewStep from "../checkout/ReviewStep";
 import OrderSummary from "../checkout/OrderSummary";
 import { LuShoppingCart } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
@@ -56,6 +57,8 @@ export default function CheckoutModal({
     country: "",
   });
   const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
+  const [paypalData, setPaypalData] = useState<{ paypalOrderId: string; paypalCaptureId: string } | null>(null);
+  const [orderId, setOrderId] = useState<string | null>(null);
 
   const subtotal = Number(
     cartItems
@@ -110,19 +113,42 @@ export default function CheckoutModal({
 
   const isPaymentValid =
     payment === "paypal"
-      ? false
-      : Boolean(stripePromise && isCardComplete);
+      ? Boolean(paypalData)
+      : Boolean((stripePromise && isCardComplete) || (!stripePromise && isCardComplete));
 
   const mapItems = () =>
-    cartItems.map((item) => ({
-      name: item.name || "Gang Sheet",
-      widthIn: item.widthIn || 0,
-      heightIn: item.heightIn || 0,
-      quantity: item.quantity || item.copies || 1,
-      unitPrice: item.price || 0,
-      designId: item.designId || item.id?.toString(),
-      type: item.type || "gangsheet",
-    }));
+    cartItems.map((item) => {
+      const isGangsheet = (item.type || "gangsheet") === "gangsheet";
+      const artboardItems = isGangsheet && Array.isArray((item as any).items)
+        ? (item as any).items.map((it: any) => ({
+            id: Number(it.id),
+            assetId: String(it.originalUrl || it.assetId || it.url || ""),
+            croppedUrl: typeof it.url === "string" ? it.url : undefined,
+            autoCrop: typeof it.autoCrop === "boolean" ? it.autoCrop : undefined,
+            widthIn: Number(it.widthIn),
+            heightIn: Number(it.heightIn),
+            posX: Number(it.posX),
+            posY: Number(it.posY),
+            rotation: typeof it.rotation === "number" ? it.rotation : 0,
+            copies: typeof it.copies === "number" ? it.copies : 1,
+            linked: Boolean(it.linked),
+          }))
+        : undefined;
+
+      return {
+        name: item.name || "Gang Sheet",
+        widthIn: item.widthIn || 0,
+        heightIn: item.heightIn || 0,
+        quantity: item.quantity || item.copies || 1,
+        unitPrice: item.price || 0,
+        designId: item.designId || item.id?.toString(),
+        type: item.type || "gangsheet",
+        sheetWidthIn: isGangsheet ? (item.widthIn || 0) : undefined,
+        sheetHeightIn: isGangsheet ? (item.heightIn || 0) : undefined,
+        previewImage: isGangsheet ? ((item as any).image || undefined) : undefined,
+        artboardItems: artboardItems && artboardItems.length > 0 ? artboardItems : undefined,
+      };
+    });
 
   const placeOrder = async (paymentPayload: any) => {
     const payload = {
@@ -151,12 +177,15 @@ export default function CheckoutModal({
       },
     };
 
-    await apiFetch("/customer/orders", {
+    const result = await apiFetch("/customer/orders", {
       method: "POST",
       body: JSON.stringify(payload),
     });
 
-    setStep(3);
+    if (result?.id) {
+      setOrderId(result.id);
+    }
+    setStep(4);
     if (onCheckoutSuccess) {
       onCheckoutSuccess();
     }
@@ -193,15 +222,31 @@ export default function CheckoutModal({
         return;
       }
 
+      setStep(3);
+      return;
+    }
+
+    if (step === 3) {
       setIsSubmitting(true);
       try {
-        const handler = cardHandlerRef.current;
-        if (!handler) {
-          throw new Error("Card payment is not configured");
-        }
+        if (payment === "card") {
+          const handler = cardHandlerRef.current;
+          if (!handler) {
+            throw new Error("Card payment is not configured");
+          }
 
-        const { paymentIntentId } = await handler();
-        await placeOrder({ method: "card", paymentIntentId });
+          const { paymentIntentId } = await handler();
+          await placeOrder({ method: "card", paymentIntentId });
+        } else if (payment === "paypal") {
+          if (!paypalData) {
+            throw new Error("PayPal payment not authorized");
+          }
+          await placeOrder({
+            method: "paypal",
+            paypalOrderId: paypalData.paypalOrderId,
+            paypalCaptureId: paypalData.paypalCaptureId,
+          });
+        }
       } catch (err: any) {
         toast.error(err.message || "Failed to place order");
       } finally {
@@ -293,9 +338,21 @@ export default function CheckoutModal({
 
   const isCartEmpty = !cartItems || cartItems.length === 0;
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !isSubmitting) {
+      // Don't trigger if target is a button or link (already handles Enter)
+      if (e.target instanceof HTMLButtonElement || e.target instanceof HTMLAnchorElement) {
+        return;
+      }
+      handleNextStep();
+    }
+  };
+ 
   return (
     <div
       onClick={onClose}
+      onKeyDown={handleKeyDown}
+      tabIndex={-1}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs"
     >
       <div
@@ -318,7 +375,16 @@ export default function CheckoutModal({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {step < 3 ? (
+            {step > 0 && step < 4 && (
+              <button
+                onClick={() => setStep((s) => s - 1)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                aria-label="Go back"
+              >
+                <MdArrowBack className="h-5 w-5" />
+              </button>
+            )}
+            {step < 4 ? (
               <button
                 onClick={onClose}
                 className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
@@ -330,52 +396,54 @@ export default function CheckoutModal({
         </div>
 
         {/* Stepper */}
-        <div className="flex items-center justify-center border-b border-gray-100 bg-gray-50/50 py-6">
-          {steps.map((s, i) => (
-            <Fragment key={s}>
-              <div className="flex flex-col items-center">
-                <div
-                  ref={(el) => (stepperRefs.current[i] = el)}
-                  className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-sm font-bold transition-all duration-300 ${
-                    i < step
-                      ? "border-green-500 bg-green-500 text-white"
-                      : i === step
-                        ? "border-blue-600 bg-blue-600 text-white"
-                        : "border-gray-300 bg-white text-gray-400"
-                  }`}
-                >
-                  {i < step ? (
-                    <MdCheckCircle className="h-5 w-5" />
-                  ) : (
-                    <span>{i + 1}</span>
-                  )}
-                </div>
-                <span
-                  className={`mt-2 text-xs font-medium ${
-                    i <= step ? "text-gray-900" : "text-gray-400"
-                  }`}
-                >
-                  {s}
-                </span>
-              </div>
-              {i < steps.length - 1 && (
-                <div className="relative h-0.5 w-16 mb-6">
-                  <div className="absolute inset-0 bg-gray-200" />
+        {step < 4 && (
+          <div className="flex items-center justify-center border-b border-gray-100 bg-gray-50/50 py-6">
+            {steps.map((s, i) => (
+              <Fragment key={s}>
+                <div className="flex flex-col items-center">
                   <div
-                    ref={(el) => (lineRefs.current[i] = el)}
-                    className="absolute inset-0 bg-blue-600 origin-left"
-                    style={{ transform: i < step ? "scaleX(1)" : "scaleX(0)" }}
-                  />
+                    ref={(el) => (stepperRefs.current[i] = el)}
+                    className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-sm font-bold transition-all duration-300 ${
+                      i < step
+                        ? "border-green-500 bg-green-500 text-white"
+                        : i === step
+                          ? "border-blue-600 bg-blue-600 text-white"
+                          : "border-gray-300 bg-white text-gray-400"
+                    }`}
+                  >
+                    {i < step ? (
+                      <MdCheckCircle className="h-5 w-5" />
+                    ) : (
+                      <span>{i + 1}</span>
+                    )}
+                  </div>
+                  <span
+                    className={`mt-2 text-xs font-medium ${
+                      i <= step ? "text-gray-900" : "text-gray-400"
+                    }`}
+                  >
+                    {s}
+                  </span>
                 </div>
-              )}
-            </Fragment>
-          ))}
-        </div>
+                {i < steps.length - 1 && (
+                  <div className="relative h-0.5 w-16 mb-6">
+                    <div className="absolute inset-0 bg-gray-200" />
+                    <div
+                      ref={(el) => (lineRefs.current[i] = el)}
+                      className="absolute inset-0 bg-blue-600 origin-left"
+                      style={{ transform: i < step ? "scaleX(1)" : "scaleX(0)" }}
+                    />
+                  </div>
+                )}
+              </Fragment>
+            ))}
+          </div>
+        )}
 
         {/* Content */}
         <div className="p-6 max-h-[70vh] overflow-y-auto">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className={`${isCartEmpty ? 'lg:col-span-3' : 'lg:col-span-2'} space-y-6`}>
+            <div className={`${isCartEmpty || step === 4 ? 'lg:col-span-3' : 'lg:col-span-2'} space-y-6`}>
               <div ref={contentRef}>
                 {step === 0 && (
                   <CartStep
@@ -422,19 +490,10 @@ export default function CheckoutModal({
                         onCardHandlerReady={(handler) => {
                           cardHandlerRef.current = handler;
                         }}
+                        paypalData={paypalData}
                         onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                          setIsSubmitting(true);
-                          try {
-                            await placeOrder({
-                              method: "paypal",
-                              paypalOrderId,
-                              paypalCaptureId,
-                            });
-                          } catch (err: any) {
-                            toast.error(err?.message || "Failed to place order");
-                          } finally {
-                            setIsSubmitting(false);
-                          }
+                          setPaypalData({ paypalOrderId, paypalCaptureId });
+                          setStep(3);
                         }}
                       />
                     </Elements>
@@ -465,48 +524,54 @@ export default function CheckoutModal({
                       onCardHandlerReady={(handler) => {
                         cardHandlerRef.current = handler;
                       }}
+                      paypalData={paypalData}
                       onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                        setIsSubmitting(true);
-                        try {
-                          await placeOrder({
-                            method: "paypal",
-                            paypalOrderId,
-                            paypalCaptureId,
-                          });
-                        } catch (err: any) {
-                          toast.error(err?.message || "Failed to place order");
-                        } finally {
-                          setIsSubmitting(false);
-                        }
+                        setPaypalData({ paypalOrderId, paypalCaptureId });
+                        setStep(3);
                       }}
                     />
                   ))
                 )}
 
                 {step === 3 && (
+                  <ReviewStep
+                    formData={formData}
+                    shipping={shipping}
+                    payment={payment}
+                  />
+                )}
+
+                {step === 4 && (
                   <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <div className="mb-4 rounded-full bg-green-100 p-4">
-                      <MdCheckCircle className="h-16 w-16 text-green-500" />
+                    <div className="mb-6 rounded-full bg-green-100 p-6 animate-bounce">
+                      <MdCheckCircle className="h-20 w-20 text-green-500" />
                     </div>
-                    <h2 className="mb-2 text-2xl font-bold text-gray-900">
-                      Thank you for your order!
+                    <h2 className="mb-2 text-3xl font-extrabold text-gray-900">
+                      Order Placed Successfully!
                     </h2>
+                    {orderId && (
+                      <div className="mb-4 text-lg font-medium text-blue-600 bg-blue-50 px-4 py-1 rounded-full border border-blue-100">
+                        Order #{orderId.slice(-8).toUpperCase()}
+                      </div>
+                    )}
                     <p className="mb-8 max-w-md text-gray-600">
-                      We've received your order and will begin processing it right
-                      away. You'll receive a confirmation email shortly.
+                      Thank you for your purchase! We've received your order and will begin processing it right
+                      away. A confirmation email has been sent to <strong>{formData.email}</strong>.
                     </p>
-                    <button
-                      onClick={onClose}
-                      className="rounded-lg bg-blue-600 px-8 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
-                    >
-                      Continue Shopping
-                    </button>
+                    <div className="flex flex-col sm:flex-row gap-4">
+                      <button
+                        onClick={onClose}
+                        className="rounded-lg bg-blue-600 px-10 py-3 text-sm font-semibold text-white shadow-lg transition-all hover:bg-blue-700 hover:scale-105"
+                      >
+                        Continue Designing
+                      </button>  
+                    </div>
                   </div>
                 )}
               </div>
             </div>
 
-            {!isCartEmpty && (
+            {!isCartEmpty && step < 4 && (
               <div className="lg:col-span-1">
                 {step === 0 ? (
                   <div className="bg-white rounded-lg border border-gray-200 p-6 sticky top-6">
@@ -569,7 +634,9 @@ export default function CheckoutModal({
                         ? "Complete with PayPal"
                         : step === 2 && payment === "card" && !isPaymentValid
                           ? "Enter card details"
-                          : undefined
+                          : step === 3
+                            ? "Place Order"
+                            : undefined
                     }
                   />
                 )}
