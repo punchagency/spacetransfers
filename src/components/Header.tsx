@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson } from "react-icons/md";
 import { GrRedo } from "react-icons/gr";
+import { CANVAS } from "../config/artboard.config";
 type HeaderInfo = {
   hasItem: boolean;
   areaSf?: number;
@@ -112,9 +113,10 @@ export default function Header({
           <span>{(info?.areaSf ?? 0).toFixed(2)}sf</span>
           <span className="text-gray-300">|</span>
           <span>
-            {(info?.widthIn ?? 24).toFixed(2)}in wide x{" "}
-            {(info?.heightIn ?? 19.5).toFixed(2)}in long
+            23.50in wide x{" "}
+            {(info?.heightIn ?? CANVAS.SHEET_HEIGHT_IN).toFixed(2)}in long
           </span>
+     
           <span className="text-gray-300">|</span>
           {isRenaming ? (
             <input
@@ -178,7 +180,7 @@ export default function Header({
                 {cartCount}
               </span>
             )}
-          </button>
+          </button> 
         ) : null}
         {isLoggedIn ? (
           <button 

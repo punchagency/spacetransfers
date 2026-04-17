@@ -1,6 +1,14 @@
 import { CANVAS } from "../../../../config/artboard.config";
 
-export default function RulerSegment({ vertical = false, label }: { vertical?: boolean; label: number }) {
+export default function RulerSegment({
+  vertical = false,
+  label,
+  maxFraction = 1,
+}: {
+  vertical?: boolean;
+  label: number;
+  maxFraction?: number;
+}) {
   // Positions are defined as fractions of the segment (0–1),
   // mapped from the original ticks over a base (PPI).
   const base = CANVAS.PIXELS_PER_INCH;
@@ -8,7 +16,16 @@ export default function RulerSegment({ vertical = false, label }: { vertical?: b
   const ticks = rawTicks.map((pos) => ({
     pos: pos / base,
     size: pos === base / 2 ? "large" : pos === base / 4 || pos === (3 * base) / 4 ? "medium" : "small",
-  }));
+  })).filter((t) => t.pos <= maxFraction + 1e-6);
+
+  const labelPosClass = vertical
+    ? label >= 1000
+      ? // Thundreds-thousands labels can spill past the ruler edge.
+        "top-1 left-1 pl-1"
+      : label >= 100
+        ? "top-1 left-2 pl-1"
+        : "top-1 left-4"
+    : "top-4 left-1";
 
   return (
     <div
@@ -17,10 +34,9 @@ export default function RulerSegment({ vertical = false, label }: { vertical?: b
         : "flex-1 h-full border-l border-gray-300"
         }`}
     >
-      {label !== 0 && label !== 24 && (
+      {label !== 0 && (
         <span
-          className={`absolute text-[9px] text-gray-500 font-medium select-none ${vertical ? "top-1 left-4" : "top-4 left-1"
-            }`}
+          className={`absolute text-[9px] text-gray-500 font-medium select-none whitespace-nowrap ${labelPosClass}`}
         >
           {label}
         </span>

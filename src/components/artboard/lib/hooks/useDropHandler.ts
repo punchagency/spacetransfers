@@ -5,6 +5,7 @@ import { calculateGridLayout } from "../utils";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
 import { CANVAS } from "../../../../config/artboard.config";
+import toast from "react-hot-toast";
 
 export const useDropHandler = (
   items: ArtboardItem[],
@@ -27,6 +28,7 @@ export const useDropHandler = (
 
   const activeUploadsRef = useRef<XMLHttpRequest[]>([]);
   const canceledRef = useRef(false);
+  const warnedMaxHeightRef = useRef(false);
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
   const cancelUploads = () => {
@@ -400,18 +402,16 @@ export const useDropHandler = (
 
     // 1. Calculate the final intended layout for ALL items immediately
     setTimeout(() => {
-      const artboardContainer = document.querySelector(
-        "#artboard-main-container"
-      ) as HTMLElement;
-      const currentCanvasWidth = artboardContainer
-        ? artboardContainer.offsetWidth / CANVAS.PIXELS_PER_INCH
-        : canvasWidth || 24;
+      // Always use the real sheet width (inches), not viewport width,
+      // otherwise items can be laid out beyond the top ruler break (23.5").
+      const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
 
-      const allItems = [...created, ...items];
-      const rulerOffsetIn = CANVAS.RULER_OFFSET_PX / CANVAS.PIXELS_PER_INCH;
-      const effectiveMargin = marginSize + rulerOffsetIn;
+      // Keep existing layout order first so newly uploaded items
+      // flow into the next available (typically lower) slots.
+      const allItems = [...items, ...created];
+      const effectiveMargin = marginSize;
 
-      const finalUpdates = calculateGridLayout(
+      const finalUpdatesRaw = calculateGridLayout(
         allItems,
         currentCanvasWidth,
         spacing,
@@ -419,9 +419,32 @@ export const useDropHandler = (
         effectiveMargin
       );
 
+      // Enforce max sheet height (100 feet = 1200 inches).
+      // Copies can wrap vertically, so clamp using a conservative
+      // "worst-case" group height so items can never exceed the ruler bottom.
+      const MAX_SHEET_HEIGHT_IN = 1200;
+      let didClamp = false;
+      const finalUpdates = finalUpdatesRaw.map((u: any) => {
+        const itemH = typeof u.heightIn === "number" ? u.heightIn : 0;
+        const copies = typeof u.copies === "number" && u.copies > 0 ? u.copies : 1;
+        const gap = CANVAS.GRID_GAP_IN;
+        const groupHeightIn = copies <= 1 ? itemH : copies * itemH + (copies - 1) * gap;
+        const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupHeightIn);
+        const nextPosY = Math.max(0, Math.min(u.posY, maxPosY));
+        if (nextPosY !== u.posY) didClamp = true;
+        return { ...u, posY: nextPosY };
+      });
+
+      if (didClamp && !warnedMaxHeightRef.current) {
+        toast.error("Max sheet height of 1200 inches reached.");
+        warnedMaxHeightRef.current = true;
+      }
+
       // 2. Preserve NEW items at their drop position initially (avoid instant jump).
       setItems((prev) => {
-        const withCreated = [...created, ...prev];
+        // Keep existing items first so newly dropped singles are arranged after them
+        // (below grouped/copies items in the packed layout).
+        const withCreated = [...prev, ...created];
         return withCreated.map((it) => {
           const isNew = created.some((c) => c.id === it.id);
           if (isNew) {
@@ -595,12 +618,7 @@ export const useDropHandler = (
       onRequestAutoNest?.(true);
     }
 
-    const artboardContainer = document.querySelector(
-      "#artboard-main-container"
-    ) as HTMLElement;
-    const currentCanvasWidth = artboardContainer
-      ? artboardContainer.offsetWidth / CANVAS.PIXELS_PER_INCH
-      : canvasWidth || 24;
+    const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
     const dropX = currentCanvasWidth / 2;
     const dropY = 6;
     await processDrop({ droppedFiles, droppedUrl: "", dropX, dropY });

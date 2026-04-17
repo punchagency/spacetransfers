@@ -15,6 +15,7 @@ import ConfirmModal from "./modals/ConfirmModal";
 import { captureArtboard } from "./artboard/lib/utils";
 import { apiFetch } from "../lib/utils/api";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
+import { CANVAS, PRICING } from "../config/artboard.config";
 
 export default function Editor() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -188,6 +189,7 @@ export default function Editor() {
     secondaryLabel: string;
   }>(null);
   const [showClearArtboardConfirm, setShowClearArtboardConfirm] = useState(false);
+  const [showUnderUtilizedCartConfirm, setShowUnderUtilizedCartConfirm] = useState(false);
 
   const clearWorkspace = () => {
     setArtboardData({ items: [], counter: Date.now() });
@@ -491,7 +493,7 @@ export default function Editor() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleAddGangSheetToCart = async () => {
+  const addGangSheetToCartNow = async (forceFullSheetPrice: boolean = false) => {
     if (!isLoggedIn) {
       setAuthView("register");
       setShowAuthModal(true);
@@ -527,6 +529,20 @@ export default function Editor() {
       console.log("artboardData:", artboardData);
       console.log("artboardData.items:", artboardData?.items);
 
+      const fullSheetAreaSf =
+        (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
+        PRICING.SQUARE_INCHES_PER_SQ_FT;
+      const fullSheetPrice = +(fullSheetAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(2);
+      const priceToUse = forceFullSheetPrice
+        ? fullSheetPrice
+        : headerInfo?.price || 0;
+      const widthToUse = forceFullSheetPrice
+        ? CANVAS.SHEET_WIDTH_IN
+        : headerInfo?.widthIn || CANVAS.SHEET_WIDTH_IN;
+      const heightToUse = forceFullSheetPrice
+        ? CANVAS.SHEET_HEIGHT_IN
+        : headerInfo?.heightIn || CANVAS.SHEET_HEIGHT_IN;
+
       // Add gang sheet without image first
       const gangSheetItem = {
         id: Date.now(),
@@ -535,11 +551,10 @@ export default function Editor() {
         image: "/placeholder-gangsheet.png",
         items: normalized,
         designSignature,
-        price: headerInfo?.price || 0,
-        widthIn: headerInfo?.widthIn || 24,
-        heightIn: headerInfo?.heightIn || 19.5,
-        size: `${(headerInfo?.widthIn || 24).toFixed(1)}" × ${(headerInfo?.heightIn || 19.5
-        ).toFixed(1)}"`,
+        price: priceToUse,
+        widthIn: widthToUse,
+        heightIn: heightToUse,
+        size: `${widthToUse.toFixed(1)}" × ${heightToUse.toFixed(1)}"`,
         copies: 1,
         color: "N/A",
         design: "Custom Gang Sheet",
@@ -569,6 +584,116 @@ export default function Editor() {
       console.error("Failed to add gang sheet:", error);
       alert("Failed to add gang sheet to cart");
     }
+  };
+
+  const handleAddGangSheetToCart = async () => {
+    const currentItems = getCurrentItems();
+    const used = (() => {
+      if (!Array.isArray(currentItems) || currentItems.length === 0) {
+        return { usedWidthIn: 0, usedHeightIn: 0 };
+      }
+
+      const canvasWidthIn = CANVAS.SHEET_WIDTH_IN;
+      const effectiveMargin = settings.marginSize;
+      const gap = CANVAS.GRID_GAP_IN;
+
+      const bounds = currentItems.reduce(
+        (acc: any, item: any) => {
+          const copies = item.copies || 1;
+          const scaledWidth = item.widthIn;
+          const scaledHeight = item.heightIn;
+
+          const maxAvailableWidth = Math.max(0, canvasWidthIn - 2 * effectiveMargin);
+          const capacityCols = Math.max(
+            1,
+            Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
+          );
+          const visibleCols = Math.min(copies, capacityCols);
+          const rows = Math.ceil(copies / capacityCols);
+
+          const groupWidthRaw = visibleCols * scaledWidth + (visibleCols - 1) * gap;
+          const groupWidth = Math.min(groupWidthRaw, maxAvailableWidth);
+          const groupHeight = rows * scaledHeight + (rows - 1) * gap;
+
+          const centeredLeft = effectiveMargin + (maxAvailableWidth - groupWidth) / 2;
+          const rightBoundLeft = canvasWidthIn - effectiveMargin - groupWidth;
+          const clampedLeft =
+            copies > 1
+              ? Math.max(effectiveMargin, Math.min(centeredLeft, rightBoundLeft))
+              : Math.max(effectiveMargin, item.posX);
+          const clampedTop = Math.max(effectiveMargin, item.posY);
+
+          const left = clampedLeft;
+          const top = clampedTop;
+          const right = clampedLeft + groupWidth;
+          const bottom = clampedTop + groupHeight;
+
+          return {
+            minX: Math.min(acc.minX, left),
+            minY: Math.min(acc.minY, top),
+            maxX: Math.max(acc.maxX, right),
+            maxY: Math.max(acc.maxY, bottom),
+          };
+        },
+        {
+          minX: Number.POSITIVE_INFINITY,
+          minY: Number.POSITIVE_INFINITY,
+          maxX: 0,
+          maxY: 0,
+        },
+      );
+
+      return { usedWidthIn: Math.max(0, bounds.maxX), usedHeightIn: Math.max(0, bounds.maxY) };
+    })();
+
+    const usedHeight = used.usedHeightIn || 0;
+    // Sheet width is fixed at 23.5", so we only gate on height utilization.
+    const notFullyUtilized = usedHeight < CANVAS.SHEET_HEIGHT_IN - 0.01;
+
+    if (notFullyUtilized) {
+      setShowUnderUtilizedCartConfirm(true);
+      return;
+    }
+
+    setShowUnderUtilizedCartConfirm(false);
+    await addGangSheetToCartNow();
+  };
+
+  const handleReorderToCart = async (orderId: string) => {
+    const order = await apiFetch(`/customer/orders/${orderId}`);
+    const orderItems = Array.isArray(order?.items) ? order.items : [];
+    if (orderItems.length === 0) {
+      toast.error("No items found in this order");
+      return;
+    }
+
+    const mapped = orderItems.map((item: any, idx: number) => {
+      const quantity = Number(item?.quantity || 1);
+      const subtotal = Number(item?.subtotal || 0);
+      const unitPrice =
+        Number(item?.unitPrice || item?.price || (quantity > 0 ? subtotal / quantity : 0)) || 0;
+      const type = item?.type || "gangsheet";
+
+      return {
+        id: Date.now() + idx,
+        name: item?.name || "Gang Sheet",
+        type,
+        image: item?.previewImage || "/placeholder-gangsheet.png",
+        items: Array.isArray(item?.artboardItems) ? item.artboardItems : undefined,
+        price: unitPrice,
+        quantity,
+        widthIn: Number(item?.sheetWidthIn || item?.widthIn || CANVAS.SHEET_WIDTH_IN),
+        heightIn: Number(item?.sheetHeightIn || item?.heightIn || CANVAS.SHEET_HEIGHT_IN),
+        size: `${Number(item?.sheetWidthIn || item?.widthIn || CANVAS.SHEET_WIDTH_IN).toFixed(1)}" × ${Number(item?.sheetHeightIn || item?.heightIn || CANVAS.SHEET_HEIGHT_IN).toFixed(1)}"`,
+        color: item?.color || "N/A",
+        design: item?.description || "Reorder Item",
+        print: item?.print || "DTF Transfer",
+      };
+    });
+
+    setCartItems((prev) => [...prev, ...mapped]);
+    setShowOrderHistoryModal(false);
+    setShowCheckoutModal(true);
   };
 
   return (
@@ -742,6 +867,18 @@ export default function Editor() {
         }}
         onCancel={() => setShowClearArtboardConfirm(false)}
       />
+      <ConfirmModal
+        isOpen={showUnderUtilizedCartConfirm}
+        title="Unused Sheet Space"
+        message="Your 23.5 x 23.5 gang sheet is not fully utilized. Do you want to continue adding items, or add to cart anyway?"
+        confirmLabel="Add to Cart Anyway"
+        cancelLabel="Continue Adding Items"
+        onConfirm={async () => {
+          setShowUnderUtilizedCartConfirm(false);
+          await addGangSheetToCartNow(true);
+        }}
+        onCancel={() => setShowUnderUtilizedCartConfirm(false)}
+      />
       {cartWarning && (
         <div className="absolute mt-10 top-10 left-1/2 -translate-x-1/2 z-50">
           <div className="inline-flex items-center gap-2 rounded-lg bg-blue-50 border border-blue-500 px-4 py-2 shadow-lg">
@@ -856,8 +993,8 @@ export default function Editor() {
             return;
           }
 
-          const widthIn = headerInfo?.widthIn || 24;
-          const heightIn = headerInfo?.heightIn || 19.5;
+          const widthIn = headerInfo?.widthIn || CANVAS.SHEET_WIDTH_IN;
+          const heightIn = headerInfo?.heightIn || CANVAS.SHEET_HEIGHT_IN;
           const areaSqFt = headerInfo?.areaSf ?? (widthIn * heightIn) / 144;
           const price = headerInfo?.price ?? 0;
 
@@ -1021,6 +1158,7 @@ export default function Editor() {
       <OrderHistoryModal
         isOpen={showOrderHistoryModal}
         onClose={() => setShowOrderHistoryModal(false)}
+        onReorderToCart={handleReorderToCart}
         onViewDetails={(orderId) => {
           setSelectedOrderId(orderId);
           setShowOrderHistoryModal(false);

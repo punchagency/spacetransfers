@@ -2,7 +2,7 @@ import { MdOutlineFileUpload } from "react-icons/md";
 
 export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center">
+    <div className="flex items-center justify-center">
       <div className="w-[420px] max-w-[92vw]">
         <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-white px-10 py-10 text-center shadow-sm">
           <div className="mx-auto mb-5 flex   items-center justify-center rounded-xl  ">

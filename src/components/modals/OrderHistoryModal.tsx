@@ -22,12 +22,14 @@ interface OrderHistoryModalProps {
   isOpen: boolean;
   onClose: () => void;
   onViewDetails: (orderId: string) => void;
+  onReorderToCart?: (orderId: string) => Promise<void> | void;
 }
 
 export default function OrderHistoryModal({
   isOpen,
   onClose,
   onViewDetails,
+  onReorderToCart,
 }: OrderHistoryModalProps) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -81,11 +83,12 @@ export default function OrderHistoryModal({
 
   const handleReorder = async (orderId: string) => {
     try {
-      await apiFetch(`/customer/orders/${orderId}/reorder`, {
-        method: "POST",
-      });
-      toast.success("Order placed successfully!");
-      fetchOrders();
+      if (onReorderToCart) {
+        await onReorderToCart(orderId);
+        toast.success("Order added to cart");
+        return;
+      }
+      toast.error("Reorder is unavailable right now.");
     } catch (err: any) {
       toast.error(err.message || "Failed to reorder");
     }

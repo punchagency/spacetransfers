@@ -102,7 +102,6 @@ export default function PropertiesPanel({
         <input
           type="number"
           min={1}
-          max={250}
           value={item.copies}
           onChange={(e) => {
             const value = e.target.value;
@@ -111,8 +110,7 @@ export default function PropertiesPanel({
             }
             const numValue = parseInt(value, 10);
             if (!isNaN(numValue) && numValue >= 1) {
-              const clamped = Math.min(numValue, 250);
-              onSetCopies(clamped);
+              onSetCopies(numValue);
             }
           }}
           onBlur={(e) => {
@@ -120,11 +118,6 @@ export default function PropertiesPanel({
             const numValue = parseInt(value, 10);
             if (value === "" || isNaN(numValue) || numValue < 1) {
               onSetCopies(1);
-            } else {
-              const clamped = Math.min(numValue, 250);
-              if (clamped !== numValue) {
-                onSetCopies(clamped);
-              }
             }
           }}
           className="w-full h-6 px-2 rounded-md text-[8px] bg-[#F3F3F5]"

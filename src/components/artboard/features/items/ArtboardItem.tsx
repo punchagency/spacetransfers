@@ -1,9 +1,12 @@
 import React, { useEffect, useRef } from "react";
+import toast from "react-hot-toast";
 import { FiLink } from "react-icons/fi";
 import ItemToolbar from "./ItemToolbar";
 import PropertiesPanel from "./PropertiesPanel";
 import { gsap } from "gsap";
-  import { CANVAS } from "../../../../config/artboard.config";
+import { CANVAS } from "../../../../config/artboard.config";
+
+let hasShownMaxHeightToast = false;
 
 interface ArtboardItemProps {
   item: {
@@ -80,6 +83,7 @@ export default function ArtboardItem({
 }: ArtboardItemProps) {
   const panelWidth = 2.625;
   const effectiveMargin = marginSize;
+  const MAX_SHEET_HEIGHT_IN = 1200;
   const isTooCloseToRight =
     item.posX + item.widthIn + panelWidth > canvasWidth - effectiveMargin;
   const gap = CANVAS.GRID_GAP_IN;
@@ -91,9 +95,26 @@ export default function ArtboardItem({
     1,
     Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap))
   );
-  const visibleCols = Math.min(item.copies, capacityCols);
+
+  // To guarantee items never exceed the sheet height limit,
+  // we cap the *rendered* copies to what can fit vertically.
+  const maxGroupHeightAllowedIn = Math.max(0, MAX_SHEET_HEIGHT_IN - effectiveMargin);
+  const maxRows = Math.max(
+    1,
+    Math.floor((maxGroupHeightAllowedIn + gap) / Math.max(1e-6, scaledHeight + gap)),
+  );
+
+  const visibleColsCandidate = Math.max(1, Math.min(item.copies, capacityCols));
+  const maxCopiesThatFit = Math.max(1, maxRows * visibleColsCandidate);
+  const renderCopies = Math.max(1, Math.min(item.copies, maxCopiesThatFit));
+
+  const visibleCols = Math.max(1, Math.min(renderCopies, capacityCols));
+  const rows = Math.max(1, Math.ceil(renderCopies / visibleCols));
+
   const groupWidthInchesRaw =
     visibleCols * scaledWidth + (visibleCols - 1) * gap;
+  const groupHeightInches = rows * scaledHeight + (rows - 1) * gap;
+
   const maxGroupWidthInches = Math.max(
     0,
     maxAvailableWidth
@@ -103,14 +124,20 @@ export default function ArtboardItem({
     effectiveMargin + (maxAvailableWidth - groupWidthInches) / 2;
   const rightBoundLeftInches = canvasWidth - effectiveMargin - groupWidthInches;
   const clampedLeft =
-    item.copies > 1
+    renderCopies > 1
       ? Math.max(
           effectiveMargin,
           Math.min(centeredLeftInches, rightBoundLeftInches)
         )
       : Math.max(effectiveMargin, item.posX);
-  const clampedTop = Math.max(effectiveMargin, item.posY);
-  const firstRowFilled = item.copies >= capacityCols;
+  // Clamp by sheet height only (bottom must not exceed MAX_SHEET_HEIGHT_IN).
+  // If the item is taller than the remaining space, we allow `clampedTop` to move
+  // above `effectiveMargin` rather than letting the item overflow.
+  const topRaw = item.posY;
+  const bottomLimitTopInches = MAX_SHEET_HEIGHT_IN - groupHeightInches;
+  const clampedTop = Math.min(topRaw, bottomLimitTopInches);
+
+  const firstRowFilled = renderCopies >= capacityCols;
   const propertyPanelPosition = firstRowFilled
     ? "center"
     : isTooCloseToRight
@@ -119,6 +146,16 @@ export default function ArtboardItem({
 
   const groupWidthPx = groupWidthInches * CANVAS.PIXELS_PER_INCH;
   const prevCopiesRef = useRef<number>(item.copies);
+
+  // Notify once if we had to cap/render fewer copies or clamp the item into the max height.
+  const didCapCopies = renderCopies < item.copies;
+  const didClampTop = clampedTop < topRaw - 1e-6;
+  useEffect(() => {
+    if (!hasShownMaxHeightToast && (didCapCopies || didClampTop)) {
+      toast.error("Max sheet height of 1200 inches reached.");
+      hasShownMaxHeightToast = true;
+    }
+  }, [didCapCopies, didClampTop]);
 
   useEffect(() => {
     if (prevCopiesRef.current === 1 && item.copies > 1) {
@@ -167,7 +204,7 @@ export default function ArtboardItem({
           onFlip={onFlip}
           onDuplicate={onDuplicate}
           onDelete={onDelete}
-          position={item.posY <= marginSize + 0.3 ? "bottom" : "top"}
+          position={clampedTop <= marginSize + 0.3 ? "bottom" : "top"}
         />
       )}
       {isSelected && showProperties && !isDragging && (
@@ -203,14 +240,14 @@ export default function ArtboardItem({
         className="flex flex-wrap justify-start transition-all duration-300 ease-out"
         style={{ gap: `${gap * CANVAS.PIXELS_PER_INCH}px`, width: `${groupWidthPx}px` }}
       >
-        {Array.from({ length: item.copies }).map((_, index) => (
+        {Array.from({ length: renderCopies }).map((_, index) => (
           <img
             key={index}
             src={item.url}
             crossOrigin="anonymous"
             alt={`copy-${index}`}
             className={`object-contain cursor-move transition-all duration-300 ease-out rounded-sm ${
-              isSelected && item.copies > 1 ? "border border-blue-500" : ""
+              isSelected && renderCopies > 1 ? "border border-blue-500" : ""
             }`}
             style={{
               width: `${scaledWidth * CANVAS.PIXELS_PER_INCH}px`,

@@ -9,6 +9,7 @@ import {
 import { snapToGridPoint } from "./artboard/lib/utils";
 import { DpiWarning, CanvasContainer } from "./artboard/features/canvas";
 import type { ArtboardProps } from "./artboard/types";
+import { CANVAS } from "../config/artboard.config";
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -37,6 +38,27 @@ export default function Artboard({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const canvasWidth = useCanvasWidth();
+
+  // Auto-fit the 23.5" sheet width into the visible area at browser zoom 100%.
+  // No user controls; this is just a responsive scale used for layout + interaction math.
+  useEffect(() => {
+    const el = document.querySelector("#artboard-main-container") as HTMLElement | null;
+    if (!el) return;
+
+    const neededPx = CANVAS.SHEET_WIDTH_IN * CANVAS.PIXELS_PER_INCH;
+    if (!neededPx) return;
+
+    const update = () => {
+      const availablePx = Math.max(0, el.clientWidth - CANVAS.RULER_OFFSET_PX);
+      const fit = availablePx / neededPx;
+      setZoom(Math.min(1, Math.max(0.1, fit || 1)));
+    };
+
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const {
     isDragging,
     lowDpiCount,
@@ -206,21 +228,13 @@ export default function Artboard({
           selectedIds={selectedIds}
           showProperties={showProperties}
           addedToCart={addedToCart}
-          emptyOffsetY={350}
           onWheel={(e) => {
-            if (e.ctrlKey || e.metaKey) {
-              e.preventDefault();
-              const delta = e.deltaY > 0 ? -0.1 : 0.1;
-              setZoom((z) =>
-                Math.min(3, Math.max(0.5, +(z + delta).toFixed(2))),
-              );
-            }
+            // Zoom disabled
+            if (e.ctrlKey || e.metaKey) e.preventDefault();
           }}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
           onDrop={onDropEvent}
-          onZoomIn={() => setZoom((z) => Math.min(3, +(z + 0.1).toFixed(2)))}
-          onZoomOut={() => setZoom((z) => Math.max(1, +(z - 0.1).toFixed(2)))}
           onCanvasClick={() => {
             setSelectedId(null);
             setSelectedIds(new Set());

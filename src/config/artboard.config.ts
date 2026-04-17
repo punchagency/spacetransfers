@@ -1,6 +1,6 @@
 // Zoom configuration
 export const ZOOM = {
-  MIN: 1,
+  MIN: 0.5,
   MAX: 3,
   STEP: 0.1,
   WHEEL_FACTOR_IN: 1.05,
@@ -10,6 +10,8 @@ export const ZOOM = {
 // Canvas configuration
 export const CANVAS = { 
   PIXELS_PER_INCH: 96,
+  SHEET_WIDTH_IN: 23.5,
+  SHEET_HEIGHT_IN: 23.5,
   DEFAULT_MARGIN: 0.15,
   DEFAULT_SPACING: 0.1,
   TOP_CENTER_Y: 1.0,

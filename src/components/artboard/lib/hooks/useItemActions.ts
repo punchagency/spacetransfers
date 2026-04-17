@@ -251,7 +251,7 @@ export const useItemActions = (
 
   const setCopies = (n: number) => {
     if (selectedId == null) return;
-    const clamped = Math.max(1, Math.min(250, Math.floor(n)));
+    const clamped = Math.max(1, Math.floor(n));
     setItems((prev) =>
       prev.map((it) => (it.id === selectedId ? { ...it, copies: clamped } : it))
     );

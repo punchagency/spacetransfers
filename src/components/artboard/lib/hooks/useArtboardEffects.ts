@@ -4,6 +4,7 @@ import { animateItemPosition } from "../utils";
 import { calculateGridLayout } from "../utils";
 import { snapToGridPoint } from "../utils";
 import { CANVAS, PRICING, UNIT } from "../../../../config/artboard.config";
+import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
   items: ArtboardItem[],
@@ -26,6 +27,7 @@ export const useArtboardEffects = (
   >({});
   const [lastConfig, setLastConfig] = useState({ marginSize, spacing });
   const prevItemsRef = useRef<ArtboardItem[]>([]);
+  const warnedMaxHeightRef = useRef(false);
 
   // Load initial data
   useEffect(() => {
@@ -78,11 +80,41 @@ export const useArtboardEffects = (
     // Layout is now relative to ruler "0" (which is the container origin)
     const effectiveMargin = marginSize;
 
-    const updates = calculateGridLayout(items, canvasWidth, spacing, autoNestStickers, effectiveMargin);
+    const updates = calculateGridLayout(
+      items,
+      canvasWidth,
+      spacing,
+      autoNestStickers,
+      effectiveMargin,
+    );
+
+    // Enforce max sheet height (100 feet = 1200 inches).
+    // Copies can stack vertically (wrapping), so we clamp using a conservative
+    // "worst-case" group height so nothing can exceed the ruler bottom.
+    const MAX_SHEET_HEIGHT_IN = 1200;
+    let didClamp = false;
+    const clampedUpdates = updates.map((u: any) => {
+      const itemH = typeof u.heightIn === "number" ? u.heightIn : 0;
+      const copies = typeof u.copies === "number" && u.copies > 0 ? u.copies : 1;
+      const gap = CANVAS.GRID_GAP_IN;
+      // Worst case: all copies are stacked into rows, so groupHeight = copies*height + (copies-1)*gap.
+      const groupHeightIn = copies <= 1 ? itemH : copies * itemH + (copies - 1) * gap;
+      const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupHeightIn);
+      const nextPosY = Math.max(0, Math.min(u.posY, maxPosY));
+      if (nextPosY !== u.posY) didClamp = true;
+      return { ...u, posY: nextPosY };
+    });
+
+    if (didClamp && !warnedMaxHeightRef.current) {
+      toast.error("Max sheet height of 1200 inches reached.");
+      warnedMaxHeightRef.current = true;
+    }
+
+    const updatesToUse = clampedUpdates;
 
     setItems((prev) => {
       const needsUpdate = prev.some(it => {
-        const update = updates.find((u) => u.id === it.id);
+        const update = updatesToUse.find((u) => u.id === it.id);
         if (!update) return false;
         return Math.abs(update.posX - it.posX) > 0.001 || Math.abs(update.posY - it.posY) > 0.001;
       });
@@ -90,7 +122,7 @@ export const useArtboardEffects = (
       if (!needsUpdate && !configChanged) return prev;
 
       return prev.map((it) => {
-        const update = updates.find((u: any) => u.id === it.id);
+        const update = updatesToUse.find((u: any) => u.id === it.id);
         if (update) {
           const hasMoved = Math.abs(update.posX - it.posX) > 0.001 || Math.abs(update.posY - it.posY) > 0.001;
 
@@ -142,6 +174,7 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
+      const MAX_SHEET_HEIGHT_IN = 1200;
       const bounds = items.reduce(
         (acc, item) => {
           const copies = item.copies || 1;
@@ -176,7 +209,14 @@ export const useArtboardEffects = (
                   Math.min(centeredLeft, rightBoundLeft),
                 )
               : Math.max(effectiveMargin, item.posX);
-          const clampedTop = Math.max(effectiveMargin, item.posY);
+          const maxTopBySheetLimit = Math.max(
+            0,
+            MAX_SHEET_HEIGHT_IN - groupHeight,
+          );
+          const clampedTop = Math.min(
+            Math.max(effectiveMargin, item.posY),
+            maxTopBySheetLimit,
+          );
 
           const left = clampedLeft;
           const top = clampedTop;
@@ -193,10 +233,16 @@ export const useArtboardEffects = (
       );
 
       const usedWidthIn = items.length > 0 ? Math.max(0, bounds.maxX) : 0;
-      const usedHeightIn = items.length > 0 ? Math.max(0, bounds.maxY) : 0;
+      const usedHeightIn = items.length > 0 ? Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bounds.maxY)) : 0;
 
-      const totalAreaSf = +((usedWidthIn * usedHeightIn) / PRICING.SQUARE_INCHES_PER_SQ_FT).toFixed(UNIT.INCH.DECIMALS);
-      const totalPrice = +(totalAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(UNIT.INCH.DECIMALS);
+      // Pricing is based on actual utilized area (not hardcoded).
+      const totalAreaSf = +(
+        (usedWidthIn * usedHeightIn) /
+        PRICING.SQUARE_INCHES_PER_SQ_FT
+      ).toFixed(UNIT.INCH.DECIMALS);
+      const totalPrice = +(totalAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(
+        UNIT.INCH.DECIMALS,
+      );
 
       // Collect all image names
       const imageNames = items.map(item =>

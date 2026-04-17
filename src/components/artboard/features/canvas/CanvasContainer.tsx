@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MdAdd } from "react-icons/md";
 import { getGridStyle } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
 import EmptyState from "./EmptyState";
-import ZoomControls from "../zoom/ZoomControls";
 import ArtboardItem from "../items/ArtboardItem";
 import { ArtboardItem as ArtboardItemType } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
@@ -26,8 +25,6 @@ interface CanvasContainerProps {
   onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
   onDragLeave: () => void;
   onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
-  onZoomIn: () => void;
-  onZoomOut: () => void;
   onCanvasClick: () => void;
   onItemSelect: (id: number, multi?: boolean) => void;
   onToggleProperties: (id: number) => void;
@@ -41,7 +38,6 @@ interface CanvasContainerProps {
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
   canvasWidth: number;
-  emptyOffsetY?: number;
   onBrowseFiles: () => void;
   isUploading: boolean;
   uploadProgress: number;
@@ -66,8 +62,6 @@ export default function CanvasContainer({
   onDragOver,
   onDragLeave,
   onDrop,
-  onZoomIn,
-  onZoomOut,
   onCanvasClick,
   onItemSelect,
   onToggleProperties,
@@ -81,7 +75,6 @@ export default function CanvasContainer({
   onResizeStart,
   isDraggingItem,
   canvasWidth,
-  emptyOffsetY = 0,
   onBrowseFiles,
   isUploading,
   uploadProgress,
@@ -89,6 +82,9 @@ export default function CanvasContainer({
   onCancelUpload,
 }: CanvasContainerProps) {
   const [menu, setMenu] = useState<null | { x: number; y: number }>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
 
   const clampedMenu = useMemo(() => {
     if (!menu) return null;
@@ -114,6 +110,55 @@ export default function CanvasContainer({
   }, [menu]);
 
   const pct = Math.max(0, Math.min(100, uploadProgress));
+  const offset = CANVAS.RULER_OFFSET_PX;
+  const ppi = CANVAS.PIXELS_PER_INCH;
+  const maxSheetHeightIn = 1200; // 100 feet
+  const minSheetHeightIn = CANVAS.SHEET_HEIGHT_IN;
+
+  const sheetHeightPx = useMemo(() => {
+    if (items.length === 0) return 0;
+
+    const gap = CANVAS.GRID_GAP_IN;
+    const effectiveMargin = marginSize;
+    const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
+
+    const maxBottomIn = items.reduce((acc, it) => {
+      const copies = it.copies || 1;
+      const scaledWidth = it.widthIn;
+      const scaledHeight = it.heightIn;
+
+      const capacityCols = Math.max(
+        1,
+        Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
+      );
+      const visibleCols = Math.min(copies, capacityCols);
+      const rows = Math.ceil(copies / capacityCols);
+
+      const groupHeight =
+        rows * scaledHeight + Math.max(0, rows - 1) * gap;
+
+      const top = Math.max(effectiveMargin, it.posY);
+      const bottom = top + groupHeight;
+      return Math.max(acc, bottom);
+    }, 0);
+
+    const targetHeightIn = Math.min(
+      maxSheetHeightIn,
+      Math.max(minSheetHeightIn, maxBottomIn + effectiveMargin),
+    );
+    return targetHeightIn * ppi * zoom;
+  }, [items, canvasWidth, marginSize, ppi, zoom, minSheetHeightIn]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const update = () => setViewportHeight(el.clientHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [items.length]);
 
   return (
     <div
@@ -132,70 +177,88 @@ export default function CanvasContainer({
         className="absolute inset-0 z-0 opacity-100"
         style={getGridStyle(zoom)}
       />
-      <CanvasRulers showRulers={showRulers} zoom={zoom} />
-      <div
-        className="absolute"
-        style={{
-          left: `${CANVAS.RULER_OFFSET_PX}px`,
-          top: `${CANVAS.RULER_OFFSET_PX}px`,
-          width: "100%",
-          height: "100%",
-          transform: `scale(${zoom})`,
-          transformOrigin: "0 0",
-          transition: "transform 200ms ease-out",
-        }}
-        onClick={onCanvasClick}
-      >
-        <CanvasMargins
-          showMargins={showMargins}
-          showRulers={showRulers}
-          marginSize={marginSize}
-          zoom={1}
-        />
-        {items.length > 0 ? (
-          items.map((it) => (
-            <ArtboardItem
-              key={it.id}
-              item={it}
-              isSelected={selectedId === it.id || selectedIds.has(it.id)}
-              showProperties={showProperties[it.id] || false}
-              addedToCart={addedToCart.has(it.id)}
-              onSelect={(multi) => onItemSelect(it.id, multi)}
-              onToggleProperties={() => onToggleProperties(it.id)}
-              onLink={onLink}
-              onRotate={itemActions.rotateSelected}
-              onToggleLock={itemActions.toggleLockSelected}
-              onFlip={itemActions.flipSelected}
-              onDuplicate={onDuplicate}
-              onDelete={onDelete}
-              onToggleAutoCrop={itemActions.toggleAutoCrop}
-              onSetCopies={itemActions.setCopies}
-              onToggleLinked={itemActions.toggleLinked}
-              onSetWidthIn={itemActions.setWidthIn}
-              onSetHeightIn={itemActions.setHeightIn}
-              onSetPosX={itemActions.setPosX}
-              onSetPosY={itemActions.setPosY}
-              onAddToCart={() => onAddToCart(it)}
-              onCloseProperties={onCloseProperties}
-              onDragStart={(e) => onDragStart(e, it.id)}
-              onResizeStart={(e) => onResizeStart(e, it.id)}
-              isDragging={isDraggingItem}
-              canvasWidth={canvasWidth}
-              marginSize={marginSize}
-            />
-          ))
-        ) : (
+      <CanvasRulers
+        showRulers={showRulers}
+        zoom={zoom}
+        sheetHeightPx={sheetHeightPx}
+        scrollTopPx={scrollTop}
+        viewportHeightPx={viewportHeight}
+      />
+
+      {items.length === 0 ? (
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          onClick={onCanvasClick}
+        >
+          {!isUploading ? <EmptyState onBrowse={onBrowseFiles} /> : null}
+        </div>
+      ) : (
+        <>
           <div
+            ref={scrollRef}
+            className="absolute z-10"
             style={{
-              transform: emptyOffsetY
-                ? `translateY(${emptyOffsetY}px)`
-                : undefined,
+              left: `${offset}px`,
+              top: `${offset}px`,
+              right: 0,
+              bottom: 0,
+              overflowY: "auto",
+              overflowX: "hidden",
             }}
+            onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+            onClick={onCanvasClick}
           >
-            {!isUploading ? <EmptyState onBrowse={onBrowseFiles} /> : null}
+            <div
+              className="relative"
+              style={{
+                width: `${canvasWidth * ppi * zoom}px`,
+                height: `${sheetHeightPx}px`,
+                transform: `scale(${zoom})`,
+                transformOrigin: "0 0",
+                transition: "transform 200ms ease-out",
+              }}
+            >
+              <CanvasMargins
+                showMargins={showMargins}
+                showRulers={showRulers}
+                marginSize={marginSize}
+                zoom={1}
+              />
+              {items.map((it) => (
+                <ArtboardItem
+                  key={it.id}
+                  item={it}
+                  isSelected={selectedId === it.id || selectedIds.has(it.id)}
+                  showProperties={showProperties[it.id] || false}
+                  addedToCart={addedToCart.has(it.id)}
+                  onSelect={(multi) => onItemSelect(it.id, multi)}
+                  onToggleProperties={() => onToggleProperties(it.id)}
+                  onLink={onLink}
+                  onRotate={itemActions.rotateSelected}
+                  onToggleLock={itemActions.toggleLockSelected}
+                  onFlip={itemActions.flipSelected}
+                  onDuplicate={onDuplicate}
+                  onDelete={onDelete}
+                  onToggleAutoCrop={itemActions.toggleAutoCrop}
+                  onSetCopies={itemActions.setCopies}
+                  onToggleLinked={itemActions.toggleLinked}
+                  onSetWidthIn={itemActions.setWidthIn}
+                  onSetHeightIn={itemActions.setHeightIn}
+                  onSetPosX={itemActions.setPosX}
+                  onSetPosY={itemActions.setPosY}
+                  onAddToCart={() => onAddToCart(it)}
+                  onCloseProperties={onCloseProperties}
+                  onDragStart={(e) => onDragStart(e, it.id)}
+                  onResizeStart={(e) => onResizeStart(e, it.id)}
+                  isDragging={isDraggingItem}
+                  canvasWidth={canvasWidth}
+                  marginSize={marginSize}
+                />
+              ))}
+            </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
       {isDragging && (
         <div className="absolute inset-0 z-20 pointer-events-none">
           <div className="w-full h-full border-2 border-dashed border-blue-400 rounded" />
@@ -273,7 +336,6 @@ export default function CanvasContainer({
           </div>
         </div>
       ) : null}
-      <ZoomControls zoom={zoom} onZoomIn={onZoomIn} onZoomOut={onZoomOut} />
     </div>
   );
 }
