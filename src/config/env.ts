@@ -15,6 +15,9 @@ interface Env {
   smtpPass?: string;
   smtpFrom?: string;
   smtpSecure?: boolean;
+  googleDriveClientEmail?: string;
+  googleDrivePrivateKey?: string;
+  googleDriveFolderId?: string;
 }
 
 const cleanEnvString = (value?: string): string | undefined => {
@@ -43,4 +46,8 @@ export const env: Env = {
   smtpPass: cleanEnvString(process.env.SMTP_PASS),
   smtpFrom: cleanEnvString(process.env.SMTP_FROM),
   smtpSecure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === "true" : undefined,
+
+  googleDriveClientEmail: cleanEnvString(process.env.GOOGLE_DRIVE_CLIENT_EMAIL),
+  googleDrivePrivateKey: cleanEnvString(process.env.GOOGLE_DRIVE_PRIVATE_KEY),
+  googleDriveFolderId: cleanEnvString(process.env.GOOGLE_DRIVE_FOLDER_ID),
 };

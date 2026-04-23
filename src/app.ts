@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import path from "path";
+import mongoose from "mongoose";
 import apiRouter from "./routes/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 
@@ -8,6 +9,15 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (!req.path.startsWith("/api")) return next();
+  if (req.path === "/api/health") return next();
+  if (mongoose.connection.readyState === 1) return next();
+  res.status(503).json({
+    message: "Database unavailable. Ensure MongoDB is running and MONGO_URI is set correctly."
+  });
+});
 
 // Request Logger (Professional logging for debugging)
 app.use((req: Request, res: Response, next: NextFunction) => {

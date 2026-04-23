@@ -8,6 +8,7 @@ import {
   setOrderTracking, 
   downloadOrderInvoice, 
   getOrderById, 
+  getOrderGangsheetPreview,
   getOrderTimeline, 
   getOrderFinancials, 
   adjustOrderFinancials, 
@@ -32,7 +33,15 @@ import {
   getAdminSecuritySettings, 
   updateAdminSecuritySettings, 
   getAdminProfile, 
-  updateAdminProfile 
+  updateAdminProfile,
+  updateAdminPassword,
+  listAdminNotifications,
+  setAdminNotificationRead,
+  markAllAdminNotificationsRead,
+  streamAdminNotifications,
+  listPendingPrinters,
+  approvePrinter,
+  rejectPrinter 
 } from "../controllers/admin.controller.js";
 
 const router = express.Router();
@@ -50,9 +59,17 @@ router.get("/settings/security", getAdminSecuritySettings);
 router.patch("/settings/security", updateAdminSecuritySettings);
 router.get("/profile", getAdminProfile);
 router.patch("/profile", updateAdminProfile);
+router.get("/profile/preferences", getAdminNotificationSettings);
+router.patch("/profile/preferences", updateAdminNotificationSettings);
+router.patch("/profile/password", updateAdminPassword);
+router.get("/notifications", listAdminNotifications);
+router.get("/notifications/stream", streamAdminNotifications);
+router.patch("/notifications/:id/read", setAdminNotificationRead);
+router.post("/notifications/mark-all-read", markAllAdminNotificationsRead);
 router.get("/orders/export", exportOrders);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
+router.get("/orders/:orderId/gangsheet/preview", getOrderGangsheetPreview);
 router.post("/orders/:orderId/assign", assignOrder);
 router.patch("/orders/:orderId/status", updateOrderStatus);
 router.patch("/orders/:orderId/tracking", setOrderTracking);
@@ -62,6 +79,9 @@ router.get("/orders/:orderId/financials", getOrderFinancials);
 router.patch("/orders/:orderId/financials", adjustOrderFinancials);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 
+router.get("/partners/pending", listPendingPrinters);
+router.post("/partners/:partnerId/approve", approvePrinter);
+router.post("/partners/:partnerId/reject", rejectPrinter);
 router.get("/partners/:partnerId", getPartnerById);
 router.get("/partners/:partnerId/orders", getPartnerOrders);
 router.get("/partners/:partnerId/pricing", getPartnerPricing);

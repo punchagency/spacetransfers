@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from "express";
+  import { Request, Response, NextFunction } from "express";
 import { User } from "../models/user.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
@@ -10,6 +10,10 @@ import fs from "fs";
 import path from "path";
 import { alphaTrimToFile } from "../utils/aiCrop.js";
 import { isRembgEnabled, runRembg } from "../utils/rembg.js";
+import { autoAssignOrder } from "../services/orderAssignment.service.js";
+import { getRegionFromState, normalizeRegion } from "../utils/region.js";
+import { sendEmail } from "../services/email.service.js";
+import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -389,7 +393,11 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         widthIn,
         heightIn,
         quantity,
-        unitPrice
+        unitPrice,
+        sheetWidthIn,
+        sheetHeightIn,
+        previewImage,
+        artboardItems
       } = item || {};
 
       if (!type || !name || typeof quantity !== "number" || typeof unitPrice !== "number") {
@@ -401,6 +409,32 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       const lineSubtotal = unitPrice * quantity;
       computedSubtotal += lineSubtotal;
 
+      const normalizedArtboardItems = Array.isArray(artboardItems)
+        ? artboardItems
+            .filter(Boolean)
+            .map((it: any) => ({
+              id: Number(it.id),
+              assetId: String(it.assetId || ""),
+              croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
+              autoCrop: typeof it.autoCrop === "boolean" ? it.autoCrop : undefined,
+              widthIn: Number(it.widthIn),
+              heightIn: Number(it.heightIn),
+              posX: Number(it.posX),
+              posY: Number(it.posY),
+              rotation: typeof it.rotation === "number" ? it.rotation : 0,
+              copies: typeof it.copies === "number" ? it.copies : 1,
+              linked: Boolean(it.linked)
+            }))
+            .filter((it: any) =>
+              Number.isFinite(it.id) &&
+              it.assetId &&
+              Number.isFinite(it.widthIn) &&
+              Number.isFinite(it.heightIn) &&
+              Number.isFinite(it.posX) &&
+              Number.isFinite(it.posY)
+            )
+        : undefined;
+
       return {
         type,
         designId,
@@ -409,7 +443,11 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         heightIn,
         quantity,
         unitPrice,
-        subtotal: lineSubtotal
+        subtotal: lineSubtotal,
+        sheetWidthIn: typeof sheetWidthIn === "number" ? sheetWidthIn : undefined,
+        sheetHeightIn: typeof sheetHeightIn === "number" ? sheetHeightIn : undefined,
+        previewImage: typeof previewImage === "string" ? previewImage : undefined,
+        artboardItems: normalizedArtboardItems && normalizedArtboardItems.length > 0 ? normalizedArtboardItems : undefined
       };
     });
 
@@ -429,24 +467,66 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    const currentUser = req.user?.id
+      ? await User.findById(req.user.id).select("regions").lean()
+      : null;
+    const resolvedCustomerRegion =
+      normalizeRegion(customer?.region) ||
+      normalizeRegion(currentUser?.regions?.[0]) ||
+      normalizeRegion(getRegionFromState(shippingAddress?.state)) ||
+      "West";
+
+    const normalizedCustomer = {
+      ...customer,
+      region: resolvedCustomerRegion
+    };
+
     const order = new Order({
       user: req.user?.id,
       items: orderItems,
-      customer,
+      customer: normalizedCustomer,
       shippingAddress,
       shippingMethod,
       payment,
       pricing,
-      status: "COMPLETED"
+      status: "PENDING"
     });
 
     await order.save();
 
+    notifyAllAdmins({
+      category: "orders",
+      priority: "medium",
+      title: "New order placed",
+      message: `${String(customer.firstName)} ${String(customer.lastName)} • $${Number(pricing.total).toFixed(2)}`,
+      meta: { orderId: order.id, status: "PENDING" }
+    }).catch(() => {});
+
+    const assignment = await Promise.race([
+      autoAssignOrder(order.id),
+      new Promise<{ assigned: false; orderId: string; reason: string; tookMs: number }>((resolve) =>
+        setTimeout(() => resolve({ assigned: false, orderId: order.id, reason: "Assignment timed out", tookMs: 2000 }), 1900)
+      )
+    ]);
+
+    const refreshed = await Order.findById(order.id)
+      .select("status assignedPrinter")
+      .populate("assignedPrinter", "companyName name email")
+      .lean();
+
     res.status(201).json({
       id: order.id,
       createdAt: order.createdAt,
-      status: order.status,
-      pricing: order.pricing
+      status: refreshed?.status || order.status,
+      pricing: order.pricing,
+      assignment,
+      assignedPrinter: refreshed?.assignedPrinter
+        ? {
+            id: (refreshed.assignedPrinter as any)?._id,
+            name: (refreshed.assignedPrinter as any)?.companyName || (refreshed.assignedPrinter as any)?.name,
+            email: (refreshed.assignedPrinter as any)?.email
+          }
+        : null
     });
   } catch (error) {
     next(error);
@@ -1205,6 +1285,53 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       total,
       currency: "USD"
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const sendGangsheetUtilizationWarning = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = req.user!;
+    const { fullSheetPrice, sheetWidthIn, sheetHeightIn, utilizationPct } = req.body;
+
+    const price = Number(fullSheetPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      const error = new Error("fullSheetPrice must be a positive number") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const width = Number(sheetWidthIn || 23.5);
+    const height = Number(sheetHeightIn || 23.5);
+    const pct = utilizationPct != null ? Number(utilizationPct) : null;
+    const pctText = pct != null && Number.isFinite(pct) ? `${pct.toFixed(0)}%` : "N/A";
+
+    const amountText = `$${price.toFixed(2)}`;
+
+    const subject = "Unused gang sheet space notice";
+    const html = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+        <h2 style="margin: 0 0 12px 0;">Unused gang sheet space</h2>
+        <p style="margin: 0 0 12px 0;">
+          Your gang sheet (${width.toFixed(1)}&quot; × ${height.toFixed(1)}&quot;) is not fully utilized.
+        </p>
+        <p style="margin: 0 0 12px 0;">
+          If you proceed, you will be charged the full gang sheet amount of <strong>${amountText}</strong>.
+        </p>
+        <p style="margin: 0 0 0 0; color: #6B7280; font-size: 12px;">
+          Utilization: ${pctText}
+        </p>
+      </div>
+    `;
+
+    const sendResult = await sendEmail({ to: user.email, subject, html });
+
+    console.log(
+      `[GANGSHEET_WARN] user=${user.id} email=${user.email} fullSheetPrice=${amountText} utilization=${pctText} sent=${sendResult.sent}`
+    );
+
+    res.status(200).json({ sent: sendResult.sent });
   } catch (error) {
     next(error);
   }

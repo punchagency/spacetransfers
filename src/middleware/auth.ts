@@ -36,6 +36,29 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+export const maybeAuthenticate = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith("Bearer ")) {
+      return next();
+    }
+
+    const token = header.substring("Bearer ".length);
+    const payload = verifyJwt(token);
+
+    if (payload && payload.sub) {
+      const user = await User.findById(payload.sub).select("-passwordHash");
+      if (user) {
+        req.user = user;
+      }
+    }
+    next();
+  } catch (error) {
+    // If token is invalid, just proceed as guest
+    next();
+  }
+};
+
 export const requireRoles = (...roles: string[]) => {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) {

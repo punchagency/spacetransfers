@@ -60,8 +60,8 @@ export const switchAccount = async (req: Request, res: Response, next: NextFunct
 
 export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, email, password, role, companyName, phone } = req.body;
-    const result = await registerUser({ name, email, password, role, companyName, phone });
+    const { name, email, password, role, companyName, phone, region, website, address } = req.body;
+    const result = await registerUser({ name, email, password, role, companyName, phone, region, website, address });
     res.status(201).json(result);
   } catch (error) {
     next(error);
