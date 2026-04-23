@@ -10,13 +10,18 @@ import {
   updateJobPriority, 
   getJobDetails, 
   getJobCustomerInfo, 
+  getPrinterJobOverview,
   updateJobNotes, 
   updateJobSpecs, 
   executeJobAction, 
   getJobAssets, 
   createJobAssetBundle, 
+  downloadJobAssetBundle,
   exportJobGangsheet, 
   getJobGangsheetPreview, 
+  downloadGangsheetExport,
+  getPrinterOrdersSummary,
+  updatePrinterOrderStatus,
   createJobShippingLabel, 
   updateJobTracking, 
   getOrderSummary, 
@@ -41,11 +46,16 @@ router.patch("/profile", updatePrinterProfile);
 router.get("/settings", getPrinterSettings);
 router.patch("/settings", updatePrinterSettings);
 router.get("/jobs/:jobId", getJobDetails);
+router.get("/jobs/:jobId/overview", getPrinterJobOverview);
 router.get("/jobs/:jobId/customer", getJobCustomerInfo);
 router.get("/jobs/:jobId/assets", getJobAssets);
 router.get("/jobs/:jobId/gangsheet/preview", getJobGangsheetPreview);
 router.post("/jobs/:jobId/assets/bundle", createJobAssetBundle);
+router.get("/jobs/:jobId/assets/bundle/download", downloadJobAssetBundle);
 router.post("/jobs/:jobId/gangsheet/export", exportJobGangsheet);
+router.get("/exports/:exportId/file", downloadGangsheetExport);
+router.get("/orders/summary", getPrinterOrdersSummary);
+router.patch("/orders/:orderId/status", updatePrinterOrderStatus);
 router.post("/jobs/:jobId/label", createJobShippingLabel);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.patch("/jobs/:jobId/specs", updateJobSpecs);

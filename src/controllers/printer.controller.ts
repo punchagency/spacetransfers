@@ -3,12 +3,101 @@ import { Order } from "../models/order.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { User } from "../models/user.model.js";
+import { Settings } from "../models/settings.model.js";
+import archiver from "archiver";
 import mongoose from "mongoose";
 import { env } from "../config/env.js";
+import fs from "fs";
+import path from "path";
+import { Readable } from "node:stream";
+import { GangsheetExport } from "../models/gangsheetExport.model.js";
+import { GangsheetExportAudit } from "../models/gangsheetExportAudit.model.js";
+import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
+import { uploadPngToDrive } from "../services/googleDrive.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
+
+const isObjectIdString = (v: string) => /^[0-9a-fA-F]{24}$/.test(v);
+const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
+const resolveLocalUploadPath = (url: string) => {
+  const marker = "/uploads/";
+  const idx = String(url || "").lastIndexOf(marker);
+  if (idx === -1) return null;
+  const filename = String(url).substring(idx + marker.length);
+  const safeFilename = path.basename(filename);
+  return path.join(process.cwd(), "uploads", safeFilename);
+};
+
+const splitAssetRefs = (refs: Set<string>) => {
+  const ids: mongoose.Types.ObjectId[] = [];
+  const urls: string[] = [];
+  for (const r of refs) {
+    const s = String(r || "");
+    if (!s) continue;
+    if (isObjectIdString(s)) ids.push(new mongoose.Types.ObjectId(s));
+    else urls.push(s);
+  }
+  return { ids, urls };
+};
+
+const pickMostPopulatedItem = (items: any[]) => {
+  const list = Array.isArray(items) ? items : [];
+  let best: any | null = null;
+  let bestCopies = -1;
+  let bestArea = -1;
+  let bestIndex = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const it = list[i];
+    if (!it) continue;
+    const copies = typeof it.copies === "number" && Number.isFinite(it.copies) ? Math.max(0, it.copies) : 0;
+    const w = typeof it.widthIn === "number" && Number.isFinite(it.widthIn) ? Math.max(0, it.widthIn) : 0;
+    const h = typeof it.heightIn === "number" && Number.isFinite(it.heightIn) ? Math.max(0, it.heightIn) : 0;
+    const area = w * h;
+
+    const isBetter =
+      copies > bestCopies ||
+      (copies === bestCopies && area > bestArea) ||
+      (copies === bestCopies && area === bestArea && i < bestIndex);
+
+    if (isBetter) {
+      best = it;
+      bestCopies = copies;
+      bestArea = area;
+      bestIndex = i;
+    }
+  }
+
+  return best;
+};
+
+const resolveThumbnailUrl = (ref: string, assetsById: Map<string, string>) => {
+  const s = String(ref || "").trim();
+  if (!s) return null;
+  if (!isObjectIdString(s)) return s;
+  const fromMap = assetsById.get(s);
+  return fromMap || null;
+};
+
+const computeGangsheetFaceThumbnail = ({
+  items,
+  assetsById,
+}: {
+  items: any[];
+  assetsById: Map<string, string>;
+}) => {
+  const gangsheetItem = (Array.isArray(items) ? items : []).find((i: any) => i?.type === "gangsheet") || (items || [])[0] || {};
+  const artboardItems = Array.isArray((gangsheetItem as any).artboardItems) ? (gangsheetItem as any).artboardItems : [];
+  const best = pickMostPopulatedItem(artboardItems);
+  if (!best) return null;
+
+  const croppedUrl = typeof best.croppedUrl === "string" ? best.croppedUrl.trim() : "";
+  if (croppedUrl) return croppedUrl;
+
+  return resolveThumbnailUrl(String(best.assetId || ""), assetsById);
+};
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -73,6 +162,37 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     const completedTrend = getTrend(completedTodayCount, completedYesterdayCount);
     const revenueTrend = getTrend(totalRevenue, totalRevenueBeforeToday);
 
+    const activeAssignedJobs = await Order.find({
+      assignedPrinter: printerId,
+      status: { $in: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] }
+    })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(12)
+      .lean();
+
+    const mapStatus = (s: string) => {
+      const v = String(s || "").toUpperCase();
+      if (v === "PENDING") return "Pending";
+      if (v === "PROCESSING") return "Processing";
+      if (v === "PRINTING") return "Printing";
+      if (v === "QUALITY_CHECK") return "Quality Check";
+      if (v === "COMPLETED") return "Completed";
+      if (v === "CANCELLED") return "Cancelled";
+      return "Pending";
+    };
+
+    const assignedJobs = activeAssignedJobs.map((job: any) => ({
+      id: String(job._id),
+      customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
+      order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
+      deadline: job.createdAt
+        ? new Date(job.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", 2:00 PM"
+        : "—",
+      status: mapStatus(String(job.status || "")),
+      isUrgent: String(job.priority || "").toUpperCase() === "URGENT",
+      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null
+    }));
+
     const urgentJobs = await Order.find({ 
       assignedPrinter: printerId,
       priority: "URGENT",
@@ -84,7 +204,9 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       customerName: `${job.customer.firstName} ${job.customer.lastName}`,
       order: `${job.items.length} Items`,
       deadline: job.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", 2:00 PM",
-      status: "Urgent"
+      status: "Urgent",
+      isUrgent: true,
+      createdAt: job.createdAt.toISOString()
     }));
 
     res.json({
@@ -111,7 +233,8 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
           ...revenueTrend
         }
       ],
-      urgentJobs: formattedUrgentJobs
+      urgentJobs: formattedUrgentJobs,
+      assignedJobs
     });
   } catch (error) {
     next(error);
@@ -144,6 +267,8 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
           query.status = backendStatus;
         }
       }
+    } else {
+      query.status = { $in: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] };
     }
 
     const jobs = await Order.find(query)
@@ -496,11 +621,14 @@ export const getJobAssets = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
-    const designIds = job.items
+    const designIdsRaw = job.items
       .filter(item => item.designId)
-      .map(item => item.designId);
+      .map(item => String(item.designId));
+    const designIds = designIdsRaw
+      .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
 
-    const designs = await Design.find({ _id: { $in: designIds } });
+    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
     
     const assetIds = new Set<string>();
     designs.forEach(design => {
@@ -511,7 +639,13 @@ export const getJobAssets = async (req: Request, res: Response, next: NextFuncti
       }
     });
 
-    const assets = await Asset.find({ _id: { $in: Array.from(assetIds) } });
+    const { ids, urls } = splitAssetRefs(assetIds);
+    const assets = await Asset.find({
+      $or: [
+        ...(ids.length ? [{ _id: { $in: ids } }] : []),
+        ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : [])
+      ]
+    });
 
     const formattedAssets = assets.map(asset => ({
       id: asset.id,
@@ -550,11 +684,14 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const designIds = job.items
+    const designIdsRaw = job.items
       .filter(item => item.designId)
-      .map(item => item.designId);
+      .map(item => String(item.designId));
+    const designIds = designIdsRaw
+      .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
 
-    const designs = await Design.find({ _id: { $in: designIds } });
+    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
     
     const allAssetIds = new Set<string>();
     designs.forEach(design => {
@@ -580,12 +717,119 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const port = env.port || 4000;
-    const bundleUrl = `http://localhost:${port}/uploads/bundle-${job.id}.zip`;
-
     res.status(201).json({
-      bundleUrl
+      bundleDownloadUrl: `http://localhost:${env.port || 4000}/api/printer/jobs/${encodeURIComponent(String(job.id))}/assets/bundle/download${
+        include === "ALL"
+          ? `?include=ALL`
+          : Array.isArray(include)
+            ? `?include=${encodeURIComponent(include.map((v: any) => String(v)).join(","))}`
+            : ""
+      }`
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const downloadJobAssetBundle = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobId } = req.params;
+    const printerId = req.user?.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const includeParam = Array.isArray(req.query.include) ? String(req.query.include[0] || "") : String(req.query.include || "ALL");
+    const includeAll = !includeParam || includeParam === "ALL";
+    const requestedIds = includeAll
+      ? null
+      : includeParam
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+    const designIdsRaw = job.items
+      .filter((item: any) => item.designId)
+      .map((item: any) => String(item.designId));
+    const designIds = designIdsRaw
+      .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
+    const allAssetIds = new Set<string>();
+    designs.forEach((design: any) => {
+      if (design.artboardData && design.artboardData.items) {
+        design.artboardData.items.forEach((item: any) => {
+          if (item.assetId) allAssetIds.add(String(item.assetId));
+        });
+      }
+    });
+
+    let targetAssetIds = Array.from(allAssetIds);
+    if (requestedIds) {
+      targetAssetIds = targetAssetIds.filter((id) => requestedIds.includes(id));
+      if (targetAssetIds.length === 0) {
+        const error = new Error("None of the specified assets were found in this job") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    const { ids, urls } = splitAssetRefs(new Set(targetAssetIds));
+    const assets =
+      ids.length || urls.length
+        ? await Asset.find({
+            $or: [
+              ...(ids.length ? [{ _id: { $in: ids } }] : []),
+              ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : [])
+            ]
+          }).lean()
+        : [];
+
+    if (assets.length === 0) {
+      const error = new Error("No assets available for this job") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const zipName = `original_assets_${String(job.id).slice(-6).toUpperCase()}.zip`;
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
+    res.setHeader("Cache-Control", "no-store");
+
+    const archive = archiver("zip", { zlib: { level: 0 } });
+    archive.on("error", (err: any) => {
+      next(err);
+    });
+    archive.pipe(res);
+
+    for (const a of assets as any[]) {
+      const url = String(a?.trimmedUrl || a?.url || "");
+      if (!url) continue;
+      const preferredName = String(a?.originalFilename || "").trim();
+      const fallbackName = path.basename(url.split("?")[0] || "") || `asset_${String(a?._id || "")}.bin`;
+      const entryName = preferredName || fallbackName;
+      const localPath = resolveLocalUploadPath(url);
+
+      if (localPath && fs.existsSync(localPath)) {
+        archive.file(localPath, { name: entryName });
+        continue;
+      }
+
+      if (/^https?:\/\//i.test(url)) {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const body = r.body ? Readable.fromWeb(r.body as any) : null;
+        if (!body) continue;
+        archive.append(body, { name: entryName });
+      }
+    }
+
+    await archive.finalize();
   } catch (error) {
     next(error);
   }
@@ -594,12 +838,11 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
 export const exportJobGangsheet = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const { format } = req.body;
+    const { format, toDrive } = req.body || {};
     const printerId = req.user?.id;
 
-    const allowedFormats = ["PDF", "PNG", "TIFF"];
-    if (!format || !allowedFormats.includes(format)) {
-      const error = new Error("Invalid format. Must be one of: PDF | PNG | TIFF") as CustomError;
+    if (!format || String(format).toUpperCase() !== "PNG") {
+      const error = new Error("Invalid format. Must be PNG") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -612,13 +855,90 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    const port = env.port || 4000;
-    const fileExtension = format.toLowerCase();
-    const exportUrl = `http://localhost:${port}/uploads/gangsheet-${job.id}.${fileExtension}`;
+    const gangsheetItem = (job.items || []).find((i: any) => i?.type === "gangsheet") || (job.items || [])[0] || {};
+    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
+    if (artboardItems.length === 0) {
+      const error = new Error("No artboard items found for this job") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const rendered = await exportGangsheetPng24({
+      jobId: job.id,
+      printerId: String(printerId),
+      sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
+      sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
+      artboardItems,
+      dpi: 600
+    });
+
+    if (!rendered.validation.ok) {
+      const error = new Error(`Export validation failed: ${rendered.validation.errors.join(", ")}`) as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const exportDoc = await GangsheetExport.create({
+      jobId: new mongoose.Types.ObjectId(job.id),
+      printerId: new mongoose.Types.ObjectId(String(printerId)),
+      format: "png",
+      dpi: rendered.dpi,
+      sheet: rendered.sheet,
+      fileName: rendered.fileName,
+      filePath: rendered.filePath,
+      byteSize: rendered.byteSize,
+      validation: rendered.validation,
+      drive: { status: "skipped" }
+    });
+
+    await GangsheetExportAudit.create({
+      exportId: exportDoc._id,
+      jobId: exportDoc.jobId,
+      printerId: exportDoc.printerId,
+      action: "export_created",
+      meta: { format: "png", dpi: rendered.dpi }
+    });
+
+    let driveResult: any = null;
+    if (Boolean(toDrive)) {
+      const uploaded = await uploadPngToDrive({ localFilePath: rendered.filePath, fileName: rendered.fileName });
+      if (uploaded.uploaded) {
+        await GangsheetExport.updateOne(
+          { _id: exportDoc._id },
+          { $set: { drive: { status: "uploaded", fileId: uploaded.fileId, webViewLink: uploaded.webViewLink, uploadedAt: new Date() } } }
+        );
+        await GangsheetExportAudit.create({
+          exportId: exportDoc._id,
+          jobId: exportDoc.jobId,
+          printerId: exportDoc.printerId,
+          action: "drive_uploaded",
+          meta: { fileId: uploaded.fileId, webViewLink: uploaded.webViewLink }
+        });
+      } else {
+        await GangsheetExport.updateOne(
+          { _id: exportDoc._id },
+          { $set: { drive: { status: "failed", error: uploaded.error || "drive_failed" } } }
+        );
+        await GangsheetExportAudit.create({
+          exportId: exportDoc._id,
+          jobId: exportDoc.jobId,
+          printerId: exportDoc.printerId,
+          action: "drive_failed",
+          meta: { error: uploaded.error || "drive_failed" }
+        });
+      }
+      driveResult = uploaded;
+    }
 
     res.status(201).json({
-      exportUrl,
-      format
+      exportId: String(exportDoc._id),
+      format: "PNG",
+      dpi: rendered.dpi,
+      sheet: rendered.sheet,
+      validation: rendered.validation,
+      drive: driveResult
+        ? { uploaded: Boolean(driveResult.uploaded), fileId: driveResult.fileId, webViewLink: driveResult.webViewLink, error: driveResult.error }
+        : null
     });
   } catch (error) {
     next(error);
@@ -628,7 +948,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
 export const getJobGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const resolution = parseInt(req.query.resolution as string) || 150;
+    const resolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 150));
     const printerId = req.user?.id;
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
@@ -639,13 +959,80 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       throw error;
     }
 
-    const port = env.port || 4000;
-    const previewUrl = `http://localhost:${port}/uploads/preview-${job.id}-${resolution}.png`;
+    const gangsheetItem = (job.items || []).find((i: any) => i?.type === "gangsheet") || (job.items || [])[0] || {};
+    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
+    if (artboardItems.length === 0) {
+      const error = new Error("No artboard items found for this job") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const sheetWidthInRaw = gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn;
+    const sheetHeightInRaw = gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn;
+    const sheetWidthIn = typeof sheetWidthInRaw === "number" && Number.isFinite(sheetWidthInRaw) ? sheetWidthInRaw : 23.5;
+    const sheetHeightIn = typeof sheetHeightInRaw === "number" && Number.isFinite(sheetHeightInRaw) ? sheetHeightInRaw : 23.5;
+
+    const rendered = await exportGangsheetPng24({
+      jobId: job.id,
+      printerId: String(printerId),
+      sheetWidthIn,
+      sheetHeightIn,
+      artboardItems,
+      dpi: resolution
+    });
+
+    const fileBuf = await fs.promises.readFile(rendered.filePath);
+    const b64 = fileBuf.toString("base64");
 
     res.json({
-      previewUrl,
-      resolutionDPI: resolution
+      previewDataUrl: `data:image/png;base64,${b64}`,
+      resolutionDPI: rendered.dpi,
+      sheetWidthIn,
+      sheetHeightIn
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const downloadGangsheetExport = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { exportId } = req.params as any;
+    const printerId = req.user?.id;
+    const id = Array.isArray(exportId) ? String(exportId[0] || "") : String(exportId || "");
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      const error = new Error("Invalid export id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const exp = await GangsheetExport.findOne({ _id: new mongoose.Types.ObjectId(id), printerId: new mongoose.Types.ObjectId(String(printerId)) }).lean();
+    if (!exp) {
+      const error = new Error("Export not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (!fs.existsSync(String((exp as any).filePath))) {
+      const error = new Error("Export file missing") as CustomError;
+      error.statusCode = 410;
+      throw error;
+    }
+
+    await GangsheetExportAudit.create({
+      exportId: (exp as any)._id,
+      jobId: (exp as any).jobId,
+      printerId: (exp as any).printerId,
+      action: "downloaded",
+      meta: { userAgent: String(req.headers["user-agent"] || ""), ip: String(req.ip || "") }
+    });
+
+    const stats = await fs.promises.stat(String((exp as any).filePath));
+    res.setHeader("Content-Length", String(stats.size));
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Disposition", `attachment; filename="${String((exp as any).fileName)}"`);
+    res.setHeader("Cache-Control", "no-store");
+    fs.createReadStream(String((exp as any).filePath)).pipe(res);
   } catch (error) {
     next(error);
   }
@@ -736,15 +1123,16 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
 export const listPrinterOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
-    const { status } = req.query;
+    const { status, q, limit = "30", cursor } = req.query;
 
     const query: any = { assignedPrinter: printerId };
 
     const statusMap: { [key: string]: any } = {
       "Pending Review": "PENDING",
-      "In Progress": "PROCESSING",
-      "Ready": ["PRINTING", "QUALITY_CHECK"],
-      "Completed": ["SHIPPED", "COMPLETED"]
+      "In Progress": ["PROCESSING", "PRINTING"],
+      "Ready": ["QUALITY_CHECK"],
+      "Completed": ["SHIPPED", "COMPLETED"],
+      "Cancelled": ["CANCELLED"]
     };
 
     if (status && statusMap[status as string]) {
@@ -756,9 +1144,66 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       }
     }
 
-    const orders = await Order.find(query).sort({ createdAt: -1 });
+    if (typeof q === "string" && q.trim()) {
+      const raw = q.trim();
+      const re = new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      query.$or = [
+        { "customer.firstName": re },
+        { "customer.lastName": re },
+        { "customer.email": re },
+        { "shippingAddress.city": re },
+        { "shippingAddress.state": re }
+      ];
+      if (mongoose.Types.ObjectId.isValid(raw)) {
+        query.$or.push({ _id: new mongoose.Types.ObjectId(raw) });
+      }
+    }
 
-    const formattedOrders = await Promise.all(orders.map(async (order) => {
+    const pageSize = Math.max(1, Math.min(100, parseInt(String(limit), 10) || 30));
+    if (typeof cursor === "string" && cursor.includes("_")) {
+      const [createdAtMsRaw, idRaw] = cursor.split("_");
+      const createdAtMs = Number(createdAtMsRaw);
+      if (Number.isFinite(createdAtMs) && mongoose.Types.ObjectId.isValid(idRaw)) {
+        query.$and = [
+          ...(query.$and || []),
+          {
+            $or: [
+              { createdAt: { $lt: new Date(createdAtMs) } },
+              { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } }
+            ]
+          }
+        ];
+      }
+    }
+
+    const orders = await Order.find(query).sort({ createdAt: -1, _id: -1 }).limit(pageSize + 1);
+
+    const formatDueDate = (d: Date) => {
+      const now = new Date();
+      const startToday = new Date(now);
+      startToday.setHours(0, 0, 0, 0);
+      const startTomorrow = new Date(startToday);
+      startTomorrow.setDate(startTomorrow.getDate() + 1);
+      const startDayAfter = new Date(startToday);
+      startDayAfter.setDate(startDayAfter.getDate() + 2);
+
+      if (d >= startToday && d < startTomorrow) return "Due Today";
+      if (d >= startTomorrow && d < startDayAfter) return "Due Tomorrow";
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    };
+
+    const statusDescription = (label: string) => {
+      if (label === "Pending Review") return "Review artwork and accept this job";
+      if (label === "In Progress") return "Currently being processed";
+      if (label === "Ready") return "Ready for packaging and shipment";
+      if (label === "Completed") return "Job completed successfully";
+      return "";
+    };
+
+    const hasNextPage = orders.length > pageSize;
+    const pageOrders = hasNextPage ? orders.slice(0, pageSize) : orders;
+
+    const formattedOrders = await Promise.all(pageOrders.map(async (order) => {
       const firstItem = order.items[0] || {};
       const sheetSize = (firstItem.widthIn && firstItem.heightIn) 
         ? `${firstItem.widthIn}x${firstItem.heightIn}` 
@@ -776,35 +1221,398 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         }
       }
 
-      const designIds = order.items.filter(i => i.designId).map(i => i.designId);
-      const designs = await Design.find({ _id: { $in: designIds } });
+      const designIdsRaw = order.items.filter(i => i.designId).map(i => String(i.designId));
+      const designIds = designIdsRaw
+        .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+      const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
       const assetIds = new Set<string>();
+      const gangsheetItem = (order.items || []).find((i: any) => i?.type === "gangsheet") || (order.items || [])[0] || {};
+      const artboardItems = Array.isArray((gangsheetItem as any).artboardItems) ? (gangsheetItem as any).artboardItems : [];
       designs.forEach(d => {
         d.artboardData?.items?.forEach(item => {
           if (item.assetId) assetIds.add(item.assetId);
         });
       });
-      const assets = await Asset.find({ _id: { $in: Array.from(assetIds) } });
+      artboardItems.forEach((it: any) => {
+        if (it?.assetId) assetIds.add(String(it.assetId));
+      });
+      const { ids, urls } = splitAssetRefs(assetIds);
+      const assetOr: any[] = [
+        ...(ids.length ? [{ _id: { $in: ids } }] : []),
+        ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : [])
+      ];
+      const assets = assetOr.length ? await Asset.find({ $or: assetOr }) : [];
       
       const hasWarning = assets.length < assetIds.size || assets.some(a => !a.dpi || a.dpi < 150);
+      const assetsById = new Map<string, string>();
+      assets.forEach((a: any) => {
+        const id = a?._id ? String(a._id) : "";
+        const url = typeof a?.trimmedUrl === "string" ? a.trimmedUrl : typeof a?.url === "string" ? a.url : "";
+        if (id && url) assetsById.set(id, url);
+      });
+      const faceThumbnail = computeGangsheetFaceThumbnail({ items: order.items as any, assetsById });
 
       return {
         id: order.id,
+        actualId: order.id,
         customerName: `${order.customer.firstName} ${order.customer.lastName}`,
         sheetSize,
+        filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
         location,
         status: displayStatus,
-        dueDate: order.createdAt,
+        dueDate: formatDueDate(order.createdAt),
         isUrgent: order.priority === "URGENT",
-        hasWarning
+        hasWarning,
+        statusDescription: statusDescription(displayStatus),
+        thumbnail: faceThumbnail || (typeof firstItem.previewImage === "string" ? firstItem.previewImage : null)
       };
     }));
 
-    res.json({ orders: formattedOrders });
+    const lastOrder = pageOrders[pageOrders.length - 1];
+    const nextCursor =
+      hasNextPage && lastOrder
+        ? `${new Date(lastOrder.createdAt).getTime()}_${String(lastOrder._id)}`
+        : null;
+
+    res.json({ orders: formattedOrders, nextCursor });
   } catch (error) {
     next(error);
   }
 };                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+
+export const getPrinterJobOverview = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobId } = req.params as any;
+    const printerId = req.user?.id;
+    const id = Array.isArray(jobId) ? String(jobId[0] || "") : String(jobId || "");
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      const error = new Error("Invalid job id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: id, assignedPrinter: printerId }).lean();
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const items = Array.isArray((job as any).items) ? (job as any).items : [];
+    const firstItem: any = (job as any).items?.[0] || {};
+    const sheetSize =
+      firstItem.widthIn && firstItem.heightIn ? `${firstItem.widthIn}x${firstItem.heightIn}` : "N/A";
+
+    const designIdsRaw =
+      (job as any).items?.filter((i: any) => i.designId).map((i: any) => String(i.designId)) || [];
+    const designIds = designIdsRaw
+      .filter((id: string) => /^[0-9a-fA-F]{24}$/.test(id))
+      .map((id: string) => new mongoose.Types.ObjectId(id));
+    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }).lean() : [];
+    const assetIds = new Set<string>();
+    for (const d of designs as any[]) {
+      d.artboardData?.items?.forEach((item: any) => {
+        if (item.assetId) assetIds.add(String(item.assetId));
+      });
+    }
+    const gangsheetItem = ((job as any).items || []).find((i: any) => i?.type === "gangsheet") || ((job as any).items || [])[0] || {};
+    const jobArtboardItems = Array.isArray((gangsheetItem as any).artboardItems) ? (gangsheetItem as any).artboardItems : [];
+    jobArtboardItems.forEach((it: any) => {
+      if (it?.assetId) assetIds.add(String(it.assetId));
+    });
+    const { ids, urls } = splitAssetRefs(assetIds);
+    const assets =
+      ids.length || urls.length
+        ? await Asset.find({
+            $or: [
+              ...(ids.length ? [{ _id: { $in: ids } }] : []),
+              ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : [])
+            ]
+          }).lean()
+        : [];
+    const hasWarning = assets.length < assetIds.size || assets.some((a: any) => !a.dpi || a.dpi < 150);
+    const assetsById = new Map<string, string>();
+    assets.forEach((a: any) => {
+      const id = a?._id ? String(a._id) : "";
+      const url = typeof a?.trimmedUrl === "string" ? a.trimmedUrl : typeof a?.url === "string" ? a.url : "";
+      if (id && url) assetsById.set(id, url);
+    });
+    const faceThumbnail = computeGangsheetFaceThumbnail({ items, assetsById });
+
+    const exports = await GangsheetExport.find({
+      jobId: new mongoose.Types.ObjectId(String((job as any)._id)),
+      printerId: new mongoose.Types.ObjectId(String(printerId))
+    })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(5)
+      .lean();
+
+    const storedPricing = (job as any).pricing || {};
+    const currency = String(storedPricing.currency || "USD");
+    const storedAdjustments = Array.isArray(storedPricing.adjustments) ? storedPricing.adjustments : [];
+
+    const partner = printerId
+      ? await User.findById(printerId).select("settings.pricing").lean()
+      : null;
+    const partnerPricing = (partner as any)?.settings?.pricing || {};
+    const baseRatePerSqFt = typeof partnerPricing.baseRatePerSqFt === "number" ? partnerPricing.baseRatePerSqFt : 2.5;
+    const tiers = Array.isArray(partnerPricing.tiered) ? partnerPricing.tiered : [];
+    const surchargesCfg = partnerPricing.surcharges || {};
+    const rushPct = typeof surchargesCfg.rushPct === "number" ? surchargesCfg.rushPct : 0;
+    const specialInkFlat = typeof surchargesCfg.specialInkFlat === "number" ? surchargesCfg.specialInkFlat : 0;
+
+    const totalSqFt = roundMoney(
+      items.reduce((sum: number, it: any) => {
+        const w =
+          typeof it?.sheetWidthIn === "number"
+            ? it.sheetWidthIn
+            : typeof it?.widthIn === "number"
+              ? it.widthIn
+              : null;
+        const h =
+          typeof it?.sheetHeightIn === "number"
+            ? it.sheetHeightIn
+            : typeof it?.heightIn === "number"
+              ? it.heightIn
+              : null;
+        const qty = typeof it?.quantity === "number" ? it.quantity : 1;
+        if (!w || !h) return sum;
+        const sqft = (Number(w) * Number(h)) / 144;
+        if (!Number.isFinite(sqft) || sqft <= 0) return sum;
+        return sum + sqft * Math.max(1, qty);
+      }, 0)
+    );
+
+    const appliedTier = tiers.find((t: any) => {
+      const min = typeof t?.minSqFt === "number" ? t.minSqFt : 0;
+      const max = t?.maxSqFt == null ? null : Number(t.maxSqFt);
+      const okMin = totalSqFt >= min;
+      const okMax = max == null ? true : totalSqFt < max;
+      return okMin && okMax;
+    });
+    const appliedRatePerSqFt =
+      appliedTier && typeof (appliedTier as any).rate === "number"
+        ? Number((appliedTier as any).rate)
+        : baseRatePerSqFt;
+
+    const base = roundMoney(Math.max(0, totalSqFt * appliedRatePerSqFt));
+    const hasSpecialInk = storedAdjustments.some((a: any) => {
+      const r = String(a?.reason || "").toLowerCase();
+      return r.includes("special ink") || r.includes("specialink");
+    });
+    const rushFee = (job as any).priority === "URGENT" ? roundMoney((base * rushPct) / 100) : 0;
+    const specialInkFee = hasSpecialInk ? roundMoney(specialInkFlat) : 0;
+    const surcharges = roundMoney(Math.max(0, rushFee + specialInkFee));
+    const subtotal = roundMoney(Math.max(0, base + surcharges));
+
+    const globalPricing = await Settings.findOne({ key: "global_pricing" }).select("value").lean();
+    const taxRatePctRaw = Number((globalPricing as any)?.value?.taxRatePct ?? 8.0);
+    const taxRate = taxRatePctRaw > 0 ? taxRatePctRaw / 100 : 0;
+    const tax = roundMoney(Math.max(0, subtotal * taxRate));
+    const total = roundMoney(Math.max(0, subtotal + tax));
+
+    const PLATFORM_RATE = 0.2;
+    const earning = Number((total - total * PLATFORM_RATE).toFixed(2));
+    const commission = Number((total * PLATFORM_RATE).toFixed(2));
+
+    res.json({
+      id: String((job as any)._id),
+      orderId: String((job as any)._id),
+      status: String((job as any).status),
+      priority: String((job as any).priority || "NORMAL"),
+      createdAt: (job as any).createdAt,
+      updatedAt: (job as any).updatedAt,
+      faceThumbnail,
+      customer: {
+        name: `${(job as any).customer?.firstName || ""} ${(job as any).customer?.lastName || ""}`.trim(),
+        email: (job as any).customer?.email || null,
+        phone: (job as any).customer?.phone || null,
+        region: (job as any).customer?.region || null
+      },
+      shippingAddress: (job as any).shippingAddress || null,
+      specs: {
+        sheetSize,
+        filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
+        itemsCount: Array.isArray((job as any).items) ? (job as any).items.length : 0
+      },
+      notes: (job as any).notes || "",
+      timeline: ((job as any).statusTimeline || []).map((t: any) => ({
+        status: t.status,
+        time: t.time,
+        message: t.message || null,
+        actorRole: t.actorRole || null,
+        actorId: t.actorId || null,
+        actorName: t.actorName ?? null
+      })),
+      payment: {
+        method: (job as any).payment?.method || null,
+        status: String((job as any).status || "").toUpperCase() === "CANCELLED" ? "cancelled" : "secured"
+      },
+      pricing: {
+        subtotal: base,
+        partnerCost: subtotal,
+        rushFee: surcharges,
+        shippingCost: null,
+        tax,
+        total,
+        currency
+      },
+      earnings: {
+        gross: total,
+        commission,
+        net: earning,
+        currency
+      },
+      warnings: { hasWarning },
+      recentExports: exports.map((e: any) => ({
+        id: String(e._id),
+        fileName: e.fileName,
+        dpi: e.dpi,
+        createdAt: e.createdAt,
+        drive: e.drive?.status === "uploaded" ? { webViewLink: e.drive.webViewLink } : null
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPrinterOrdersSummary = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    const match: any = { assignedPrinter: new mongoose.Types.ObjectId(printerId) };
+
+    const [counts, urgentCount] = await Promise.all([
+      Order.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+      Order.countDocuments({
+        assignedPrinter: printerId,
+        priority: "URGENT",
+        status: { $in: ["PENDING", "PROCESSING", "PRINTING"] }
+      })
+    ]);
+
+    const byStatus = new Map<string, number>(counts.map((c: any) => [String(c._id), Number(c.count || 0)]));
+    const pendingReview = (byStatus.get("PENDING") || 0);
+    const inProgress = (byStatus.get("PROCESSING") || 0) + (byStatus.get("PRINTING") || 0);
+    const ready = (byStatus.get("QUALITY_CHECK") || 0);
+    const completed = (byStatus.get("SHIPPED") || 0) + (byStatus.get("COMPLETED") || 0);
+    const cancelled = (byStatus.get("CANCELLED") || 0);
+
+    res.json({
+      counts: {
+        all: Array.from(byStatus.values()).reduce((a, b) => a + b, 0),
+        pending: pendingReview,
+        inProgress,
+        ready,
+        completed,
+        cancelled,
+        urgent: urgentCount
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePrinterOrderStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orderId } = req.params as any;
+    const printerId = req.user?.id;
+    const id = Array.isArray(orderId) ? String(orderId[0] || "") : String(orderId || "");
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      const error = new Error("Invalid order id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const { status } = req.body || {};
+    const input = String(status || "").trim();
+    if (!input) {
+      const error = new Error("status is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const allowedLabels: Record<string, string> = {
+      "Pending Review": "PENDING",
+      "In Progress": "PRINTING",
+      "Ready": "QUALITY_CHECK",
+      "Completed": "COMPLETED",
+      "Cancelled": "CANCELLED"
+    };
+
+    const normalized = allowedLabels[input] || input.toUpperCase();
+    const allowedBackend = ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"];
+    if (!allowedBackend.includes(normalized)) {
+      const error = new Error("Invalid status") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const job = await Order.findOne({ _id: id, assignedPrinter: printerId });
+    if (!job) {
+      const error = new Error("Order not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const current = String((job as any).status || "").toUpperCase();
+    const next = normalized;
+
+    const canTransition = (() => {
+      if (next === current) return true;
+      if (current === "COMPLETED") return false;
+      if (next === "CANCELLED") return true;
+      if (next === "PENDING") return ["PENDING", "PROCESSING", "PRINTING"].includes(current);
+      if (next === "PROCESSING") return ["PENDING", "PROCESSING"].includes(current);
+      if (next === "PRINTING") return ["PENDING", "PROCESSING", "PRINTING"].includes(current);
+      if (next === "QUALITY_CHECK") return ["PENDING", "PRINTING", "QUALITY_CHECK", "PROCESSING"].includes(current);
+      if (next === "SHIPPED") return ["QUALITY_CHECK", "SHIPPED"].includes(current);
+      if (next === "COMPLETED") return ["SHIPPED", "QUALITY_CHECK", "COMPLETED"].includes(current);
+      return false;
+    })();
+
+    if (!canTransition) {
+      const error = new Error(`Invalid status transition from ${current} to ${next}`) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+
+    if (!job.statusTimeline) job.statusTimeline = [];
+    const now = new Date();
+    const timelineHas = (s: string) =>
+      (job.statusTimeline || []).some((t: any) => String(t?.status || "").toUpperCase() === s);
+    const pushStatus = (s: string) => {
+      (job.statusTimeline as any).push({
+        status: s as any,
+        time: now,
+        message: `Printer updated status to ${s}`,
+        actorRole: "PRINTER",
+        actorId: String(printerId || ""),
+        actorName: null
+      } as any);
+    };
+
+    if (next === "QUALITY_CHECK" && !timelineHas("PRINTING")) pushStatus("PRINTING");
+
+    job.status = next as any;
+    pushStatus(next);
+    await job.save();
+
+    res.json({ updated: true, id: job.id, status: normalized, updatedAt: job.updatedAt.toISOString() });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const getOrderSummary = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -821,9 +1629,10 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
 
     const statusMap: { [key: string]: any } = {
       "Pending Review": "PENDING",
-      "In Progress": "PROCESSING",
-      "Ready": ["PRINTING", "QUALITY_CHECK"],
-      "Completed": ["SHIPPED", "COMPLETED"]
+      "In Progress": ["PROCESSING", "PRINTING"],
+      "Ready": ["QUALITY_CHECK"],
+      "Completed": ["SHIPPED", "COMPLETED"],
+      "Cancelled": ["CANCELLED"]
     };
 
         let displayStatus: any = order.status;

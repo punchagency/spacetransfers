@@ -23,10 +23,24 @@ export interface IUser extends Document {
   rating: number;
   phone?: string;
   avatarUrl?: string | null;
+  welcomeEmail?: {
+    status: "sent" | "skipped" | "failed";
+    attemptedAt?: Date;
+    sentAt?: Date;
+    error?: string | null;
+    messageId?: string | null;
+  };
   resetPasswordTokenHash?: string | null;
   resetPasswordExpiresAt?: Date | null;
   artboardDraft?: any;
   settings: {
+    profile?: {
+      bio?: string;
+      gender?: string;
+      dateOfBirth?: string;
+      nationalId?: string;
+      taxId?: string;
+    };
     businessHours?: {
       monday?: { isOpen: boolean; start: string; end: string };
       tuesday?: { isOpen: boolean; start: string; end: string };
@@ -131,13 +145,13 @@ const userSchema = new Schema<IUser>(
     ],
     status: {
       type: String,
-      enum: ["Active", "Suspended", "Under Review"],
+      enum: ["Active", "Suspended", "Under Review", "Pending"],
       default: "Active"
     },
     rating: {
       type: Number,
       default: 5.0,
-      min: 0,
+      min: 0,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
       max: 5
     },
     phone: {
@@ -147,6 +161,13 @@ const userSchema = new Schema<IUser>(
     avatarUrl: {
       type: String,
       default: null
+    },
+    welcomeEmail: {
+      status: { type: String, enum: ["sent", "skipped", "failed"], default: "skipped" },
+      attemptedAt: { type: Date, default: null },
+      sentAt: { type: Date, default: null },
+      error: { type: String, default: null },
+      messageId: { type: String, default: null }
     },
     resetPasswordTokenHash: {
       type: String,
@@ -161,6 +182,13 @@ const userSchema = new Schema<IUser>(
       default: null
     },
     settings: {
+      profile: {
+        bio: { type: String, default: "" },
+        gender: { type: String, default: "" },
+        dateOfBirth: { type: String, default: "" },
+        nationalId: { type: String, default: "" },
+        taxId: { type: String, default: "" }
+      },
       businessHours: {
         monday: { isOpen: Boolean, start: String, end: String },
         tuesday: { isOpen: Boolean, start: String, end: String },
@@ -201,7 +229,7 @@ const userSchema = new Schema<IUser>(
         maxResolutionDPI: Number
       },
       pricing: {
-        baseRatePerSqFt: { type: Number, default: 18.00 },
+        baseRatePerSqFt: { type: Number, default: 2.5 },
         tiered: [
           {
             minSqFt: { type: Number, required: true },
@@ -236,7 +264,7 @@ const userSchema = new Schema<IUser>(
     },
     defaultShippingAddress: {
       street: String,
-      city: String,
+      city: String, 
       state: String,
       postalCode: String,
       country: String
@@ -244,7 +272,7 @@ const userSchema = new Schema<IUser>(
   },
   {
     timestamps: true
-  }
+  } 
 );
 
 export const User = mongoose.model<IUser>("User", userSchema);

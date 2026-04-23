@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { getRegionFromState, normalizeRegion } from "../utils/region.js";
 import mongoose from "mongoose";
 import fs from "fs";
 import path from "path";
@@ -8,10 +9,30 @@ import { generatePDF } from "pdf-node";
 import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
+import { Design } from "../models/design.model.js";
+import { AdminNotification } from "../models/adminNotification.model.js";
+import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminNotificationClient } from "../services/adminNotificationsHub.js";
+import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
+import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
+
+const resolveOrderRegion = (
+  order: any,
+  userRegionMap?: Map<string, string | null>
+): string => {
+  const userId = order?.user ? String(order.user) : null;
+  const regionFromUser = userId && userRegionMap ? userRegionMap.get(userId) : null;
+  return (
+    normalizeRegion(order?.customer?.region) ||
+    normalizeRegion(regionFromUser || undefined) ||
+    normalizeRegion(getRegionFromState(order?.shippingAddress?.state)) ||
+    "West"
+  );
+};
 
 export const getAdminDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -98,6 +119,20 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
       .limit(5)
       .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
 
+    const recentUserIds = Array.from(
+      new Set(
+        recentOrdersRaw
+          .map((o: any) => (o.user ? String(o.user) : null))
+          .filter(Boolean)
+      )
+    ) as string[];
+    const recentUsers = recentUserIds.length > 0
+      ? await User.find({ _id: { $in: recentUserIds } }).select("regions").lean()
+      : [];
+    const recentUserRegionMap = new Map<string, string | null>(
+      recentUsers.map((u: any) => [String(u._id), Array.isArray(u.regions) ? (u.regions[0] || null) : null])
+    );
+
         const calculateOrderFinancials = (order: Pick<IOrder, "pricing" | "items">) => {
       const customerCharge = order.pricing?.total || 0;
       
@@ -125,7 +160,8 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         profits: Number(profit.toFixed(2)),
         status: order.status,
         createdAt: order.createdAt,
-        assignedPartner: (order.assignedPrinter as unknown as IUser)?.companyName || null
+        assignedPartner: (order.assignedPrinter as unknown as IUser)?.companyName || null,
+        region: resolveOrderRegion(order, recentUserRegionMap)
       };
     });
 
@@ -193,27 +229,27 @@ export const updateGlobalPricing = async (req: Request, res: Response, next: Nex
 
 export const getAdminNotificationSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const settings = await Settings.findOne({ key: "admin_notifications" });
-
-    if (!settings) {
-      return res.status(200).json({
-        email: {
-          newOrderPlaced: true,
-          lowPartnerBalance: true,
-          printErrorReported: true,
-          orderShipped: true,
-          paymentFailed: true,
-          newPartnerSignup: false,
-          dailySummaryReport: false
-        },
-        sms: {
-          urgentOrders: true,
-          systemCritical: false
-        }
-      });
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
     }
 
-    res.status(200).json(settings.value);
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN })
+      .select("settings.notifications")
+      .lean();
+
+    const emailPrefs = (admin as any)?.settings?.notifications?.email || {};
+
+    res.status(200).json({
+      email: {
+        orderUpdates: typeof emailPrefs.orderUpdates === "boolean" ? emailPrefs.orderUpdates : true,
+        partnerActivity: typeof emailPrefs.partnerActivity === "boolean" ? emailPrefs.partnerActivity : true,
+        systemAlerts: typeof emailPrefs.systemAlerts === "boolean" ? emailPrefs.systemAlerts : true
+      },
+      sms: {}
+    });
   } catch (error) {
     next(error);
   }
@@ -221,22 +257,217 @@ export const getAdminNotificationSettings = async (req: Request, res: Response, 
 
 export const updateAdminNotificationSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, sms } = req.body;
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
 
-    const settings = await Settings.findOneAndUpdate(
-      { key: "admin_notifications" },
-      {
-        $set: {
-          value: {
-            email: email || {},
-            sms: sms || {}
-          }
-        }
-      },
-      { upsert: true, new: true, runValidators: true }
+    const email = req.body?.email;
+    if (!email || typeof email !== "object") {
+      const error = new Error("email is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const nextPrefs = {
+      orderUpdates: typeof email.orderUpdates === "boolean" ? email.orderUpdates : true,
+      partnerActivity: typeof email.partnerActivity === "boolean" ? email.partnerActivity : true,
+      systemAlerts: typeof email.systemAlerts === "boolean" ? email.systemAlerts : true
+    };
+
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN });
+    if (!admin) {
+      const error = new Error("Admin not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const settings: any = (admin as any).settings || {};
+    const notifications: any = settings.notifications || {};
+    const notifEmail: any = notifications.email || {};
+    notifications.email = { ...notifEmail, ...nextPrefs };
+    settings.notifications = notifications;
+    (admin as any).settings = settings;
+    admin.markModified("settings.notifications");
+    await admin.save();
+
+    res.status(200).json({ email: nextPrefs, sms: {} });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const streamAdminNotifications = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive"
+    });
+
+    res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+
+    addAdminNotificationClient(adminId, res);
+
+    const interval = setInterval(() => {
+      try {
+        res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
+      } catch {
+        clearInterval(interval);
+      }
+    }, 25_000);
+
+    req.on("close", () => {
+      clearInterval(interval);
+      removeAdminNotificationClient(adminId, res);
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listAdminNotifications = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    const { status, category, priority, q, limit = "30", cursor } = req.query;
+    const pageSize = Math.max(1, Math.min(100, parseInt(String(limit), 10) || 30));
+
+    const query: any = { adminId: new mongoose.Types.ObjectId(adminId) };
+
+    if (status === "unread") query.readAt = null;
+    if (typeof category === "string" && ["orders", "partners", "system"].includes(category)) {
+      query.category = category;
+    }
+    if (typeof priority === "string" && ["high", "medium", "low"].includes(priority)) {
+      query.priority = priority;
+    }
+    if (typeof q === "string" && q.trim()) {
+      const re = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      query.$or = [{ title: re }, { message: re }];
+    }
+
+    if (typeof cursor === "string" && cursor.includes("_")) {
+      const [createdAtMsRaw, idRaw] = cursor.split("_");
+      const createdAtMs = Number(createdAtMsRaw);
+      if (Number.isFinite(createdAtMs) && mongoose.Types.ObjectId.isValid(idRaw)) {
+        query.$or = [
+          { createdAt: { $lt: new Date(createdAtMs) } },
+          { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } }
+        ];
+      }
+    }
+
+    const docs = await AdminNotification.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pageSize + 1)
+      .lean();
+
+    const hasNextPage = docs.length > pageSize;
+    const results = hasNextPage ? docs.slice(0, pageSize) : docs;
+    const nextCursor = hasNextPage
+      ? `${new Date(results[results.length - 1].createdAt).getTime()}_${String(results[results.length - 1]._id)}`
+      : null;
+
+    const unreadCount = await AdminNotification.countDocuments({
+      adminId: new mongoose.Types.ObjectId(adminId),
+      readAt: null
+    });
+
+    res.status(200).json({
+      notifications: results.map((n: any) => ({
+        id: String(n._id),
+        category: n.category,
+        priority: n.priority,
+        title: n.title,
+        message: n.message,
+        readAt: n.readAt || null,
+        createdAt: n.createdAt
+      })),
+      unreadCount,
+      nextCursor
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const setAdminNotificationRead = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    const notificationIdRaw: any = (req as any).params?.id;
+    const notificationId =
+      Array.isArray(notificationIdRaw) ? String(notificationIdRaw[0] || "") : String(notificationIdRaw || "");
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      const error = new Error("Invalid notification id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const read = req.body?.read !== undefined ? Boolean(req.body.read) : true;
+    const readAt = read ? new Date() : null;
+
+    const updated = await AdminNotification.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(notificationId), adminId: new mongoose.Types.ObjectId(adminId) },
+      { $set: { readAt } },
+      { new: true }
+    ).lean();
+
+    if (!updated) {
+      const error = new Error("Notification not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    publishAdminNotificationEvent(adminId, "notification.updated", {
+      id: String(updated._id),
+      readAt: updated.readAt || null
+    });
+
+    res.status(200).json({ updated: true, id: String(updated._id), readAt: updated.readAt || null });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const markAllAdminNotificationsRead = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    const now = new Date();
+    await AdminNotification.updateMany(
+      { adminId: new mongoose.Types.ObjectId(adminId), readAt: null },
+      { $set: { readAt: now } }
     );
 
-    res.status(200).json(settings?.value);
+    publishAdminNotificationEvent(adminId, "notification.bulk_read", { readAt: now });
+
+    res.status(200).json({ updated: true });
   } catch (error) {
     next(error);
   }
@@ -282,7 +513,7 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
        throw error;
      }
  
-     if (!admin.settings) admin.settings = { pricing: { baseRatePerSqFt: 18, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } }, security: { twoFactorEnabled: false } };
+    if (!admin.settings) admin.settings = { pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } }, security: { twoFactorEnabled: false } };
      if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
  
      const previous2FA = admin.settings.security.twoFactorEnabled;
@@ -305,7 +536,7 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
 export const getAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
-    const admin = await User.findById(adminId).select("name email phone avatarUrl");
+    const admin = await User.findById(adminId).select("name email phone avatarUrl defaultShippingAddress settings.profile");
 
     if (!admin) {
       const error = new Error("Admin not found") as CustomError;
@@ -317,7 +548,21 @@ export const getAdminProfile = async (req: Request, res: Response, next: NextFun
       name: admin.name,
       email: admin.email,
       phone: admin.phone || null,
-      avatarUrl: admin.avatarUrl || null
+      avatarUrl: admin.avatarUrl || null,
+      profile: {
+        bio: admin.settings?.profile?.bio || "",
+        gender: admin.settings?.profile?.gender || "",
+        dateOfBirth: admin.settings?.profile?.dateOfBirth || "",
+        nationalId: admin.settings?.profile?.nationalId || "",
+        taxId: admin.settings?.profile?.taxId || ""
+      },
+      address: admin.defaultShippingAddress || {
+        street: "",
+        city: "",
+        state: "",
+        postalCode: "",
+        country: ""
+      }
     });
   } catch (error) {
     next(error);
@@ -327,30 +572,132 @@ export const getAdminProfile = async (req: Request, res: Response, next: NextFun
 export const updateAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
-    const { name, phone, avatarUrl } = req.body;
+    const { name, email, phone, avatarUrl, profile, address } = req.body;
 
-    const updateData: any = {};
-    if (name !== undefined) updateData.name = name;
-    if (phone !== undefined) updateData.phone = phone;
-    if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
-
-    if (Object.keys(updateData).length === 0) {
-      const error = new Error("No update data provided") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const admin = await User.findOneAndUpdate(
-      { _id: adminId, role: UserRoles.ADMIN },
-      { $set: updateData },
-      { new: true, runValidators: true }
-    );
-
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN });
     if (!admin) {
       const error = new Error("Admin not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
+
+    let didUpdate = false;
+
+    if (name !== undefined) {
+      admin.name = String(name);
+      didUpdate = true;
+    }
+    if (email !== undefined) {
+      const nextEmail = String(email).toLowerCase().trim();
+      if (!nextEmail) {
+        const error = new Error("email is required") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      const existing = await User.findOne({ email: nextEmail, _id: { $ne: admin._id } }).select("_id");
+      if (existing) {
+        const error = new Error("Email already in use") as CustomError;
+        error.statusCode = 409;
+        throw error;
+      }
+      admin.email = nextEmail;
+      didUpdate = true;
+    }
+    if (phone !== undefined) {
+      admin.phone = phone === null ? undefined : String(phone);
+      didUpdate = true;
+    }
+    if (avatarUrl !== undefined) {
+      admin.avatarUrl = avatarUrl === null ? null : String(avatarUrl);
+      didUpdate = true;
+    }
+
+    if (profile !== undefined && profile && typeof profile === "object") {
+      if (!admin.settings) (admin as any).settings = {};
+      if (!admin.settings.profile) (admin.settings as any).profile = {};
+
+      if (profile.bio !== undefined) (admin.settings.profile as any).bio = String(profile.bio || "");
+      if (profile.gender !== undefined) (admin.settings.profile as any).gender = String(profile.gender || "");
+      if (profile.dateOfBirth !== undefined) (admin.settings.profile as any).dateOfBirth = String(profile.dateOfBirth || "");
+      if (profile.nationalId !== undefined) (admin.settings.profile as any).nationalId = String(profile.nationalId || "");
+      if (profile.taxId !== undefined) (admin.settings.profile as any).taxId = String(profile.taxId || "");
+      admin.markModified("settings.profile");
+      didUpdate = true;
+    }
+
+    if (address !== undefined && address && typeof address === "object") {
+      admin.defaultShippingAddress = {
+        street: String(address.street || ""),
+        city: String(address.city || ""),
+        state: String(address.state || ""),
+        postalCode: String(address.postalCode || ""),
+        country: String(address.country || "")
+      };
+      didUpdate = true;
+    }
+
+    if (!didUpdate) {
+      const error = new Error("No update data provided") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    await admin.save();
+
+    res.status(200).json({ updated: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAdminPassword = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    if (typeof currentPassword !== "string" || !currentPassword.trim()) {
+      const error = new Error("currentPassword is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      const error = new Error("newPassword must be at least 8 characters") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN }).select("passwordHash settings updatedAt");
+    if (!admin) {
+      const error = new Error("Admin not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const ok = await bcrypt.compare(currentPassword, admin.passwordHash);
+    if (!ok) {
+      const error = new Error("Current password is incorrect") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    admin.passwordHash = await bcrypt.hash(newPassword, 10);
+    if (!admin.settings) {
+      admin.settings = {
+        pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } },
+        security: { twoFactorEnabled: false }
+      };
+    }
+    if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
+    admin.settings.security.lastPasswordChange = new Date();
+    admin.markModified("settings.security");
+    await admin.save();
 
     res.status(200).json({ updated: true });
   } catch (error) {
@@ -380,7 +727,7 @@ export const getRevenueChart = async (req: Request, res: Response, next: NextFun
     const orders = await Order.find({
       createdAt: { $gte: startDate }, 
       status: { $nin: ["CANCELLED", "REJECTED"] }
-    }).select("pricing.total createdAt");
+    }).select("pricing.total createdAt"); 
 
     const dailyRevenue: { [key: string]: number } = {};
     orders.forEach(order => {
@@ -422,7 +769,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     if (status) {
       const statusMap: { [key: string]: string } = {
         "Pending": "PENDING",
-        "Assigned": "PROCESSING",
+        "Assigned": "PENDING",
         "In Progress": "PRINTING",
         "Shipped": "SHIPPED",
         "Completed": "COMPLETED",
@@ -452,26 +799,60 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const orders = await Order.find(query)
       .sort({ createdAt: -1, _id: -1 })
       .limit(pageSize + 1)
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions")
       .lean();
 
     const hasNextPage = orders.length > pageSize;
     const results = hasNextPage ? orders.slice(0, pageSize) : orders;
+
+    const userIds = Array.from(
+      new Set(
+        results
+          .map((o: any) => (o.user ? String(o.user) : null))
+          .filter(Boolean)
+      )
+    ) as string[];
+    const users = userIds.length > 0
+      ? await User.find({ _id: { $in: userIds } }).select("regions").lean()
+      : [];
+    const userRegionMap = new Map<string, string | null>(
+      users.map((u: any) => [String(u._id), Array.isArray(u.regions) ? (u.regions[0] || null) : null])
+    );
 
     const formattedOrders = results.map(order => {
       const firstItem = order.items?.[0] || {};
       const sheetSize = firstItem.widthIn && firstItem.heightIn 
         ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
         : "N/A";
+
+      const customerCharge = order.pricing?.total || 0;
+      const partnerPayout = (order.items || []).reduce((total: number, item: any) => {
+        const widthIn = Number(item.widthIn || 0);
+        const heightIn = Number(item.heightIn || 0);
+        const quantity = Number(item.quantity || 1);
+        if (widthIn > 0 && heightIn > 0) {
+          const areaSqFt = (widthIn * heightIn) / 144;
+          return total + (areaSqFt * 3.5 * quantity);
+        }
+        return total;
+      }, 0);
+      const processingFees = customerCharge * 0.05;
+      const profits = customerCharge - partnerPayout - processingFees;
   
       return {
         id: order._id,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
+        profits: Number(profits.toFixed(2)),
         status: order.status,
         createdAt: order.createdAt,
-        assignedPartnerId: order.assignedPrinter || null,
+        assignedPartnerId: (order.assignedPrinter as any)?._id
+          ? String((order.assignedPrinter as any)._id)
+          : (order.assignedPrinter ? String(order.assignedPrinter) : null),
+        assignedPartner: (order.assignedPrinter as any)?.companyName || null,
         sheetSize,
-        isUrgent: order.priority === "URGENT"
+        isUrgent: order.priority === "URGENT",
+        region: resolveOrderRegion(order, userRegionMap)
       };
     });
 
@@ -512,7 +893,7 @@ export const getPartnerPricing = async (req: Request, res: Response, next: NextF
     }
 
     const pricing = partner.settings?.pricing || {
-      baseRatePerSqFt: 18.00,
+      baseRatePerSqFt: 2.5,
       tiered: [
         { minSqFt: 0, maxSqFt: 2, rate: 20.00 },
         { minSqFt: 2, maxSqFt: 5, rate: 18.50 },
@@ -696,7 +1077,10 @@ export const setOrderTracking = async (req: Request, res: Response, next: NextFu
     order.statusTimeline.push({
       status: "SHIPPED",
       time: new Date(),
-      message: `Order shipped via ${carrier}. Tracking: ${trackingNumber}`
+      message: `Order shipped via ${carrier}. Tracking: ${trackingNumber}`,
+      actorRole: "ADMIN",
+      actorId: String(req.user?.id || ""),
+      actorName: null
     });
 
     await order.save();
@@ -732,7 +1116,7 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
 
     const statusMap: { [key: string]: string } = {
       "Pending": "PENDING",
-      "Assigned": "PROCESSING",
+      "Assigned": "PENDING",
       "In Progress": "PRINTING",
       "Shipped": "SHIPPED",
       "Completed": "COMPLETED",
@@ -759,10 +1143,21 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
     order.statusTimeline.push({
       status: dbStatus,
       time: new Date(),
-      message: `Admin updated status to ${status}`
+      message: `Admin updated status to ${status}`,
+      actorRole: "ADMIN",
+      actorId: String(req.user?.id || ""),
+      actorName: null
     });
 
     await order.save();
+
+    notifyAllAdmins({
+      category: "orders",
+      priority: "medium",
+      title: "Order status updated",
+      message: `Order ${String(order._id)} → ${dbStatus}`,
+      meta: { orderId: String(order._id), status: dbStatus }
+    }).catch(() => {});
 
     res.status(200).json({
       orderId: order._id,
@@ -812,7 +1207,9 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
 
     order.assignedPrinter = partnerId;
     order.priority = priority.toUpperCase() as any;
-    order.status = "PROCESSING";
+    if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
+      order.status = "PENDING";
+    }
 
     const message = isReassignment 
       ? `Order reassigned from previous partner to ${partner.companyName || partner.name}`
@@ -820,17 +1217,46 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
 
     if (!order.statusTimeline) order.statusTimeline = [];
     order.statusTimeline.push({
-      status: "PROCESSING",
+      status: String(order.status || "PENDING"),
       time: new Date(),
-      message
+      message,
+      actorRole: "ADMIN",
+      actorId: String(req.user?.id || ""),
+      actorName: String(req.user?.name || req.user?.email || "") || null
     });
 
+    if (!order.assignmentHistory) order.assignmentHistory = [];
+    order.assignmentHistory.push({
+      time: new Date(),
+      mode: "MANUAL",
+      selectedPrinterId: String(partnerId),
+      selectedPrinterName: partner.companyName || partner.name,
+      customerRegion: null,
+      customerState: order.shippingAddress?.state || null,
+      candidatesConsidered: 0,
+      candidatesSameRegion: 0,
+      reason: message,
+      tookMs: 0
+    } as any);
+
     await order.save();
+
+    notifyAllAdmins({
+      category: "orders",
+      priority: "medium",
+      title: "Order assigned",
+      message: `Order ${String(order._id)} → ${partner.companyName || partner.name}`,
+      meta: { orderId: String(order._id), partnerId: String(partnerId) }
+    }).catch(() => {});
+
+    console.log(
+      `[MANUAL_ASSIGN] order=${order._id} partnerId=${partnerId} partnerName=${partner.companyName || partner.name} priority=${order.priority}`
+    );
 
     res.status(200).json({
       orderId: order._id,
       assignedPartnerId: partnerId,
-      status: "Assigned"
+      status: "Pending"
     });
   } catch (error) {
     next(error);
@@ -858,33 +1284,120 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
-    const calculateItemCost = (item: any) => {
-      const { widthIn, heightIn, quantity = 1 } = item;
-      if (widthIn && heightIn) {
-        const areaSqFt = (widthIn * heightIn) / 144;
-        const costPerSqFt = 3.50; 
-        return areaSqFt * costPerSqFt * quantity;
-      }
-      return 5.00 * quantity;
-    };
+    const formattedItems = (order.items || []).map(item => ({
+      name: item.name,
+      size: item.widthIn && item.heightIn ? `${item.widthIn}" x ${item.heightIn}"` : "Custom",
+      quantity: item.quantity,
+      price: item.unitPrice,
+      subtotal: item.subtotal
+    }));
 
-    let totalPartnerCost = 0;
-    const formattedItems = (order.items || []).map(item => {
-      const itemCost = calculateItemCost(item);
-      totalPartnerCost += itemCost;
-      
-      return {
-        name: item.name,
-        size: item.widthIn && item.heightIn ? `${item.widthIn}" x ${item.heightIn}"` : "Custom",
-        quantity: item.quantity,
-        price: item.unitPrice,
-        subtotal: item.subtotal
-      };
+    const assignedPrinterId = (order as any).assignedPrinter?._id
+      ? String((order as any).assignedPrinter._id)
+      : (order as any).assignedPrinter
+        ? String((order as any).assignedPrinter)
+        : null;
+    const partner = assignedPrinterId ? await User.findById(assignedPrinterId).select("settings.pricing").lean() : null;
+    const breakdown = computePartnerCostBreakdown({
+      items: Array.isArray(order.items) ? order.items : [],
+      partnerPricing: (partner as any)?.settings?.pricing || {},
+      priority: (order as any).priority,
+      adjustments: (order as any)?.pricing?.adjustments || []
     });
+    const totalPartnerCost = breakdown.subtotal;
 
     const customerPaid = order.pricing?.total || 0;
     const processingFees = customerPaid > 0 ? (customerPaid * 0.029) + 0.30 : 0;
     const adminProfit = customerPaid - totalPartnerCost - processingFees;
+
+    const gangsheetOrderItem = (order.items || []).find((it: any) => it?.type === "gangsheet") as any | null;
+    const designId = gangsheetOrderItem?.designId || order.items?.[0]?.designId || null;
+    let designThumbnail = null;
+    let designSize: { widthIn: number; heightIn: number } | null = null;
+    let designArtboardItems: any[] | null = null;
+    let gangsheetItems: any[] = [];
+    const storedArtboardItems = Array.isArray(gangsheetOrderItem?.artboardItems) ? gangsheetOrderItem.artboardItems : null;
+    const storedSheetWidthIn =
+      typeof gangsheetOrderItem?.sheetWidthIn === "number"
+        ? gangsheetOrderItem.sheetWidthIn
+        : typeof gangsheetOrderItem?.widthIn === "number"
+          ? gangsheetOrderItem.widthIn
+          : null;
+    const storedSheetHeightIn =
+      typeof gangsheetOrderItem?.sheetHeightIn === "number"
+        ? gangsheetOrderItem.sheetHeightIn
+        : typeof gangsheetOrderItem?.heightIn === "number"
+          ? gangsheetOrderItem.heightIn
+          : null;
+
+    if (storedArtboardItems && storedSheetWidthIn && storedSheetHeightIn) {
+      designArtboardItems = storedArtboardItems;
+      designSize = { widthIn: storedSheetWidthIn, heightIn: storedSheetHeightIn };
+      designThumbnail = typeof gangsheetOrderItem?.previewImage === "string" ? gangsheetOrderItem.previewImage : null;
+      gangsheetItems = storedArtboardItems.map((it: any) => {
+        const url = it.croppedUrl || it.assetId || null;
+        const rawSku = typeof it.assetId === "string" ? it.assetId : "";
+        const sku = rawSku ? rawSku.split("/").filter(Boolean).slice(-1)[0] : `ITEM-${it.id}`;
+        const baseName = sku ? sku.replace(/\.[a-z0-9]+$/i, "") : `Artwork ${it.id}`;
+        return {
+          name: baseName || `Artwork ${it.id}`,
+          sku,
+          quantity: typeof it.copies === "number" ? it.copies : 1,
+          size: (typeof it.widthIn === "number" && typeof it.heightIn === "number")
+            ? `${it.widthIn.toFixed(2)}\" × ${it.heightIn.toFixed(2)}\"`
+            : "N/A",
+          color: "N/A",
+          customAttributes: {
+            linked: Boolean(it.linked),
+            autoCrop: it.autoCrop !== false,
+            rotation: typeof it.rotation === "number" ? it.rotation : 0
+          },
+          fileUrl: url
+        };
+      });
+    } else if (designId && /^[0-9a-fA-F]{24}$/.test(designId)) {
+      const design = await Design.findById(designId).select("thumbnail size artboardData").lean();
+      if (design && design.thumbnail) {
+        designThumbnail = design.thumbnail;
+      }
+      if (design && design.size?.widthIn && design.size?.heightIn) {
+        designSize = { widthIn: design.size.widthIn, heightIn: design.size.heightIn };
+      }
+      if (design && Array.isArray((design as any).artboardData?.items)) {
+        const artboardItems = ((design as any).artboardData.items as any[]) || [];
+        designArtboardItems = artboardItems;
+        gangsheetItems = artboardItems.map((it: any) => {
+          const url = it.croppedUrl || it.assetId || null;
+          const rawSku = typeof it.assetId === "string" ? it.assetId : "";
+          const sku = rawSku ? rawSku.split("/").filter(Boolean).slice(-1)[0] : `ITEM-${it.id}`;
+          const baseName = sku ? sku.replace(/\.[a-z0-9]+$/i, "") : `Artwork ${it.id}`;
+          return {
+            name: baseName || `Artwork ${it.id}`,
+            sku,
+            quantity: typeof it.copies === "number" ? it.copies : 1,
+            size: (typeof it.widthIn === "number" && typeof it.heightIn === "number")
+              ? `${it.widthIn.toFixed(2)}\" × ${it.heightIn.toFixed(2)}\"`
+              : "N/A",
+            color: "N/A",
+            customAttributes: {
+              linked: Boolean(it.linked),
+              autoCrop: it.autoCrop !== false,
+              rotation: typeof it.rotation === "number" ? it.rotation : 0
+            },
+            fileUrl: url
+          };
+        });
+      }
+    }
+
+    const regionUser = order.user
+      ? await User.findById(order.user).select("regions").lean()
+      : null;
+    const oneUserRegionMap = new Map<string, string | null>(
+      order.user
+        ? [[String(order.user), Array.isArray((regionUser as any)?.regions) ? ((regionUser as any).regions[0] || null) : null]]
+        : []
+    );
 
     const orderSummary = {
       id: order._id,
@@ -903,14 +1416,18 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         state: order.shippingAddress?.state || "N/A",
         postalCode: order.shippingAddress?.postalCode || "N/A",
         country: order.shippingAddress?.country || "N/A",
-        region: (order.assignedPrinter as unknown as IUser)?.regions?.[0] || "Unknown"
+        region: resolveOrderRegion(order, oneUserRegionMap)
       },
 
       items: formattedItems,
 
       statusTimeline: (order.statusTimeline || []).map(entry => ({
         status: entry.status,
-        time: entry.time
+        time: entry.time,
+        message: (entry as any).message || null,
+        actorRole: (entry as any).actorRole || null,
+        actorId: (entry as any).actorId || null,
+        actorName: (entry as any).actorName ?? null
       })),
 
       financials: {
@@ -928,12 +1445,87 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       } : null,
 
       preview: {
-        designId: order.items?.[0]?.designId || null,
-        sheetSize: formattedItems[0]?.size || "N/A"
+        designId,
+        sheetSize: formattedItems[0]?.size || "N/A",
+        fileUrl: designThumbnail,
+        sheetWidthIn: designSize?.widthIn || null,
+        sheetHeightIn: designSize?.heightIn || null,
+        artboardItems: designArtboardItems
       }
     };
 
+    (orderSummary as any).gangsheetItems = gangsheetItems;
+
     res.status(200).json(orderSummary);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const gangsheetPreviewCache = new Map<
+  string,
+  { updatedAtMs: number; resolution: number; previewDataUrl: string; resolutionDPI: number; sheetWidthIn: number; sheetHeightIn: number }
+>();
+
+export const getOrderGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orderId } = req.params;
+    const id = Array.isArray(orderId) ? String(orderId[0] || "") : String(orderId || "");
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      const error = new Error("Invalid order id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const resolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 150));
+
+    const order = await Order.findById(id).select("items assignedPrinter updatedAt").lean();
+    if (!order) {
+      const error = new Error("Order not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const updatedAtMs = order.updatedAt ? new Date(order.updatedAt as any).getTime() : 0;
+    const cacheKey = `${id}_${resolution}`;
+    const cached = gangsheetPreviewCache.get(cacheKey);
+    if (cached && cached.updatedAtMs === updatedAtMs && cached.resolution === resolution) {
+      return res.json(cached);
+    }
+
+    const gangsheetItem = (order.items || []).find((i: any) => i?.type === "gangsheet") || (order.items || [])[0] || {};
+    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
+    if (artboardItems.length === 0) {
+      const error = new Error("No artboard items found for this order") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const sheetWidthInRaw = gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn;
+    const sheetHeightInRaw = gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn;
+    const sheetWidthIn = typeof sheetWidthInRaw === "number" && Number.isFinite(sheetWidthInRaw) ? sheetWidthInRaw : 23.5;
+    const sheetHeightIn = typeof sheetHeightInRaw === "number" && Number.isFinite(sheetHeightInRaw) ? sheetHeightInRaw : 23.5;
+
+    const rendered = await exportGangsheetPng24({
+      jobId: String(id),
+      printerId: String((order as any).assignedPrinter || "admin"),
+      sheetWidthIn,
+      sheetHeightIn,
+      artboardItems,
+      dpi: resolution
+    });
+
+    const fileBuf = await fs.promises.readFile(rendered.filePath);
+    const b64 = fileBuf.toString("base64");
+
+    const payload = {
+      previewDataUrl: `data:image/png;base64,${b64}`,
+      resolutionDPI: rendered.dpi,
+      sheetWidthIn,
+      sheetHeightIn
+    };
+    gangsheetPreviewCache.set(cacheKey, { ...payload, updatedAtMs, resolution });
+    res.json(payload);
   } catch (error) {
     next(error);
   }
@@ -952,7 +1544,7 @@ export const exportOrders = async (req: Request, res: Response, next: NextFuncti
     if (status) {
       const statusMap: { [key: string]: string } = {
         "Pending": "PENDING",
-        "Assigned": "PROCESSING",
+        "Assigned": "PENDING",
         "In Progress": "PRINTING",
         "Shipped": "SHIPPED",
         "Completed": "COMPLETED",
@@ -1005,7 +1597,55 @@ export const exportOrders = async (req: Request, res: Response, next: NextFuncti
 
 export const createPartner = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, email, phone, regions, capabilities } = req.body;
+    const {
+      partnerName,
+      contactName,
+      name,
+      companyName,
+      email,
+      phone,
+      regions,
+      capabilities,
+      status
+    } = req.body;
+
+    const resolvedCompanyName = (typeof partnerName === "string" && partnerName.trim())
+      || (typeof companyName === "string" && companyName.trim())
+      || (typeof name === "string" && name.trim())
+      || "";
+    const resolvedContactName = (typeof contactName === "string" && contactName.trim())
+      || (typeof name === "string" && name.trim())
+      || resolvedCompanyName;
+
+    if (!resolvedCompanyName) {
+      const error = new Error("partnerName is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!resolvedContactName) {
+      const error = new Error("contactName is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (typeof email !== "string" || !email.trim()) {
+      const error = new Error("email is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (typeof phone !== "string" || !phone.trim()) {
+      const error = new Error("phone is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!Array.isArray(regions) || regions.length === 0) {
+      const error = new Error("regions must be a non-empty array") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -1017,14 +1657,17 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
     const tempPassword = crypto.randomBytes(8).toString('hex');
     const passwordHash = await bcrypt.hash(tempPassword, 10);
 
+    const allowedStatuses = ["Active", "Pending", "Suspended", "Under Review"];
+    const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Pending";
+
     const newPartner = new User({
-      name,
-      companyName: name,
-      email,
-      phone,
-      regions,
+      name: resolvedContactName,
+      companyName: resolvedCompanyName,
+      email: String(email).trim(),
+      phone: String(phone).trim(),
+      regions: regions.map((r: any) => String(r).trim()).filter(Boolean),
       role: UserRoles.PRINTER,
-      status: "Active",
+      status: resolvedStatus,
       passwordHash,
       settings: {
         printingCapabilities: {
@@ -1050,13 +1693,17 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
 
 export const listPartners = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { status, search, cursor, limit = "20" } = req.query;
+    const { status, region, search, cursor, limit = "20" } = req.query;
     const pageSize = parseInt(limit as string);
 
     const matchQuery: any = { role: UserRoles.PRINTER };
 
     if (status) {
       matchQuery.status = status;
+    }
+
+    if (region) {
+      matchQuery.regions = String(region);
     }
 
     if (search) {
@@ -1067,6 +1714,10 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
         { email: searchRegex }
       ];
     }
+
+    const globalPricingSetting = await Settings.findOne({ key: "global_pricing" }).lean();
+    const globalPricing = (globalPricingSetting as any)?.value;
+    const saleRatePerSqFt = typeof globalPricing?.baseRatePerSqFt === "number" ? globalPricing.baseRatePerSqFt : 24.0;
 
     const pipeline: any[] = [
       { $match: matchQuery },
@@ -1095,7 +1746,18 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
           ordersCompleted: { $ifNull: [{ $arrayElemAt: ["$completedCountArr.count", 0] }, 0] }
         }
       },
-      { $project: { passwordHash: 0, completedCountArr: 0 } },
+      {
+        $project: {
+          companyName: 1,
+          name: 1,
+          email: 1,
+          status: 1,
+          regions: 1,
+          rating: 1,
+          ordersCompleted: 1,
+          "settings.pricing.baseRatePerSqFt": 1
+        }
+      },
       { $sort: { ordersCompleted: -1, _id: -1 } }
     ];
 
@@ -1124,10 +1786,15 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
     const formattedPartners = results.map(p => ({
       id: p._id,
       name: p.companyName || p.name,
+      email: p.email,
       status: p.status,
       regions: p.regions || [],
       rating: p.rating || 5.0,
-      ordersCompleted: p.ordersCompleted
+      ordersCompleted: p.ordersCompleted,
+      basePrice: `$${Number(p.settings?.pricing?.baseRatePerSqFt ?? 18).toFixed(2)}`,
+      salePrice: `$${Number(saleRatePerSqFt).toFixed(2)}`,
+      profit: `$${(Number(saleRatePerSqFt) - Number(p.settings?.pricing?.baseRatePerSqFt ?? 18)).toFixed(2)}`,
+      orders: Number(p.ordersCompleted ?? 0).toLocaleString()
     }));
 
     let nextCursor = null;
@@ -1174,12 +1841,15 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
     res.status(200).json({
       id: partner._id,
       name: partner.companyName || partner.name,
+      companyName: partner.companyName || partner.name,
+      contactName: partner.name,
       status: partner.status,
       regions: partner.regions || [],
       ordersCompleted,
       rating: partner.rating || 5.0,
       email: partner.email,
-      phone: partner.phone || "N/A"
+      phone: partner.phone || "N/A",
+      website: partner.website || "N/A"
     });
   } catch (error) {
     next(error);
@@ -1203,7 +1873,7 @@ export const getPartnerOrders = async (req: Request, res: Response, next: NextFu
     if (status) {
       const statusMap: { [key: string]: string } = {
         "Pending": "PENDING",
-        "Assigned": "PROCESSING",
+        "Assigned": "PENDING",
         "In Progress": "PRINTING",
         "Shipped": "SHIPPED",
         "Completed": "COMPLETED",
@@ -1304,8 +1974,8 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
       throw error;
     }
 
-    if (!["Active", "Suspended", "Under Review"].includes(status)) {
-      const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review") as CustomError;
+    if (!["Active", "Suspended", "Under Review", "Pending"].includes(status)) {
+      const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review, Pending") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -1326,6 +1996,112 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
       id: partner._id,
       status: partner.status,
       updated: true
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listPendingPrinters = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printers = await User.find({ role: UserRoles.PRINTER, status: "Pending" })
+      .select("name companyName email phone createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedPrinters = printers.map(p => ({
+      id: p._id,
+      name: p.name,
+      companyName: p.companyName,
+      email: p.email,
+      phone: p.phone,
+      createdAt: p.createdAt
+    }));
+
+    res.status(200).json(formattedPrinters);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const approvePrinter = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { partnerId } = req.params;
+
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const partner = await User.findOneAndUpdate(
+      { _id: partnerIdString, role: UserRoles.PRINTER },
+      { $set: { status: "Active" } },
+      { new: true }
+    );
+
+    if (!partner) {
+      const error = new Error("Printer not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    console.log(`[EMAIL MOCK] Activation email sent to ${partner.email}`);
+
+    notifyAllAdmins({
+      category: "partners",
+      priority: "medium",
+      title: "Printer approved",
+      message: `${partner.companyName || partner.name} • ${partner.email}`,
+      meta: { partnerId: String(partner._id), status: "Active" }
+    }).catch(() => {});
+
+    res.status(200).json({
+      id: partner._id,
+      status: partner.status,
+      message: "Printer approved successfully"
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const rejectPrinter = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { partnerId } = req.params;
+
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const partner = await User.findOneAndUpdate(
+      { _id: partnerIdString, role: UserRoles.PRINTER },
+      { $set: { status: "Suspended" } },
+      { new: true }
+    );
+
+    if (!partner) {
+      const error = new Error("Printer not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    notifyAllAdmins({
+      category: "partners",
+      priority: "medium",
+      title: "Printer rejected",
+      message: `${partner.companyName || partner.name} • ${partner.email}`,
+      meta: { partnerId: String(partner._id), status: "Suspended" }
+    }).catch(() => {});
+
+    res.status(200).json({
+      id: partner._id,
+      status: partner.status,
+      message: "Printer registration rejected"
     });
   } catch (error) {
     next(error);
@@ -1391,7 +2167,10 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
       order.statusTimeline.push({
         status: order.status,
         time: new Date(),
-        message: `Financial adjustment: ${type.toUpperCase()} of ${amount} applied. Reason: ${reason}`
+        message: `Financial adjustment: ${type.toUpperCase()} of ${amount} applied. Reason: ${reason}`,
+        actorRole: "ADMIN",
+        actorId: String(req.user?.id || ""),
+        actorName: null
       });
     });
 
@@ -1399,17 +2178,16 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
     
     await order.save();
 
-    const calculateItemCost = (item: any) => {
-      const { widthIn, heightIn, quantity = 1 } = item;
-      if (widthIn && heightIn) {
-        const areaSqFt = (widthIn * heightIn) / 144;
-        const costPerSqFt = 3.50; 
-        return areaSqFt * costPerSqFt * quantity;
-      }
-      return 5.00 * quantity;
-    };
-
-    const partnerPayout = (order.items || []).reduce((total, item) => total + calculateItemCost(item), 0);
+    const partner = order.assignedPrinter
+      ? await User.findById(order.assignedPrinter).select("settings.pricing").lean()
+      : null;
+    const breakdown = computePartnerCostBreakdown({
+      items: Array.isArray(order.items) ? order.items : [],
+      partnerPricing: (partner as any)?.settings?.pricing || {},
+      priority: (order as any).priority,
+      adjustments: (order as any)?.pricing?.adjustments || []
+    });
+    const partnerPayout = breakdown.subtotal;
     const fees = order.pricing.total > 0 ? (order.pricing.total * 0.029) + 0.30 : 0;
     const margin = order.pricing.total - partnerPayout - fees;
 

@@ -21,6 +21,7 @@ import {
   upsertArtboardDraft,
   clearArtboardDraft,
   getCartQuote,
+  sendGangsheetUtilizationWarning,
   downloadInvoice,
   reorder,
   getOrderTracking
@@ -58,6 +59,7 @@ router.patch("/designs/:designId", updateDesign);
 router.delete("/designs/:designId", deleteDesign);
 router.post("/designs/:designId/duplicate", duplicateDesign);
 router.post("/cart/quote", getCartQuote);
+router.post("/notifications/gangsheet-utilization-warning", sendGangsheetUtilizationWarning);
 router.post("/payments/stripe/create-intent", createStripePaymentIntent);
 router.post("/payments/paypal/create-order", createPaypalOrder);
 router.post("/payments/paypal/capture-order", capturePaypalOrder);

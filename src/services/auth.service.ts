@@ -4,6 +4,8 @@ import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
 import { env } from "../config/env.js";
 import nodemailer from "nodemailer";
+import { sendEmail } from "./email.service.js";
+import { notifyAllAdmins } from "./adminNotifications.service.js";
 
 interface RegisterParams {
   name: string;
@@ -12,6 +14,15 @@ interface RegisterParams {
   role?: UserRole;
   companyName?: string;
   phone?: string;
+  region?: string;
+  website?: string;
+  address?: {
+    street?: string;
+    city?: string;
+    state?: string;
+    postalCode?: string;
+    country?: string;
+  };
 }
 
 interface UserResponse {
@@ -21,8 +32,13 @@ interface UserResponse {
   role: string;
   companyName?: string;
   phone?: string;
+  website?: string;
+  avatarUrl?: string | null;
+  status?: string;
   isSubAccount?: boolean;
   parentAccount?: string | null;
+  region?: string;
+  regions?: string[];
 }
 
 interface AuthResponse {
@@ -30,13 +46,42 @@ interface AuthResponse {
   token: string;
 }
 
+const buildCustomerWelcomeEmailHtml = (name: string) => {
+  const safeName = String(name || "").trim() || "there";
+  const appUrl = env.appUrl.replace(/\/$/, "");
+
+  return `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
+      <h2 style="margin: 0 0 12px 0;">Welcome, ${safeName}!</h2>
+      <p style="margin: 0 0 12px 0;">Your Space Transfers account is ready.</p>
+      <div style="margin: 0 0 16px 0; padding: 12px 14px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 12px;">
+        <div style="font-weight: 600; margin: 0 0 6px 0;">Getting started</div>
+        <div style="margin: 0 0 6px 0;">1) Create a new gang sheet and upload your images</div>
+        <div style="margin: 0 0 6px 0;">2) Arrange your items and maximize your sheet space</div>
+        <div style="margin: 0 0 6px 0;">3) Add to cart and checkout</div>
+      </div>
+      <p style="margin: 0 0 16px 0;">
+        <a href="${appUrl}" style="display: inline-block; padding: 10px 14px; background: #2563eb; color: #ffffff; text-decoration: none; border-radius: 10px;">
+          Start Designing
+        </a>
+      </p>
+      <p style="margin: 0; font-size: 12px; color: #6b7280;">
+        This is a welcome email only. No verification is required.
+      </p>
+    </div>
+  `;
+};
+
 export const registerUser = async ({
   name,
   email,
   password,
   role,
   companyName,
-  phone
+  phone,
+  region,
+  website,
+  address
 }: RegisterParams): Promise<AuthResponse> => {
   const existing = await User.findOne({ email });
   if (existing) {
@@ -62,6 +107,21 @@ export const registerUser = async ({
       error.statusCode = 400;
       throw error;
     }
+    if (!phone) {
+      const error = new Error("Phone Number is required for Printer registration") as any;
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!region) {
+      const error = new Error("Region is required for Printer registration") as any;
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!address || !address.street || !address.city || !address.state || !address.postalCode || !address.country) {
+      const error = new Error("Address is required for Printer registration") as any;
+      error.statusCode = 400;
+      throw error;
+    }
   } else if (resolvedRole === UserRoles.ADMIN) {
     if (!companyName || !phone) {
       const error = new Error("Company Name and Phone Number are required for Admin registration") as any;
@@ -74,25 +134,104 @@ export const registerUser = async ({
     name,
     email,
     passwordHash,
-    role: resolvedRole
+    role: resolvedRole,
+    status: resolvedRole === UserRoles.PRINTER ? "Pending" : "Active"
   };
 
   if (companyName) userPayload.companyName = companyName;
   if (phone) userPayload.phone = phone;
+  if (website) userPayload.website = website;
+  const resolvedRegion = region || (resolvedRole === UserRoles.CUSTOMER ? "West" : undefined);
+  if (resolvedRegion) userPayload.regions = [resolvedRegion];
+  if (address) {
+    userPayload.defaultShippingAddress = {
+      street: String(address.street || ""),
+      city: String(address.city || ""),
+      state: String(address.state || ""),
+      postalCode: String(address.postalCode || ""),
+      country: String(address.country || "")
+    };
+  }
 
   const user = await User.create(userPayload);
 
-  const token = signJwt({ sub: user.id, role: user.role });
+  const isPending = user.status === "Pending";
+  const token = isPending ? "" : signJwt({ sub: user.id, role: user.role });
+
+  if (resolvedRole === UserRoles.PRINTER) {
+    notifyAllAdmins({
+      category: "partners",
+      priority: "low",
+      title: "New printer signup",
+      message: `${user.companyName || user.name} • ${user.email}`,
+      meta: { partnerId: user.id, status: user.status, region: user.regions?.[0] || null }
+    }).catch(() => {});
+  }
+
+  if (resolvedRole === UserRoles.CUSTOMER) {
+    const attemptedAt = new Date();
+    let status: "sent" | "skipped" | "failed" = "skipped";
+    let sentAt: Date | null = null;
+    let error: string | null = null;
+    let messageId: string | null = null;
+
+    try {
+      const sendResult = await Promise.race([
+        sendEmail({
+          to: user.email,
+          subject: "Welcome to Space Transfers",
+          html: buildCustomerWelcomeEmailHtml(user.name)
+        }),
+        new Promise<{ sent: boolean; messageId: string | null; error: string | null }>((_, reject) =>
+          setTimeout(() => reject(new Error("welcome_email_timeout")), 25_000)
+        )
+      ]);
+
+      messageId = sendResult.messageId;
+      if (sendResult.sent) {
+        status = "sent";
+        sentAt = new Date();
+      } else {
+        status = sendResult.error ? "failed" : "skipped";
+        error = sendResult.error;
+      }
+    } catch (e: any) {
+      status = "failed";
+      error = e?.message ? String(e.message) : "welcome_email_failed";
+    }
+
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          welcomeEmail: {
+            status,
+            attemptedAt,
+            sentAt,
+            error,
+            messageId
+          }
+        }
+      }
+    );
+  }
 
   const userResponse: UserResponse = {
     id: user.id,
     name: user.name,
     email: user.email,
-    role: user.role
+    role: user.role,
+    avatarUrl: user.avatarUrl || null,
+    status: user.status
   };
 
   if (user.companyName) userResponse.companyName = user.companyName;
   if (user.phone) userResponse.phone = user.phone;
+  if (user.website) userResponse.website = user.website;
+  if (user.regions && user.regions.length > 0) {
+    userResponse.region = user.regions[0];
+    userResponse.regions = user.regions;
+  }
 
   return {
     user: userResponse,
@@ -112,11 +251,18 @@ export const getCurrentUser = async (userId: string): Promise<UserResponse> => {
     id: user.id,
     name: user.name,
     email: user.email,
-    role: user.role
+    role: user.role,
+    avatarUrl: user.avatarUrl || null,
+    status: user.status
   };
 
   if (user.companyName) userResponse.companyName = user.companyName;
   if (user.phone) userResponse.phone = user.phone;
+  if (user.website) userResponse.website = user.website;
+  if (user.regions && user.regions.length > 0) {
+    userResponse.region = user.regions[0];
+    userResponse.regions = user.regions;
+  }
 
   return userResponse;
 };
@@ -308,6 +454,18 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
     throw error;
   }
 
+  if (user.status === "Pending") {
+    const error = new Error("Your account is pending approval. Please check back later.") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (user.status === "Suspended") {
+    const error = new Error("Your account has been suspended. Please contact support.") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+
   const token = signJwt({ sub: user.id, role: user.role });
 
   return {
@@ -316,7 +474,13 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
       name: user.name,
       email: user.email,
       role: user.role,
-      companyName: user.companyName
+      companyName: user.companyName,
+      phone: user.phone,
+      website: user.website,
+      avatarUrl: user.avatarUrl || null,
+      status: user.status,
+      region: user.regions?.[0],
+      regions: user.regions
     },
     token
   };

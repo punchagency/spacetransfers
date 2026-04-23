@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema } from "mongoose";
+import { publishOrderEvent } from "../services/orderSyncHub.js";
 
 export interface IOrderItem {
   type: string;
@@ -9,6 +10,22 @@ export interface IOrderItem {
   quantity: number;
   unitPrice: number;
   subtotal?: number;
+  sheetWidthIn?: number;
+  sheetHeightIn?: number;
+  previewImage?: string;
+  artboardItems?: Array<{
+    id: number;
+    assetId: string;
+    croppedUrl?: string;
+    autoCrop?: boolean;
+    widthIn: number;
+    heightIn: number;
+    posX: number;
+    posY: number;
+    rotation: number;
+    copies: number;
+    linked: boolean;
+  }>;
 }
 
 export interface IOrderAdjustment {
@@ -27,6 +44,9 @@ export interface ITrackingEvent {
 export interface IStatusTimeline {
   status: string;
   message?: string;
+  actorRole?: string;
+  actorId?: string;
+  actorName?: string | null;
   time: Date;
 }
 
@@ -38,6 +58,7 @@ export interface IOrder extends Document {
     lastName: string;
     email: string;
     phone?: string;
+    region?: string;
   };
   shippingAddress: {
     street: string;
@@ -77,6 +98,18 @@ export interface IOrder extends Document {
     pressSeconds?: number;
   };
   statusTimeline?: IStatusTimeline[];
+  assignmentHistory?: Array<{
+    time: Date;
+    mode: "AUTO" | "MANUAL";
+    selectedPrinterId?: string | null;
+    selectedPrinterName?: string | null;
+    customerRegion?: string | null;
+    customerState?: string | null;
+    candidatesConsidered?: number;
+    candidatesSameRegion?: number;
+    reason?: string;
+    tookMs?: number;
+  }>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -110,6 +143,33 @@ const orderItemSchema = new Schema<IOrderItem>(
     },
     subtotal: {
       type: Number
+    },
+    sheetWidthIn: {
+      type: Number
+    },
+    sheetHeightIn: {
+      type: Number
+    },
+    previewImage: {
+      type: String
+    },
+    artboardItems: {
+      type: [
+        {
+          id: { type: Number, required: true },
+          assetId: { type: String, required: true },
+          croppedUrl: { type: String },
+          autoCrop: { type: Boolean, default: true },
+          widthIn: { type: Number, required: true },
+          heightIn: { type: Number, required: true },
+          posX: { type: Number, required: true },
+          posY: { type: Number, required: true },
+          rotation: { type: Number, default: 0 },
+          copies: { type: Number, default: 1 },
+          linked: { type: Boolean, default: false }
+        }
+      ],
+      default: undefined
     }
   },
   { _id: false }
@@ -130,7 +190,8 @@ const orderSchema = new Schema<IOrder>(
       firstName: { type: String, required: true },
       lastName: { type: String, required: true },
       email: { type: String, required: true },
-      phone: { type: String }
+      phone: { type: String },
+      region: { type: String }
     },
     shippingAddress: {
       street: { type: String, required: true },
@@ -211,7 +272,24 @@ const orderSchema = new Schema<IOrder>(
       {
         status: { type: String, required: true },
         message: { type: String },
+        actorRole: { type: String },
+        actorId: { type: String },
+        actorName: { type: String },
         time: { type: Date, default: Date.now }
+      }
+    ],
+    assignmentHistory: [
+      {
+        time: { type: Date, default: Date.now },
+        mode: { type: String, enum: ["AUTO", "MANUAL"], required: true },
+        selectedPrinterId: { type: String },
+        selectedPrinterName: { type: String },
+        customerRegion: { type: String },
+        customerState: { type: String },
+        candidatesConsidered: { type: Number },
+        candidatesSameRegion: { type: Number },
+        reason: { type: String },
+        tookMs: { type: Number }
       }
     ]
   },
@@ -220,6 +298,58 @@ const orderSchema = new Schema<IOrder>(
   }
 );
 
+orderSchema.pre("save", async function () {
+  if (this.isNew) return;
+  const isStatusModified = this.isModified("status");
+  const isPricingModified = this.isModified("pricing");
+  if (!isStatusModified && !isPricingModified) return;
+
+  const prev = await (this.constructor as any)
+    .findById(this._id)
+    .select("status pricing.total pricing.subtotal pricing.tax pricing.shippingCost pricing.currency")
+    .lean();
+
+  (this as any).$locals = (this as any).$locals || {};
+  (this as any).$locals.__prevStatus = prev?.status ?? null;
+  (this as any).$locals.__prevPricing = prev?.pricing ?? null;
+});
+
+orderSchema.post("save", function (doc: any) {
+  const orderId = doc?._id ? String(doc._id) : null;
+  if (!orderId) return;
+
+  const locals = (doc as any).$locals || {};
+  const prevStatus = locals.__prevStatus ?? null;
+  const prevPricing = locals.__prevPricing ?? null;
+
+  const payloadBase = {
+    orderId,
+    status: String(doc.status || ""),
+    updatedAt: doc.updatedAt,
+    lastTimelineEntry: Array.isArray(doc.statusTimeline) && doc.statusTimeline.length ? doc.statusTimeline[doc.statusTimeline.length - 1] : null
+  };
+
+  if (prevStatus && String(prevStatus) !== String(doc.status || "")) {
+    publishOrderEvent(orderId, "order.status.changed", {
+      ...payloadBase,
+      from: String(prevStatus),
+      to: String(doc.status || "")
+    });
+  }
+
+  if (prevPricing && JSON.stringify(prevPricing) !== JSON.stringify(doc.pricing || null)) {
+    publishOrderEvent(orderId, "order.financials.changed", {
+      ...payloadBase,
+      pricing: doc.pricing || null
+    });
+  }
+
+  publishOrderEvent(orderId, "order.updated", payloadBase);
+});
+
 orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ assignedPrinter: 1, createdAt: -1 });
+orderSchema.index({ createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
 
 export const Order = mongoose.model<IOrder>("Order", orderSchema);

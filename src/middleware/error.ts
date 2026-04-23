@@ -9,7 +9,17 @@ export interface CustomError extends Error {
 }
 
 export const errorHandler = (err: CustomError, req: Request, res: Response, next: NextFunction): void => {
-  const statusCode = err.statusCode || 500;
-  const message = err.message || "Internal server error";
+  const rawMessage = err.message || "Internal server error";
+  const isDbDown =
+    rawMessage.includes("ECONNREFUSED") ||
+    rawMessage.includes("MongooseServerSelectionError") ||
+    rawMessage.includes("MongoServerSelectionError") ||
+    rawMessage.includes("connect ECONNREFUSED") ||
+    rawMessage.includes("MongoDB connection error");
+
+  const statusCode = err.statusCode || (isDbDown ? 503 : 500);
+  const message = isDbDown
+    ? "Database unavailable. Ensure MongoDB is running and MONGO_URI is set correctly."
+    : rawMessage;
   res.status(statusCode).json({ message });
 };
