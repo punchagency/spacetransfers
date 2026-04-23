@@ -1,15 +1,4 @@
-export type EarningsRow = {
-  name: string;
-  sku: string;
-  baseCost: number;
-  markupPct: number;
-  finalPrice: number;
-  quantity: number;
-  totalCost: number;
-  totalRevenue: number;
-  profit: number;
-  profitMarginPct: number;
-};
+import type { EarningsRow } from "../types/earnings";
 
 export const earningsRows: EarningsRow[] = [
   {

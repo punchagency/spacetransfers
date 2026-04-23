@@ -1,6 +1,4 @@
-interface ProfitMarginPillProps {
-  value: number;
-}
+import { type ProfitMarginPillProps } from "../../types/earnings";
 
 export const ProfitMarginPill = ({ value }: ProfitMarginPillProps) => {
   const isGood = value >= 40;

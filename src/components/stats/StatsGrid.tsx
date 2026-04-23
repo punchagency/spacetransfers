@@ -1,10 +1,5 @@
 import { StatCard } from './StatCard';
-
-type StatCardItem = {
-  title: string;
-  value: string;
-  trend: string;
-};
+import { type StatCardItem, type StatsGridProps } from '../../types/dashboard';
 
 const defaultCards: StatCardItem[] = [
   { title: "Total Orders", value: "24", trend: "+12%" },
@@ -13,7 +8,7 @@ const defaultCards: StatCardItem[] = [
   { title: "Total Revenue", value: "$45,293", trend: "+23%" },
 ];
 
-export const StatsGrid = ({ cards = defaultCards }: { cards?: StatCardItem[] }) => (
+export const StatsGrid = ({ cards = defaultCards }: StatsGridProps) => (
   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
     {cards.map((c) => (
       <StatCard key={c.title} title={c.title} value={c.value} trend={c.trend} />

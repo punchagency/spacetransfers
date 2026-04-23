@@ -1,76 +1,112 @@
 import { FiCheck } from 'react-icons/fi';
 
-export const OrderTimeline = () => {
+interface TimelineEntry {
+    status: string;
+    time?: string;
+    message?: string;
+}
+
+interface OrderTimelineProps {
+    order: {
+        status: string;
+        createdAt: string;
+        statusTimeline?: TimelineEntry[];
+        history?: Array<{
+            status: string;
+            timestamp: string;
+            note?: string;
+        }>;
+    };
+}
+
+const STATUS_STEPS = [
+    { key: 'PENDING',      label: 'Order Received' },
+    { key: 'PROCESSING',   label: 'Payment Verified' },
+    { key: 'PRINTING',     label: 'In Production' },
+    { key: 'SHIPPED',      label: 'Shipped' },
+    { key: 'COMPLETED',    label: 'Completed' },
+];
+
+export const OrderTimeline = ({ order }: OrderTimelineProps) => {
+    const formatDate = (dateStr: string) =>
+        new Date(dateStr).toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',     
+            minute: '2-digit',
+            hour12: true
+        });
+
+    // Use statusTimeline from admin endpoint if available, otherwise fall back to static steps
+    const hasTimeline = Array.isArray(order.statusTimeline) && order.statusTimeline.length > 0;
+
+    if (hasTimeline) {
+        return (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-6">Order Status Timeline</h2>
+                <div className="relative pl-4 border-l-2 border-gray-100 space-y-6 ml-2">
+                    {order.statusTimeline!.map((entry, index) => (
+                        <div key={index} className="relative">
+                            <div className="absolute -left-[29px] rounded-full p-1 bg-green-100">
+                              
+                            </div>
+                            <div>
+                                <p className="text-sm font-medium text-gray-900">
+                                    {entry.status}
+                                </p>
+                                {entry.message && (
+                                    <p className="text-xs text-gray-500 mt-0.5">{entry.message}</p>
+                                )}
+                                {entry.time && (
+                                    <p className="text-xs text-gray-400 mt-0.5">{formatDate(entry.time)}</p>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        );
+    }
+
+    // Fallback: static progress steps
+    const currentStatusIndex = STATUS_STEPS.findIndex(s => s.key === order.status);
+
     return (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-6">Order Status Timeline</h2>
-
             <div className="relative pl-4 border-l-2 border-gray-100 space-y-8 ml-2">
+                {STATUS_STEPS.map((step, index) => {
+                    const isCompleted = index <= currentStatusIndex;
+                    const isCurrent = index === currentStatusIndex;
 
-                {/* Step 1: Received */}
-                <div className="relative">
-                    <div className="absolute -left-[29px] bg-green-100 rounded-full p-1">
-                        <div className="bg-green-500 rounded-full p-0.5 text-white">
-                            <FiCheck size={12} />
+                    return (
+                        <div key={step.key} className="relative">
+                            <div className={`absolute -left-[29px] rounded-full p-1 ${
+                                isCompleted ? 'bg-green-100' : isCurrent ? 'bg-blue-100' : 'bg-gray-100'
+                            }`}>
+                                {isCompleted ? (
+                                    <div className="bg-green-500 rounded-full p-0.5 text-white">
+                                        <FiCheck size={12} />
+                                    </div>
+                                ) : (
+                                    <div className={`rounded-full w-4 h-4 border-2 border-white ${
+                                        isCurrent ? 'bg-blue-500' : 'bg-gray-300'
+                                    }`}></div>
+                                )}
+                            </div>
+                            <div>
+                                <p className={`text-sm font-medium ${
+                                    isCurrent ? 'text-blue-600' : isCompleted ? 'text-gray-900' : 'text-gray-400'
+                                }`}>
+                                    {step.label}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                    {isCompleted ? formatDate(order.createdAt) : '-'}
+                                </p>
+                            </div>
                         </div>
-                    </div>
-                    <div>
-                        <p className="text-sm font-medium text-gray-900">Order Received</p>
-                        <p className="text-xs text-gray-500">Dec 3, 10:24 AM</p>
-                    </div>
-                </div>
-
-                {/* Step 2: Payment Verified */}
-                <div className="relative">
-                    <div className="absolute -left-[29px] bg-green-100 rounded-full p-1">
-                        <div className="bg-green-500 rounded-full p-0.5 text-white">
-                            <FiCheck size={12} />
-                        </div>
-                    </div>
-                    <div>
-                        <p className="text-sm font-medium text-gray-900">Payment Verified</p>
-                        <p className="text-xs text-gray-500">Dec 3, 10:25 AM</p>
-                    </div>
-                </div>
-
-                {/* Step 3: Assigned (Active) */}
-                <div className="relative">
-                    <div className="absolute -left-[29px] bg-blue-100 rounded-full p-1">
-                        <div className="bg-blue-500 rounded-full w-4 h-4 border-2 border-white"></div>
-                    </div>
-                    <div>
-                        <p className="text-sm font-medium text-blue-600">Assigned to Partner</p>
-                        <p className="text-xs text-gray-500">Dec 3, 10:32 AM</p>
-                    </div>
-                </div>
-
-                {/* Step 4: In Production */}
-                <div className="relative">
-                    <div className="absolute -left-[23px] top-1 bg-gray-200 rounded-full w-3 h-3 border-2 border-white ring-1 ring-gray-100"></div>
-                    <div>
-                        <p className="text-sm font-medium text-gray-400">In Production</p>
-                        <p className="text-xs text-gray-500">-</p>
-                    </div>
-                </div>
-
-                {/* Step 5: Ready to Ship */}
-                <div className="relative">
-                    <div className="absolute -left-[23px] top-1 bg-gray-200 rounded-full w-3 h-3 border-2 border-white ring-1 ring-gray-100"></div>
-                    <div>
-                        <p className="text-sm font-medium text-gray-400">Ready to Ship</p>
-                        <p className="text-xs text-gray-500">-</p>
-                    </div>
-                </div>
-
-                {/* Step 6: Shipped */}
-                <div className="relative">
-                    <div className="absolute -left-[23px] top-1 bg-gray-200 rounded-full w-3 h-3 border-2 border-white ring-1 ring-gray-100"></div>
-                    <div>
-                        <p className="text-sm font-medium text-gray-400">Shipped</p>
-                        <p className="text-xs text-gray-500">-</p>
-                    </div>
-                </div>
-
+                    );
+                })}
             </div>
         </div>
     );

@@ -1,14 +1,4 @@
-export interface Partner {
-    id: string;
-    name: string;
-    email: string;
-    regions: string[];
-    status: "Active" | "Pending" | "Suspended";
-    basePrice: string;
-    salePrice: string;
-    profit: string;
-    orders: string;
-}
+import type { Partner } from "../types/partners";
 
 export const mockPartners: Partner[] = [
     {

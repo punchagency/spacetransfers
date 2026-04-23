@@ -1,12 +1,94 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Toggle } from '../common/Toggle';
+import toast from 'react-hot-toast';
+import { apiFetch } from '../../utils/api';
+import type { PartnerSettingsApi } from '../../types/partners';
 
-export const PartnerSettings = () => {
-    const [maxSheets, setMaxSheets] = useState('500');
-    const [cutOffTime, setCutOffTime] = useState('');
-    const [isWeekendAvailable, setIsWeekendAvailable] = useState(true);
-    const [isPartnerActive, setIsPartnerActive] = useState(true);
-    const [isAutoAssignmentEnabled, setIsAutoAssignmentEnabled] = useState(true);
+export const PartnerSettings = ({
+    partnerId,
+    partnerStatus,
+    settings,
+    onUpdated
+}: {
+    partnerId: string;
+    partnerStatus: string;
+    settings: PartnerSettingsApi | null;
+    onUpdated: (settings: PartnerSettingsApi, nextStatus?: 'Active' | 'Pending' | 'Suspended' | 'Under Review') => void;
+}) => {
+    const [dailyMax, setDailyMax] = useState<string>('0');
+    const [maxConcurrent, setMaxConcurrent] = useState<string>('0');
+    const [orderAssignedEmail, setOrderAssignedEmail] = useState(false);
+    const [jobCompletedEmail, setJobCompletedEmail] = useState(false);
+    const [isPartnerActive, setIsPartnerActive] = useState(partnerStatus === 'Active');
+    const [autoAccept, setAutoAccept] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        setIsPartnerActive(partnerStatus === 'Active');
+    }, [partnerStatus]);
+
+    useEffect(() => {
+        if (!settings) return;
+        setDailyMax(String(settings.jobCapacity?.dailyMax ?? 0));
+        setMaxConcurrent(String(settings.jobCapacity?.maxConcurrent ?? 0));
+        setAutoAccept(settings.jobCapacity?.autoAccept ?? true);
+        setOrderAssignedEmail(settings.notifications?.orderAssigned ?? false);
+        setJobCompletedEmail(settings.notifications?.jobCompleted ?? false);
+    }, [settings]);
+
+    const canSave = useMemo(() => {
+        const d = Number(dailyMax);
+        const m = Number(maxConcurrent);
+        if (!Number.isFinite(d) || d < 0 || d > 100000) return false;
+        if (!Number.isFinite(m) || m < 0 || m > 100000) return false;
+        return true;
+    }, [dailyMax, maxConcurrent]);
+
+    const persistStatus = async (nextActive: boolean) => {
+        setIsSaving(true);
+        try {
+            const nextStatus = nextActive ? 'Active' : 'Suspended';
+            const res = await apiFetch(`/admin/partners/${partnerId}/status`, {
+                method: 'PATCH',
+                body: JSON.stringify({ status: nextStatus }),
+            });
+            toast.success('Partner status updated');
+            if (settings) onUpdated(settings, res.status);
+        } catch (error: any) {
+            toast.error(error.message || 'Failed to update status');
+            setIsPartnerActive(partnerStatus === 'Active');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleSave = async () => {
+        if (!canSave) return;
+        setIsSaving(true);
+        try {
+            const payload: PartnerSettingsApi = {
+                jobCapacity: {
+                    dailyMax: Number(dailyMax),
+                    maxConcurrent: Number(maxConcurrent),
+                    autoAccept
+                },
+                notifications: {
+                    orderAssigned: orderAssignedEmail,
+                    jobCompleted: jobCompletedEmail
+                }
+            };
+            await apiFetch(`/admin/partners/${partnerId}/settings`, {
+                method: 'PATCH',
+                body: JSON.stringify(payload),
+            });
+            toast.success('Settings saved');
+            onUpdated(payload);
+        } catch (error: any) {
+            toast.error(error.message || 'Failed to save settings');
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
     return (
         <div className="space-y-6">
@@ -20,9 +102,9 @@ export const PartnerSettings = () => {
                         <div className="space-y-2">
                             <label className="text-sm font-bold text-gray-900">Max Sheets Per Day</label>
                             <input
-                                type="text"
-                                value={maxSheets}
-                                onChange={(e) => setMaxSheets(e.target.value)}
+                                type="number"
+                                value={dailyMax}
+                                onChange={(e) => setDailyMax(e.target.value)}
                                 className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-lg text-sm font-medium text-gray-900 focus:bg-white focus:border-blue-500 transition-all outline-none"
                             />
                             <p className="text-[13px] text-gray-400 font-medium">Maximum daily capacity for this partner</p>
@@ -30,24 +112,23 @@ export const PartnerSettings = () => {
 
                         {/* Cut-off Time */}
                         <div className="space-y-2">
-                            <label className="text-sm font-bold text-gray-900">Cut-off Time</label>
+                            <label className="text-sm font-bold text-gray-900">Max Concurrent Jobs</label>
                             <input
-                                type="text"
-                                value={cutOffTime}
-                                placeholder="e.g. 2:00 PM"
-                                onChange={(e) => setCutOffTime(e.target.value)}
+                                type="number"
+                                value={maxConcurrent}
+                                onChange={(e) => setMaxConcurrent(e.target.value)}
                                 className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-lg text-sm font-medium text-gray-900 focus:bg-white focus:border-blue-500 transition-all outline-none"
                             />
-                            <p className="text-[13px] text-gray-400 font-medium">Orders received after this time will be processed next day</p>
+                            <p className="text-[13px] text-gray-400 font-medium">Limit of jobs that can be handled concurrently</p>
                         </div>
 
                         {/* Weekend Availability */}
                         <div className="flex items-center justify-between pt-2">
                             <div className="space-y-0.5">
-                                <label className="text-sm font-bold text-gray-900">Weekend Availability</label>
-                                <p className="text-[13px] text-gray-400 font-medium">Accept orders on weekends</p>
+                                <label className="text-sm font-bold text-gray-900">Auto-Accept Jobs</label>
+                                <p className="text-[13px] text-gray-400 font-medium">Automatically accept assigned jobs</p>
                             </div>
-                            <Toggle enabled={isWeekendAvailable} setEnabled={setIsWeekendAvailable} />
+                            <Toggle enabled={autoAccept} setEnabled={setAutoAccept} />
                         </div>
                     </div>
                 </div>
@@ -63,16 +144,23 @@ export const PartnerSettings = () => {
                                 <label className="text-sm font-bold text-gray-900">Activate/Deactivate Partner</label>
                                 <p className="text-[13px] text-gray-400 font-medium">Control whether this partner can receive orders</p>
                             </div>
-                            <Toggle enabled={isPartnerActive} setEnabled={setIsPartnerActive} />
+                            <Toggle enabled={isPartnerActive} setEnabled={(v) => { setIsPartnerActive(v); void persistStatus(v); }} />
                         </div>
 
-                        {/* Auto-Assignment */}
                         <div className="flex items-center justify-between">
                             <div className="space-y-0.5">
-                                <label className="text-sm font-bold text-gray-900">Enable Auto-Assignment</label>
-                                <p className="text-[13px] text-gray-400 font-medium">Automatically assign orders to this partner</p>
+                                <label className="text-sm font-bold text-gray-900">Email: Order Assigned</label>
+                                <p className="text-[13px] text-gray-400 font-medium">Notify partner when a new job is assigned</p>
                             </div>
-                            <Toggle enabled={isAutoAssignmentEnabled} setEnabled={setIsAutoAssignmentEnabled} />
+                            <Toggle enabled={orderAssignedEmail} setEnabled={setOrderAssignedEmail} />
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                                <label className="text-sm font-bold text-gray-900">Email: Job Updates</label>
+                                <p className="text-[13px] text-gray-400 font-medium">Notify partner when job updates occur</p>
+                            </div>
+                            <Toggle enabled={jobCompletedEmail} setEnabled={setJobCompletedEmail} />
                         </div>
                     </div>
                 </div>
@@ -80,7 +168,11 @@ export const PartnerSettings = () => {
 
             {/* Save Button */}
             <div className="flex justify-end pt-4">
-                <button className="bg-blue-600 text-white px-8 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-md">
+                <button
+                    disabled={!canSave || isSaving}
+                    onClick={handleSave}
+                    className="bg-blue-600 text-white px-8 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-md disabled:opacity-60 disabled:hover:bg-blue-600"
+                >
                     Save Settings
                 </button>
             </div>

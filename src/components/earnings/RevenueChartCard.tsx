@@ -9,16 +9,21 @@ import {
 } from "recharts";
 import { currency } from "../../utils/formatters";
 
-const revenueData = [
-  { name: "Jan", current: 5000, previous: 2500 },
-  { name: "Feb", current: 15000, previous: 11600 },
-  { name: "Mar", current: 13300, previous: 5000 },
-  { name: "Apr", current: 21600, previous: 8300 },
-  { name: "May", current: 25000, previous: 18300 },
-  { name: "Jun", current: 28300, previous: 26600 },
-];
+export type RevenueChartPoint = {
+  label: string;
+  current: number;
+  previous: number;
+};
 
-export const RevenueChartCard = () => {
+export const RevenueChartCard = ({
+  currentTotal,
+  previousTotal,
+  points,
+}: {
+  currentTotal: number;
+  previousTotal: number;
+  points: RevenueChartPoint[];
+}) => {
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 h-[393px] flex flex-col">
       <div className="flex items-center gap-4 flex-wrap">
@@ -29,14 +34,18 @@ export const RevenueChartCard = () => {
             <span className="w-2 h-2 rounded-full bg-gray-900" />
             <span>
               Current Week{" "}
-              <span className="font-semibold text-gray-900">$58,211</span>
+              <span className="font-semibold text-gray-900">
+                {currency(currentTotal || 0)}
+              </span>
             </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-blue-500" />
             <span>
               Previous Week{" "}
-              <span className="font-semibold text-gray-900">$68,768</span>
+              <span className="font-semibold text-gray-900">
+                {currency(previousTotal || 0)}
+              </span>
             </span>
           </div>
         </div>
@@ -45,7 +54,7 @@ export const RevenueChartCard = () => {
       <div className="mt-5 relative flex-1 w-full h-full min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
-            data={revenueData}
+            data={points}
             margin={{
               top: 20,
               right: 20,
@@ -55,7 +64,7 @@ export const RevenueChartCard = () => {
           >
             <CartesianGrid vertical={false} stroke="#F3F4F6" />
             <XAxis
-              dataKey="name"
+              dataKey="label"
               axisLine={{ stroke: "#E5E7EB" }}
               tickLine={false}
               tick={{ fill: "#9CA3AF", fontSize: 10 }}
@@ -65,10 +74,7 @@ export const RevenueChartCard = () => {
               axisLine={{ stroke: "#E5E7EB" }}
               tickLine={false}
               tick={{ fill: "#9CA3AF", fontSize: 10 }}
-              ticks={[0, 10000, 20000, 30000]}
-              tickFormatter={(value) =>
-                value === 0 ? "0" : `${value / 1000}K`
-              }
+              tickFormatter={(value) => (value === 0 ? "0" : `${Number(value) / 1000}K`)}
             />
             <Tooltip
               cursor={{ stroke: "#111827", strokeWidth: 1 }}

@@ -1,12 +1,14 @@
 import { useNavigate } from "react-router-dom";
-import type { Partner } from "../../data/partners";
 import { GenericTable } from "../common/GenericTable";
+import type { Partner } from "../../types/partners";
 
 const getStatusStyles = (status: Partner["status"]) => {
     switch (status) {
         case "Active":
             return "bg-green-50 text-green-600";
         case "Pending":
+            return "bg-amber-50 text-amber-600";
+        case "Under Review":
             return "bg-amber-50 text-amber-600";
         case "Suspended":
             return "bg-red-50 text-red-600";

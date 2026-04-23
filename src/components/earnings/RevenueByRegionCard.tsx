@@ -5,7 +5,17 @@ import {
   Marker,
 } from "react-simple-maps";
 
-export const RevenueByRegionCard = () => {
+export type RevenueByRegionRow = {
+  region: string;
+  value: number;
+  percentage: number;
+};
+
+export const RevenueByRegionCard = ({
+  rows,
+}: {
+  rows: RevenueByRegionRow[];
+}) => {
   // Marker locations: [longitude, latitude]
   const markers: Array<{ coordinates: [number, number] }> = [
     { coordinates: [-120, 37] }, // West Coast US (California)
@@ -16,6 +26,9 @@ export const RevenueByRegionCard = () => {
 
   const geoUrl =
     "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+  const maxValue = Math.max(1, ...(rows || []).map((r) => Number(r.value) || 0));
+  const displayRows = (rows || []).slice(0, 5);
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 w-[292px] h-[393px] flex flex-col">
@@ -53,24 +66,23 @@ export const RevenueByRegionCard = () => {
       </div>
 
       <div className="mt-4 space-y-4">
-        {[
-          { label: "Mid-West", value: "72K", pct: 0.82 },
-          { label: "West-Coast", value: "39K", pct: 0.55 },
-          { label: "North-East", value: "25K", pct: 0.45 },
-          { label: "WestCoast", value: "61K", pct: 0.72 },
-        ].map((r) => (
-          <div key={r.label}>
+        {displayRows.length === 0 ? (
+          <div className="text-sm text-gray-400 italic">No region data</div>
+        ) : (
+          displayRows.map((r) => (
+            <div key={r.region}>
             <div className="text-sm text-gray-900 mb-1">
-              {r.label} <span className="font-semibold">{r.value}</span>
+              {r.region} <span className="font-semibold">{r.value.toLocaleString()}</span>
             </div>
             <div className="h-[2px] bg-gray-200 rounded-full overflow-hidden">
               <div
                 className="h-full bg-blue-600"
-                style={{ width: `${r.pct * 100}%` }}
+                style={{ width: `${(Number(r.value) / maxValue) * 100}%` }}
               />
             </div>
-          </div>
-        ))}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

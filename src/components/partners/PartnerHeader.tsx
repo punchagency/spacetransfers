@@ -1,12 +1,6 @@
 import { FiArrowLeft, FiEdit3 } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
-
-interface PartnerHeaderProps {
-    name: string;
-    email: string;
-    status: string;
-    onEdit?: () => void;
-}
+import type { PartnerHeaderProps } from '../../types/partners';
 
 export const PartnerHeader = ({ name, email, status, onEdit }: PartnerHeaderProps) => {
     const navigate = useNavigate();

@@ -1,18 +1,27 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { PartnersTable } from '../components/partners/PartnersTable';
-import { FiPlus } from 'react-icons/fi';
-import { mockPartners } from '../data/partners';
+import { FiPlus, FiSend } from 'react-icons/fi';
 import { SelectInput } from '../components/common/SelectInput';
 import { SearchInput } from '../components/common/SearchInput';
+import type { Partner } from '../types/partners';
+import { apiFetch } from '../utils/api';
+import toast from 'react-hot-toast';
+import { AddPartnerModal } from '../components/partners/AddPartnerModal';
+import { AssignOrdersModal } from '../components/partners/AssignOrdersModal';
 
 export const FulfilmentPartners = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('All Status');
   const [regionFilter, setRegionFilter] = useState('All Regions');
+  const [partners, setPartners] = useState<Partner[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const filteredPartners = useMemo(() => {
-    return mockPartners.filter((partner) => {
+  const filteredPartners: Partner[] = useMemo(() => {
+    return partners.filter((partner) => {
       const matchesSearch =
         partner.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         partner.email.toLowerCase().includes(searchTerm.toLowerCase());
@@ -25,21 +34,68 @@ export const FulfilmentPartners = () => {
 
       return matchesSearch && matchesStatus && matchesRegion;
     });
-  }, [searchTerm, statusFilter, regionFilter]);
+  }, [partners, searchTerm, statusFilter, regionFilter]);
+
+  useEffect(() => {
+    const fetchPartners = async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (statusFilter !== 'All Status') params.set('status', statusFilter);
+        if (regionFilter !== 'All Regions') params.set('region', regionFilter);
+        if (searchTerm.trim()) params.set('search', searchTerm.trim());
+        params.set('limit', '50');
+
+        const response = await apiFetch(`/admin/partners?${params.toString()}`);
+        const mapped: Partner[] = (response.partners || []).map((p: any) => ({
+          id: String(p.id),
+          name: String(p.name || 'N/A'),
+          email: String(p.email || 'N/A'),
+          regions: Array.isArray(p.regions) ? p.regions : [],
+          status: p.status as Partner['status'],
+          basePrice: String(p.basePrice || '$0.00'),
+          salePrice: String(p.salePrice || '$0.00'),
+          profit: String(p.profit || '$0.00'),
+          orders: String(p.orders ?? p.ordersCompleted ?? '0'),
+        }));
+        setPartners(mapped);
+      } catch (error: any) {
+        toast.error(error.message || 'Failed to load partners');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPartners();
+  }, [refreshKey, searchTerm, statusFilter, regionFilter]);
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
         {/* Header */}
-        <div className="flex justify-between items-start">
+        <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-4">
           <div>
             <h1 className="text-[24px] font-bold text-gray-900">Fulfilment Partners</h1>
             <p className="text-gray-500">Manage your DTF printing network partners</p>
           </div>
-          <button className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-sm">
-            <FiPlus />
-            <span className='text-[14px]'>Add New Partner</span>
-          </button>
+          <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+            <button
+              onClick={() => setIsAssignModalOpen(true)}
+              aria-label="Assign orders to fulfilment partners"
+              className="flex items-center justify-center gap-2 bg-white text-gray-700 border border-gray-200 px-4 py-2 rounded-lg font-medium hover:bg-gray-50 transition-colors shadow-sm w-full sm:w-auto"
+            >
+              <FiSend />
+              <span className="text-[14px]">Assign Orders</span>
+            </button>
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              aria-label="Add new fulfilment partner"
+              className="flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-sm w-full sm:w-auto"
+            >
+              <FiPlus />
+              <span className='text-[14px]'>Add New Partner</span>
+            </button>
+          </div>
         </div>
 
         {/* Filters */}
@@ -60,7 +116,7 @@ export const FulfilmentPartners = () => {
             <option>Active</option>
             <option>Pending</option>
             <option>Suspended</option>
-          </SelectInput>
+          </SelectInput> 
 
           <SelectInput
             value={regionFilter}
@@ -78,8 +134,29 @@ export const FulfilmentPartners = () => {
           </SelectInput>
         </div>
 
-        <PartnersTable partners={filteredPartners} />
+        {loading ? (
+          <div className="flex flex-col items-center justify-center min-h-[240px]">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+            <p className="mt-3 text-gray-500 text-sm">Loading partners...</p>
+          </div>
+        ) : (
+          <PartnersTable partners={filteredPartners} />
+        )}
       </div>
+
+      <AddPartnerModal
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        onCreated={() => {
+          setIsAddModalOpen(false);
+          setRefreshKey((k) => k + 1);
+        }}
+      />
+
+      <AssignOrdersModal
+        isOpen={isAssignModalOpen}
+        onClose={() => setIsAssignModalOpen(false)}
+      />
     </DashboardLayout>
   );
 };

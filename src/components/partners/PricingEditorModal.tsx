@@ -1,26 +1,6 @@
 import { useState } from "react";
 import { FiX, FiPlus, FiTrash2, FiChevronDown } from "react-icons/fi";
-
-interface Fee {
-  id: number;
-  name: string;
-  value: string;
-}
-
-export interface PricingData {
-  basePrintPrice: string;
-  baseShippingPrice: string;
-  extraFees: Fee[];
-  markupType: string;
-  markupAmount: string;
-}
-
-interface PricingEditorModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSave: (data: PricingData) => void;
-  initialData: PricingData;
-}
+import type { PricingEditorModalProps, Fee } from "../../types/partners";
 
 export const PricingEditorModal = ({
   isOpen,

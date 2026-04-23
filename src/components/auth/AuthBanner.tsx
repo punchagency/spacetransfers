@@ -1,6 +1,4 @@
-interface AuthBannerProps {
-  isSignIn: boolean;
-}
+import { type AuthBannerProps } from "../../types/auth";
 
 export const AuthBanner = ({ isSignIn }: AuthBannerProps) => {
   return (

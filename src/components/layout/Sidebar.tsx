@@ -1,9 +1,9 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
-
   AiOutlineDollar,
   AiOutlineUser,
   AiOutlineSetting,
+  AiOutlineCheckCircle,
 } from "react-icons/ai";
 import { FiHome } from "react-icons/fi";
 const nav = [
@@ -14,6 +14,7 @@ const nav = [
     iconSrc: "/fulfilment.svg",
     path: "/fulfilment-partners",
   },
+  { label: "Approvals", icon: AiOutlineCheckCircle, path: "/printer-approvals" },
   { label: "Earnings", icon: AiOutlineDollar, path: "/earnings" },
 ];
 

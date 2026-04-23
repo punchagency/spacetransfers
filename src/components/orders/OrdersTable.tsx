@@ -16,12 +16,22 @@ const getStatusColor = (status: string) => {
       return "text-yellow-400";
     case "Rejected":
       return "text-red-500";
+    case "Cancelled":
+      return "text-gray-400";
     default:
       return "text-gray-500";
   }
 };
 
-export const OrdersTable = ({ orders }: { orders: Order[] }) => {
+export const OrdersTable = ({
+  orders,
+  title = "Recent Orders",
+  itemsPerPage = 7,
+}: {
+  orders: Order[];
+  title?: string;
+  itemsPerPage?: number;
+}) => {
   const navigate = useNavigate();
 
   const columns = [
@@ -30,6 +40,7 @@ export const OrdersTable = ({ orders }: { orders: Order[] }) => {
     { header: "Region", key: "region" as keyof Order, className: "text-gray-500" },
     {
       header: "Partner",
+      sortValue: (o: Order) => o.partner,
       render: (order: Order) => (
         <span className={order.partner === "Unassigned" ? "text-gray-400 italic" : "text-gray-600"}>
           {order.partner}
@@ -38,15 +49,31 @@ export const OrdersTable = ({ orders }: { orders: Order[] }) => {
     },
     {
       header: "Status",
+      sortValue: (o: Order) => o.status,
       render: (order: Order) => (
         <span className={`font-medium ${getStatusColor(order.status)}`}>
           {order.status}
         </span>
       )
     },
-    { header: "Amount", key: "amount" as keyof Order, className: "font-bold text-gray-900" },
-    { header: "Profits", key: "profit" as keyof Order, className: "font-bold text-gray-900" },
-    { header: "Date", key: "date" as keyof Order, className: "text-gray-500" },
+    {
+      header: "Amount",
+      key: "amount" as keyof Order,
+      className: "font-bold text-gray-900",
+      sortValue: (o: Order) => Number(String(o.amount || "").replace(/[^0-9.]/g, "")) || 0,
+    },
+    {
+      header: "Profits",
+      key: "profit" as keyof Order,
+      className: "font-bold text-gray-900",
+      sortValue: (o: Order) => Number(String(o.profit || "").replace(/[^0-9.]/g, "")) || 0,
+    },
+    {
+      header: "Date",
+      key: "date" as keyof Order,
+      className: "text-gray-500",
+      sortValue: (o: Order) => o.createdAtMs || 0,
+    },
     {
       header: "Action",
       render: () => (
@@ -61,8 +88,12 @@ export const OrdersTable = ({ orders }: { orders: Order[] }) => {
     <GenericTable
       data={orders}
       columns={columns}
-      title="Recent Orders"
-      onRowClick={(order) => navigate(`/dashboard/orders/${order.id.replace('#', '')}`)}
+      title={title}
+      itemsPerPage={itemsPerPage}
+      sortable
+      defaultSortColumnIndex={7}
+      defaultSortDirection="desc"
+      onRowClick={(order) => navigate(`/dashboard/orders/${order.actualId || order.id.replace('#', '')}`)}
     />
   );
 };

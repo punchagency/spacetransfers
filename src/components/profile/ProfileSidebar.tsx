@@ -54,7 +54,7 @@ export const ProfileSidebar = ({
               activeTab === "preferences"
                 ? "bg-blue-50 text-blue-600"
                 : "text-gray-700 hover:bg-gray-50"
-            }`}
+            }`} 
           >
             <div className="flex items-center gap-3">
               <FiSettings className="w-4 h-4" />

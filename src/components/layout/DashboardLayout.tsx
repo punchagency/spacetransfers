@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
+import { type DashboardLayoutProps } from '../../types/dashboard';
 
-export const DashboardLayout = ({ children }: { children: ReactNode }) => (
+export const DashboardLayout = ({ children }: DashboardLayoutProps) => (
   <div className="flex h-screen bg-gray-50 overflow-hidden">
     <Sidebar />
     <main className="flex-1 flex flex-col h-full min-w-0">

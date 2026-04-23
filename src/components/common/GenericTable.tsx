@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Pagination } from "./Pagination";
 
 interface Column<T> {
@@ -6,6 +6,7 @@ interface Column<T> {
     key?: keyof T;
     render?: (item: T, index: number) => ReactNode;
     className?: string;
+    sortValue?: (item: T) => string | number | null | undefined;
 }
 
 interface GenericTableProps<T> {
@@ -16,6 +17,9 @@ interface GenericTableProps<T> {
     showFooterInfo?: boolean;
     footerLabel?: string;
     onRowClick?: (item: T) => void;
+    sortable?: boolean;
+    defaultSortColumnIndex?: number;
+    defaultSortDirection?: "asc" | "desc";
 }
 
 export function GenericTable<T>({
@@ -26,12 +30,53 @@ export function GenericTable<T>({
     showFooterInfo = false,
     footerLabel = "items",
     onRowClick,
+    sortable = false,
+    defaultSortColumnIndex = -1,
+    defaultSortDirection = "asc",
 }: GenericTableProps<T>) {
     const [currentPage, setCurrentPage] = useState(1);
+    const [sortColumnIndex, setSortColumnIndex] = useState(defaultSortColumnIndex);
+    const [sortDirection, setSortDirection] = useState<"asc" | "desc">(defaultSortDirection);
 
-    const totalPages = Math.ceil(data.length / itemsPerPage);
+    const sortedData = useMemo(() => {
+        if (!sortable) return data;
+        if (sortColumnIndex < 0 || sortColumnIndex >= columns.length) return data;
+
+        const col = columns[sortColumnIndex];
+        const getValue = (item: T) => {
+            if (col.sortValue) return col.sortValue(item);
+            if (col.key) return item[col.key] as any;
+            return null;
+        };
+
+        const mapped = data.map((item, idx) => ({
+            item,
+            idx,
+            value: getValue(item),
+        }));
+
+        mapped.sort((a, b) => {
+            const av = a.value;
+            const bv = b.value;
+            const dir = sortDirection === "asc" ? 1 : -1;
+
+            if (av == null && bv == null) return a.idx - b.idx;
+            if (av == null) return 1;
+            if (bv == null) return -1;
+
+            if (typeof av === "number" && typeof bv === "number") {
+                return (av - bv) * dir;
+            }
+
+            return String(av).localeCompare(String(bv)) * dir;
+        });
+
+        return mapped.map((m) => m.item);
+    }, [columns, data, sortColumnIndex, sortDirection, sortable]);
+
+    const totalPages = Math.ceil(sortedData.length / itemsPerPage);
     const startIndex = (currentPage - 1) * itemsPerPage;
-    const currentItems = data.slice(startIndex, startIndex + itemsPerPage);
+    const currentItems = sortedData.slice(startIndex, startIndex + itemsPerPage);
 
     return (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col overflow-hidden">
@@ -47,7 +92,30 @@ export function GenericTable<T>({
                         <tr>
                             {columns.map((col, idx) => (
                                 <th key={idx} className={`px-6 py-5 ${col.className || ""}`}>
-                                    {col.header}
+                                    {sortable ? (
+                                        <button
+                                            type="button"
+                                            className="inline-flex items-center gap-2 hover:text-gray-900"
+                                            onClick={() => {
+                                                setCurrentPage(1);
+                                                if (sortColumnIndex !== idx) {
+                                                    setSortColumnIndex(idx);
+                                                    setSortDirection("asc");
+                                                    return;
+                                                }
+                                                setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
+                                            }}
+                                        >
+                                            <span>{col.header}</span>
+                                            {sortColumnIndex === idx ? (
+                                                <span className="text-[11px] text-gray-400">
+                                                    {sortDirection === "asc" ? "↑" : "↓"}
+                                                </span>
+                                            ) : null}
+                                        </button>
+                                    ) : (
+                                        col.header
+                                    )}
                                 </th>
                             ))}
                         </tr>
