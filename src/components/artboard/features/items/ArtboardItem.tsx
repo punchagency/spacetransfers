@@ -179,12 +179,13 @@ export default function ArtboardItem({
     <div
       data-item-id={item.id}
       className={`absolute rounded-md transition-all duration-300 ease-out ${
-        isSelected ? "ring-4 ring-blue-500 z-40" : "z-10"
+        isSelected ? "ring-4 ring-blue-500" : ""
       }`}
       style={{
         left: `${clampedLeft * CANVAS.PIXELS_PER_INCH}px`,
         top: `${clampedTop * CANVAS.PIXELS_PER_INCH}px`,
         touchAction: "none",
+        zIndex: isSelected ? 1000 : item.copies > 1 ? 30 : 10,
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -207,6 +208,13 @@ export default function ArtboardItem({
           position={clampedTop <= marginSize + 0.3 ? "bottom" : "top"}
         />
       )}
+      {isSelected ? (
+        <div className="absolute top-1 right-2 bg-white/90 border border-gray-200 text-gray-700 text-[10px] rounded-full px-2 h-5 flex items-center gap-2 pointer-events-none">
+          <span className="font-semibold">{item.copies > 1 ? "Group" : "Single"}</span>
+          <span className="text-gray-400">•</span>
+          <span>{item.copies > 1 ? "Top" : "Bottom"}</span>
+        </div>
+      ) : null}
       {isSelected && showProperties && !isDragging && (
         <PropertiesPanel
           item={item}

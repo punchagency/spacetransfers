@@ -253,7 +253,9 @@ export const useItemActions = (
     if (selectedId == null) return;
     const clamped = Math.max(1, Math.floor(n));
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, copies: clamped } : it))
+      prev.map((it) =>
+        it.id === selectedId ? { ...it, copies: clamped, gravityActive: true } : it
+      )
     );
     emit({
       type: "setCopies",
@@ -269,9 +271,9 @@ export const useItemActions = (
         if (it.id === selectedId) {
           if (it.linked) {
             const ratio = it.heightIn / it.widthIn;
-            return { ...it, widthIn: n, heightIn: n * ratio };
+            return { ...it, widthIn: n, heightIn: n * ratio, gravityActive: true };
           }
-          return { ...it, widthIn: n };
+          return { ...it, widthIn: n, gravityActive: true };
         }
         return it;
       })
@@ -290,9 +292,9 @@ export const useItemActions = (
         if (it.id === selectedId) {
           if (it.linked) {
             const ratio = it.widthIn / it.heightIn;
-            return { ...it, heightIn: n, widthIn: n * ratio };
+            return { ...it, heightIn: n, widthIn: n * ratio, gravityActive: true };
           }
-          return { ...it, heightIn: n };
+          return { ...it, heightIn: n, gravityActive: true };
         }
         return it;
       })

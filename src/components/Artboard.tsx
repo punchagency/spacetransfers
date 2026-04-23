@@ -101,6 +101,9 @@ export default function Artboard({
       snapToGrid,
       snapToGridPoint,
       autoNestStickers,
+      canvasWidth,
+      marginSize,
+      spacing,
     );
 
   useArtboardEffects(

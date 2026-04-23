@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { ArtboardItem } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
+import { getRenderedBounds } from "../utils";
 
 export const useMouseInteractions = (
   items: ArtboardItem[],
@@ -10,7 +11,10 @@ export const useMouseInteractions = (
   zoom: number,
   snapToGrid: boolean,
   snapToGridPoint: (value: number) => number,
-  autoNestStickers: boolean
+  autoNestStickers: boolean,
+  canvasWidth: number,
+  marginSize: number,
+  spacing: number
 ) => {
   const [isResizing, setIsResizing] = useState(false);
   const [resizeStart, setResizeStart] = useState<{
@@ -41,6 +45,46 @@ export const useMouseInteractions = (
     if (warnedMaxHeightRef.current) return;
     toast.error("Max sheet height of 1200 inches reached.");
     warnedMaxHeightRef.current = true;
+  };
+
+  const getMinSpacingIn = () => {
+    const tightGapIn = 2 / 96;
+    return autoNestStickers
+      ? Math.min(Math.max(spacing, 0), tightGapIn)
+      : Math.max(spacing, 0.08);
+  };
+
+  const resolveCollisionPosY = (all: ArtboardItem[], candidate: ArtboardItem) => {
+    const minSpacingIn = getMinSpacingIn();
+    const clearance = minSpacingIn + CANVAS.SELECTION_BUFFER_IN;
+    const others = all.filter((it) => it.id !== candidate.id);
+
+    const maxIterations = 40;
+    let y = candidate.posY;
+
+    for (let i = 0; i < maxIterations; i++) {
+      const candBounds = getRenderedBounds({ ...candidate, posY: y }, canvasWidth, marginSize);
+      let nextY: number | null = null;
+
+      for (const it of others) {
+        const b = getRenderedBounds(it, canvasWidth, marginSize);
+        const overlaps =
+          candBounds.left < b.right + clearance &&
+          candBounds.right + clearance > b.left &&
+          candBounds.top < b.bottom + clearance &&
+          candBounds.bottom + clearance > b.top;
+
+        if (overlaps) {
+          nextY = Math.max(nextY ?? 0, b.bottom + clearance);
+        }
+      }
+
+      if (nextY == null) return y;
+      y = nextY;
+      if (y > MAX_SHEET_HEIGHT_IN) break;
+    }
+
+    return y;
   };
 
   const handleResizeStart = (e: React.MouseEvent, itemId: number) => {
@@ -99,7 +143,7 @@ export const useMouseInteractions = (
             clampedHeight !== finalHeight || item.posY > maxPosY;
           if (didClamp) maybeToastMaxHeight();
 
-          return prevItems.map((it) =>
+          const updated = prevItems.map((it) =>
             it.id === selectedId
               ? {
                   ...it,
@@ -108,6 +152,12 @@ export const useMouseInteractions = (
                   posY: Math.min(it.posY, maxPosY),
                 }
               : it,
+          );
+          const nextItem = updated.find((it) => it.id === selectedId);
+          if (!nextItem) return updated;
+          const resolvedY = resolveCollisionPosY(updated, nextItem);
+          return updated.map((it) =>
+            it.id === selectedId ? { ...it, posY: Math.min(resolvedY, maxPosY) } : it,
           );
         } else {
           const copies = typeof item.copies === "number" && item.copies > 0 ? item.copies : 1;
@@ -124,7 +174,7 @@ export const useMouseInteractions = (
             clampedHeight !== newHeight || item.posY > maxPosY;
           if (didClamp) maybeToastMaxHeight();
 
-          return prevItems.map((it) =>
+          const updated = prevItems.map((it) =>
             it.id === selectedId
               ? {
                   ...it,
@@ -133,6 +183,12 @@ export const useMouseInteractions = (
                   posY: Math.min(it.posY, maxPosY),
                 }
               : it,
+          );
+          const nextItem = updated.find((it) => it.id === selectedId);
+          if (!nextItem) return updated;
+          const resolvedY = resolveCollisionPosY(updated, nextItem);
+          return updated.map((it) =>
+            it.id === selectedId ? { ...it, posY: Math.min(resolvedY, maxPosY) } : it,
           );
         }
       });
@@ -149,7 +205,7 @@ export const useMouseInteractions = (
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isResizing, resizeStart, selectedId, items, zoom, setItems]);
+  }, [isResizing, resizeStart, selectedId, items, zoom, setItems, canvasWidth, marginSize, spacing, autoNestStickers]);
 
   useEffect(() => {
     if (!isDraggingItem || !dragStart || selectedId == null) return;
@@ -230,8 +286,14 @@ export const useMouseInteractions = (
           if (finalY !== rawFinalY && !warnedMaxHeightRef.current) {
             maybeToastMaxHeight();
           }
-          return prev.map((it) =>
+          const updated = prev.map((it) =>
             it.id === selectedId ? { ...it, posX: finalX, posY: finalY } : it
+          );
+          const nextItem = updated.find((it) => it.id === selectedId);
+          if (!nextItem) return updated;
+          const resolvedY = resolveCollisionPosY(updated, nextItem);
+          return updated.map((it) =>
+            it.id === selectedId ? { ...it, posY: Math.min(resolvedY, maxPosY) } : it
           );
         }
       });
@@ -248,7 +310,7 @@ export const useMouseInteractions = (
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDraggingItem, dragStart, selectedId, zoom, snapToGrid, snapToGridPoint, setItems]);
+  }, [isDraggingItem, dragStart, selectedId, zoom, snapToGrid, snapToGridPoint, setItems, canvasWidth, marginSize, spacing, autoNestStickers]);
 
   return {
     handleResizeStart,

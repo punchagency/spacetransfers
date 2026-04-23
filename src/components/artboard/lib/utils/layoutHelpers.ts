@@ -1,3 +1,5 @@
+import { CANVAS } from "../../../../config/artboard.config";
+
 export interface LayoutItem {
   id: number;
   widthIn: number;
@@ -8,15 +10,63 @@ export interface LayoutItem {
   copies?: number;
 }
 
-const getGroupSize = (width: number, height: number, copies: number = 1, gap: number = 0.05) => {
-  if (copies <= 1) return { width, height };
-  const cols = Math.ceil(Math.sqrt(copies));
-  const rows = Math.ceil(copies / cols);
+export const getRenderedGroupSize = (
+  widthIn: number,
+  heightIn: number,
+  copies: number = 1,
+  maxAvailableWidthIn: number,
+  gapIn: number = CANVAS.GRID_GAP_IN
+) => {
+  const w = Math.max(0, Number(widthIn || 0));
+  const h = Math.max(0, Number(heightIn || 0));
+  const c = Math.max(1, Number(copies || 1));
+
+  if (c <= 1) return { width: w, height: h, cols: 1, rows: 1 };
+
+  const capacityCols = Math.max(
+    1,
+    Math.floor((maxAvailableWidthIn + gapIn) / Math.max(1e-6, w + gapIn))
+  );
+  const cols = Math.max(1, Math.min(c, capacityCols));
+  const rows = Math.max(1, Math.ceil(c / capacityCols));
+
+  const widthRaw = cols * w + (cols - 1) * gapIn;
+  const width = Math.min(widthRaw, Math.max(0, maxAvailableWidthIn));
+  const height = rows * h + (rows - 1) * gapIn;
+
+  return { width, height, cols, rows };
+};
+
+export const getRenderedBounds = (
+  item: LayoutItem,
+  canvasWidthIn: number,
+  marginIn: number
+) => {
+  const effectiveMargin = Math.max(0, Number(marginIn || 0));
+  const maxAvailableWidth = Math.max(0, canvasWidthIn - 2 * effectiveMargin);
+  const copies = typeof item.copies === "number" && item.copies > 0 ? item.copies : 1;
+  const group = getRenderedGroupSize(item.widthIn, item.heightIn, copies, maxAvailableWidth);
+
+  const centeredLeft = effectiveMargin + (maxAvailableWidth - group.width) / 2;
+  const rightBoundLeft = canvasWidthIn - effectiveMargin - group.width;
+  const left =
+    copies > 1
+      ? Math.max(effectiveMargin, Math.min(centeredLeft, rightBoundLeft))
+      : Math.max(effectiveMargin, item.posX);
+
+  const MAX_SHEET_HEIGHT_IN = 1200;
+  const bottomLimitTop = MAX_SHEET_HEIGHT_IN - group.height;
+  const top = Math.min(item.posY, bottomLimitTop);
+
   return {
-    width: cols * width + (cols - 1) * gap,
-    height: rows * height + (rows - 1) * gap
+    left,
+    top,
+    right: left + group.width,
+    bottom: top + group.height,
+    width: group.width,
+    height: group.height,
   };
-};      
+};
 
 export const calculateGridLayout = (
   items: LayoutItem[],
@@ -25,26 +75,32 @@ export const calculateGridLayout = (
   autoNestStickers: boolean,
   margin: number = 0.15
 ): LayoutItem[] => {
-  const selectionBuffer = 0.084; // Room for blue selection ring (4px) to stay within margin
+  const selectionBuffer = CANVAS.SELECTION_BUFFER_IN;
   const tightGapIn = 2 / 96;
   const minSpacing = autoNestStickers
     ? Math.min(Math.max(spacing, 0), tightGapIn)
     : Math.max(spacing, 0.08);
   const maxWidth = canvasWidth - margin * 2;
 
-  const enriched = items.map((it) => {
-    const { width, height } = getGroupSize(it.widthIn, it.heightIn, it.copies);
+  const enriched = items.map((it, idx) => {
+    const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
+    const { width, height } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
     const packedWidth = width + selectionBuffer;
     const packedHeight = height + selectionBuffer;
-    return {  
+    return {
       it,
+      idx,
+      isGroup: copies > 1,
       packedWidth,
       packedHeight,
       footprint: packedWidth * packedHeight,
     };
   });
 
-  const ordered = enriched;
+  const ordered = [
+    ...enriched.filter((e) => e.isGroup).sort((a, b) => a.idx - b.idx),
+    ...enriched.filter((e) => !e.isGroup).sort((a, b) => a.idx - b.idx),
+  ];
 
   const placed: Array<{
     it: any;
@@ -127,7 +183,7 @@ export const calculateDropPosition = (
   spacing: number = 0.5,
   margin: number = 0.15
 ): { targetX: number; targetY: number } => {
-  const selectionBuffer = 0.084;
+  const selectionBuffer = CANVAS.SELECTION_BUFFER_IN;
   const minSpacing = Math.max(spacing, 0.3);
   const maxWidth = canvasWidth - margin * 2;
   const allItems = [...items, newItem];
@@ -137,7 +193,8 @@ export const calculateDropPosition = (
   let currentRowWidth = 0;
 
   allItems.forEach((it) => {
-    const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
+    const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
+    const { width } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
     const itemWidth = width + selectionBuffer + minSpacing;
     if (currentRowWidth + itemWidth > maxWidth && currentRow.length > 0) {
       rows.push(currentRow);
@@ -156,12 +213,14 @@ export const calculateDropPosition = (
 
   for (const row of rows) {
     const rowWidth = row.reduce((sum, it, idx) => {
-      const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
+      const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
+      const { width } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
       return sum + (width + selectionBuffer) + (idx > 0 ? minSpacing : 0);
     }, 0);
     let currentX = margin + (maxWidth - rowWidth) / 2;
     const maxHeight = Math.max(...row.map((it) => {
-      const { height } = getGroupSize(it.widthIn, it.heightIn, it.copies);
+      const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
+      const { height } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
       return height + selectionBuffer;
     }));
 
@@ -171,7 +230,8 @@ export const calculateDropPosition = (
         found = true;
         break;
       }
-      const { width } = getGroupSize(it.widthIn, it.heightIn, it.copies);
+      const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
+      const { width } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
       currentX += width + selectionBuffer + minSpacing;
     }
 

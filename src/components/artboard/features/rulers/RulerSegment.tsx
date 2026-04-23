@@ -18,14 +18,7 @@ export default function RulerSegment({
     size: pos === base / 2 ? "large" : pos === base / 4 || pos === (3 * base) / 4 ? "medium" : "small",
   })).filter((t) => t.pos <= maxFraction + 1e-6);
 
-  const labelPosClass = vertical
-    ? label >= 1000
-      ? // Thundreds-thousands labels can spill past the ruler edge.
-        "top-1 left-1 pl-1"
-      : label >= 100
-        ? "top-1 left-2 pl-1"
-        : "top-1 left-4"
-    : "top-4 left-1";
+  const labelPosClass = "top-4 left-1";
 
   return (
     <div
@@ -61,13 +54,7 @@ export default function RulerSegment({
             transform: "translateX(-0.5px)",
           };
 
-        return (
-          <div
-            key={tick.pos}
-            className="absolute bg-gray-400"
-            style={style}
-          />
-        );
+        return <div key={tick.pos} className="absolute bg-gray-400" style={style} />;
       })}
     </div>
   );

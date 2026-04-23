@@ -12,6 +12,7 @@ import OrderDetailsModal from "./modals/OrderDetailsModal";
 import CheckoutModal from "./modals/CheckoutModal";
 import UnsavedChangesModal from "./modals/UnsavedChangesModal";
 import ConfirmModal from "./modals/ConfirmModal";
+import UnderUtilizedSheetModal from "./modals/UnderUtilizedSheetModal";
 import { captureArtboard } from "./artboard/lib/utils";
 import { apiFetch } from "../lib/utils/api";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
@@ -190,6 +191,10 @@ export default function Editor() {
   }>(null);
   const [showClearArtboardConfirm, setShowClearArtboardConfirm] = useState(false);
   const [showUnderUtilizedCartConfirm, setShowUnderUtilizedCartConfirm] = useState(false);
+  const [underUtilizedMeta, setUnderUtilizedMeta] = useState<{
+    fullSheetPrice: number;
+    utilizationPct: number | null;
+  } | null>(null);
 
   const clearWorkspace = () => {
     setArtboardData({ items: [], counter: Date.now() });
@@ -566,6 +571,23 @@ export default function Editor() {
 
       setCartItems((prev) => [...prev, gangSheetItem]);
 
+      if (forceFullSheetPrice) {
+        const utilizationPct =
+          typeof headerInfo?.areaSf === "number" && fullSheetAreaSf > 0
+            ? (headerInfo.areaSf / fullSheetAreaSf) * 100
+            : null;
+
+        apiFetch("/customer/notifications/gangsheet-utilization-warning", {
+          method: "POST",
+          body: JSON.stringify({
+            fullSheetPrice,
+            sheetWidthIn: CANVAS.SHEET_WIDTH_IN,
+            sheetHeightIn: CANVAS.SHEET_HEIGHT_IN,
+            utilizationPct,
+          }),
+        }).catch((e) => console.warn("Failed to send utilization warning email", e));
+      }
+
       // Try to capture image in background
       try {
         const imageDataUrl = await captureArtboard();
@@ -651,11 +673,21 @@ export default function Editor() {
     const notFullyUtilized = usedHeight < CANVAS.SHEET_HEIGHT_IN - 0.01;
 
     if (notFullyUtilized) {
+      const fullSheetAreaSf =
+        (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
+        PRICING.SQUARE_INCHES_PER_SQ_FT;
+      const fullSheetPrice = +(fullSheetAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(2);
+      const utilizationPct =
+        typeof headerInfo?.areaSf === "number" && fullSheetAreaSf > 0
+          ? (headerInfo.areaSf / fullSheetAreaSf) * 100
+          : null;
+      setUnderUtilizedMeta({ fullSheetPrice, utilizationPct });
       setShowUnderUtilizedCartConfirm(true);
       return;
     }
 
     setShowUnderUtilizedCartConfirm(false);
+    setUnderUtilizedMeta(null);
     await addGangSheetToCartNow();
   };
 
@@ -867,17 +899,20 @@ export default function Editor() {
         }}
         onCancel={() => setShowClearArtboardConfirm(false)}
       />
-      <ConfirmModal
+      <UnderUtilizedSheetModal
         isOpen={showUnderUtilizedCartConfirm}
-        title="Unused Sheet Space"
-        message="Your 23.5 x 23.5 gang sheet is not fully utilized. Do you want to continue adding items, or add to cart anyway?"
-        confirmLabel="Add to Cart Anyway"
-        cancelLabel="Continue Adding Items"
+        sheetSizeLabel={`${CANVAS.SHEET_WIDTH_IN.toFixed(1)}" × ${CANVAS.SHEET_HEIGHT_IN.toFixed(1)}"`}
+        fullSheetAmount={underUtilizedMeta?.fullSheetPrice || 0}
+        utilizationPct={underUtilizedMeta?.utilizationPct ?? null}
         onConfirm={async () => {
           setShowUnderUtilizedCartConfirm(false);
+          setUnderUtilizedMeta(null);
           await addGangSheetToCartNow(true);
         }}
-        onCancel={() => setShowUnderUtilizedCartConfirm(false)}
+        onCancel={() => {
+          setShowUnderUtilizedCartConfirm(false);
+          setUnderUtilizedMeta(null);
+        }}
       />
       {cartWarning && (
         <div className="absolute mt-10 top-10 left-1/2 -translate-x-1/2 z-50">
