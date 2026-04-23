@@ -9,20 +9,81 @@ import {
 } from "react-icons/hi";
 import { BsArrowRight } from "react-icons/bs";
 import type { AuthFormProps } from "../../types/auth";
+import { apiFetch } from "../../utils/api";
+import toast from "react-hot-toast";
+import { SpaceLoader } from "../common/SpaceLoader";
  
 export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const [region, setRegion] = useState<"Northeast" | "Midwest" | "South" | "West">("West");
+  const [phone, setPhone] = useState("");
+  const [website, setWebsite] = useState("");
+  const [street, setStreet] = useState("");
+  const [city, setCity] = useState("");
+  const [stateProv, setStateProv] = useState("");
+  const [postalCode, setPostalCode] = useState("");
+  const [country, setCountry] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (email === "demo@spacetransfers.com" && password === "demo123") {
-      onLogin();
-      navigate("/dashboard");
-    } else {
-      alert("Invalid credentials. Use demo@spacetransfers.com / demo123");
+    setIsLoading(true);
+    try {
+      if (isSignIn) {
+        const response = await apiFetch("/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ email, password }),
+        });
+
+        if (response.user.role !== "PRINTER") {
+          throw new Error("Access denied. Printer account required.");
+        }
+
+        localStorage.setItem("printer_token", response.token);
+        localStorage.setItem("printer_user", JSON.stringify(response.user));
+        toast.success("Welcome back!");
+        onLogin();
+        navigate("/dashboard");
+      } else {
+        if (!fullName || !companyName || !email || !password || !phone || !region || !street || !city || !stateProv || !postalCode || !country) {
+          toast.error("Please fill in all fields");
+          setIsLoading(false);
+          return;
+        }
+
+        await apiFetch("/auth/register", {
+          method: "POST",
+          body: JSON.stringify({
+            name: fullName,
+            companyName,
+            email,
+            password,
+            phone,
+            website: website || undefined,
+            region,
+            address: {
+              street,
+              city,
+              state: stateProv,
+              postalCode,
+              country
+            },
+            role: "PRINTER"
+          }),
+        });
+
+        toast.success("Registration successful! Your account is pending approval.");
+        setIsSignIn(true); // Switch to sign in
+      }
+    } catch (error: any) {
+      toast.error(error.message || "Authentication failed");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -86,6 +147,8 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
                 </label>
                 <input
                   type="text"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
                   placeholder="John Davidson"
                   className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
                 />
@@ -97,9 +160,120 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
                 </label>
                 <input
                   type="text"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
                   placeholder="Premium DTF Solutions"
                   className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
                 />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                  Region
+                </label>
+                <select
+                  value={region}
+                  onChange={(e) => setRegion(e.target.value as any)}
+                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm text-left"
+                >
+                  <option value="Northeast">Northeast</option>
+                  <option value="Midwest">Midwest</option>
+                  <option value="South">South</option>
+                  <option value="West">West</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                  Phone
+                </label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="+1 (555) 123-4567"
+                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                  Website (optional)
+                </label>
+                <input
+                  type="text"
+                  value={website}
+                  onChange={(e) => setWebsite(e.target.value)}
+                  placeholder="https://example.com"
+                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                  Street Address
+                </label>
+                <input
+                  type="text"
+                  value={street}
+                  onChange={(e) => setStreet(e.target.value)}
+                  placeholder="123 Main St"
+                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                    City
+                  </label>
+                  <input
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder="Los Angeles"
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                    State
+                  </label>
+                  <input
+                    type="text"
+                    value={stateProv}
+                    onChange={(e) => setStateProv(e.target.value)}
+                    placeholder="CA"
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                    Postal Code
+                  </label>
+                  <input
+                    type="text"
+                    value={postalCode}
+                    onChange={(e) => setPostalCode(e.target.value)}
+                    placeholder="90001"
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs text-left font-semibold text-slate-700 ml-1 block">
+                    Country
+                  </label>
+                  <input
+                    type="text"
+                    value={country}
+                    onChange={(e) => setCountry(e.target.value)}
+                    placeholder="United States"
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400 text-left"
+                  />
+                </div>
               </div>
             </>
           )}
@@ -182,10 +356,16 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
 
           <button
             type="submit"
-            className="w-full bg-[#3B82F6] hover:bg-blue-600 text-white font-semibold py-3 px-4 rounded-xl shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 transition-all transform active:scale-[0.98]"
+            disabled={isLoading}
+            className={`w-full py-3 px-4 rounded-xl text-white font-semibold shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 transition-all transform active:scale-[0.98] ${
+              isLoading 
+                ? "bg-blue-400 cursor-not-allowed" 
+                : "bg-[#3B82F6] hover:bg-blue-600"
+            }`}
           >
-            <span>{isSignIn ? "Sign In" : "Create Account"}</span>
-            <BsArrowRight className="text-lg" />
+            {isLoading ? <SpaceLoader size={18} layout="inline" /> : null}
+            <span>{isLoading ? "Please Wait..." : isSignIn ? "Sign In" : "Create Account"}</span>
+            {!isLoading && <BsArrowRight className="text-lg" />}
           </button>
         </form>
 

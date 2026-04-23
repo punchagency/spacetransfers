@@ -1,11 +1,24 @@
 import { FiUser, FiMail, FiPhone, FiMapPin } from "react-icons/fi";
-import type { PrintJob } from "../../../types/printQueue";
 
 interface CustomerInformationProps {
-  job: PrintJob;
+  customer: {
+    name: string;
+    email: string | null;
+    phone: string | null;
+    region: string | null;
+  };
+  shippingAddress:
+    | {
+        street?: string;
+        city?: string;
+        state?: string;
+        postalCode?: string;
+        country?: string;
+      }
+    | null;
 }
 
-export const CustomerInformation = ({ job }: CustomerInformationProps) => {
+export const CustomerInformation = ({ customer, shippingAddress }: CustomerInformationProps) => {
   return (
     <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
       <h3 className="text-base font-bold text-gray-900 mb-3">
@@ -19,7 +32,7 @@ export const CustomerInformation = ({ job }: CustomerInformationProps) => {
           <div>
             <div className="text-[10px] text-gray-500">Customer Name</div>
             <div className="text-xs font-medium text-gray-900">
-              {job.customer}
+              {customer.name}
             </div>
           </div>
         </div>
@@ -30,7 +43,7 @@ export const CustomerInformation = ({ job }: CustomerInformationProps) => {
           <div>
             <div className="text-[10px] text-gray-500">Email</div>
             <div className="text-xs font-medium text-gray-900">
-              contact@sarahjohnson.com
+              {customer.email || "N/A"}
             </div>
           </div>
         </div>
@@ -41,7 +54,7 @@ export const CustomerInformation = ({ job }: CustomerInformationProps) => {
           <div>
             <div className="text-[10px] text-gray-500">Phone</div>
             <div className="text-xs font-medium text-gray-900">
-              +1 (555) 123-4567
+              {customer.phone || "N/A"}
             </div>
           </div>
         </div>
@@ -52,9 +65,18 @@ export const CustomerInformation = ({ job }: CustomerInformationProps) => {
           <div>
             <div className="text-[10px] text-gray-500">Shipping Address</div>
             <div className="text-xs font-medium text-gray-900">
-              1234 Market Street, Suite 500,
-              <br />
-              San Francisco, CA 94102
+              {shippingAddress ? (
+                <>
+                  <div>{shippingAddress.street || "N/A"}</div>
+                  <div>
+                    {(shippingAddress.city || "N/A")}, {(shippingAddress.state || "N/A")}{" "}
+                    {shippingAddress.postalCode || ""}
+                  </div>
+                  <div>{shippingAddress.country || "N/A"}</div>
+                </>
+              ) : (
+                "N/A"
+              )}
             </div>
           </div>
         </div>
@@ -62,7 +84,7 @@ export const CustomerInformation = ({ job }: CustomerInformationProps) => {
       <div className="mt-3 pt-3 border-t border-gray-100 flex justify-between items-center">
         <span className="text-[10px] text-gray-500">Region</span>
         <span className="text-[10px] font-medium bg-gray-100 px-2 py-0.5 rounded text-gray-600">
-          West Coast
+          {customer.region || "N/A"}
         </span>
       </div>
     </div>

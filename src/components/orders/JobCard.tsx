@@ -12,9 +12,11 @@ interface JobCardProps {
   job: Order;
   selected: boolean;
   onToggle: (id: string) => void;
+  onPrimaryAction?: (id: string, status: Order["status"]) => void;
+  onSecondaryAction?: (id: string) => void;
 }
 
-export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
+export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryAction }: JobCardProps) => {
   const getStatusBadgeStyles = (status: string) => {
     switch (status) {
       case "Pending Review":
@@ -35,8 +37,11 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
       case "Pending Review":
         return (
           <button
-            onClick={(e) => e.stopPropagation()}
-            className="w-full sm:w-auto px-4 py-2 bg-blue-600 text-white rounded-2xl text-sm font-medium hover:bg-blue-700 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrimaryAction?.(job.id, job.status);
+            }}
+            className="w-full sm:w-auto px-4 py-2 bg-[#3C83F6] text-white rounded-2xl text-sm font-medium hover:bg-[#2F74E6] transition-colors"
           >
             Accept & Start
           </button>
@@ -44,16 +49,22 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
       case "In Progress":
         return (
           <button
-            onClick={(e) => e.stopPropagation()}
-            className="w-full sm:w-auto px-4 py-2 bg-green-600 text-white rounded-2xl text-sm font-medium hover:bg-green-700 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrimaryAction?.(job.id, job.status);
+            }}
+            className="w-full sm:w-auto px-4 py-2 bg-[#BB4D00] text-white rounded-2xl text-sm font-medium hover:bg-[#A74400] transition-colors"
           >
-            Mark Complete
+            Pending Review
           </button>
         );
       case "Ready":
         return (
           <button
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrimaryAction?.(job.id, job.status);
+            }}
             className="w-full sm:w-auto px-4 py-2 bg-blue-600 text-white rounded-2xl text-sm font-medium hover:bg-blue-700 transition-colors"
           >
             Start Packaging
@@ -62,7 +73,10 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
       case "Completed":
         return (
           <button
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrimaryAction?.(job.id, job.status);
+            }}
             className="w-full sm:w-auto px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium hover:bg-gray-50 transition-colors"
           >
             View Details
@@ -78,7 +92,7 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
 
   return (
     <div
-      onClick={() => onToggle(job.id)}
+      onClick={() => onSecondaryAction?.(job.id)}
       className={`bg-white rounded-xl p-4 sm:p-6 border transition-all cursor-pointer ${selected ? "border-blue-500 ring-1 ring-blue-500" : "border-gray-200 hover:border-gray-300"}`}
     >
       <div className="flex flex-col lg:flex-row gap-6 items-start lg:items-center">
@@ -96,9 +110,9 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
 
           <div className="relative w-20 h-20 bg-gray-100 rounded-2xl flex items-center justify-center overflow-hidden flex-shrink-0">
             <img
-              src="/space.svg"
+              src={job.thumbnail || "/space.svg"}
               alt="thumbnail"
-              className="w-12 h-12 opacity-80"
+              className={job.thumbnail ? "w-full h-full object-cover" : "w-12 h-12 opacity-80"}
             />
             {job.hasWarning && (
               <div className="absolute top-1 right-1">
@@ -110,7 +124,7 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
           </div>
 
           <div className="flex flex-col items-start gap-1 pt-1">
-            <span className="font-bold text-gray-900">{job.id}</span>
+            <span className="font-bold text-gray-900">{job.displayId || job.id}</span>
             {job.isUrgent && (
               <span className="bg-red-50 text-red-600 text-[10px] font-bold px-1.5 py-0.5 rounded-xl border border-red-100 uppercase tracking-wide">
                 Urgent
@@ -174,7 +188,10 @@ export const JobCard = ({ job, selected, onToggle }: JobCardProps) => {
           <div className="flex flex-col items-center gap-2">
             {renderActionButton(job.status)}
             <button
-              onClick={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSecondaryAction?.(job.id);
+              }}
               className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 font-medium"
             >
               Details <FiExternalLink className="w-3 h-3" />

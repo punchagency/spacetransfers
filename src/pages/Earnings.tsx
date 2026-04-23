@@ -223,10 +223,10 @@ const Earnings = () => {
       {/* Header */}
       <div className="sticky top-0 z-20 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 flex justify-between items-start  ">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">
+          <h1 className="text-3xl font-bold text-gray-900">
             Earnings & Payouts
           </h1>
-          <p className="text-gray-500 mt-1">
+          <p className="text2-gray-500 mt-1">
             Track your earnings and manage payment history
           </p>
         </div>

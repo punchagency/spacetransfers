@@ -2,10 +2,13 @@ export type OrderStatus =
   | "Pending Review"
   | "In Progress"
   | "Ready"
-  | "Completed";
+  | "Completed"
+  | "Cancelled";
 
 export interface Order {
   id: string;
+  actualId?: string;
+  displayId?: string;
   customerName: string;
   isUrgent: boolean;
   hasWarning: boolean;

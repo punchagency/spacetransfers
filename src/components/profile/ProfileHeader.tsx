@@ -1,7 +1,5 @@
 import {
-  FiBriefcase,
   FiCalendar,
-  FiCheckCircle,
   FiClock,
 } from "react-icons/fi";
 import { BsBoxSeam } from "react-icons/bs";
@@ -77,4 +75,3 @@ export const ProfileHeader = () => {
     </div>
   );
 };
-

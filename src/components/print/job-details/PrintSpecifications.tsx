@@ -3,9 +3,11 @@ import type { PrintJob } from "../../../types/printQueue";
 
 interface PrintSpecificationsProps {
   job: PrintJob;
+  itemsCount?: number;
+  exportDpi?: number;
 }
 
-export const PrintSpecifications = ({ job }: PrintSpecificationsProps) => {
+export const PrintSpecifications = ({ job, itemsCount, exportDpi }: PrintSpecificationsProps) => {
   return (
     <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
       <h3 className="text-base font-bold text-gray-900 mb-3">
@@ -28,8 +30,10 @@ export const PrintSpecifications = ({ job }: PrintSpecificationsProps) => {
             <FiFileText className="w-3.5 h-3.5" />
           </div>
           <div>
-            <div className="text-[10px] text-gray-500">Quantity</div>
-            <div className="text-sm font-bold text-gray-900">48 sheets</div>
+            <div className="text-[10px] text-gray-500">Items</div>
+            <div className="text-sm font-bold text-gray-900">
+              {typeof itemsCount === "number" ? itemsCount : "—"}
+            </div>
           </div>
         </div>
         <div className="bg-gray-50 p-2.5 rounded-lg flex items-center gap-2">
@@ -47,7 +51,7 @@ export const PrintSpecifications = ({ job }: PrintSpecificationsProps) => {
         <div className="flex justify-between py-1.5 border-b border-gray-50 text-xs">
           <span className="text-gray-500">Resolution</span>
           <span className="font-medium text-gray-900">
-            300 DPI - High Quality
+            {exportDpi ? `${exportDpi} DPI` : "—"}
           </span>
         </div>
         <div className="flex justify-between py-1.5 border-b border-gray-50 text-xs">
@@ -60,7 +64,7 @@ export const PrintSpecifications = ({ job }: PrintSpecificationsProps) => {
         </div>
         <div className="flex justify-between py-1.5 border-b border-gray-50 text-xs">
           <span className="text-gray-500">Color Profile</span>
-          <span className="font-medium text-gray-900">Full CMYK</span>
+          <span className="font-medium text-gray-900">sRGB</span>
         </div>
       </div>
     </div>

@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FiHelpCircle, FiEye } from "react-icons/fi";
+import { useSearchParams } from "react-router-dom";
+import { SpaceLoader } from "../components/common/SpaceLoader";
 import { SearchInput } from "../components/common/SearchInput";
 import { GenericTable } from "../components/common/GenericTable";
 import { JobDetailsModal } from "../components/print/JobDetailsModal";
-import { printQueueData, printQueueTabs } from "../data/printQueue";
 import type { PrintJob } from "../types/printQueue";
+import { apiFetch } from "../utils/api";
 
 export const getTabActiveStyles = (label: string) => {
   switch (label) {
@@ -61,9 +63,12 @@ export const getTabActiveStyles = (label: string) => {
 };
 
 const PrintQueue = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState("All Jobs");
   const [selectedJob, setSelectedJob] = useState<PrintJob | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [jobs, setJobs] = useState<PrintJob[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const handleRowClick = (job: PrintJob) => {
     setSelectedJob(job);
@@ -94,7 +99,7 @@ const PrintQueue = () => {
       header: "Order ID",
       key: "id" as keyof PrintJob,
       render: (job: PrintJob) => (
-        <span className="font-medium text-gray-900">{job.id}</span>
+        <span className="font-medium text-gray-900">{job.orderId}</span>
       ),
     },
     {
@@ -136,10 +141,87 @@ const PrintQueue = () => {
     },
   ];
 
-  const filteredData = printQueueData.filter((job) => {
-    if (activeTab === "All Jobs") return true;
-    return job.status === activeTab;
-  });
+  const fetchQueue = async () => {
+    setLoading(true);
+    try {
+      const r = await apiFetch("/printer/print-queue");
+      const raw = Array.isArray(r?.jobs) ? r.jobs : [];
+      const mapped: PrintJob[] = raw.map((j: any) => {
+          const backendStatus = String(j.status || "");
+          const priority = String(j.priority || "");
+          const status =
+            priority === "URGENT"
+              ? "Urgent"
+              : backendStatus === "PENDING"
+              ? "Pending"
+              : backendStatus === "PROCESSING"
+              ? "Processing"
+              : backendStatus === "PRINTING"
+              ? "Printing"
+              : backendStatus === "QUALITY_CHECK"
+              ? "Quality Check"
+              : backendStatus === "COMPLETED"
+              ? "Completed"
+              : "Pending";
+
+          const id = String(j.id || "");
+          const displayId = id ? `#ORD-${id.slice(-6).toUpperCase()}` : "#ORD";
+
+          return {
+            id,
+            orderId: displayId,
+            customer: String(j.customer || ""),
+            sheetSize: String(j.sheetSize || ""),
+            orderDescription: String(j.orderDescription || ""),
+            status: status as any,
+            deadline: String(j.deadline || ""),
+            priority: priority === "URGENT" ? ("Urgent" as any) : undefined,
+          };
+      });
+      setJobs(mapped);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchQueue().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const id = searchParams.get("jobId");
+    if (!id) return;
+    const found = jobs.find((j) => j.id === id);
+    if (found) {
+      setSelectedJob(found);
+      setIsModalOpen(true);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("jobId");
+        return next;
+      });
+    }
+  }, [jobs, searchParams, setSearchParams]);
+
+  const filteredData = useMemo(() => {
+    return jobs.filter((job) => {
+      if (activeTab === "All Jobs") return true;
+      return job.status === activeTab;
+    });
+  }, [jobs, activeTab]);
+
+  const tabs = useMemo(() => {
+    const counts = {
+      "All Jobs": jobs.length,
+      Pending: jobs.filter((j) => j.status === "Pending").length,
+      Urgent: jobs.filter((j) => j.status === "Urgent").length,
+      Processing: jobs.filter((j) => j.status === "Processing").length,
+      Printing: jobs.filter((j) => j.status === "Printing").length,
+      "Quality Check": jobs.filter((j) => j.status === "Quality Check").length,
+      Completed: jobs.filter((j) => j.status === "Completed").length,
+    };
+    return Object.entries(counts).map(([label, count]) => ({ label, count }));
+  }, [jobs]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -158,7 +240,7 @@ const PrintQueue = () => {
           {/* Tabs */}
           <div className="border-b border-gray-200">
             <div className="flex items-center gap-8 overflow-x-auto">
-              {printQueueTabs.map((tab) => {
+              {tabs.map((tab) => {
                 const styles = getTabActiveStyles(tab.label);
                 const isActive = activeTab === tab.label;
                 return (
@@ -208,18 +290,25 @@ const PrintQueue = () => {
       </div>
 
       {/* Table Card */}
-      <GenericTable<PrintJob>
-        title="Recent Orders"
-        data={filteredData}
-        columns={columns}
-        itemsPerPage={10}
-        onRowClick={handleRowClick}
-      />
+      {loading ? (
+        <div className="bg-white border border-gray-200 rounded-xl p-10">
+          <SpaceLoader label="Loading print queue…" />
+        </div>
+      ) : (
+        <GenericTable<PrintJob>
+          title="Recent Orders"
+          data={filteredData}
+          columns={columns}
+          itemsPerPage={10}
+          onRowClick={handleRowClick}
+        />
+      )}
 
       <JobDetailsModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         job={selectedJob}
+        onJobUpdated={() => void fetchQueue()}
       />
     </div>
   );

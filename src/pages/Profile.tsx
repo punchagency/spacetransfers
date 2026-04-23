@@ -10,7 +10,7 @@ const Profile = () => {
   return (
     <div className="flex flex-col gap-8">
       <div className="sticky top-0 z-20 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 border-b border-gray-200">
-        <h1 className="text-2xl font-bold text-gray-900">Profile</h1>
+        <h1 className="text-3xl font-bold text-gray-900">Profile</h1>
         <p className="text-gray-500 mt-1">
           Manage your account information and business details
         </p>

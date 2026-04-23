@@ -1,5 +1,3 @@
-import { Asset } from "../../../data/assets";
-
 interface AssetStatsBarProps {
   selectedCount: number;
   totalSize: string;

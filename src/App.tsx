@@ -3,17 +3,17 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
 import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
+import OrderDetails from "./pages/OrderDetails";
 import PrintQueue from "./pages/PrintQueue";
 import Earnings from "./pages/Earnings";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import { DashboardLayout } from "./components/layout/DashboardLayout";
+import { Toaster } from "react-hot-toast";
 import "./App.css";
 
 function App() {
-  // Simple auth state for demonstration
-  // In a real app, you'd check localStorage or an auth provider
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem("printer_token"));
 
   const handleLogin = () => {
     setIsAuthenticated(true);
@@ -21,6 +21,7 @@ function App() {
 
   return (
     <BrowserRouter>
+      <Toaster position="top-right" />
       <Routes>
         <Route
           path="/auth"
@@ -44,6 +45,7 @@ function App() {
         >
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/orders" element={<Orders />} />
+          <Route path="/orders/:jobId" element={<OrderDetails />} />
           <Route path="/print-queue" element={<PrintQueue />} />
           <Route path="/earnings" element={<Earnings />} />
           <Route path="/profile" element={<Profile />} />

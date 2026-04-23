@@ -5,7 +5,14 @@ export interface DashboardStatCard {
   trendUp: boolean;
 }
 
-export type DashboardJobStatus = "Urgent" | "Pending" | "Processing";
+export type DashboardJobStatus =
+  | "Urgent"
+  | "Pending"
+  | "Processing"
+  | "Printing"
+  | "Quality Check"
+  | "Completed"
+  | "Cancelled";
 
 export interface DashboardJob {
   id: string;
@@ -13,5 +20,6 @@ export interface DashboardJob {
   order: string;
   deadline: string;
   status: DashboardJobStatus;
+  isUrgent?: boolean;
+  createdAt?: string | null;
 }
-

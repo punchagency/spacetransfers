@@ -42,7 +42,8 @@ export const Sidebar = () => {
               ${
                 location.pathname === path ||
                 (path === "/orders" &&
-                  location.pathname.startsWith("/dashboard/orders")) ||
+                  (location.pathname.startsWith("/orders") ||
+                    location.pathname.startsWith("/dashboard/orders"))) ||
                 (path === "/fulfilment-partners" &&
                   location.pathname.startsWith(
                     "/dashboard/fulfilment-partners",

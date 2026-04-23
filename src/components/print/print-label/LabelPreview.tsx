@@ -1,4 +1,4 @@
-import type { PrintJob } from "../../../data/printQueue";
+import type { PrintJob } from "../../../types/printQueue";
 
 interface LabelPreviewProps {
   job: PrintJob;
