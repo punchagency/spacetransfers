@@ -9,12 +9,12 @@ export const computeAlphaCropRegion = async (
   filePath: string,
   { alphaThreshold, maxProbe }: AlphaCropOptions,
 ): Promise<{ left: number; top: number; width: number; height: number } | null> => {
-  const meta = await sharp(filePath).metadata();
+  const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
   const originalWidth = meta.width || 0;
   const originalHeight = meta.height || 0;
   if (!originalWidth || !originalHeight) return null;
 
-  const probe = await sharp(filePath)
+  const probe = await sharp(filePath, { limitInputPixels: false })
     .ensureAlpha()
     .resize({
       width: Math.min(originalWidth, maxProbe),
@@ -66,7 +66,7 @@ export const verifyTightAlphaCrop = async (
   filePath: string,
   alphaThreshold: number,
 ): Promise<boolean> => {
-  const img = await sharp(filePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const img = await sharp(filePath, { limitInputPixels: false }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const w = img.info.width;
   const h = img.info.height;
   const buf = img.data;
@@ -97,10 +97,10 @@ export const alphaTrimToFile = async (
 ) => {
   const region = await computeAlphaCropRegion(inputPath, options);
   if (!region) {
-    await sharp(inputPath).ensureAlpha().png().toFile(outputPath);
+    await sharp(inputPath, { limitInputPixels: false }).ensureAlpha().png().toFile(outputPath);
     return;
   }
-  await sharp(inputPath).ensureAlpha().extract(region).png().toFile(outputPath);
+  await sharp(inputPath, { limitInputPixels: false }).ensureAlpha().extract(region).png().toFile(outputPath);
 
   const ok = await verifyTightAlphaCrop(outputPath, options.alphaThreshold);
   if (!ok) {
@@ -110,8 +110,8 @@ export const alphaTrimToFile = async (
     });
     if (secondRegion) {
       const tmp = `${outputPath}.tmp.png`;
-      await sharp(outputPath).ensureAlpha().extract(secondRegion).png().toFile(tmp);
-      await sharp(tmp).png().toFile(outputPath);
+      await sharp(outputPath, { limitInputPixels: false }).ensureAlpha().extract(secondRegion).png().toFile(tmp);
+      await sharp(tmp, { limitInputPixels: false }).png().toFile(outputPath);
     }
   }
 };

@@ -33,6 +33,7 @@ export interface IUser extends Document {
   resetPasswordTokenHash?: string | null;
   resetPasswordExpiresAt?: Date | null;
   artboardDraft?: any;
+  cart?: any[];
   settings: {
     profile?: {
       bio?: string;

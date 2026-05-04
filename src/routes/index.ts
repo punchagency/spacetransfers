@@ -5,9 +5,11 @@ import customerRoutes from "./customer.routes.js";
 import printerRoutes from "./printer.routes.js";
 import adminRoutes from "./admin.routes.js";
 import orderRoutes from "./order.routes.js";
+import healthRoutes from "./health.routes.js";
 
 const router = express.Router();
 
+router.use("/health", healthRoutes);
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
 router.use("/customer", customerRoutes);

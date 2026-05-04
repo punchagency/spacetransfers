@@ -52,6 +52,7 @@ export interface IStatusTimeline {
 
 export interface IOrder extends Document {
   user: mongoose.Types.ObjectId;
+  displayId?: string;
   items: IOrderItem[];
   customer: {
     firstName: string;
@@ -181,6 +182,9 @@ const orderSchema = new Schema<IOrder>(
       type: Schema.Types.ObjectId,
       ref: "User",
       required: true
+    },
+    displayId: {
+      type: String
     },
     items: {
       type: [orderItemSchema],
@@ -348,6 +352,7 @@ orderSchema.post("save", function (doc: any) {
 });
 
 orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ displayId: 1 }, { unique: true, sparse: true });
 orderSchema.index({ assignedPrinter: 1, createdAt: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
