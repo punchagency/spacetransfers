@@ -14,6 +14,7 @@ import { GangsheetExport } from "../models/gangsheetExport.model.js";
 import { GangsheetExportAudit } from "../models/gangsheetExportAudit.model.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
+import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -102,6 +103,16 @@ const computeGangsheetFaceThumbnail = ({
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
+    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
+    const partnerPricing = (printer as any)?.settings?.pricing || {};
+    const basePriceForOrder = (order: any) =>
+      computePartnerCostBreakdown({
+        items: Array.isArray(order?.items) ? order.items : [],
+        partnerPricing,
+        priority: order?.priority,
+        adjustments: Array.isArray(order?.pricing?.adjustments) ? order.pricing.adjustments : [],
+      }).subtotal;
+
     const now = new Date();
     const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
@@ -111,16 +122,18 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     const yesterdayEnd = new Date(todayStart);
     yesterdayEnd.setMilliseconds(-1);
 
-    const printerOrders = await Order.find({ 
+    const printerOrders = await Order.find({
       assignedPrinter: printerId,
       updatedAt: { $gte: yesterdayStart }
-    });
+    })
+      .select("displayId status updatedAt createdAt items pricing.adjustments priority customer")
+      .lean();
 
     const todayCompleted = printerOrders.filter(o => o.status === "COMPLETED" && o.updatedAt >= todayStart);
-    const todayEarnings = todayCompleted.reduce((sum, o) => sum + (o.pricing?.total || 0), 0);
+    const todayEarnings = todayCompleted.reduce((sum, o) => sum + basePriceForOrder(o), 0);
 
     const yesterdayCompleted = printerOrders.filter(o => o.status === "COMPLETED" && o.updatedAt >= yesterdayStart && o.updatedAt <= yesterdayEnd);
-    const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + (o.pricing?.total || 0), 0);
+    const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + basePriceForOrder(o), 0);
 
     const completedTodayCount = todayCompleted.length;
     const completedYesterdayCount = yesterdayCompleted.length;
@@ -132,21 +145,24 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       createdAt: { $lt: todayStart }
     });
 
-    const totalRevenueResult = await Order.aggregate([
-      { $match: { assignedPrinter: new mongoose.Types.ObjectId(printerId), status: "COMPLETED" } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } }
+    const [completedOrdersAll, completedOrdersBeforeToday] = await Promise.all([
+      Order.find({
+        assignedPrinter: printerId,
+        status: "COMPLETED",
+      })
+        .select("items pricing.adjustments priority")
+        .lean(),
+      Order.find({
+        assignedPrinter: printerId,
+        status: "COMPLETED",
+        updatedAt: { $lt: todayStart },
+      })
+        .select("items pricing.adjustments priority")
+        .lean(),
     ]);
-    const totalRevenue = totalRevenueResult[0]?.total || 0;
 
-    const totalRevenueLastMonthResult = await Order.aggregate([
-      { $match: { 
-          assignedPrinter: new mongoose.Types.ObjectId(printerId), 
-          status: "COMPLETED",
-          updatedAt: { $lt: todayStart }
-      } },
-      { $group: { _id: null, total: { $sum: "$pricing.total" } } }
-    ]);
-    const totalRevenueBeforeToday = totalRevenueLastMonthResult[0]?.total || 0;
+    const totalRevenue = completedOrdersAll.reduce((sum, o) => sum + basePriceForOrder(o), 0);
+    const totalRevenueBeforeToday = completedOrdersBeforeToday.reduce((sum, o) => sum + basePriceForOrder(o), 0);
 
     const getTrend = (current: number, previous: number) => {
       if (!previous || previous === 0) return { trend: "0%", trendUp: true };
@@ -183,6 +199,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
 
     const assignedJobs = activeAssignedJobs.map((job: any) => ({
       id: String(job._id),
+      displayId: job?.displayId ? String(job.displayId) : null,
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
       order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
       deadline: job.createdAt
@@ -197,10 +214,11 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       assignedPrinter: printerId,
       priority: "URGENT",
       status: { $in: ["PENDING", "PROCESSING"] }
-    }).sort({ createdAt: 1 }).limit(5);
+    }).select("displayId customer items createdAt priority status").sort({ createdAt: 1 }).limit(5);
 
     const formattedUrgentJobs = urgentJobs.map(job => ({
       id: job.id,
+      displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       customerName: `${job.customer.firstName} ${job.customer.lastName}`,
       order: `${job.items.length} Items`,
       deadline: job.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", 2:00 PM",
@@ -283,7 +301,8 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
 
       return {
         id: job.id,
-        orderId: job.id,
+        orderId: (job as any)?.displayId ? String((job as any).displayId) : job.id,
+        displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
         customer: `${job.customer.firstName} ${job.customer.lastName}`,
         sheetSize,
         orderDescription: firstItem.name || "N/A",
@@ -390,7 +409,8 @@ export const getJobDetails = async (req: Request, res: Response, next: NextFunct
 
     res.json({
       id: job.id,
-      orderId: job.id,
+      orderId: (job as any)?.displayId ? String((job as any).displayId) : job.id,
+      displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       status: job.status,
       specs: {
         sheetSize,
@@ -621,23 +641,26 @@ export const getJobAssets = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
-    const designIdsRaw = job.items
-      .filter(item => item.designId)
-      .map(item => String(item.designId));
-    const designIds = designIdsRaw
-      .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
-      .map((id) => new mongoose.Types.ObjectId(id));
-
-    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
-    
     const assetIds = new Set<string>();
-    designs.forEach(design => {
-      if (design.artboardData && design.artboardData.items) {
-        design.artboardData.items.forEach(item => {
-          if (item.assetId) assetIds.add(item.assetId);
-        });
+
+    for (const item of job.items) {
+      // Only items in the gangsheet should be shown
+      if (item.type === "gangsheet" || item.artboardItems) {
+        if (Array.isArray(item.artboardItems) && item.artboardItems.length > 0) {
+          item.artboardItems.forEach((ai: any) => {
+            if (ai.assetId) assetIds.add(String(ai.assetId));
+          });
+        } else if (item.designId && isObjectIdString(String(item.designId))) {
+          // Fallback to design if artboardItems not snapshotted in order
+          const design = await Design.findById(item.designId).select("artboardData").lean();
+          if (design?.artboardData?.items) {
+            design.artboardData.items.forEach((di: any) => {
+              if (di.assetId) assetIds.add(String(di.assetId));
+            });
+          }
+        }
       }
-    });
+    }
 
     const { ids, urls } = splitAssetRefs(assetIds);
     const assets = await Asset.find({
@@ -647,21 +670,30 @@ export const getJobAssets = async (req: Request, res: Response, next: NextFuncti
       ]
     });
 
-    const formattedAssets = assets.map(asset => ({
-      id: asset.id,
-      filename: asset.originalFilename,
-      widthPx: asset.widthPx,
-      heightPx: asset.heightPx,
-      dpi: asset.dpi,
-      downloadUrl: asset.url
-    }));
+    const uniqueAssetsMap = new Map<string, any>();
+    assets.forEach(asset => {
+      // Deduplicate by original URL to ensure "clean copy" and "prevent duplicate copies"
+      const url = asset.url;
+      if (url && !uniqueAssetsMap.has(url)) {
+        uniqueAssetsMap.set(url, {
+          id: asset.id,
+          filename: asset.originalFilename,
+          widthPx: asset.widthPx,
+          heightPx: asset.heightPx,
+          dpi: asset.dpi,
+          downloadUrl: asset.url,
+          sizeBytes: asset.sizeBytes || 0
+        });
+      }
+    });
 
-    const totalBytes = assets.reduce((sum, asset) => sum + (asset.sizeBytes || 0), 0);
+    const formattedAssets = Array.from(uniqueAssetsMap.values());
+    const totalBytes = formattedAssets.reduce((sum, asset) => sum + (asset.sizeBytes || 0), 0);
 
     res.json({
       assets: formattedAssets,
       counts: {
-        images: assets.length,
+        images: formattedAssets.length,
         totalBytes
       }
     });
@@ -684,23 +716,26 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const designIdsRaw = job.items
-      .filter(item => item.designId)
-      .map(item => String(item.designId));
-    const designIds = designIdsRaw
-      .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
-      .map((id) => new mongoose.Types.ObjectId(id));
-
-    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
-    
     const allAssetIds = new Set<string>();
-    designs.forEach(design => {
-      if (design.artboardData && design.artboardData.items) {
-        design.artboardData.items.forEach(item => {
-          if (item.assetId) allAssetIds.add(item.assetId);
-        });
+
+    for (const item of job.items) {
+      // Only items in the gangsheet should be shown
+      if (item.type === "gangsheet" || item.artboardItems) {
+        if (Array.isArray(item.artboardItems) && item.artboardItems.length > 0) {
+          item.artboardItems.forEach((ai: any) => {
+            if (ai.assetId) allAssetIds.add(String(ai.assetId));
+          });
+        } else if (item.designId && isObjectIdString(String(item.designId))) {
+          // Fallback to design if artboardItems not snapshotted in order
+          const design = await Design.findById(item.designId).select("artboardData").lean();
+          if (design?.artboardData?.items) {
+            design.artboardData.items.forEach((di: any) => {
+              if (di.assetId) allAssetIds.add(String(di.assetId));
+            });
+          }
+        }
       }
-    });
+    }
 
     let targetAssetIds = Array.from(allAssetIds);
 
@@ -752,26 +787,38 @@ export const downloadJobAssetBundle = async (req: Request, res: Response, next: 
           .map((s) => s.trim())
           .filter(Boolean);
 
-    const designIdsRaw = job.items
-      .filter((item: any) => item.designId)
-      .map((item: any) => String(item.designId));
-    const designIds = designIdsRaw
-      .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
-      .map((id) => new mongoose.Types.ObjectId(id));
-
-    const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
     const allAssetIds = new Set<string>();
-    designs.forEach((design: any) => {
-      if (design.artboardData && design.artboardData.items) {
-        design.artboardData.items.forEach((item: any) => {
-          if (item.assetId) allAssetIds.add(String(item.assetId));
-        });
+
+    for (const item of job.items) {
+      // Only items in the gangsheet should be shown
+      if (item.type === "gangsheet" || item.artboardItems) {
+        if (Array.isArray(item.artboardItems) && item.artboardItems.length > 0) {
+          item.artboardItems.forEach((ai: any) => {
+            if (ai.assetId) allAssetIds.add(String(ai.assetId));
+          });
+        } else if (item.designId && isObjectIdString(String(item.designId))) {
+          // Fallback to design if artboardItems not snapshotted in order
+          const design = await Design.findById(item.designId).select("artboardData").lean();
+          if (design?.artboardData?.items) {
+            design.artboardData.items.forEach((di: any) => {
+              if (di.assetId) allAssetIds.add(String(di.assetId));
+            });
+          }
+        }
       }
-    });
+    }
+
+    // Include additional logic to normalize asset IDs for filtering
+    const { ids: jobAssetIds, urls: jobAssetUrls } = splitAssetRefs(allAssetIds);
+    const jobAssetIdStrings = new Set([
+      ...jobAssetIds.map(id => id.toString()),
+      ...jobAssetUrls
+    ]);
 
     let targetAssetIds = Array.from(allAssetIds);
     if (requestedIds) {
-      targetAssetIds = targetAssetIds.filter((id) => requestedIds.includes(id));
+      // Ensure we compare requested IDs against the normalized job asset IDs
+      targetAssetIds = requestedIds.filter((id) => jobAssetIdStrings.has(id));
       if (targetAssetIds.length === 0) {
         const error = new Error("None of the specified assets were found in this job") as CustomError;
         error.statusCode = 400;
@@ -807,26 +854,84 @@ export const downloadJobAssetBundle = async (req: Request, res: Response, next: 
     });
     archive.pipe(res);
 
+    const addedFiles = new Set<string>();
+    const usedNames = new Set<string>();
+    const skippedFiles: string[] = [];
+    let addedCount = 0;
+
     for (const a of assets as any[]) {
-      const url = String(a?.trimmedUrl || a?.url || "");
+      // Prioritize the original URL for "Download Original" functionality
+      const url = String(a?.url || a?.trimmedUrl || "");
       if (!url) continue;
+
+      // Prevent duplicate files in the same bundle - "ensure users receive a single, clean copy"
+      if (addedFiles.has(url)) continue;
+      addedFiles.add(url);
+
       const preferredName = String(a?.originalFilename || "").trim();
       const fallbackName = path.basename(url.split("?")[0] || "") || `asset_${String(a?._id || "")}.bin`;
-      const entryName = preferredName || fallbackName;
+      let entryName = preferredName || fallbackName;
+
+      // Handle name collisions in the zip
+      if (usedNames.has(entryName)) {
+        const ext = path.extname(entryName);
+        const base = path.basename(entryName, ext);
+        let counter = 1;
+        while (usedNames.has(`${base}_${counter}${ext}`)) {
+          counter++;
+        }
+        entryName = `${base}_${counter}${ext}`;
+      }
+      usedNames.add(entryName);
+
       const localPath = resolveLocalUploadPath(url);
 
-      if (localPath && fs.existsSync(localPath)) {
-        archive.file(localPath, { name: entryName });
-        continue;
-      }
+      try {
+        // Direct reference to source file - "verify download mechanism correctly references gansheet source"
+        if (localPath && fs.existsSync(localPath)) {
+          const stats = fs.statSync(localPath);
+          if (stats.size > 0) {
+            archive.file(localPath, { name: entryName });
+            addedCount++;
+            continue;
+          } else {
+            console.warn(`Asset file is empty: ${localPath}`);
+            skippedFiles.push(`${entryName} (Empty file)`);
+            continue;
+          }
+        }
 
-      if (/^https?:\/\//i.test(url)) {
-        const r = await fetch(url);
-        if (!r.ok) continue;
-        const body = r.body ? Readable.fromWeb(r.body as any) : null;
-        if (!body) continue;
-        archive.append(body, { name: entryName });
+        // Fallback to remote fetch if not local, still streaming - "eliminate redundant file generation"
+        if (/^https?:\/\//i.test(url)) {
+          const r = await fetch(url);
+          if (r.ok) {
+            const contentLength = r.headers.get("content-length");
+            if (contentLength === "0") {
+              skippedFiles.push(`${entryName} (Remote file is empty)`);
+              continue;
+            }
+            const body = r.body ? Readable.fromWeb(r.body as any) : null;
+            if (body) {
+              archive.append(body, { name: entryName });
+              addedCount++;
+            } else {
+              skippedFiles.push(`${entryName} (Failed to read remote body)`);
+            }
+          } else {
+            skippedFiles.push(`${entryName} (Remote fetch failed: ${r.status})`);
+          }
+        } else {
+          skippedFiles.push(`${entryName} (Invalid source URL)`);
+        }
+      } catch (err) {
+        console.error(`Error adding asset ${a._id} to bundle:`, err);
+        skippedFiles.push(`${entryName} (Internal error)`);
       }
+    }
+
+    if (skippedFiles.length > 0) {
+      const errorLog = `The following files could not be included in this bundle:\n\n${skippedFiles.join("\n")}`;
+      archive.append(errorLog, { name: "DOWNLOAD_ERRORS.txt" });
     }
 
     await archive.finalize();
@@ -869,7 +974,8 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
       sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
       artboardItems,
-      dpi: 600
+      dpi: 600,
+      cropToContent: true
     });
 
     if (!rendered.validation.ok) {
@@ -1152,7 +1258,8 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         { "customer.lastName": re },
         { "customer.email": re },
         { "shippingAddress.city": re },
-        { "shippingAddress.state": re }
+        { "shippingAddress.state": re },
+        { displayId: re }
       ];
       if (mongoose.Types.ObjectId.isValid(raw)) {
         query.$or.push({ _id: new mongoose.Types.ObjectId(raw) });
@@ -1256,6 +1363,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       return {
         id: order.id,
         actualId: order.id,
+        displayId: (order as any)?.displayId ? String((order as any).displayId) : null,
         customerName: `${order.customer.firstName} ${order.customer.lastName}`,
         sheetSize,
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
@@ -1356,69 +1464,25 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       ? await User.findById(printerId).select("settings.pricing").lean()
       : null;
     const partnerPricing = (partner as any)?.settings?.pricing || {};
-    const baseRatePerSqFt = typeof partnerPricing.baseRatePerSqFt === "number" ? partnerPricing.baseRatePerSqFt : 2.5;
-    const tiers = Array.isArray(partnerPricing.tiered) ? partnerPricing.tiered : [];
-    const surchargesCfg = partnerPricing.surcharges || {};
-    const rushPct = typeof surchargesCfg.rushPct === "number" ? surchargesCfg.rushPct : 0;
-    const specialInkFlat = typeof surchargesCfg.specialInkFlat === "number" ? surchargesCfg.specialInkFlat : 0;
-
-    const totalSqFt = roundMoney(
-      items.reduce((sum: number, it: any) => {
-        const w =
-          typeof it?.sheetWidthIn === "number"
-            ? it.sheetWidthIn
-            : typeof it?.widthIn === "number"
-              ? it.widthIn
-              : null;
-        const h =
-          typeof it?.sheetHeightIn === "number"
-            ? it.sheetHeightIn
-            : typeof it?.heightIn === "number"
-              ? it.heightIn
-              : null;
-        const qty = typeof it?.quantity === "number" ? it.quantity : 1;
-        if (!w || !h) return sum;
-        const sqft = (Number(w) * Number(h)) / 144;
-        if (!Number.isFinite(sqft) || sqft <= 0) return sum;
-        return sum + sqft * Math.max(1, qty);
-      }, 0)
-    );
-
-    const appliedTier = tiers.find((t: any) => {
-      const min = typeof t?.minSqFt === "number" ? t.minSqFt : 0;
-      const max = t?.maxSqFt == null ? null : Number(t.maxSqFt);
-      const okMin = totalSqFt >= min;
-      const okMax = max == null ? true : totalSqFt < max;
-      return okMin && okMax;
+    const breakdown = computePartnerCostBreakdown({
+      items,
+      partnerPricing,
+      priority: (job as any).priority,
+      adjustments: storedAdjustments,
     });
-    const appliedRatePerSqFt =
-      appliedTier && typeof (appliedTier as any).rate === "number"
-        ? Number((appliedTier as any).rate)
-        : baseRatePerSqFt;
 
-    const base = roundMoney(Math.max(0, totalSqFt * appliedRatePerSqFt));
-    const hasSpecialInk = storedAdjustments.some((a: any) => {
-      const r = String(a?.reason || "").toLowerCase();
-      return r.includes("special ink") || r.includes("specialink");
-    });
-    const rushFee = (job as any).priority === "URGENT" ? roundMoney((base * rushPct) / 100) : 0;
-    const specialInkFee = hasSpecialInk ? roundMoney(specialInkFlat) : 0;
-    const surcharges = roundMoney(Math.max(0, rushFee + specialInkFee));
-    const subtotal = roundMoney(Math.max(0, base + surcharges));
-
-    const globalPricing = await Settings.findOne({ key: "global_pricing" }).select("value").lean();
-    const taxRatePctRaw = Number((globalPricing as any)?.value?.taxRatePct ?? 8.0);
-    const taxRate = taxRatePctRaw > 0 ? taxRatePctRaw / 100 : 0;
-    const tax = roundMoney(Math.max(0, subtotal * taxRate));
-    const total = roundMoney(Math.max(0, subtotal + tax));
-
-    const PLATFORM_RATE = 0.2;
-    const earning = Number((total - total * PLATFORM_RATE).toFixed(2));
-    const commission = Number((total * PLATFORM_RATE).toFixed(2));
+    const base = roundMoney(breakdown.base);
+    const surcharges = roundMoney(breakdown.surcharges);
+    const partnerCost = roundMoney(breakdown.subtotal);
+    const total = partnerCost;
+    const earning = partnerCost;
+    const commission = 0;
+    const tax = 0;
 
     res.json({
       id: String((job as any)._id),
-      orderId: String((job as any)._id),
+      orderId: (job as any)?.displayId ? String((job as any).displayId) : String((job as any)._id),
+      displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       status: String((job as any).status),
       priority: String((job as any).priority || "NORMAL"),
       createdAt: (job as any).createdAt,
@@ -1451,7 +1515,7 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       },
       pricing: {
         subtotal: base,
-        partnerCost: subtotal,
+        partnerCost,
         rushFee: surcharges,
         shippingCost: null,
         tax,
@@ -1645,6 +1709,7 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
 
     res.json({
       id: order.id,
+      displayId: (order as any)?.displayId ? String((order as any).displayId) : null,
       status: displayStatus,
       items: order.items.length,
       amount: order.pricing?.total || 0,
@@ -1660,6 +1725,8 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
   try {
     const printerId = req.user?.id;
     const { range = "30d" } = req.query;
+    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
+    const partnerPricing = (printer as any)?.settings?.pricing || {};
 
     let startDate: Date;
     const now = new Date();
@@ -1683,7 +1750,12 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
     const dailyRevenue: { [key: string]: number } = {};
 
     orders.forEach(order => {
-      const amount = order.pricing?.total || 0;
+      const amount = computePartnerCostBreakdown({
+        items: Array.isArray((order as any).items) ? (order as any).items : [],
+        partnerPricing,
+        priority: (order as any).priority,
+        adjustments: Array.isArray((order as any)?.pricing?.adjustments) ? (order as any).pricing.adjustments : [],
+      }).subtotal;
       revenue += amount;
 
       if (["COMPLETED", "SHIPPED"].includes(order.status)) {
@@ -1731,6 +1803,8 @@ export const listEarningsJobs = async (req: Request, res: Response, next: NextFu
   try {
     const printerId = req.user?.id;
     const { status } = req.query;
+    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
+    const partnerPricing = (printer as any)?.settings?.pricing || {};
 
     const query: any = { assignedPrinter: printerId };
 
@@ -1744,12 +1818,15 @@ export const listEarningsJobs = async (req: Request, res: Response, next: NextFu
 
     const orders = await Order.find(query).sort({ updatedAt: -1 });
 
-    const PLATFORM_RATE = 0.20;
-
     const jobs = orders.map(order => {
-      const amount = order.pricing?.total || 0;
-      const commission = amount * PLATFORM_RATE;
-      const earning = amount - commission;
+      const amount = computePartnerCostBreakdown({
+        items: Array.isArray((order as any).items) ? (order as any).items : [],
+        partnerPricing,
+        priority: (order as any).priority,
+        adjustments: Array.isArray((order as any)?.pricing?.adjustments) ? (order as any).pricing.adjustments : [],
+      }).subtotal;
+      const commission = 0;
+      const earning = amount;
       const isPaid = ["SHIPPED", "COMPLETED"].includes(order.status);
 
       return {
@@ -1773,6 +1850,8 @@ export const requestPayout = async (req: Request, res: Response, next: NextFunct
   try {
     const printerId = req.user?.id;
     const { amount, method } = req.body;
+    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
+    const partnerPricing = (printer as any)?.settings?.pricing || {};
 
     const allowedMethods = ["bank_transfer", "paypal", "check"];
     if (!method || !allowedMethods.includes(method)) {
@@ -1787,15 +1866,18 @@ export const requestPayout = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    const PLATFORM_RATE = 0.20;
     const orders = await Order.find({
       assignedPrinter: printerId,
       status: { $in: ["SHIPPED", "COMPLETED"] }
     });
 
     const totalAvailable = orders.reduce((sum, order) => {
-      const orderAmount = order.pricing?.total || 0;
-      const earning = orderAmount * (1 - PLATFORM_RATE);
+      const earning = computePartnerCostBreakdown({
+        items: Array.isArray((order as any).items) ? (order as any).items : [],
+        partnerPricing,
+        priority: (order as any).priority,
+        adjustments: Array.isArray((order as any)?.pricing?.adjustments) ? (order as any).pricing.adjustments : [],
+      }).subtotal;
       return sum + earning;
     }, 0);
 

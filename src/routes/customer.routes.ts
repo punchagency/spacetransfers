@@ -20,6 +20,8 @@ import {
   getArtboardDraft,
   upsertArtboardDraft,
   clearArtboardDraft,
+  getCart,
+  updateCart,
   getCartQuote,
   sendGangsheetUtilizationWarning,
   downloadInvoice,
@@ -51,6 +53,8 @@ router.get("/assets", listAssets);
 router.get("/artboard-draft", getArtboardDraft);
 router.put("/artboard-draft", upsertArtboardDraft);
 router.delete("/artboard-draft", clearArtboardDraft);
+router.get("/cart", getCart);
+router.put("/cart", updateCart);
 router.post("/designs", createDesign);
 router.get("/designs", listDesigns);
 router.get("/designs/search", searchDesigns);

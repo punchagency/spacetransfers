@@ -3,6 +3,7 @@ import { User } from "../models/user.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
+import { Settings } from "../models/settings.model.js";
 import sharp from "sharp";
 import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
@@ -47,13 +48,13 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
     }
 
     const computeTrimRegion = async (filePath: string) => {
-      const meta = await sharp(filePath).metadata();
+      const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
       const originalWidth = meta.width || 0;
       const originalHeight = meta.height || 0;
       if (!originalWidth || !originalHeight) return null;
 
       const maxProbe = 800;
-      const probe = await sharp(filePath)
+      const probe = await sharp(filePath, { limitInputPixels: false })
         .ensureAlpha()
         .resize({
           width: Math.min(originalWidth, maxProbe),
@@ -159,20 +160,20 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
     } else {
       const region = await computeTrimRegion(sourcePath);
       if (region) {
-        await sharp(sourcePath)
+        await sharp(sourcePath, { limitInputPixels: false })
           .ensureAlpha()
           .extract(region)
           .png()
           .toFile(trimmedPath);
       } else {
-        await sharp(sourcePath)
+        await sharp(sourcePath, { limitInputPixels: false })
           .ensureAlpha()
           .png()
           .toFile(trimmedPath);
       }
     }
 
-    const meta = await sharp(trimmedPath).metadata();
+    const meta = await sharp(trimmedPath, { limitInputPixels: false }).metadata();
     const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
     const trimmedWidthPx = meta.width || null;
     const trimmedHeightPx = meta.height || null;
@@ -481,8 +482,19 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       region: resolvedCustomerRegion
     };
 
+    const nextOrderDisplayId = async () => {
+      const counter = await Settings.findOneAndUpdate(
+        { key: "order_display_counter" },
+        { $inc: { "value.next": 1 } },
+        { new: true, upsert: true, runValidators: true }
+      ).lean();
+      const seq = Number((counter as any)?.value?.next || 1) - 1;
+      return `DTF-${String(seq).padStart(4, "0")}`;
+    };
+
     const order = new Order({
       user: req.user?.id,
+      displayId: await nextOrderDisplayId(),
       items: orderItems,
       customer: normalizedCustomer,
       shippingAddress,
@@ -492,7 +504,16 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       status: "PENDING"
     });
 
-    await order.save();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await order.save();
+        break;
+      } catch (e: any) {
+        const isDup = e?.code === 11000 && (e?.keyPattern?.displayId || e?.keyValue?.displayId);
+        if (!isDup || attempt === 2) throw e;
+        order.displayId = await nextOrderDisplayId();
+      }
+    }
 
     notifyAllAdmins({
       category: "orders",
@@ -516,6 +537,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 
     res.status(201).json({
       id: order.id,
+      displayId: (order as any).displayId || null,
       createdAt: order.createdAt,
       status: refreshed?.status || order.status,
       pricing: order.pricing,
@@ -583,6 +605,25 @@ export const clearArtboardDraft = async (req: Request, res: Response, next: Next
   try {
     await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
     res.json({ message: "Draft cleared" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCart = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await User.findById(req.user?.id).select("cart");
+    res.json({ cart: user?.cart || [] });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateCart = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { cart } = req.body || {};
+    await User.updateOne({ _id: req.user?.id }, { $set: { cart: cart || [] } });
+    res.json({ message: "Cart updated" });
   } catch (error) {
     next(error);
   }
@@ -929,7 +970,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
 
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
     try {
-      const metadata = await sharp(req.file.path).metadata();
+      const metadata = await sharp(req.file.path, { limitInputPixels: false }).metadata();
       widthPx = metadata.width;
       heightPx = metadata.height;
       dpi = metadata.density || 300;
@@ -946,13 +987,13 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     const heightIn = heightPx && normalizedDpi ? +(heightPx / normalizedDpi).toFixed(4) : undefined;
 
     const computeTrimRegion = async (filePath: string) => {
-      const meta = await sharp(filePath).metadata();
+      const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
       const originalWidth = meta.width || 0;
       const originalHeight = meta.height || 0;
       if (!originalWidth || !originalHeight) return null;
 
       const maxProbe = 800;
-      const probe = await sharp(filePath)
+      const probe = await sharp(filePath, { limitInputPixels: false })
         .ensureAlpha()
         .resize({
           width: Math.min(originalWidth, maxProbe),
@@ -1064,20 +1105,20 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       } else {
         const region = await computeTrimRegion(req.file.path);
         if (region) {
-          await sharp(req.file.path)
+          await sharp(req.file.path, { limitInputPixels: false })
             .ensureAlpha()
             .extract(region)
             .png()
             .toFile(trimmedPath);
         } else {
-          await sharp(req.file.path)
+          await sharp(req.file.path, { limitInputPixels: false })
             .ensureAlpha()
             .png()
             .toFile(trimmedPath);
         }
       }
 
-      const trimmedMeta = await sharp(trimmedPath).metadata();
+      const trimmedMeta = await sharp(trimmedPath, { limitInputPixels: false }).metadata();
       trimmedWidthPx = trimmedMeta.width;
       trimmedHeightPx = trimmedMeta.height;
       trimmedWidthIn =
