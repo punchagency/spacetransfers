@@ -115,6 +115,11 @@ export const useDropHandler = (
     const dropped = droppedFiles;
     if (dropped.length === 0 && !droppedUrl) return;
 
+    if (items.length >= CANVAS.MAX_ITEMS) {
+      toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items to add more.`);
+      return;
+    }
+
     const cropImage = async (url: string, dpi: number) => {
       return new Promise<{
         url: string;
@@ -284,6 +289,12 @@ export const useDropHandler = (
           setUploadProgress(0);
           setUploadFileName(null);
           return;
+        }
+
+        if (items.length + created.length >= CANVAS.MAX_ITEMS) {
+          const skipped = dropped.length - idx;
+          toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. ${skipped} file${skipped !== 1 ? "s" : ""} skipped.`);
+          break;
         }
 
         const file = dropped[idx];
@@ -587,9 +598,12 @@ export const useDropHandler = (
   const onDropEvent = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
-    const droppedFiles = Array.from(e.dataTransfer.files || []).filter((f) =>
-      f.type.startsWith("image/")
-    );
+    const allImageFiles = Array.from(e.dataTransfer.files || []).filter((f) => f.type.startsWith("image/"));
+    const droppedFiles = allImageFiles.filter((f) => f.type === "image/png");
+    if (allImageFiles.length > droppedFiles.length) {
+      const skipped = allImageFiles.length - droppedFiles.length;
+      toast.error(`Only PNG files are accepted. ${skipped} file${skipped > 1 ? "s" : ""} skipped.`);
+    }
     const jsonData =
       e.dataTransfer.getData("application/json") ||
       e.dataTransfer.getData("text/plain");
@@ -612,7 +626,12 @@ export const useDropHandler = (
 
   const dropFilesAtCenter = async (files: FileList | File[]) => {
     const arr = Array.isArray(files) ? files : Array.from(files);
-    const droppedFiles = arr.filter((f) => f.type.startsWith("image/"));
+    const allImageFiles = arr.filter((f) => f.type.startsWith("image/"));
+    const droppedFiles = allImageFiles.filter((f) => f.type === "image/png");
+    if (allImageFiles.length > droppedFiles.length) {
+      const skipped = allImageFiles.length - droppedFiles.length;
+      toast.error(`Only PNG files are accepted. ${skipped} file${skipped > 1 ? "s" : ""} skipped.`);
+    }
     if (droppedFiles.length === 0) return;
     if (droppedFiles.length >= 2 && !autoNestStickers) {
       onRequestAutoNest?.(true);
