@@ -156,7 +156,11 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       return { left, top, width, height };
     };
 
-    const port = env.port || 4000;
+    const trimProto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
+    const trimHost = req.get("host") || "";
+    const trimBase = (env.appUrl && !env.appUrl.includes("localhost"))
+      ? env.appUrl
+      : (trimHost ? `${trimProto}://${trimHost}` : `http://localhost:${env.port || 4000}`);
     const parsed = path.parse(safeFilename);
     const trimmedFilename = `${parsed.name}-trim.png`;
     const trimmedPath = path.join(process.cwd(), "uploads", trimmedFilename);
@@ -195,7 +199,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
 
     res.json({
-      trimmedUrl: `http://localhost:${port}/uploads/${trimmedFilename}`,
+      trimmedUrl: `${trimBase}/uploads/${trimmedFilename}`,
       trimmedWidthPx,
       trimmedHeightPx,
       trimmedWidthIn,
@@ -1008,8 +1012,12 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       });
     }
 
-    const port = env.port || 4000;
-    const fileUrl = `http://localhost:${port}/uploads/${req.file.filename}`;
+    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
+    const host = req.get("host") || "";
+    const publicBase = (env.appUrl && !env.appUrl.includes("localhost"))
+      ? env.appUrl
+      : (host ? `${proto}://${host}` : `http://localhost:${env.port || 4000}`);
+    const fileUrl = `${publicBase}/uploads/${req.file.filename}`;
 
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
     try {
@@ -1169,7 +1177,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       trimmedHeightIn =
         trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
 
-      trimmedUrl = `http://localhost:${port}/uploads/${trimmedFilename}`;
+      trimmedUrl = `${publicBase}/uploads/${trimmedFilename}`;
     } catch {
       trimmedUrl = undefined;
     }

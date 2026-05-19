@@ -1264,9 +1264,14 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       format: "webp",
     });
 
-    // Return a static file URL so the browser fetches the WebP directly and caches it.
-    // No base64 encoding, no JSON bloat — immutable cache headers are set by Express.
-    const previewDataUrl = `${env.appUrl}${rendered.relativePath}`;
+    // Build a public-facing base URL from the request so the preview URL works
+    // regardless of whether APP_URL is set. Heroku terminates TLS and sets
+    // x-forwarded-proto, so we use that header instead of req.protocol.
+    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
+    const host = req.get("host") || "";
+    const derivedBase = host ? `${proto}://${host}` : null;
+    const appBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : derivedBase;
+    const previewDataUrl = appBase ? `${appBase}${rendered.relativePath}` : rendered.relativePath;
 
     res.json({
       previewDataUrl,
