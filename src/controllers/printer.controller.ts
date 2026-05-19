@@ -6,6 +6,7 @@ import { User } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
 import archiver from "archiver";
 import mongoose from "mongoose";
+import crypto from "node:crypto";
 import { env } from "../config/env.js";
 import fs from "fs";
 import path from "path";
@@ -16,6 +17,30 @@ import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import sharp from "sharp";
+
+// In-memory export job queue — lets the HTTP response return immediately while
+// the (potentially slow) PNG render runs in the background.
+type ExportJobStatus = "queued" | "processing" | "done" | "failed";
+interface InMemoryExportJob {
+  status: ExportJobStatus;
+  result?: {
+    exportId: string;
+    dpi: number;
+    sheet: { widthIn: number; heightIn: number };
+    validation: { ok: boolean; errors: string[]; meta?: any };
+    drive: { uploaded: boolean; fileId?: string; webViewLink?: string; error?: string } | null;
+  };
+  error?: string;
+  createdAt: number;
+}
+const exportJobStore = new Map<string, InMemoryExportJob>();
+// Purge jobs older than 1 hour to prevent unbounded memory growth.
+setInterval(() => {
+  const cutoff = Date.now() - 3_600_000;
+  for (const [k, v] of exportJobStore) {
+    if (v.createdAt < cutoff) exportJobStore.delete(k);
+  }
+}, 300_000).unref();
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -1021,7 +1046,6 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
     }
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
     if (!job) {
       const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
@@ -1036,84 +1060,116 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    const rendered = await exportGangsheetPng24({
-      jobId: job.id,
-      printerId: String(printerId),
-      sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
-      sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
-      artboardItems,
-      dpi: 300,
-      cropToContent: true
-    });
+    const exportJobId = crypto.randomUUID();
+    exportJobStore.set(exportJobId, { status: "queued", createdAt: Date.now() });
 
-    if (!rendered.validation.ok) {
-      const error = new Error(`Export validation failed: ${rendered.validation.errors.join(", ")}`) as CustomError;
-      error.statusCode = 422;
-      throw error;
-    }
-
-    const exportDoc = await GangsheetExport.create({
-      jobId: new mongoose.Types.ObjectId(job.id),
-      printerId: new mongoose.Types.ObjectId(String(printerId)),
-      format: "png",
-      dpi: rendered.dpi,
-      sheet: rendered.sheet,
-      fileName: rendered.fileName,
-      filePath: rendered.filePath,
-      byteSize: rendered.byteSize,
-      validation: rendered.validation,
-      drive: { status: "skipped" }
-    });
-
-    await GangsheetExportAudit.create({
-      exportId: exportDoc._id,
-      jobId: exportDoc.jobId,
-      printerId: exportDoc.printerId,
-      action: "export_created",
-      meta: { format: "png", dpi: rendered.dpi }
-    });
-
-    let driveResult: any = null;
-    if (Boolean(toDrive)) {
-      const uploaded = await uploadPngToDrive({ localFilePath: rendered.filePath, fileName: rendered.fileName });
-      if (uploaded.uploaded) {
-        await GangsheetExport.updateOne(
-          { _id: exportDoc._id },
-          { $set: { drive: { status: "uploaded", fileId: uploaded.fileId, webViewLink: uploaded.webViewLink, uploadedAt: new Date() } } }
-        );
-        await GangsheetExportAudit.create({
-          exportId: exportDoc._id,
-          jobId: exportDoc.jobId,
-          printerId: exportDoc.printerId,
-          action: "drive_uploaded",
-          meta: { fileId: uploaded.fileId, webViewLink: uploaded.webViewLink }
+    // Fire-and-forget: render happens in background so the HTTP response returns immediately.
+    (async () => {
+      exportJobStore.set(exportJobId, { ...exportJobStore.get(exportJobId)!, status: "processing" });
+      try {
+        const rendered = await exportGangsheetPng24({
+          jobId: job.id,
+          printerId: String(printerId),
+          sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
+          sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
+          artboardItems,
+          dpi: 300,
+          cropToContent: true,
         });
-      } else {
-        await GangsheetExport.updateOne(
-          { _id: exportDoc._id },
-          { $set: { drive: { status: "failed", error: uploaded.error || "drive_failed" } } }
-        );
+
+        if (!rendered.validation.ok) {
+          exportJobStore.set(exportJobId, {
+            ...exportJobStore.get(exportJobId)!,
+            status: "failed",
+            error: `Export validation failed: ${rendered.validation.errors.join(", ")}`,
+          });
+          return;
+        }
+
+        const exportDoc = await GangsheetExport.create({
+          jobId: new mongoose.Types.ObjectId(job.id),
+          printerId: new mongoose.Types.ObjectId(String(printerId)),
+          format: "png",
+          dpi: rendered.dpi,
+          sheet: rendered.sheet,
+          fileName: rendered.fileName,
+          filePath: rendered.filePath,
+          byteSize: rendered.byteSize,
+          validation: rendered.validation,
+          drive: { status: "skipped" },
+        });
+
         await GangsheetExportAudit.create({
           exportId: exportDoc._id,
           jobId: exportDoc.jobId,
           printerId: exportDoc.printerId,
-          action: "drive_failed",
-          meta: { error: uploaded.error || "drive_failed" }
+          action: "export_created",
+          meta: { format: "png", dpi: rendered.dpi },
+        });
+
+        let driveResult: any = null;
+        if (Boolean(toDrive)) {
+          const uploaded = await uploadPngToDrive({ localFilePath: rendered.filePath, fileName: rendered.fileName });
+          if (uploaded.uploaded) {
+            await GangsheetExport.updateOne(
+              { _id: exportDoc._id },
+              { $set: { drive: { status: "uploaded", fileId: uploaded.fileId, webViewLink: uploaded.webViewLink, uploadedAt: new Date() } } },
+            );
+            await GangsheetExportAudit.create({
+              exportId: exportDoc._id, jobId: exportDoc.jobId, printerId: exportDoc.printerId,
+              action: "drive_uploaded", meta: { fileId: uploaded.fileId, webViewLink: uploaded.webViewLink },
+            });
+          } else {
+            await GangsheetExport.updateOne(
+              { _id: exportDoc._id },
+              { $set: { drive: { status: "failed", error: uploaded.error || "drive_failed" } } },
+            );
+            await GangsheetExportAudit.create({
+              exportId: exportDoc._id, jobId: exportDoc.jobId, printerId: exportDoc.printerId,
+              action: "drive_failed", meta: { error: uploaded.error || "drive_failed" },
+            });
+          }
+          driveResult = uploaded;
+        }
+
+        exportJobStore.set(exportJobId, {
+          ...exportJobStore.get(exportJobId)!,
+          status: "done",
+          result: {
+            exportId: String(exportDoc._id),
+            dpi: rendered.dpi,
+            sheet: rendered.sheet,
+            validation: rendered.validation,
+            drive: driveResult
+              ? { uploaded: Boolean(driveResult.uploaded), fileId: driveResult.fileId, webViewLink: driveResult.webViewLink, error: driveResult.error }
+              : null,
+          },
+        });
+      } catch (err: any) {
+        exportJobStore.set(exportJobId, {
+          ...exportJobStore.get(exportJobId)!,
+          status: "failed",
+          error: err?.message || "Export failed",
         });
       }
-      driveResult = uploaded;
-    }
+    })().catch(() => {});
 
-    res.status(201).json({
-      exportId: String(exportDoc._id),
-      format: "PNG",
-      dpi: rendered.dpi,
-      sheet: rendered.sheet,
-      validation: rendered.validation,
-      drive: driveResult
-        ? { uploaded: Boolean(driveResult.uploaded), fileId: driveResult.fileId, webViewLink: driveResult.webViewLink, error: driveResult.error }
-        : null
-    });
+    res.status(202).json({ exportJobId, status: "queued" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getExportJobStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { exportJobId } = req.params;
+    const job = exportJobStore.get(String(exportJobId || ""));
+    if (!job) {
+      const error = new Error("Export job not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+    res.json(job);
   } catch (error) {
     next(error);
   }

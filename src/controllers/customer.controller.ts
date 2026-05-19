@@ -6,6 +6,7 @@ import { Order } from "../models/order.model.js";
 import { Settings } from "../models/settings.model.js";
 import sharp from "sharp";
 import mongoose from "mongoose";
+import crypto from "node:crypto";
 import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
 import fs from "fs";
@@ -976,6 +977,37 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    // Deduplication: if this user already uploaded the exact same file, reuse it.
+    const fileBuffer = await fs.promises.readFile(req.file.path);
+    const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    const existingAsset = await Asset.findOne({
+      user: new mongoose.Types.ObjectId(String(req.user?.id)),
+      contentHash,
+    }).lean() as any;
+    if (existingAsset) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      const thumbUrl = computeThumbUrl(existingAsset.trimmedUrl || existingAsset.url);
+      const normDpi = existingAsset.dpi || 300;
+      return res.json({
+        id: String(existingAsset._id),
+        url: existingAsset.url,
+        trimmedUrl: existingAsset.trimmedUrl || null,
+        thumbnailUrl: thumbUrl,
+        originalFilename: existingAsset.originalFilename,
+        sizeBytes: existingAsset.sizeBytes,
+        widthPx: existingAsset.widthPx,
+        heightPx: existingAsset.heightPx,
+        dpi: normDpi,
+        widthIn: existingAsset.widthPx ? +(existingAsset.widthPx / normDpi).toFixed(4) : undefined,
+        heightIn: existingAsset.heightPx ? +(existingAsset.heightPx / normDpi).toFixed(4) : undefined,
+        trimmedWidthPx: existingAsset.trimmedWidthPx || null,
+        trimmedHeightPx: existingAsset.trimmedHeightPx || null,
+        trimmedWidthIn: existingAsset.trimmedWidthPx ? +(existingAsset.trimmedWidthPx / normDpi).toFixed(4) : null,
+        trimmedHeightIn: existingAsset.trimmedHeightPx ? +(existingAsset.trimmedHeightPx / normDpi).toFixed(4) : null,
+        deduplicated: true,
+      });
+    }
+
     const port = env.port || 4000;
     const fileUrl = `http://localhost:${port}/uploads/${req.file.filename}`;
 
@@ -1153,7 +1185,8 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       heightPx,
       trimmedWidthPx,
       trimmedHeightPx,
-      dpi: normalizedDpi
+      dpi: normalizedDpi,
+      contentHash,
     });
 
     await asset.save();

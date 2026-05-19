@@ -12,6 +12,27 @@ const CROP_PADDING_IN = 0.08;
 
 const isObjectIdString = (v: string) => /^[0-9a-fA-F]{24}$/.test(String(v || ""));
 
+// Concurrency limiter — prevents simultaneous large exports from exhausting memory.
+const MAX_CONCURRENT_RENDERS = 3;
+let _activeRenders = 0;
+const _renderQueue: Array<() => void> = [];
+
+const acquireRenderSlot = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    if (_activeRenders < MAX_CONCURRENT_RENDERS) {
+      _activeRenders++;
+      resolve();
+    } else {
+      _renderQueue.push(() => { _activeRenders++; resolve(); });
+    }
+  });
+
+const releaseRenderSlot = (): void => {
+  _activeRenders--;
+  const next = _renderQueue.shift();
+  if (next) next();
+};
+
 const looksLikeUrlOrPath = (v: string) => {
   const s = String(v || "");
   if (!s) return false;
@@ -197,6 +218,23 @@ export const exportGangsheetPng24 = async ({
   cacheHit: boolean;
   crop: { leftIn: number; topIn: number; widthIn: number; heightIn: number } | null;
 }> => {
+  await acquireRenderSlot();
+  try {
+  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format });
+  } finally {
+    releaseRenderSlot();
+  }
+};
+
+const _doExport = async ({
+  jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput,
+  cropToContent = false, maxComposites, format = "png",
+}: {
+  jobId: string; printerId: string; sheetWidthIn?: number | null; sheetHeightIn?: number | null;
+  artboardItems: Array<{ assetId: string; croppedUrl?: string; widthIn: number; heightIn: number;
+    posX: number; posY: number; rotation?: number; copies?: number }>;
+  dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
+}) => {
   const dpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
   const heightIn = Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
@@ -234,6 +272,15 @@ export const exportGangsheetPng24 = async ({
   const outputSheetHeightIn = crop ? crop.heightIn : heightIn;
   const widthPx = Math.max(1, Math.round(outputSheetWidthIn * dpi));
   const heightPx = Math.max(1, Math.round(outputSheetHeightIn * dpi));
+
+  const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB RGBA limit
+  const bufferBytes = widthPx * heightPx * 4;
+  if (bufferBytes > MAX_BUFFER_BYTES) {
+    throw Object.assign(
+      new Error(`Sheet too large: ${(bufferBytes / 1e9).toFixed(1)} GB buffer required at ${dpi} DPI. Reduce sheet size or DPI.`),
+      { statusCode: 422 }
+    );
+  }
 
   // Cap items used for the cache key to maxComposites so we never stringify 10k+ items.
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
@@ -469,6 +516,12 @@ export const exportGangsheetPng24 = async ({
       }
     }
   }
+
+  // Free all decoded source image buffers now — we've blitted everything into the
+  // accumulator so the per-image RGBA buffers are no longer needed. Releasing them
+  // before the Sharp encode step halves peak memory on large sheets.
+  preparedItems.length = 0;
+  bufCache.clear();
 
   // Suppress unused-base warning — we use the dimensions directly via Buffer.alloc above.
   void base;

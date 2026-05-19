@@ -12,6 +12,7 @@ export interface IAsset extends Document {
   trimmedWidthPx?: number;
   trimmedHeightPx?: number;
   dpi?: number;
+  contentHash?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -54,6 +55,9 @@ const assetSchema = new Schema<IAsset>(
     },
     dpi: {
       type: Number
+    },
+    contentHash: {
+      type: String
     }
   },
   {
@@ -61,7 +65,7 @@ const assetSchema = new Schema<IAsset>(
   }
 );
 
-// Index for pagination (cursor-based usually on _id or createdAt)
 assetSchema.index({ user: 1, _id: -1 });
+assetSchema.index({ user: 1, contentHash: 1 });
 
 export const Asset = mongoose.model<IAsset>("Asset", assetSchema);

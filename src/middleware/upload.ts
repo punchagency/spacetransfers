@@ -15,9 +15,16 @@ const storage = multer.diskStorage({
   },
   filename(req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, `${uniqueSuffix}${ext}`);
+    cb(null, `${uniqueSuffix}.png`);
   }
 });
 
-export const upload = multer({ storage });
+const pngOnly = (req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  if (file.mimetype === "image/png") {
+    cb(null, true);
+  } else {
+    cb(new Error("Only PNG files are accepted. Please convert your image to PNG before uploading."));
+  }
+};
+
+export const upload = multer({ storage, fileFilter: pngOnly });
