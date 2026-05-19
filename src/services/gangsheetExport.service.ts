@@ -58,16 +58,32 @@ const loadImageBuffer = async (url: string) => {
     return null;
   }
 
+  // Always try the local filesystem first — this works even when the stored URL
+  // has the wrong host/port (e.g. http://localhost:4000 stored from a dev session).
   const local = resolveLocalUploadPath(url);
   if (local && fs.existsSync(local)) {
     return fs.promises.readFile(local);
   }
 
+  // For localhost URLs where the file isn't on disk, skip the HTTP fetch entirely
+  // — it will always fail on Heroku since the port stored in the URL differs from
+  // the current dyno port. Return null so the item is gracefully skipped.
+  if (/^https?:\/\/localhost/i.test(url)) {
+    console.warn(`[gangsheet] skipping localhost asset not found on disk: ${url}`);
+    return null;
+  }
+
   if (/^https?:\/\//i.test(url)) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`failed_to_fetch_asset:${res.status}`);
-    const ab = await res.arrayBuffer();
-    return Buffer.from(ab);
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20_000);
+    try {
+      const res = await fetch(url, { signal: ac.signal });
+      if (!res.ok) throw new Error(`failed_to_fetch_asset:${res.status}`);
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   return null;
@@ -377,20 +393,25 @@ const _doExport = async ({
     const hit = bufCache.get(key);
     if (hit) return hit;
     const p = (async (): Promise<CachedBuf | null> => {
-      const buf = await loadImageBuffer(srcUrl);
-      if (!buf) return null;
-      const meta = await sharp(buf, { limitInputPixels: false }).metadata();
-      if (
-        (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
-        (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
-      ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
-      const out = await sharp(buf, { limitInputPixels: false })
-        .resize(wPx, hPx, { fit: "fill" })
-        .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      return { data: out.data, info: { width: out.info.width, height: out.info.height } };
+      try {
+        const buf = await loadImageBuffer(srcUrl);
+        if (!buf) return null;
+        const meta = await sharp(buf, { limitInputPixels: false }).metadata();
+        if (
+          (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
+          (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
+        ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
+        const out = await sharp(buf, { limitInputPixels: false })
+          .resize(wPx, hPx, { fit: "fill" })
+          .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        return { data: out.data, info: { width: out.info.width, height: out.info.height } };
+      } catch (err: any) {
+        console.warn(`[gangsheet] skipping unloadable image (${assetId}): ${err?.message}`);
+        return null;
+      }
     })();
     bufCache.set(key, p);
     return p;
