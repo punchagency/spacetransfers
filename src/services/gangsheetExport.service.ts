@@ -251,9 +251,21 @@ const _doExport = async ({
     posX: number; posY: number; rotation?: number; copies?: number }>;
   dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
 }) => {
-  const dpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
+  const rawDpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
   const heightIn = Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
+
+  // WebP has a hard 16383-pixel limit per dimension. If we don't cap DPI here,
+  // Sharp throws "Processed image is too large for the WebP format" at encode
+  // time and the whole render fails. Long-sheet previews (e.g. 580" rolls) hit
+  // this constant — cap the DPI so each dimension stays under the limit.
+  const dpi = (() => {
+    if (format !== "webp") return rawDpi;
+    const MAX_WEBP_DIM = 16383;
+    const maxFromWidth = Math.floor(MAX_WEBP_DIM / widthIn);
+    const maxFromHeight = Math.floor(MAX_WEBP_DIM / heightIn);
+    return Math.max(10, Math.min(rawDpi, maxFromWidth, maxFromHeight));
+  })();
   const normalizedItems = (Array.isArray(artboardItems) ? artboardItems : [])
     .map((it) => ({
       assetId: String(it.assetId || ""),
