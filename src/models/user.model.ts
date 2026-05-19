@@ -34,6 +34,43 @@ export interface IUser extends Document {
   resetPasswordExpiresAt?: Date | null;
   artboardDraft?: any;
   cart?: any[];
+  verificationStatus?: {
+    email: boolean;
+    phone: boolean;
+    business: boolean;
+    document: boolean;
+  };
+  businessDetails?: {
+    businessType?: string;
+    registrationNumber?: string;
+    foundedDate?: Date;
+  };
+  businessAddress?: {
+    street: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+    verified: boolean;
+  };
+  certifications?: {
+    name: string;
+    authority: string;
+    date: Date;
+    expiryDate?: Date;
+    verificationCode?: string;
+    documentUrl?: string;
+  }[];
+  badges?: {
+    name: string;
+    icon: string;
+    dateEarned: Date;
+  }[];
+  performance?: {
+    completionRate: number;
+    responseTime: number; // in minutes
+    customerRating: number;
+  };
   settings: {
     profile?: {
       bio?: string;
@@ -181,6 +218,47 @@ const userSchema = new Schema<IUser>(
     artboardDraft: {
       type: Schema.Types.Mixed,
       default: null
+    },
+    verificationStatus: {
+      email: { type: Boolean, default: false },
+      phone: { type: Boolean, default: false },
+      business: { type: Boolean, default: false },
+      document: { type: Boolean, default: false }
+    },
+    businessDetails: {
+      businessType: String,
+      registrationNumber: String,
+      foundedDate: Date
+    },
+    businessAddress: {
+      street: String,
+      city: String,
+      state: String,
+      postalCode: String,
+      country: String,
+      verified: { type: Boolean, default: false }
+    },
+    certifications: [
+      {
+        name: String,
+        authority: String,
+        date: Date,
+        expiryDate: Date,
+        verificationCode: String,
+        documentUrl: String
+      }
+    ],
+    badges: [
+      {
+        name: String,
+        icon: String,
+        dateEarned: { type: Date, default: Date.now }
+      }
+    ],
+    performance: {
+      completionRate: { type: Number, default: 0 },
+      responseTime: { type: Number, default: 0 },
+      customerRating: { type: Number, default: 0 }
     },
     settings: {
       profile: {

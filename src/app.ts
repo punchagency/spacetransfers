@@ -1,6 +1,8 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import path from "path";
+import fs from "fs";
+import sharp from "sharp";
 import mongoose from "mongoose";
 import apiRouter from "./routes/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
@@ -8,7 +10,8 @@ import { errorHandler, notFoundHandler } from "./middleware/error.js";
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (!req.path.startsWith("/api")) return next();
@@ -77,9 +80,52 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Serve static files from the 'uploads' directory
 const uploadsDir = path.join(process.cwd(), "uploads");
-app.use("/uploads", express.static(uploadsDir));
+
+// On-demand WebP thumbnail generator.
+// Intercepts requests for *-thumb200.webp files that don't exist yet, generates them
+// from the source file, then falls through to express.static which serves the result.
+app.use("/uploads", async (req: Request, res: Response, next: NextFunction) => {
+  const filename = path.basename(req.path);
+  if (!filename.endsWith("-thumb200.webp")) return next();
+
+  const thumbPath = path.join(uploadsDir, filename);
+  if (fs.existsSync(thumbPath)) return next(); // already cached on disk
+
+  // Derive source filename: strip -thumb200.webp suffix, try multiple extensions
+  const stem = filename.slice(0, -"-thumb200.webp".length);
+  const candidates = [".png", ".jpg", ".jpeg", ".webp", ".gif", "-trim.png"];
+  let generated = false;
+  for (const ext of candidates) {
+    const srcPath = path.join(uploadsDir, stem + ext);
+    if (fs.existsSync(srcPath)) {
+      try {
+        await fs.promises.mkdir(uploadsDir, { recursive: true });
+        await sharp(srcPath, { limitInputPixels: false })
+          .resize(200, 200, { fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 80 })
+          .toFile(thumbPath);
+        generated = true;
+        break;
+      } catch { /* try next candidate */ }
+    }
+  }
+  if (!generated) return res.status(404).end();
+  next();
+});
+
+// Serve static files with immutable caching.
+// Upload filenames contain timestamps + random IDs so they never change content —
+// a 1-year immutable cache is safe and eliminates repeat downloads entirely.
+app.use(
+  "/uploads",
+  express.static(uploadsDir, {
+    setHeaders: (res) => {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.setHeader("Vary", "Accept-Encoding");
+    },
+  }),
+);
 
 app.get("/health", (req: Request, res: Response) => {
   res.json({ status: "ok" });

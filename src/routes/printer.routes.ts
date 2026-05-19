@@ -32,8 +32,10 @@ import {
   getPrinterProfile, 
   updatePrinterProfile, 
   getPrinterSettings, 
-  updatePrinterSettings 
+  updatePrinterSettings,
+  uploadProfileAsset
 } from "../controllers/printer.controller.js";
+import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
 
@@ -43,6 +45,7 @@ router.get("/dashboard/stats", getDashboardStats);
 router.get("/print-queue", listPrintQueue);
 router.get("/profile", getPrinterProfile);
 router.patch("/profile", updatePrinterProfile);
+router.post("/profile/upload", upload.single("file"), uploadProfileAsset);
 router.get("/settings", getPrinterSettings);
 router.patch("/settings", updatePrinterSettings);
 router.get("/jobs/:jobId", getJobDetails);

@@ -2,17 +2,13 @@ import fs from "fs";
 import path from "path";
 import crypto from "node:crypto";
 import sharp from "sharp";
+import mongoose from "mongoose";
 import { Asset } from "../models/asset.model.js";
 
 const SHEET_DEFAULT_WIDTH_IN = 23.5;
 const SHEET_DEFAULT_HEIGHT_IN = 23.5;
 const GROUP_GAP_IN = 0.06;
 const CROP_PADDING_IN = 0.08;
-
-const pad2 = (n: number) => String(n).padStart(2, "0");
-const formatTimestamp = (d: Date) => {
-  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
-};
 
 const isObjectIdString = (v: string) => /^[0-9a-fA-F]{24}$/.test(String(v || ""));
 
@@ -35,6 +31,12 @@ const resolveLocalUploadPath = (url: string) => {
 };
 
 const loadImageBuffer = async (url: string) => {
+  if (url.startsWith("data:")) {
+    const match = url.match(/^data:[^;]+;base64,(.+)$/s);
+    if (match?.[1]) return Buffer.from(match[1], "base64");
+    return null;
+  }
+
   const local = resolveLocalUploadPath(url);
   if (local && fs.existsSync(local)) {
     return fs.promises.readFile(local);
@@ -50,22 +52,28 @@ const loadImageBuffer = async (url: string) => {
   return null;
 };
 
-const stableStringify = (value: any) => {
-  const seen = new WeakSet();
-  const walk = (v: any): any => {
-    if (v === null || typeof v !== "object") return v;
-    if (seen.has(v)) return null;
-    seen.add(v);
-    if (Array.isArray(v)) return v.map(walk);
-    const out: any = {};
-    for (const k of Object.keys(v).sort()) out[k] = walk(v[k]);
-    return out;
-  };
-  return JSON.stringify(walk(value));
+// Fast cache-key for large item arrays — hashes each item's fields individually
+// with XOR-folding so the full array is never JSON-stringified into one huge string.
+const computeItemsHash = (items: Array<{
+  assetId: string; croppedUrl: string; widthIn: number; heightIn: number;
+  posX: number; posY: number; rotation: number; copies: number;
+}>): string => {
+  const h = crypto.createHash("sha1");
+  h.update(`n=${items.length};`);
+  for (const it of items) {
+    h.update(`${it.assetId}|${it.croppedUrl}|${it.widthIn}|${it.heightIn}|${it.posX}|${it.posY}|${it.rotation}|${it.copies};`);
+  }
+  return h.digest("hex");
 };
 
-const computeCacheKey = (payload: any) => {
-  const raw = stableStringify(payload);
+const computeCacheKey = (payload: {
+  v: number; jobId: string; printerId: string; dpi: number;
+  sheet: { widthIn: number; heightIn: number }; cropToContent: boolean;
+  crop: any; itemsHash: string; png: any;
+}) => {
+  const raw = `v=${payload.v};job=${payload.jobId};printer=${payload.printerId};dpi=${payload.dpi};`
+    + `sheet=${payload.sheet.widthIn}x${payload.sheet.heightIn};crop=${payload.cropToContent};`
+    + `cropRect=${JSON.stringify(payload.crop)};items=${payload.itemsHash};png=${JSON.stringify(payload.png)}`;
   return crypto.createHash("sha1").update(raw).digest("hex");
 };
 
@@ -154,6 +162,8 @@ export const exportGangsheetPng24 = async ({
   artboardItems,
   dpi: dpiInput,
   cropToContent = false,
+  maxComposites,
+  format = "png",
 }: {
   jobId: string;
   printerId: string;
@@ -171,9 +181,14 @@ export const exportGangsheetPng24 = async ({
   }>;
   dpi: number;
   cropToContent?: boolean;
+  /** Preview-mode cap: stop adding composites after this many. Omit for full export. */
+  maxComposites?: number;
+  /** Output format. 'webp' for browser previews (5-10x smaller); 'png' (default) for DTF print export. */
+  format?: "png" | "webp";
 }): Promise<{
   fileName: string;
   filePath: string;
+  relativePath: string;
   byteSize: number;
   dpi: number;
   sheet: { widthIn: number; heightIn: number };
@@ -182,7 +197,7 @@ export const exportGangsheetPng24 = async ({
   cacheHit: boolean;
   crop: { leftIn: number; topIn: number; widthIn: number; heightIn: number } | null;
 }> => {
-  const dpi = Math.max(72, Math.min(1200, Math.round(Number(dpiInput) || 600)));
+  const dpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
   const heightIn = Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
   const normalizedItems = (Array.isArray(artboardItems) ? artboardItems : [])
@@ -220,28 +235,35 @@ export const exportGangsheetPng24 = async ({
   const widthPx = Math.max(1, Math.round(outputSheetWidthIn * dpi));
   const heightPx = Math.max(1, Math.round(outputSheetHeightIn * dpi));
 
+  // Cap items used for the cache key to maxComposites so we never stringify 10k+ items.
+  const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
+  const itemsHash = computeItemsHash(normalizedItems.slice(0, capForKey));
   const cacheKey = computeCacheKey({
-    v: 2,
+    v: 5,
     jobId,
     printerId,
     dpi,
     sheet: { widthIn, heightIn },
     cropToContent,
     crop,
-    items: normalizedItems,
-    png: { compressionLevel: 9, adaptiveFiltering: true, effort: 10 },
+    itemsHash,
+    png: format === "webp"
+      ? { format: "webp", quality: 85, effort: 6 }
+      : { format: "png", compressionLevel: 9, adaptiveFiltering: true, effort: 10, normTransparent: true },
   });
 
-  const fileName = `gangsheet_${jobId}_${dpi}dpi_${cacheKey.slice(0, 12)}.png`;
+  const fileName = `gangsheet_${jobId}_${dpi}dpi_${cacheKey.slice(0, 12)}.${format}`;
   const exportDir = path.join(process.cwd(), "uploads", "exports", "printers", printerId, jobId);
   await fs.promises.mkdir(exportDir, { recursive: true });
   const filePath = path.join(exportDir, fileName);
+  const relativePath = `/uploads/exports/printers/${printerId}/${jobId}/${fileName}`;
 
   if (fs.existsSync(filePath)) {
     const stats = await fs.promises.stat(filePath);
     return {
       fileName,
       filePath,
+      relativePath,
       byteSize: stats.size,
       dpi,
       sheet: { widthIn: outputSheetWidthIn, heightIn: outputSheetHeightIn },
@@ -262,49 +284,116 @@ export const exportGangsheetPng24 = async ({
     limitInputPixels: false,
   });
 
-  const composites: sharp.OverlayOptions[] = [];
+  type Placement = { data: Buffer; srcW: number; srcH: number; left: number; top: number };
+  const placements: Placement[] = [];
   const sourceResolutionErrors: string[] = [];
-  for (const it of normalizedItems) {
-    const copies = Math.max(1, Number(it.copies || 1));
+  const compositesCap = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : Infinity;
+
+  // All items are candidates — the dedup cache below ensures each unique image
+  // is loaded exactly ONCE regardless of how many artboard items reference it.
+  const itemsToLoad = normalizedItems;
+
+  // Deduplicate asset ObjectIds across all items — one DB round-trip for all.
+  const unresolvedIds = Array.from(
+    new Set(
+      itemsToLoad
+        .filter((it) => !it.croppedUrl && isObjectIdString(it.assetId))
+        .map((it) => it.assetId),
+    ),
+  );
+
+  const resolvedMap = new Map<string, string>();
+  if (unresolvedIds.length > 0) {
+    const found = await Asset.find({ _id: { $in: unresolvedIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+      .select("url trimmedUrl")
+      .lean();
+    for (const a of found as any[]) {
+      const id = String(a._id);
+      const url = String(a.trimmedUrl || a.url || "");
+      if (url) resolvedMap.set(id, url);
+    }
+  }
+
+  // Dedup buffer cache — keyed by (srcUrl | widthPx | heightPx | rotation).
+  // A Promise is stored so concurrent callers waiting on the same key share one load.
+  type CachedBuf = { data: Buffer; info: { width: number; height: number } };
+  const bufCache = new Map<string, Promise<CachedBuf | null>>();
+
+  const resolveUrl = (it: (typeof normalizedItems)[number]): string => {
+    let u = String(it.croppedUrl || "");
+    if (!u) u = looksLikeUrlOrPath(it.assetId) ? it.assetId : (resolvedMap.get(it.assetId) || "");
+    return u;
+  };
+
+  const prepareUnique = (srcUrl: string, wPx: number, hPx: number, rot: number, assetId: string): Promise<CachedBuf | null> => {
+    const key = `${srcUrl}|${wPx}|${hPx}|${rot}`;
+    const hit = bufCache.get(key);
+    if (hit) return hit;
+    const p = (async (): Promise<CachedBuf | null> => {
+      const buf = await loadImageBuffer(srcUrl);
+      if (!buf) return null;
+      const meta = await sharp(buf, { limitInputPixels: false }).metadata();
+      if (
+        (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
+        (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
+      ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
+      const out = await sharp(buf, { limitInputPixels: false })
+        .resize(wPx, hPx, { fit: "fill" })
+        .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      return { data: out.data, info: { width: out.info.width, height: out.info.height } };
+    })();
+    bufCache.set(key, p);
+    return p;
+  };
+
+  // Phase 1 — kick off all unique image loads in parallel (batched 16 at a time).
+  const uniqueKeys = new Set<string>();
+  const uniqueJobs: Promise<CachedBuf | null>[] = [];
+  for (const it of itemsToLoad) {
     const wIn = Math.max(0, Number(it.widthIn || 0));
     const hIn = Math.max(0, Number(it.heightIn || 0));
     if (!(wIn > 0) || !(hIn > 0)) continue;
-
-    let srcUrl = String(it.croppedUrl || "");
-    if (!srcUrl) {
-      if (looksLikeUrlOrPath(it.assetId)) {
-        srcUrl = String(it.assetId);
-      } else if (isObjectIdString(it.assetId)) {
-        const asset = await Asset.findById(it.assetId).select("url trimmedUrl").lean();
-        srcUrl = String((asset as any)?.trimmedUrl || (asset as any)?.url || "");
-      }
-    }
+    const srcUrl = resolveUrl(it);
     if (!srcUrl) continue;
+    const key = `${srcUrl}|${Math.round(wIn * dpi)}|${Math.round(hIn * dpi)}|${it.rotation ?? 0}`;
+    if (!uniqueKeys.has(key)) {
+      uniqueKeys.add(key);
+      uniqueJobs.push(prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.assetId));
+    }
+  }
+  const LOAD_BATCH = 16;
+  for (let i = 0; i < uniqueJobs.length; i += LOAD_BATCH) {
+    await Promise.all(uniqueJobs.slice(i, i + LOAD_BATCH));
+  }
 
-    const buf = await loadImageBuffer(srcUrl);
-    if (!buf) continue;
+  // Phase 2 — build preparedItems from cache (instant — no I/O).
+  type PreparedItem = { it: (typeof normalizedItems)[number]; data: Buffer; info: { width: number; height: number } };
+  const preparedItems: PreparedItem[] = [];
+  for (const it of itemsToLoad) {
+    const wIn = Math.max(0, Number(it.widthIn || 0));
+    const hIn = Math.max(0, Number(it.heightIn || 0));
+    if (!(wIn > 0) || !(hIn > 0)) continue;
+    const srcUrl = resolveUrl(it);
+    if (!srcUrl) continue;
+    const cached = await prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.assetId);
+    if (!cached) continue;
+    preparedItems.push({ it, data: cached.data, info: cached.info });
+  }
 
-    const itemWidthPx = Math.round(wIn * dpi);
-    const itemHeightPx = Math.round(hIn * dpi);
-    const rotation = typeof it.rotation === "number" ? it.rotation : 0;
-
+  // Lay out placements; stop at cap so preview never OOMs.
+  for (const { it, data, info } of preparedItems) {
+    if (placements.length >= compositesCap) break;
+    const copies = it.copies;
+    const wIn = it.widthIn;
+    const hIn = it.heightIn;
     const capacityCols = Math.max(1, Math.floor((widthIn + GROUP_GAP_IN) / Math.max(1e-6, wIn + GROUP_GAP_IN)));
     const cols = Math.max(1, Math.min(copies, capacityCols));
 
-    const srcMeta = await sharp(buf, { limitInputPixels: false }).metadata();
-    if (
-      (typeof srcMeta.width === "number" && srcMeta.width > 0 && srcMeta.width < itemWidthPx) ||
-      (typeof srcMeta.height === "number" && srcMeta.height > 0 && srcMeta.height < itemHeightPx)
-    ) {
-      sourceResolutionErrors.push(`asset_${it.assetId}_insufficient_px`);
-    }
-
-    const prepared = await sharp(buf, { limitInputPixels: false })
-      .resize(itemWidthPx, itemHeightPx, { fit: "fill" })
-      .rotate(rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .toBuffer({ resolveWithObject: true });
-
     for (let idx = 0; idx < copies; idx++) {
+      if (placements.length >= compositesCap) break;
       const col = idx % cols;
       const row = Math.floor(idx / cols);
       const xIn = Number(it.posX || 0) + col * (wIn + GROUP_GAP_IN);
@@ -315,32 +404,106 @@ export const exportGangsheetPng24 = async ({
       const centerXpx = Math.round((xIn - cropLeftIn + wIn / 2) * dpi);
       const centerYpx = Math.round((yIn - cropTopIn + hIn / 2) * dpi);
 
-      const placedLeft = Math.round(centerXpx - prepared.info.width / 2);
-      const placedTop = Math.round(centerYpx - prepared.info.height / 2);
-
-      composites.push({
-        input: prepared.data,
-        left: placedLeft,
-        top: placedTop,
+      placements.push({
+        data,
+        srcW: info.width,
+        srcH: info.height,
+        left: Math.round(centerXpx - info.width / 2),
+        top: Math.round(centerYpx - info.height / 2),
       });
     }
   }
 
-  const out = await base
-    .composite(composites)
-    .png({ compressionLevel: 9, adaptiveFiltering: true, palette: false, effort: 10, force: true })
-    .withMetadata({ density: dpi, icc: "sRGB" as any })
-    .toFile(filePath);
+  // Fast pure-JS raw RGBA blit — bypasses Sharp's per-composite overhead entirely.
+  // For the common case of N copies of the same image, Sharp's chunked composite call
+  // had per-op pipeline cost; this is row-by-row Buffer.copy when source pixels are
+  // opaque (the common print case), falling back to source-over only when needed.
+  const accumulator = Buffer.alloc(widthPx * heightPx * 4);
+
+  for (const p of placements) {
+    const sx0 = Math.max(0, -p.left);
+    const sy0 = Math.max(0, -p.top);
+    const dx0 = Math.max(0, p.left);
+    const dy0 = Math.max(0, p.top);
+    const w = Math.min(p.srcW - sx0, widthPx - dx0);
+    const h = Math.min(p.srcH - sy0, heightPx - dy0);
+    if (w <= 0 || h <= 0) continue;
+
+    const rowBytes = w * 4;
+    for (let y = 0; y < h; y++) {
+      const srcRowStart = ((sy0 + y) * p.srcW + sx0) * 4;
+      const dstRowStart = ((dy0 + y) * widthPx + dx0) * 4;
+
+      // Fast path: if destination row at these pixels is fully transparent (alpha = 0),
+      // we can memcpy the source row directly. This holds for non-overlapping tiles,
+      // which is the normal gangsheet layout.
+      let canFastCopy = true;
+      for (let x = 3; x < rowBytes; x += 4) {
+        if (accumulator[dstRowStart + x] !== 0) { canFastCopy = false; break; }
+      }
+
+      if (canFastCopy) {
+        p.data.copy(accumulator, dstRowStart, srcRowStart, srcRowStart + rowBytes);
+      } else {
+        // Per-pixel source-over alpha blend for the rare overlap case.
+        for (let x = 0; x < w; x++) {
+          const si = srcRowStart + x * 4;
+          const di = dstRowStart + x * 4;
+          const sA = p.data[si + 3];
+          if (sA === 0) continue;
+          const dA = accumulator[di + 3];
+          if (sA === 255 || dA === 0) {
+            accumulator[di] = p.data[si];
+            accumulator[di + 1] = p.data[si + 1];
+            accumulator[di + 2] = p.data[si + 2];
+            accumulator[di + 3] = sA;
+            continue;
+          }
+          const oneMinusSA = 255 - sA;
+          const outA = sA + ((dA * oneMinusSA) >> 8);
+          accumulator[di] = ((p.data[si] * sA + ((accumulator[di] * dA * oneMinusSA) >> 8)) / outA) | 0;
+          accumulator[di + 1] = ((p.data[si + 1] * sA + ((accumulator[di + 1] * dA * oneMinusSA) >> 8)) / outA) | 0;
+          accumulator[di + 2] = ((p.data[si + 2] * sA + ((accumulator[di + 2] * dA * oneMinusSA) >> 8)) / outA) | 0;
+          accumulator[di + 3] = outA;
+        }
+      }
+    }
+  }
+
+  // Suppress unused-base warning — we use the dimensions directly via Buffer.alloc above.
+  void base;
+
+  // Zero out RGB for fully-transparent pixels — prediction filters (Sub/Up/Paeth) compress
+  // runs of zeros far better than non-zero RGB under alpha=0, cutting file size significantly.
+  for (let i = 0; i < accumulator.length; i += 4) {
+    if (accumulator[i + 3] === 0) {
+      accumulator[i] = 0;
+      accumulator[i + 1] = 0;
+      accumulator[i + 2] = 0;
+    }
+  }
+
+  const pipeline = sharp(accumulator, {
+    raw: { width: widthPx, height: heightPx, channels: 4 },
+    limitInputPixels: false,
+  });
+
+  const out = await (format === "webp"
+    ? pipeline.webp({ quality: 85, lossless: false, effort: 6 }).withMetadata({ density: dpi })
+    : pipeline.png({ compressionLevel: 9, adaptiveFiltering: true, palette: false, effort: 10, force: true }).withMetadata({ density: dpi, icc: "sRGB" as any })
+  ).toFile(filePath);
 
   const errors: string[] = [];
   const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
 
-  if (meta.format !== "png") errors.push("format_not_png");
+  if (meta.format !== format) errors.push(`format_not_${format}`);
   if (meta.width !== widthPx || meta.height !== heightPx) errors.push("pixel_dimensions_mismatch");
-  if (!meta.hasAlpha) errors.push("alpha_missing");
-  if (meta.channels !== 4) errors.push("not_rgba");
-  if (typeof meta.density === "number" && Math.round(meta.density) !== dpi) errors.push("dpi_missing_or_incorrect");
-  if (meta.space && String(meta.space).toLowerCase() !== "srgb") errors.push("colorspace_not_srgb");
+  if (format === "png") {
+    if (!meta.hasAlpha) errors.push("alpha_missing");
+    if (meta.channels !== 4) errors.push("not_rgba");
+    if (typeof meta.density === "number" && Math.round(meta.density) !== dpi) errors.push("dpi_missing_or_incorrect");
+    if (meta.space && String(meta.space).toLowerCase() !== "srgb") errors.push("colorspace_not_srgb");
+  }
   for (const e of sourceResolutionErrors) errors.push(e);
 
   const validation = {
@@ -360,6 +523,7 @@ export const exportGangsheetPng24 = async ({
   return {
     fileName,
     filePath,
+    relativePath,
     byteSize: out.size,
     dpi,
     sheet: { widthIn: outputSheetWidthIn, heightIn: outputSheetHeightIn },
