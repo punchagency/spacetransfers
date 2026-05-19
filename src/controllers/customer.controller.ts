@@ -1,10 +1,11 @@
-  import { Request, Response, NextFunction } from "express";
+import { Request, Response, NextFunction } from "express";
 import { User } from "../models/user.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
 import { Settings } from "../models/settings.model.js";
 import sharp from "sharp";
+import mongoose from "mongoose";
 import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
 import fs from "fs";
@@ -19,6 +20,16 @@ import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 interface CustomError extends Error {
   statusCode?: number;
 }
+
+// Derive thumbnail URL from any asset URL by replacing its extension with -thumb200.webp.
+// The thumbnail is generated on-demand by the /uploads middleware on first access.
+const computeThumbUrl = (assetUrl: string | null | undefined): string | null => {
+  if (!assetUrl) return null;
+  const lastSlash = assetUrl.lastIndexOf("/");
+  const lastDot = assetUrl.lastIndexOf(".");
+  if (lastDot <= lastSlash) return null;
+  return assetUrl.substring(0, lastDot) + "-thumb200.webp";
+};
 
 export const trimAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -1147,10 +1158,34 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
 
     await asset.save();
 
+    // Eagerly generate the 200px WebP thumbnail in the background so the first
+    // view is instant instead of waiting for the on-demand middleware to fire.
+    setImmediate(async () => {
+      try {
+        const dir = path.dirname(req.file!.path);
+        const parsed = path.parse(req.file!.filename);
+        // Prefer the trimmed PNG (no background), fall back to original
+        const trimmedFilename = `${parsed.name}-trim.png`;
+        const trimmedExists = fs.existsSync(path.join(dir, trimmedFilename));
+        const srcFilename = trimmedExists ? trimmedFilename : req.file!.filename;
+        const srcStem = path.parse(srcFilename).name;
+        const thumbPath = path.join(dir, `${srcStem}-thumb200.webp`);
+        if (!fs.existsSync(thumbPath)) {
+          await sharp(path.join(dir, srcFilename), { limitInputPixels: false })
+            .resize(200, 200, { fit: "inside", withoutEnlargement: true })
+            .webp({ quality: 80 })
+            .toFile(thumbPath);
+        }
+      } catch { /* non-critical */ }
+    });
+
+    const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
+
     res.status(201).json({
       id: asset.id,
       url: asset.url,
       trimmedUrl: asset.trimmedUrl || null,
+      thumbnailUrl,
       originalFilename: asset.originalFilename,
       sizeBytes: asset.sizeBytes,
       widthPx: asset.widthPx,
@@ -1170,25 +1205,39 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
 
 export const listAssets = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const assets = await Asset.find({ user: req.user?.id })
-      .sort({ _id: -1 });
+    const pageSize = Math.max(1, Math.min(500, parseInt(String(req.query.limit || "200"), 10) || 200));
+    const cursor = typeof req.query.cursor === "string" && mongoose.Types.ObjectId.isValid(req.query.cursor)
+      ? req.query.cursor
+      : null;
 
-    const responseItems = assets.map(asset => ({
+    const query: any = { user: req.user?.id };
+    if (cursor) query._id = { $lt: new mongoose.Types.ObjectId(cursor) };
+
+    // Fetch one extra to detect whether a next page exists.
+    const assets = await Asset.find(query)
+      .sort({ _id: -1 })
+      .limit(pageSize + 1)
+      .select("url trimmedUrl originalFilename sizeBytes widthPx heightPx trimmedWidthPx trimmedHeightPx dpi");
+
+    const hasMore = assets.length > pageSize;
+    const page = hasMore ? assets.slice(0, pageSize) : assets;
+    const nextCursor = hasMore ? String(page[page.length - 1]._id) : null;
+
+    const items = page.map((asset) => ({
       id: asset.id,
       url: asset.url,
       trimmedUrl: asset.trimmedUrl || null,
+      thumbnailUrl: computeThumbUrl(asset.trimmedUrl || asset.url),
       originalFilename: asset.originalFilename,
       sizeBytes: asset.sizeBytes,
       widthPx: asset.widthPx,
       heightPx: asset.heightPx,
       trimmedWidthPx: asset.trimmedWidthPx || null,
       trimmedHeightPx: asset.trimmedHeightPx || null,
-      dpi: asset.dpi
+      dpi: asset.dpi,
     }));
 
-    res.json({
-      items: responseItems
-    });
+    res.json({ items, nextCursor });
   } catch (error) {
     next(error);
   }

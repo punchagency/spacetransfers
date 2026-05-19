@@ -14,6 +14,7 @@ import { AdminNotification } from "../models/adminNotification.model.js";
 import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminNotificationClient } from "../services/adminNotificationsHub.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
+import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 
 interface CustomError extends Error {
@@ -797,6 +798,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
 
     const pageSize = parseInt(limit as string);
     const orders = await Order.find(query)
+      .select("-items.artboardItems")
       .sort({ createdAt: -1, _id: -1 })
       .limit(pageSize + 1)
       .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions")
@@ -1462,11 +1464,6 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-const gangsheetPreviewCache = new Map<
-  string,
-  { updatedAtMs: number; resolution: number; previewDataUrl: string; resolutionDPI: number; sheetWidthIn: number; sheetHeightIn: number }
->();
-
 export const getOrderGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
@@ -1477,23 +1474,52 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       throw error;
     }
 
-    const resolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 150));
+    const requestedResolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 72));
 
-    const order = await Order.findById(id).select("items assignedPrinter updatedAt").lean();
-    if (!order) {
+    // Project only the 8 rendering fields from artboard items — all items, minimal payload.
+    const [orderRaw] = await (Order as any).aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(id) } },
+      { $project: {
+        assignedPrinter: 1,
+        items: {
+          $map: {
+            input: { $ifNull: ["$items", []] },
+            as: "item",
+            in: {
+              type: "$$item.type",
+              widthIn: "$$item.widthIn",
+              heightIn: "$$item.heightIn",
+              sheetWidthIn: "$$item.sheetWidthIn",
+              sheetHeightIn: "$$item.sheetHeightIn",
+              artboardItems: {
+                $map: {
+                  input: { $ifNull: ["$$item.artboardItems", []] },
+                  as: "ai",
+                  in: {
+                    assetId: "$$ai.assetId",
+                    croppedUrl: "$$ai.croppedUrl",
+                    widthIn: "$$ai.widthIn",
+                    heightIn: "$$ai.heightIn",
+                    posX: "$$ai.posX",
+                    posY: "$$ai.posY",
+                    rotation: "$$ai.rotation",
+                    copies: "$$ai.copies",
+                  },
+                },
+              },
+            },
+          },
+        },
+      }},
+    ]);
+
+    if (!orderRaw) {
       const error = new Error("Order not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const updatedAtMs = order.updatedAt ? new Date(order.updatedAt as any).getTime() : 0;
-    const cacheKey = `${id}_${resolution}`;
-    const cached = gangsheetPreviewCache.get(cacheKey);
-    if (cached && cached.updatedAtMs === updatedAtMs && cached.resolution === resolution) {
-      return res.json(cached);
-    }
-
-    const gangsheetItem = (order.items || []).find((i: any) => i?.type === "gangsheet") || (order.items || [])[0] || {};
+    const gangsheetItem = (orderRaw.items || []).find((i: any) => i?.type === "gangsheet") || (orderRaw.items || [])[0] || {};
     const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
     if (artboardItems.length === 0) {
       const error = new Error("No artboard items found for this order") as CustomError;
@@ -1501,31 +1527,46 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       throw error;
     }
 
-    const sheetWidthInRaw = gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn;
-    const sheetHeightInRaw = gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn;
-    const sheetWidthIn = typeof sheetWidthInRaw === "number" && Number.isFinite(sheetWidthInRaw) ? sheetWidthInRaw : 23.5;
-    const sheetHeightIn = typeof sheetHeightInRaw === "number" && Number.isFinite(sheetHeightInRaw) ? sheetHeightInRaw : 23.5;
+    const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
+      ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
+      ? gangsheetItem.widthIn : 23.5;
+    const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
+      ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
+      ? gangsheetItem.heightIn : 23.5;
+
+    const printerId = String((orderRaw as any).assignedPrinter || "admin");
+
+    // Cap DPI so the canvas never exceeds ~15 Mpx: prevents a single 1200"-sheet
+    // preview from allocating a 550+ MB RGBA buffer and exceeding browser image limits.
+    const MAX_PREVIEW_PIXELS = 15_000_000;
+    const pixelBudgetDPI = Math.floor(
+      Math.sqrt(MAX_PREVIEW_PIXELS / Math.max(0.01, sheetWidthIn * sheetHeightIn))
+    );
+    const resolution = Math.max(10, Math.min(requestedResolution, pixelBudgetDPI));
 
     const rendered = await exportGangsheetPng24({
-      jobId: String(id),
-      printerId: String((order as any).assignedPrinter || "admin"),
+      jobId: id,
+      printerId,
       sheetWidthIn,
       sheetHeightIn,
       artboardItems,
-      dpi: resolution
+      dpi: resolution,
+      maxComposites: 10000,
+      format: "webp",
     });
 
-    const fileBuf = await fs.promises.readFile(rendered.filePath);
-    const b64 = fileBuf.toString("base64");
+    // Return a static file URL so the browser fetches the WebP directly and caches it.
+    // No base64 encoding, no JSON bloat — immutable cache headers are set by Express.
+    const previewDataUrl = `${env.appUrl}${rendered.relativePath}`;
 
-    const payload = {
-      previewDataUrl: `data:image/png;base64,${b64}`,
+    res.json({
+      previewDataUrl,
       resolutionDPI: rendered.dpi,
       sheetWidthIn,
-      sheetHeightIn
-    };
-    gangsheetPreviewCache.set(cacheKey, { ...payload, updatedAtMs, resolution });
-    res.json(payload);
+      sheetHeightIn,
+      totalItems: artboardItems.length,
+      cacheKey: rendered.cacheKey,
+    });
   } catch (error) {
     next(error);
   }

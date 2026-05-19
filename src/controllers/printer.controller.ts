@@ -15,6 +15,7 @@ import { GangsheetExportAudit } from "../models/gangsheetExportAudit.model.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import sharp from "sharp";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -98,6 +99,57 @@ const computeGangsheetFaceThumbnail = ({
   if (croppedUrl) return croppedUrl;
 
   return resolveThumbnailUrl(String(best.assetId || ""), assetsById);
+};
+
+export const uploadProfileAsset = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    const file = req.file;
+    const { type } = req.body; // 'avatar' or 'certification'
+
+    if (!file) {
+      const error = new Error("No file uploaded") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const user = await User.findById(printerId);
+    if (!user) {
+      const error = new Error("Printer not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const publicUrl = `/uploads/${file.filename}`;
+
+    if (type === "avatar") {
+      // Optimize image
+      const optimizedFilename = `opt-${file.filename}`;
+      const optimizedPath = path.join(path.dirname(file.path), optimizedFilename);
+      
+      await sharp(file.path)
+        .resize(400, 400, { fit: "cover" })
+        .toFormat("webp")
+        .toFile(optimizedPath);
+
+      user.avatarUrl = `/uploads/${optimizedFilename}`;
+      await user.save();
+      
+      return res.json({ 
+        message: "Avatar uploaded and optimized", 
+        url: user.avatarUrl 
+      });
+    } else if (type === "certification") {
+      return res.json({ 
+        message: "Document uploaded successfully", 
+        url: publicUrl 
+      });
+    }
+
+    res.json({ url: publicUrl });
+  } catch (error) {
+    next(error);
+  }
 };
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
@@ -628,12 +680,24 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
   }
 };
 
+const computeThumbUrl = (assetUrl: string | null | undefined): string | null => {
+  if (!assetUrl) return null;
+  const lastSlash = assetUrl.lastIndexOf("/");
+  const lastDot = assetUrl.lastIndexOf(".");
+  if (lastDot <= lastSlash) return null;
+  return assetUrl.substring(0, lastDot) + "-thumb200.webp";
+};
+
 export const getJobAssets = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
     const printerId = req.user?.id;
+    const pageSize = Math.max(1, Math.min(500, parseInt(String(req.query.limit || "200"), 10) || 200));
+    const pageNum = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
 
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId })
+      .select("items")
+      .lean();
 
     if (!job) {
       const error = new Error("Job not found or not assigned to this printer") as CustomError;
@@ -641,38 +705,43 @@ export const getJobAssets = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
-    const assetIds = new Set<string>();
+    const assetIdSet = new Set<string>();
 
-    for (const item of job.items) {
-      // Only items in the gangsheet should be shown
+    for (const item of (job as any).items || []) {
       if (item.type === "gangsheet" || item.artboardItems) {
         if (Array.isArray(item.artboardItems) && item.artboardItems.length > 0) {
-          item.artboardItems.forEach((ai: any) => {
-            if (ai.assetId) assetIds.add(String(ai.assetId));
-          });
+          for (const ai of item.artboardItems) {
+            if (ai.assetId) assetIdSet.add(String(ai.assetId));
+          }
         } else if (item.designId && isObjectIdString(String(item.designId))) {
-          // Fallback to design if artboardItems not snapshotted in order
           const design = await Design.findById(item.designId).select("artboardData").lean();
           if (design?.artboardData?.items) {
-            design.artboardData.items.forEach((di: any) => {
-              if (di.assetId) assetIds.add(String(di.assetId));
-            });
+            for (const di of (design as any).artboardData.items) {
+              if (di.assetId) assetIdSet.add(String(di.assetId));
+            }
           }
         }
       }
     }
 
-    const { ids, urls } = splitAssetRefs(assetIds);
-    const assets = await Asset.find({
-      $or: [
-        ...(ids.length ? [{ _id: { $in: ids } }] : []),
-        ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : [])
-      ]
-    });
+    // Paginate the ID set — no DB skip/limit needed, just slice the array.
+    const allIds = Array.from(assetIdSet);
+    const total = allIds.length;
+    const offset = (pageNum - 1) * pageSize;
+    const pageIds = allIds.slice(offset, offset + pageSize);
+
+    const { ids, urls } = splitAssetRefs(new Set(pageIds));
+    const assets = pageIds.length
+      ? await Asset.find({
+          $or: [
+            ...(ids.length ? [{ _id: { $in: ids } }] : []),
+            ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : []),
+          ],
+        }).select("url trimmedUrl originalFilename widthPx heightPx dpi sizeBytes")
+      : [];
 
     const uniqueAssetsMap = new Map<string, any>();
-    assets.forEach(asset => {
-      // Deduplicate by original URL to ensure "clean copy" and "prevent duplicate copies"
+    for (const asset of assets) {
       const url = asset.url;
       if (url && !uniqueAssetsMap.has(url)) {
         uniqueAssetsMap.set(url, {
@@ -682,20 +751,19 @@ export const getJobAssets = async (req: Request, res: Response, next: NextFuncti
           heightPx: asset.heightPx,
           dpi: asset.dpi,
           downloadUrl: asset.url,
-          sizeBytes: asset.sizeBytes || 0
+          thumbnailUrl: computeThumbUrl(asset.trimmedUrl || asset.url),
+          sizeBytes: asset.sizeBytes || 0,
         });
       }
-    });
+    }
 
     const formattedAssets = Array.from(uniqueAssetsMap.values());
-    const totalBytes = formattedAssets.reduce((sum, asset) => sum + (asset.sizeBytes || 0), 0);
+    const totalBytes = formattedAssets.reduce((sum, a) => sum + (a.sizeBytes || 0), 0);
 
     res.json({
       assets: formattedAssets,
-      counts: {
-        images: formattedAssets.length,
-        totalBytes
-      }
+      total,
+      counts: { images: total, totalBytes },
     });
   } catch (error) {
     next(error);
@@ -974,7 +1042,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
       sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
       artboardItems,
-      dpi: 600,
+      dpi: 300,
       cropToContent: true
     });
 
@@ -1054,18 +1122,59 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
 export const getJobGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const resolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 150));
+    const requestedResolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 72));
     const printerId = req.user?.id;
 
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
+    if (!mongoose.Types.ObjectId.isValid(String(jobId))) {
+      const error = new Error("Invalid job id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
-    if (!job) {
+    // Fetch all artboard items but project only the 8 rendering fields — never loads
+    // full artboard documents. 10k items × ~100 bytes = ~1 MB, vs MB-per-item without projection.
+    const [jobRaw] = await (Order as any).aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(String(jobId)), assignedPrinter: new mongoose.Types.ObjectId(String(printerId)) } },
+      { $project: {
+        items: {
+          $map: {
+            input: { $ifNull: ["$items", []] },
+            as: "item",
+            in: {
+              type: "$$item.type",
+              widthIn: "$$item.widthIn",
+              heightIn: "$$item.heightIn",
+              sheetWidthIn: "$$item.sheetWidthIn",
+              sheetHeightIn: "$$item.sheetHeightIn",
+              artboardItems: {
+                $map: {
+                  input: { $ifNull: ["$$item.artboardItems", []] },
+                  as: "ai",
+                  in: {
+                    assetId: "$$ai.assetId",
+                    croppedUrl: "$$ai.croppedUrl",
+                    widthIn: "$$ai.widthIn",
+                    heightIn: "$$ai.heightIn",
+                    posX: "$$ai.posX",
+                    posY: "$$ai.posY",
+                    rotation: "$$ai.rotation",
+                    copies: "$$ai.copies",
+                  },
+                },
+              },
+            },
+          },
+        },
+      }},
+    ]);
+
+    if (!jobRaw) {
       const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const gangsheetItem = (job.items || []).find((i: any) => i?.type === "gangsheet") || (job.items || [])[0] || {};
+    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
     const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
     if (artboardItems.length === 0) {
       const error = new Error("No artboard items found for this job") as CustomError;
@@ -1073,28 +1182,43 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       throw error;
     }
 
-    const sheetWidthInRaw = gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn;
-    const sheetHeightInRaw = gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn;
-    const sheetWidthIn = typeof sheetWidthInRaw === "number" && Number.isFinite(sheetWidthInRaw) ? sheetWidthInRaw : 23.5;
-    const sheetHeightIn = typeof sheetHeightInRaw === "number" && Number.isFinite(sheetHeightInRaw) ? sheetHeightInRaw : 23.5;
+    const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
+      ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
+      ? gangsheetItem.widthIn : 23.5;
+    const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
+      ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
+      ? gangsheetItem.heightIn : 23.5;
+
+    // Cap DPI so the canvas never exceeds ~15 Mpx: prevents a 1200"-sheet preview
+    // from allocating a 550+ MB RGBA buffer and exceeding browser image limits.
+    const MAX_PREVIEW_PIXELS = 15_000_000;
+    const pixelBudgetDPI = Math.floor(
+      Math.sqrt(MAX_PREVIEW_PIXELS / Math.max(0.01, sheetWidthIn * sheetHeightIn))
+    );
+    const resolution = Math.max(10, Math.min(requestedResolution, pixelBudgetDPI));
 
     const rendered = await exportGangsheetPng24({
-      jobId: job.id,
+      jobId: String(jobId),
       printerId: String(printerId),
       sheetWidthIn,
       sheetHeightIn,
       artboardItems,
-      dpi: resolution
+      dpi: resolution,
+      maxComposites: 10000,
+      format: "webp",
     });
 
-    const fileBuf = await fs.promises.readFile(rendered.filePath);
-    const b64 = fileBuf.toString("base64");
+    // Return a static file URL so the browser fetches the WebP directly and caches it.
+    // No base64 encoding, no JSON bloat — immutable cache headers are set by Express.
+    const previewDataUrl = `${env.appUrl}${rendered.relativePath}`;
 
     res.json({
-      previewDataUrl: `data:image/png;base64,${b64}`,
+      previewDataUrl,
       resolutionDPI: rendered.dpi,
       sheetWidthIn,
-      sheetHeightIn
+      sheetHeightIn,
+      totalItems: artboardItems.length,
+      cacheKey: rendered.cacheKey,
     });
   } catch (error) {
     next(error);
@@ -1283,7 +1407,13 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       }
     }
 
-    const orders = await Order.find(query).sort({ createdAt: -1, _id: -1 }).limit(pageSize + 1);
+    // Exclude artboardItems — they can be 10k+ elements per order and are never needed
+    // in list view. Use previewImage for thumbnails instead.
+    const orders = await Order.find(query)
+      .select("-items.artboardItems")
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pageSize + 1)
+      .lean();
 
     const formatDueDate = (d: Date) => {
       const now = new Date();
@@ -1310,17 +1440,17 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const hasNextPage = orders.length > pageSize;
     const pageOrders = hasNextPage ? orders.slice(0, pageSize) : orders;
 
-    const formattedOrders = await Promise.all(pageOrders.map(async (order) => {
+    const formattedOrders = pageOrders.map((order) => {
       const firstItem = order.items[0] || {};
-      const sheetSize = (firstItem.widthIn && firstItem.heightIn) 
-        ? `${firstItem.widthIn}x${firstItem.heightIn}` 
+      const sheetSize = (firstItem.widthIn && firstItem.heightIn)
+        ? `${firstItem.widthIn}x${firstItem.heightIn}`
         : "N/A";
 
-      const location = order.shippingAddress 
+      const location = order.shippingAddress
         ? `${order.shippingAddress.city}, ${order.shippingAddress.state}`
         : "N/A";
 
-            let displayStatus: any = order.status;
+      let displayStatus: any = order.status;
       for (const [label, val] of Object.entries(statusMap)) {
         if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
           displayStatus = label;
@@ -1328,41 +1458,14 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         }
       }
 
-      const designIdsRaw = order.items.filter(i => i.designId).map(i => String(i.designId));
-      const designIds = designIdsRaw
-        .filter((id) => /^[0-9a-fA-F]{24}$/.test(id))
-        .map((id) => new mongoose.Types.ObjectId(id));
-      const designs = designIds.length ? await Design.find({ _id: { $in: designIds } }) : [];
-      const assetIds = new Set<string>();
-      const gangsheetItem = (order.items || []).find((i: any) => i?.type === "gangsheet") || (order.items || [])[0] || {};
-      const artboardItems = Array.isArray((gangsheetItem as any).artboardItems) ? (gangsheetItem as any).artboardItems : [];
-      designs.forEach(d => {
-        d.artboardData?.items?.forEach(item => {
-          if (item.assetId) assetIds.add(item.assetId);
-        });
-      });
-      artboardItems.forEach((it: any) => {
-        if (it?.assetId) assetIds.add(String(it.assetId));
-      });
-      const { ids, urls } = splitAssetRefs(assetIds);
-      const assetOr: any[] = [
-        ...(ids.length ? [{ _id: { $in: ids } }] : []),
-        ...(urls.length ? [{ url: { $in: urls } }, { trimmedUrl: { $in: urls } }] : [])
-      ];
-      const assets = assetOr.length ? await Asset.find({ $or: assetOr }) : [];
-      
-      const hasWarning = assets.length < assetIds.size || assets.some(a => !a.dpi || a.dpi < 150);
-      const assetsById = new Map<string, string>();
-      assets.forEach((a: any) => {
-        const id = a?._id ? String(a._id) : "";
-        const url = typeof a?.trimmedUrl === "string" ? a.trimmedUrl : typeof a?.url === "string" ? a.url : "";
-        if (id && url) assetsById.set(id, url);
-      });
-      const faceThumbnail = computeGangsheetFaceThumbnail({ items: order.items as any, assetsById });
+      const thumbnail = typeof firstItem.previewImage === "string" && firstItem.previewImage
+        ? firstItem.previewImage
+        : null;
 
+      const orderId = String((order as any)._id);
       return {
-        id: order.id,
-        actualId: order.id,
+        id: orderId,
+        actualId: orderId,
         displayId: (order as any)?.displayId ? String((order as any).displayId) : null,
         customerName: `${order.customer.firstName} ${order.customer.lastName}`,
         sheetSize,
@@ -1371,11 +1474,11 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         status: displayStatus,
         dueDate: formatDueDate(order.createdAt),
         isUrgent: order.priority === "URGENT",
-        hasWarning,
+        hasWarning: false,
         statusDescription: statusDescription(displayStatus),
-        thumbnail: faceThumbnail || (typeof firstItem.previewImage === "string" ? firstItem.previewImage : null)
+        thumbnail,
       };
-    }));
+    });
 
     const lastOrder = pageOrders[pageOrders.length - 1];
     const nextCursor =
@@ -1924,21 +2027,55 @@ export const getPrinterEarnings = async (req: Request, res: Response, next: Next
 export const getPrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
-    const user = await User.findById(printerId);                                                                                                  
-                                   
+    const user = await User.findById(printerId);
+
     if (!user) {
       const error = new Error("Printer not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
+    // Real-time job count
+    const totalJobs = await Order.countDocuments({ assignedPrinter: printerId });
+
+    // Fallback for address synchronization
+    const businessAddress: any = user.businessAddress?.street 
+      ? user.businessAddress 
+      : (user.defaultShippingAddress || {});
+
     res.json({
+      name: user.name,
       businessName: user.companyName || user.name,
       email: user.email,
       phone: user.phone || "N/A",
       website: user.website || "N/A",
+      avatarUrl: user.avatarUrl,
       regions: user.regions || [],
-      status: user.status || "Active"
+      status: user.status || "Active",
+      memberSince: user.createdAt,
+      totalJobs,
+      verificationStatus: user.verificationStatus || {
+        email: false,
+        phone: false,
+        business: false,
+        document: false
+      },
+      businessDetails: user.businessDetails || {},
+      businessAddress: {
+        street: businessAddress.street || "",
+        city: businessAddress.city || "",
+        state: businessAddress.state || "",
+        postalCode: businessAddress.postalCode || "",
+        country: businessAddress.country || "",
+        verified: (businessAddress as any).verified || false
+      },
+      certifications: user.certifications || [],
+      badges: user.badges || [],
+      performance: user.performance || {
+        completionRate: 0,
+        responseTime: 0,
+        customerRating: user.rating || 0
+      }
     });
   } catch (error) {
     next(error);
@@ -1948,7 +2085,15 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
 export const updatePrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
-    const { businessName, phone, website } = req.body;
+    const { 
+      name,
+      businessName, 
+      phone, 
+      website, 
+      businessDetails, 
+      businessAddress,
+      certifications 
+    } = req.body;
 
     const user = await User.findById(printerId);
 
@@ -1958,16 +2103,36 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
+    if (name) user.name = name;
     if (businessName) user.companyName = businessName;
     if (phone) user.phone = phone;
     if (website) user.website = website;
+    
+    if (businessDetails) {
+      user.businessDetails = { ...user.businessDetails, ...businessDetails };
+    }
+    
+    if (businessAddress) {
+      user.businessAddress = { ...user.businessAddress, ...businessAddress };
+    }
+
+    if (certifications) {
+      user.certifications = certifications;
+    }
 
     await user.save();
 
     res.json({
-      businessName: user.companyName || user.name,
-      phone: user.phone || "N/A",
-      website: user.website || "N/A"
+      message: "Profile updated successfully",
+      profile: {
+        name: user.name,
+        businessName: user.companyName || user.name,
+        phone: user.phone || "N/A",
+        website: user.website || "N/A",
+        businessDetails: user.businessDetails,
+        businessAddress: user.businessAddress,
+        certifications: user.certifications
+      }
     });
   } catch (error) {
     next(error);

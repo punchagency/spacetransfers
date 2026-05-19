@@ -144,13 +144,23 @@ export const registerUser = async ({
   const resolvedRegion = region || (resolvedRole === UserRoles.CUSTOMER ? "West" : undefined);
   if (resolvedRegion) userPayload.regions = [resolvedRegion];
   if (address) {
-    userPayload.defaultShippingAddress = {
+    const addressData = {
       street: String(address.street || ""),
       city: String(address.city || ""),
       state: String(address.state || ""),
       postalCode: String(address.postalCode || ""),
       country: String(address.country || "")
     };
+
+    userPayload.defaultShippingAddress = addressData;
+
+    // Synchronize to businessAddress for printers
+    if (resolvedRole === UserRoles.PRINTER) {
+      userPayload.businessAddress = {
+        ...addressData,
+        verified: false
+      };
+    }
   }
 
   const user = await User.create(userPayload);
