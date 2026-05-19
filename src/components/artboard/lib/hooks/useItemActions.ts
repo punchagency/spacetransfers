@@ -1,5 +1,8 @@
 import { ArtboardItem } from "../../types";
 import { apiFetch } from "../../../../lib/utils/api";
+import { CANVAS } from "../../../../config/artboard.config";
+import { computeRenderCopies } from "../utils/layoutHelpers";
+import toast from "react-hot-toast";
 
 export const useItemActions = (
   items: ArtboardItem[],
@@ -7,6 +10,9 @@ export const useItemActions = (
   selectedId: number | null,
   snapToGrid: boolean,
   snapToGridPoint: (value: number) => number,
+  canvasWidth: number,
+  marginSize: number,
+  spacing: number,
   onActionPerformed?: (action: {
     type: string;
     id?: number;
@@ -251,10 +257,23 @@ export const useItemActions = (
 
   const setCopies = (n: number) => {
     if (selectedId == null) return;
-    const clamped = Math.max(1, Math.floor(n));
+    const current = items.find((it) => it.id === selectedId);
+    if (!current) return;
+    const requested = Math.max(1, Math.floor(n));
+    const maxFit = computeRenderCopies(
+      { ...current, copies: requested },
+      canvasWidth,
+      marginSize,
+      spacing,
+    );
+    const clamped = Math.min(requested, maxFit);
+    if (clamped > current.copies && items.length >= CANVAS.MAX_ITEMS) {
+      toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items before adding more copies.`);
+      return;
+    }
     setItems((prev) =>
       prev.map((it) =>
-        it.id === selectedId ? { ...it, copies: clamped, gravityActive: true } : it
+        it.id === selectedId ? { ...it, copies: clamped, gravityActive: true, skipAnimation: true } : it
       )
     );
     emit({
@@ -342,6 +361,43 @@ export const useItemActions = (
     emit({ type: "toggleExpand", id: selectedId });
   };
 
+  const removeBg = async (onProgress?: (phase: string, pct: number) => void) => {
+    if (selectedId == null) return;
+    const item = items.find((it) => it.id === selectedId);
+    if (!item) return;
+
+    const { removeBackgroundAI } = await import("../utils/bgRemover");
+    const result = await removeBackgroundAI(item.url, onProgress);
+
+    // Preserve physical size: derive DPI from original pixel width vs inch width
+    const dpi =
+      result.originalWidthPx > 0 && item.widthIn > 0
+        ? result.originalWidthPx / item.widthIn
+        : 300;
+    const newWidthIn = result.widthPx / dpi;
+    const newHeightIn = result.heightPx / dpi;
+
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === selectedId
+          ? {
+              ...it,
+              url: result.dataUrl,
+              widthIn: newWidthIn,
+              heightIn: newHeightIn,
+              // Make the BG-removed result the new baseline so that toggling
+              // Auto Crop off doesn't restore the original white-background image.
+              originalUrl: result.dataUrl,
+              originalWidthIn: newWidthIn,
+              originalHeightIn: newHeightIn,
+              autoCrop: true,
+            }
+          : it
+      )
+    );
+    emit({ type: "removeBg", id: selectedId });
+  };
+
   const deleteSelected = () => {
     if (selectedId == null) return;
     setItems((prev) => {
@@ -373,5 +429,6 @@ export const useItemActions = (
     setPosY,
     toggleExpandSelected,
     deleteSelected,
+    removeBg,
   };
 };
