@@ -1077,11 +1077,16 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           cropToContent: true,
         });
 
-        if (!rendered.validation.ok) {
+        // Structural errors (format mismatch, wrong dimensions, missing alpha) indicate a
+        // genuinely broken file — fail hard. Resolution warnings are non-fatal.
+        const structuralErrors = rendered.validation.errors.filter(
+          (e) => !e.startsWith("asset_") && !e.includes("dpi") && !e.includes("colorspace"),
+        );
+        if (structuralErrors.length > 0) {
           exportJobStore.set(exportJobId, {
             ...exportJobStore.get(exportJobId)!,
             status: "failed",
-            error: `Export validation failed: ${rendered.validation.errors.join(", ")}`,
+            error: `Export failed: ${structuralErrors.join(", ")}`,
           });
           return;
         }
