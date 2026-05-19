@@ -124,7 +124,7 @@ export const DownloadGangsheetModal = ({
       let exportId = "";
       let driveResult: any = null;
       while (true) {
-        await new Promise<void>((r) => setTimeout(r, 2000));
+        await new Promise<void>((r) => setTimeout(r, 500));
         const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
         if (statusRes.status === "done") {
           exportId = String(statusRes.result?.exportId || "");
