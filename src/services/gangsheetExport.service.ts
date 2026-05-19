@@ -255,17 +255,6 @@ const _doExport = async ({
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
   const heightIn = Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
 
-  // WebP has a hard 16383-pixel limit per dimension. If we don't cap DPI here,
-  // Sharp throws "Processed image is too large for the WebP format" at encode
-  // time and the whole render fails. Long-sheet previews (e.g. 580" rolls) hit
-  // this constant — cap the DPI so each dimension stays under the limit.
-  const dpi = (() => {
-    if (format !== "webp") return rawDpi;
-    const MAX_WEBP_DIM = 16383;
-    const maxFromWidth = Math.floor(MAX_WEBP_DIM / widthIn);
-    const maxFromHeight = Math.floor(MAX_WEBP_DIM / heightIn);
-    return Math.max(10, Math.min(rawDpi, maxFromWidth, maxFromHeight));
-  })();
   const normalizedItems = (Array.isArray(artboardItems) ? artboardItems : [])
     .map((it) => ({
       assetId: String(it.assetId || ""),
@@ -298,17 +287,30 @@ const _doExport = async ({
 
   const outputSheetWidthIn = crop ? crop.widthIn : widthIn;
   const outputSheetHeightIn = crop ? crop.heightIn : heightIn;
+
+  // Auto-cap DPI so the render stays within memory + encoder limits. Without this,
+  // long roll sheets (e.g. 22" × 1180") throw "Sheet too large" at 300 DPI before
+  // any pixels are drawn. WebP also has a hard 16383-pixel per-dimension limit.
+  const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024;
+  const dpi = (() => {
+    const areaSqIn = outputSheetWidthIn * outputSheetHeightIn;
+    const maxFromBuffer = areaSqIn > 0
+      ? Math.floor(Math.sqrt(MAX_BUFFER_BYTES / 4 / areaSqIn))
+      : rawDpi;
+    if (format === "webp") {
+      const MAX_WEBP_DIM = 16383;
+      const maxFromWidth = Math.floor(MAX_WEBP_DIM / outputSheetWidthIn);
+      const maxFromHeight = Math.floor(MAX_WEBP_DIM / outputSheetHeightIn);
+      return Math.max(10, Math.min(rawDpi, maxFromWidth, maxFromHeight, maxFromBuffer));
+    }
+    return Math.max(10, Math.min(rawDpi, maxFromBuffer));
+  })();
+  if (dpi < rawDpi) {
+    console.warn(`[gangsheet] capped DPI ${rawDpi}→${dpi} for ${outputSheetWidthIn.toFixed(1)}"×${outputSheetHeightIn.toFixed(1)}" sheet`);
+  }
+
   const widthPx = Math.max(1, Math.round(outputSheetWidthIn * dpi));
   const heightPx = Math.max(1, Math.round(outputSheetHeightIn * dpi));
-
-  const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB RGBA limit
-  const bufferBytes = widthPx * heightPx * 4;
-  if (bufferBytes > MAX_BUFFER_BYTES) {
-    throw Object.assign(
-      new Error(`Sheet too large: ${(bufferBytes / 1e9).toFixed(1)} GB buffer required at ${dpi} DPI. Reduce sheet size or DPI.`),
-      { statusCode: 422 }
-    );
-  }
 
   // Cap items used for the cache key to maxComposites so we never stringify 10k+ items.
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;

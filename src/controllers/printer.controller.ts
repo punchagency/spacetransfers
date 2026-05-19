@@ -1151,13 +1151,22 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           },
         });
       } catch (err: any) {
+        console.error("[export-job] failed", {
+          exportJobId,
+          jobId: job.id,
+          printerId: String(printerId),
+          message: err?.message,
+          stack: err?.stack,
+        });
         exportJobStore.set(exportJobId, {
           ...exportJobStore.get(exportJobId)!,
           status: "failed",
           error: err?.message || "Export failed",
         });
       }
-    })().catch(() => {});
+    })().catch((err) => {
+      console.error("[export-job] outer error", { exportJobId, err });
+    });
 
     res.status(202).json({ exportJobId, status: "queued" });
   } catch (error) {
