@@ -6,6 +6,7 @@ import { Order } from "../models/order.model.js";
 import { Settings } from "../models/settings.model.js";
 import sharp from "sharp";
 import mongoose from "mongoose";
+import crypto from "node:crypto";
 import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
 import fs from "fs";
@@ -155,7 +156,11 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       return { left, top, width, height };
     };
 
-    const port = env.port || 4000;
+    const trimProto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
+    const trimHost = req.get("host") || "";
+    const trimBase = (env.appUrl && !env.appUrl.includes("localhost"))
+      ? env.appUrl
+      : (trimHost ? `${trimProto}://${trimHost}` : `http://localhost:${env.port || 4000}`);
     const parsed = path.parse(safeFilename);
     const trimmedFilename = `${parsed.name}-trim.png`;
     const trimmedPath = path.join(process.cwd(), "uploads", trimmedFilename);
@@ -194,7 +199,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
 
     res.json({
-      trimmedUrl: `http://localhost:${port}/uploads/${trimmedFilename}`,
+      trimmedUrl: `${trimBase}/uploads/${trimmedFilename}`,
       trimmedWidthPx,
       trimmedHeightPx,
       trimmedWidthIn,
@@ -976,8 +981,43 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const port = env.port || 4000;
-    const fileUrl = `http://localhost:${port}/uploads/${req.file.filename}`;
+    // Deduplication: if this user already uploaded the exact same file, reuse it.
+    const fileBuffer = await fs.promises.readFile(req.file.path);
+    const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    const existingAsset = await Asset.findOne({
+      user: new mongoose.Types.ObjectId(String(req.user?.id)),
+      contentHash,
+    }).lean() as any;
+    if (existingAsset) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      const thumbUrl = computeThumbUrl(existingAsset.trimmedUrl || existingAsset.url);
+      const normDpi = existingAsset.dpi || 300;
+      return res.json({
+        id: String(existingAsset._id),
+        url: existingAsset.url,
+        trimmedUrl: existingAsset.trimmedUrl || null,
+        thumbnailUrl: thumbUrl,
+        originalFilename: existingAsset.originalFilename,
+        sizeBytes: existingAsset.sizeBytes,
+        widthPx: existingAsset.widthPx,
+        heightPx: existingAsset.heightPx,
+        dpi: normDpi,
+        widthIn: existingAsset.widthPx ? +(existingAsset.widthPx / normDpi).toFixed(4) : undefined,
+        heightIn: existingAsset.heightPx ? +(existingAsset.heightPx / normDpi).toFixed(4) : undefined,
+        trimmedWidthPx: existingAsset.trimmedWidthPx || null,
+        trimmedHeightPx: existingAsset.trimmedHeightPx || null,
+        trimmedWidthIn: existingAsset.trimmedWidthPx ? +(existingAsset.trimmedWidthPx / normDpi).toFixed(4) : null,
+        trimmedHeightIn: existingAsset.trimmedHeightPx ? +(existingAsset.trimmedHeightPx / normDpi).toFixed(4) : null,
+        deduplicated: true,
+      });
+    }
+
+    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
+    const host = req.get("host") || "";
+    const publicBase = (env.appUrl && !env.appUrl.includes("localhost"))
+      ? env.appUrl
+      : (host ? `${proto}://${host}` : `http://localhost:${env.port || 4000}`);
+    const fileUrl = `${publicBase}/uploads/${req.file.filename}`;
 
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
     try {
@@ -1137,7 +1177,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       trimmedHeightIn =
         trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
 
-      trimmedUrl = `http://localhost:${port}/uploads/${trimmedFilename}`;
+      trimmedUrl = `${publicBase}/uploads/${trimmedFilename}`;
     } catch {
       trimmedUrl = undefined;
     }
@@ -1153,7 +1193,8 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       heightPx,
       trimmedWidthPx,
       trimmedHeightPx,
-      dpi: normalizedDpi
+      dpi: normalizedDpi,
+      contentHash,
     });
 
     await asset.save();

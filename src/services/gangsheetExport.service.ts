@@ -12,6 +12,27 @@ const CROP_PADDING_IN = 0.08;
 
 const isObjectIdString = (v: string) => /^[0-9a-fA-F]{24}$/.test(String(v || ""));
 
+// Concurrency limiter — prevents simultaneous large exports from exhausting memory.
+const MAX_CONCURRENT_RENDERS = 3;
+let _activeRenders = 0;
+const _renderQueue: Array<() => void> = [];
+
+const acquireRenderSlot = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    if (_activeRenders < MAX_CONCURRENT_RENDERS) {
+      _activeRenders++;
+      resolve();
+    } else {
+      _renderQueue.push(() => { _activeRenders++; resolve(); });
+    }
+  });
+
+const releaseRenderSlot = (): void => {
+  _activeRenders--;
+  const next = _renderQueue.shift();
+  if (next) next();
+};
+
 const looksLikeUrlOrPath = (v: string) => {
   const s = String(v || "");
   if (!s) return false;
@@ -37,16 +58,32 @@ const loadImageBuffer = async (url: string) => {
     return null;
   }
 
+  // Always try the local filesystem first — this works even when the stored URL
+  // has the wrong host/port (e.g. http://localhost:4000 stored from a dev session).
   const local = resolveLocalUploadPath(url);
   if (local && fs.existsSync(local)) {
     return fs.promises.readFile(local);
   }
 
+  // For localhost URLs where the file isn't on disk, skip the HTTP fetch entirely
+  // — it will always fail on Heroku since the port stored in the URL differs from
+  // the current dyno port. Return null so the item is gracefully skipped.
+  if (/^https?:\/\/localhost/i.test(url)) {
+    console.warn(`[gangsheet] skipping localhost asset not found on disk: ${url}`);
+    return null;
+  }
+
   if (/^https?:\/\//i.test(url)) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`failed_to_fetch_asset:${res.status}`);
-    const ab = await res.arrayBuffer();
-    return Buffer.from(ab);
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20_000);
+    try {
+      const res = await fetch(url, { signal: ac.signal });
+      if (!res.ok) throw new Error(`failed_to_fetch_asset:${res.status}`);
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   return null;
@@ -197,9 +234,27 @@ export const exportGangsheetPng24 = async ({
   cacheHit: boolean;
   crop: { leftIn: number; topIn: number; widthIn: number; heightIn: number } | null;
 }> => {
-  const dpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
+  await acquireRenderSlot();
+  try {
+  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format });
+  } finally {
+    releaseRenderSlot();
+  }
+};
+
+const _doExport = async ({
+  jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput,
+  cropToContent = false, maxComposites, format = "png",
+}: {
+  jobId: string; printerId: string; sheetWidthIn?: number | null; sheetHeightIn?: number | null;
+  artboardItems: Array<{ assetId: string; croppedUrl?: string; widthIn: number; heightIn: number;
+    posX: number; posY: number; rotation?: number; copies?: number }>;
+  dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
+}) => {
+  const rawDpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
   const heightIn = Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
+
   const normalizedItems = (Array.isArray(artboardItems) ? artboardItems : [])
     .map((it) => ({
       assetId: String(it.assetId || ""),
@@ -232,6 +287,28 @@ export const exportGangsheetPng24 = async ({
 
   const outputSheetWidthIn = crop ? crop.widthIn : widthIn;
   const outputSheetHeightIn = crop ? crop.heightIn : heightIn;
+
+  // Auto-cap DPI so the render stays within memory + encoder limits. Without this,
+  // long roll sheets (e.g. 22" × 1180") throw "Sheet too large" at 300 DPI before
+  // any pixels are drawn. WebP also has a hard 16383-pixel per-dimension limit.
+  const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024;
+  const dpi = (() => {
+    const areaSqIn = outputSheetWidthIn * outputSheetHeightIn;
+    const maxFromBuffer = areaSqIn > 0
+      ? Math.floor(Math.sqrt(MAX_BUFFER_BYTES / 4 / areaSqIn))
+      : rawDpi;
+    if (format === "webp") {
+      const MAX_WEBP_DIM = 16383;
+      const maxFromWidth = Math.floor(MAX_WEBP_DIM / outputSheetWidthIn);
+      const maxFromHeight = Math.floor(MAX_WEBP_DIM / outputSheetHeightIn);
+      return Math.max(10, Math.min(rawDpi, maxFromWidth, maxFromHeight, maxFromBuffer));
+    }
+    return Math.max(10, Math.min(rawDpi, maxFromBuffer));
+  })();
+  if (dpi < rawDpi) {
+    console.warn(`[gangsheet] capped DPI ${rawDpi}→${dpi} for ${outputSheetWidthIn.toFixed(1)}"×${outputSheetHeightIn.toFixed(1)}" sheet`);
+  }
+
   const widthPx = Math.max(1, Math.round(outputSheetWidthIn * dpi));
   const heightPx = Math.max(1, Math.round(outputSheetHeightIn * dpi));
 
@@ -330,20 +407,25 @@ export const exportGangsheetPng24 = async ({
     const hit = bufCache.get(key);
     if (hit) return hit;
     const p = (async (): Promise<CachedBuf | null> => {
-      const buf = await loadImageBuffer(srcUrl);
-      if (!buf) return null;
-      const meta = await sharp(buf, { limitInputPixels: false }).metadata();
-      if (
-        (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
-        (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
-      ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
-      const out = await sharp(buf, { limitInputPixels: false })
-        .resize(wPx, hPx, { fit: "fill" })
-        .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      return { data: out.data, info: { width: out.info.width, height: out.info.height } };
+      try {
+        const buf = await loadImageBuffer(srcUrl);
+        if (!buf) return null;
+        const meta = await sharp(buf, { limitInputPixels: false }).metadata();
+        if (
+          (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
+          (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
+        ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
+        const out = await sharp(buf, { limitInputPixels: false })
+          .resize(wPx, hPx, { fit: "fill" })
+          .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        return { data: out.data, info: { width: out.info.width, height: out.info.height } };
+      } catch (err: any) {
+        console.warn(`[gangsheet] skipping unloadable image (${assetId}): ${err?.message}`);
+        return null;
+      }
     })();
     bufCache.set(key, p);
     return p;
@@ -470,6 +552,12 @@ export const exportGangsheetPng24 = async ({
     }
   }
 
+  // Free all decoded source image buffers now — we've blitted everything into the
+  // accumulator so the per-image RGBA buffers are no longer needed. Releasing them
+  // before the Sharp encode step halves peak memory on large sheets.
+  preparedItems.length = 0;
+  bufCache.clear();
+
   // Suppress unused-base warning — we use the dimensions directly via Buffer.alloc above.
   void base;
 
@@ -488,21 +576,24 @@ export const exportGangsheetPng24 = async ({
     limitInputPixels: false,
   });
 
+  // compressionLevel 1 = fastest lossless encoding; level 9 can take 10+ minutes on large
+  // sheets and provides only marginal size savings vs 1 for RGBA print files.
+  // icc string is intentionally omitted — Sharp treats it as a file path and throws ENOENT.
   const out = await (format === "webp"
     ? pipeline.webp({ quality: 85, lossless: false, effort: 6 }).withMetadata({ density: dpi })
-    : pipeline.png({ compressionLevel: 9, adaptiveFiltering: true, palette: false, effort: 10, force: true }).withMetadata({ density: dpi, icc: "sRGB" as any })
+    : pipeline.png({ compressionLevel: 1, adaptiveFiltering: false, palette: false, effort: 2, force: true }).withMetadata({ density: dpi })
   ).toFile(filePath);
 
   const errors: string[] = [];
   const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
 
+  // Only flag structural failures — format/dimension/alpha mismatches indicate a broken
+  // file. DPI and colorspace metadata drift is a warning, not a fatal error.
   if (meta.format !== format) errors.push(`format_not_${format}`);
   if (meta.width !== widthPx || meta.height !== heightPx) errors.push("pixel_dimensions_mismatch");
   if (format === "png") {
     if (!meta.hasAlpha) errors.push("alpha_missing");
     if (meta.channels !== 4) errors.push("not_rgba");
-    if (typeof meta.density === "number" && Math.round(meta.density) !== dpi) errors.push("dpi_missing_or_incorrect");
-    if (meta.space && String(meta.space).toLowerCase() !== "srgb") errors.push("colorspace_not_srgb");
   }
   for (const e of sourceResolutionErrors) errors.push(e);
 

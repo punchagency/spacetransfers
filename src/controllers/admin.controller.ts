@@ -1555,9 +1555,11 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       format: "webp",
     });
 
-    // Return a static file URL so the browser fetches the WebP directly and caches it.
-    // No base64 encoding, no JSON bloat — immutable cache headers are set by Express.
-    const previewDataUrl = `${env.appUrl}${rendered.relativePath}`;
+    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
+    const host = req.get("host") || "";
+    const derivedBase = host ? `${proto}://${host}` : null;
+    const appBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : derivedBase;
+    const previewDataUrl = appBase ? `${appBase}${rendered.relativePath}` : rendered.relativePath;
 
     res.json({
       previewDataUrl,
