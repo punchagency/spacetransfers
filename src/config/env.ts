@@ -18,6 +18,7 @@ interface Env {
   googleDriveClientEmail?: string;
   googleDrivePrivateKey?: string;
   googleDriveFolderId?: string;
+  googleClientId?: string;
 }
 
 const cleanEnvString = (value?: string): string | undefined => {
@@ -50,4 +51,5 @@ export const env: Env = {
   googleDriveClientEmail: cleanEnvString(process.env.GOOGLE_DRIVE_CLIENT_EMAIL),
   googleDrivePrivateKey: cleanEnvString(process.env.GOOGLE_DRIVE_PRIVATE_KEY),
   googleDriveFolderId: cleanEnvString(process.env.GOOGLE_DRIVE_FOLDER_ID),
+  googleClientId: cleanEnvString(process.env.GOOGLE_CLIENT_ID),
 };

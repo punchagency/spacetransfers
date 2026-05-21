@@ -6,6 +6,8 @@ import { env } from "../config/env.js";
 import nodemailer from "nodemailer";
 import { sendEmail } from "./email.service.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
+import { OAuth2Client } from "google-auth-library";
+import dotenv from "dotenv";
 
 interface RegisterParams {
   name: string;
@@ -39,6 +41,7 @@ interface UserResponse {
   parentAccount?: string | null;
   region?: string;
   regions?: string[];
+  isGoogleAccount?: boolean;
 }
 
 interface AuthResponse {
@@ -232,7 +235,8 @@ export const registerUser = async ({
     email: user.email,
     role: user.role,
     avatarUrl: user.avatarUrl || null,
-    status: user.status
+    status: user.status,
+    isGoogleAccount: !!user.googleId,
   };
 
   if (user.companyName) userResponse.companyName = user.companyName;
@@ -263,7 +267,8 @@ export const getCurrentUser = async (userId: string): Promise<UserResponse> => {
     email: user.email,
     role: user.role,
     avatarUrl: user.avatarUrl || null,
-    status: user.status
+    status: user.status,
+    isGoogleAccount: !!user.googleId,
   };
 
   if (user.companyName) userResponse.companyName = user.companyName;
@@ -457,6 +462,12 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
     throw error;
   }
 
+  if (!user.passwordHash) {
+    const error = new Error("This account was created with Google. Please sign in with Google.") as any;
+    error.statusCode = 401;
+    throw error;
+  }
+
   const valid = await verifyPassword(password!, user.passwordHash);
   if (!valid) {
     const error = new Error("Invalid credentials") as any;
@@ -490,7 +501,8 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
       avatarUrl: user.avatarUrl || null,
       status: user.status,
       region: user.regions?.[0],
-      regions: user.regions
+      regions: user.regions,
+      isGoogleAccount: !!user.googleId,
     },
     token
   };
@@ -560,6 +572,85 @@ export const requestPasswordReset = async (email: string): Promise<{ resetToken?
   }
 
   return {};
+};
+
+export const loginWithGoogle = async (credential: string): Promise<AuthResponse & { isNew: boolean }> => {
+  dotenv.config({ override: true });
+  const clientId = (process.env.GOOGLE_CLIENT_ID || "").trim() || env.googleClientId;
+  if (!clientId) {
+    const error = new Error("Google Sign-In is not configured on this server") as any;
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const client = new OAuth2Client(clientId);
+  const ticket = await client.verifyIdToken({ idToken: credential, audience: clientId });
+  const payload = ticket.getPayload();
+
+  if (!payload?.email) {
+    const error = new Error("Google account has no email address") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const { email, name, sub: googleId, picture: avatarUrl } = payload;
+  const normalizedEmail = email.toLowerCase().trim();
+
+  let user = await User.findOne({ googleId }) as any;
+  if (!user) user = await User.findOne({ email: normalizedEmail }) as any;
+
+  let isNew = false;
+
+  if (user) {
+    if (user.status === "Suspended") {
+      const error = new Error("Your account has been suspended. Please contact support.") as any;
+      error.statusCode = 403;
+      throw error;
+    }
+    // Sync Google profile data on every login so name/photo stay current
+    let changed = false;
+    if (!user.googleId) { user.googleId = googleId; changed = true; }
+    if (name && user.name !== name) { user.name = name; changed = true; }
+    if (avatarUrl && user.avatarUrl !== avatarUrl) { user.avatarUrl = avatarUrl; changed = true; }
+    if (changed) await user.save();
+  } else {
+    isNew = true;
+    user = await User.create({
+      email: normalizedEmail,
+      name: name || normalizedEmail.split("@")[0],
+      passwordHash: null,
+      googleId,
+      avatarUrl: avatarUrl || null,
+      role: UserRoles.CUSTOMER,
+      status: "Active",
+      regions: ["West"],
+    });
+
+    // Send welcome email (non-blocking)
+    sendEmail({
+      to: normalizedEmail,
+      subject: "Welcome to Space Transfers",
+      html: buildCustomerWelcomeEmailHtml(user.name),
+    }).catch(() => {});
+  }
+
+  const token = signJwt({ sub: user.id, role: user.role });
+
+  const userResponse: UserResponse = {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    avatarUrl: user.avatarUrl || null,
+    status: user.status,
+    isGoogleAccount: true,
+  };
+  if (user.regions?.length) {
+    userResponse.region = user.regions[0];
+    userResponse.regions = user.regions;
+  }
+
+  return { user: userResponse, token, isNew };
 };
 
 export const resetPassword = async ({

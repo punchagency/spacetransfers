@@ -9,22 +9,29 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+const ALLOWED_TYPES: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/svg+xml": ".svg",
+};
+
 const storage = multer.diskStorage({
-  destination(req: Request, file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) {
+  destination(_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) {
     cb(null, uploadsDir);
   },
-  filename(req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) {
+  filename(_req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, `${uniqueSuffix}.png`);
+    const ext = ALLOWED_TYPES[file.mimetype] || ".png";
+    cb(null, `${uniqueSuffix}${ext}`);
   }
 });
 
-const pngOnly = (req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  if (file.mimetype === "image/png") {
+const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  if (ALLOWED_TYPES[file.mimetype]) {
     cb(null, true);
   } else {
-    cb(new Error("Only PNG files are accepted. Please convert your image to PNG before uploading."));
+    cb(new Error("Unsupported file type. Please use PNG, JPG, or SVG."));
   }
 };
 
-export const upload = multer({ storage, fileFilter: pngOnly });
+export const upload = multer({ storage, fileFilter });

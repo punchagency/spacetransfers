@@ -8,7 +8,8 @@ import {
   deleteSubAccount,
   switchSubAccount,
   requestPasswordReset,
-  resetPassword
+  resetPassword,
+  loginWithGoogle,
 } from "../services/auth.service.js";
 
 export const me = async (req: Request, res: Response, next: NextFunction) => {
@@ -96,6 +97,19 @@ export const resetPasswordController = async (req: Request, res: Response, next:
     const { token, newPassword } = req.body;
     await resetPassword({ token, newPassword });
     res.json({ message: "Password has been reset successfully." });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const googleAuthController = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { credential } = req.body;
+    if (!credential || typeof credential !== "string") {
+      return res.status(400).json({ message: "Google credential is required" });
+    }
+    const result = await loginWithGoogle(credential);
+    res.json(result);
   } catch (error) {
     next(error);
   }

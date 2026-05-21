@@ -14,7 +14,8 @@ export const UserRoles = {
 
 export interface IUser extends Document {
   email: string;
-  passwordHash: string;
+  passwordHash: string | null;
+  googleId?: string | null;
   name: string;
   companyName?: string;
   website?: string;
@@ -160,7 +161,13 @@ const userSchema = new Schema<IUser>(
     },
     passwordHash: {
       type: String,
-      required: true
+      default: null,
+    },
+    googleId: {
+      type: String,
+      default: null,
+      sparse: true,
+      unique: true,
     },
     name: {
       type: String,
