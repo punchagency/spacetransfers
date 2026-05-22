@@ -26,9 +26,16 @@ export default function CanvasRulers({
 
   const topFull = Math.floor(topRulerLengthInches);
   const topRemainder = topRulerLengthInches - topFull;
-  const totalHeightIn = Math.max(0, sheetHeightPx / (ppi * zoom || 1));
-  const leftFull = Math.floor(totalHeightIn);
-  const leftRemainder = totalHeightIn - leftFull;
+
+  // The left ruler always spans the full sheet capacity (1200 in) so it never
+  // truncates based on how copies happen to fill the canvas. Content heights
+  // like 1181" or 1105" are artefacts of (image height + gap) not dividing
+  // evenly into 1200; the ruler must ignore that and show the defined maximum.
+  const MAX_RULER_HEIGHT_IN = 1200;
+  const hasContent = sheetHeightPx > 0;
+  const totalHeightIn = hasContent ? MAX_RULER_HEIGHT_IN : 0;
+  const leftFull = Math.floor(totalHeightIn); // 1200 when content present
+  const leftRemainder = totalHeightIn - leftFull; // 0 (1200 is exact integer)
 
   // Ruler uses the same global zoom as the sheet; no extra local scaling.
   const fitScale = 1;
@@ -68,44 +75,73 @@ export default function CanvasRulers({
       </div>
 
       {/* Left Ruler */}
-      <div 
-        className="absolute left-0 z-50 bg-transparent pointer-events-none overflow-hidden"
-        style={{ top: `${offset}px`, height: `calc(100% - ${offset}px)`, width: `${offset}px` }}
-      >
-        <div className="relative w-full h-full">
-          {(() => {
-            const inchPx = ppi * zoom;
-            const effectiveViewportHeight =
-              viewportHeightPx > 0 ? viewportHeightPx : sheetHeightPx;
-            const start = Math.max(0, Math.floor(scrollTopPx / (inchPx || 1)) - 2);
-            const count = Math.max(
-              0,
-              Math.ceil(effectiveViewportHeight / (inchPx || 1)) + 4,
-            );
-            const end = Math.min(leftFull + 1, start + count);
-            const segments: React.ReactNode[] = [];
+      {(() => {
+        // Container height tracks the ruler's defined capacity (1200 in), not
+        // the content height, so the ruler always fills the viewport rather than
+        // stopping short at whatever the current canvas height happens to be.
+        const effectiveViewportHeight =
+          viewportHeightPx > 0 ? viewportHeightPx : sheetHeightPx;
+        const rulerTotalPx = hasContent ? MAX_RULER_HEIGHT_IN * ppi * zoom : 0;
+        const visibleRulerPx = Math.max(0, rulerTotalPx - scrollTopPx);
+        const leftRulerHeightPx = Math.max(
+          0,
+          Math.min(effectiveViewportHeight, visibleRulerPx),
+        );
 
-            for (let i = start; i < end; i++) {
-              const remainderFrac =
-                i === leftFull && leftRemainder > 1e-6 ? leftRemainder : 1;
-              const heightPx = remainderFrac * inchPx;
-              const topPx = i * inchPx - scrollTopPx;
+        return (
+          <div
+            className="absolute left-0 z-50 bg-transparent pointer-events-none overflow-hidden"
+            style={{
+              top: `${offset}px`,
+              height: `${leftRulerHeightPx}px`,
+              width: `${offset}px`,
+            }}
+          >
+            <div className="relative w-full h-full">
+              {(() => {
+                const inchPx = ppi * zoom;
+                const start = Math.max(
+                  0,
+                  Math.floor(scrollTopPx / (inchPx || 1)) - 2,
+                );
+                const count = Math.max(
+                  0,
+                  Math.ceil(effectiveViewportHeight / (inchPx || 1)) + 4,
+                );
+                // Stop exactly at ceil(totalHeightIn): when sheet height is an
+                // integer number of inches, leftFull + 1 would render an extra
+                // full-inch tick past the sheet's bottom.
+                const totalSegments = Math.ceil(totalHeightIn);
+                const end = Math.min(totalSegments, start + count);
+                const segments: React.ReactNode[] = [];
 
-              segments.push(
-                <div
-                  key={i}
-                  className="absolute left-0 w-full"
-                  style={{ top: `${topPx}px`, height: `${heightPx}px` }}
-                >
-                  <RulerSegment label={i} vertical maxFraction={remainderFrac} />
-                </div>,
-              );
-            }
+                for (let i = start; i < end; i++) {
+                  const remainderFrac =
+                    i === leftFull && leftRemainder > 1e-6 ? leftRemainder : 1;
+                  const heightPx = remainderFrac * inchPx;
+                  const topPx = i * inchPx - scrollTopPx;
 
-            return segments;
-          })()}
-        </div>
-      </div>
+                  segments.push(
+                    <div
+                      key={i}
+                      className="absolute left-0 w-full"
+                      style={{ top: `${topPx}px`, height: `${heightPx}px` }}
+                    >
+                      <RulerSegment
+                        label={i}
+                        vertical
+                        maxFraction={remainderFrac}
+                      />
+                    </div>,
+                  );
+                }
+
+                return segments;
+              })()}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Corner 0 Label */}
       <div 

@@ -17,6 +17,7 @@ import { captureArtboard } from "./artboard/lib/utils";
 import { apiFetch } from "../lib/utils/api";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { CANVAS, PRICING } from "../config/artboard.config";
+import { computeRenderCopies } from "./artboard/lib/utils/layoutHelpers";
 
 export default function Editor() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -32,6 +33,12 @@ export default function Editor() {
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [historyState, setHistoryState] = useState<{
+    undo: () => void;
+    redo: () => void;
+    canUndo: boolean;
+    canRedo: boolean;
+  }>({ undo: () => {}, redo: () => {}, canUndo: false, canRedo: false });
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState<any>(null);
 
@@ -101,7 +108,44 @@ export default function Editor() {
 
   useEffect(() => {
     localStorage.setItem("cart", JSON.stringify(cartItems));
-  }, [cartItems]);
+
+    // Sync to server if logged in
+    if (isLoggedIn && user?.id) {
+      apiFetch("/customer/cart", {
+        method: "PUT",
+        body: JSON.stringify({ cart: cartItems }),
+      }).catch((err) => console.error("Failed to sync cart to server", err));
+    }
+  }, [cartItems, isLoggedIn, user?.id]);
+
+  // Keyboard shortcuts: Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z (or Ctrl+Y) = redo.
+  // Skipped while typing in form fields so we don't hijack the browser's native
+  // text-editing undo/redo inside inputs and textareas.
+  useEffect(() => {
+    const isTextInputTarget = (el: EventTarget | null) => {
+      const node = el as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (node.isContentEditable) return true;
+      return false;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTextInputTarget(e.target)) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (!ctrl) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        historyState.undo();
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        historyState.redo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [historyState]);
 
   const [headerInfo, setHeaderInfo] = useState<{
     hasItem: boolean;
@@ -728,12 +772,28 @@ export default function Editor() {
     setShowCheckoutModal(true);
   };
 
+  const currentItems = getCurrentItems();
+  const itemCount = currentItems.reduce((sum: number, it: any) => {
+    const rendered = computeRenderCopies(
+      { widthIn: it.widthIn, heightIn: it.heightIn, copies: Number(it.copies) || 1 },
+      CANVAS.SHEET_WIDTH_IN,
+      settings.marginSize,
+      settings.spacing,
+    );
+    return sum + rendered;
+  }, 0);
+
   return (
     <div className="relative flex flex-col h-screen w-screen bg-white">
       <Header
         info={headerInfo ? { ...headerInfo, name: currentLoadedDesignTitle || headerInfo.name } : undefined}
-        canRedo={!!lastAction}
+        itemCount={itemCount}
+        canUndo={historyState.canUndo}
+        canRedo={historyState.canRedo}
+        onUndo={historyState.undo}
+        onRedo={historyState.redo}
         onMenuClick={() => setIsSidebarOpen(true)}
+        isSidebarOpen={isSidebarOpen}
         onCartClick={() => setShowCheckoutModal(true)}
         cartCount={cartItems.length}
         onAddGangSheetToCart={handleAddGangSheetToCart}
@@ -745,6 +805,8 @@ export default function Editor() {
           setShowAccountModal(true);
           setIsSidebarOpen(false);
         }}
+        profileAvatarUrl={user?.avatarUrl || null}
+        profileName={user?.name || user?.email || undefined}
         profileLabel={(user?.name || user?.email || "")
           .trim()
           .split(/\s+/)
@@ -796,83 +858,6 @@ export default function Editor() {
         onSignInClick={() => {
           setAuthView("login");
           setShowAuthModal(true);
-        }}
-        onRedo={() => {
-          if (!lastAction) return;
-          const sourceItems =
-            (artboardData?.items as any[]) ||
-            (loadedDesignData?.items as any[]) ||
-            [];
-          if (sourceItems.length === 0) return;
-          if (lastAction.type === "delete") {
-            const snapshot =
-              lastAction.id != null ? deletedItems[lastAction.id] : null;
-            if (!snapshot) return;
-            const updated = [...sourceItems, snapshot];
-            const nextData = { items: updated, counter: Date.now() };
-            setArtboardData(nextData);
-            setLoadedDesignData(nextData);
-            setLastAction(null);
-            return;
-          }
-          const idx = sourceItems.findIndex((it) => it.id === lastAction.id);
-          if (idx === -1) return;
-          const updated = [...sourceItems];
-          const current = updated[idx];
-          const it = { ...current };
-          switch (lastAction.type) {
-            case "rotate":
-              it.rotation =
-                ((it.rotation || 0) + (lastAction.payload?.delta || 90)) %
-                360;
-              break;
-            case "flip":
-              it.flipped = !it.flipped;
-              break;
-            case "toggleLock":
-              it.locked = !it.locked;
-              break;
-            case "toggleLinked":
-              it.linked = !it.linked;
-              break;
-            case "toggleExpand":
-              it.expanded = !it.expanded;
-              break;
-            case "setCopies":
-              it.copies = lastAction.payload?.value ?? it.copies;
-              break;
-            case "setWidthIn":
-              it.widthIn = lastAction.payload?.value ?? it.widthIn;
-              if (it.linked && it.heightIn) {
-                const ratio =
-                  current.heightIn / (current.widthIn || it.widthIn || 1);
-                it.heightIn =
-                  (lastAction.payload?.value ?? it.widthIn) * ratio;
-              }
-              break;
-            case "setHeightIn":
-              it.heightIn = lastAction.payload?.value ?? it.heightIn;
-              if (it.linked && it.widthIn) {
-                const ratio =
-                  current.widthIn / (current.heightIn || it.heightIn || 1);
-                it.widthIn =
-                  (lastAction.payload?.value ?? it.heightIn) * ratio;
-              }
-              break;
-            case "setPosX":
-              it.posX = lastAction.payload?.value ?? it.posX;
-              break;
-            case "setPosY":
-              it.posY = lastAction.payload?.value ?? it.posY;
-              break;
-            default:
-              break;
-          }
-          updated[idx] = it;
-          const nextData = { items: updated, counter: Date.now() };
-          setArtboardData(nextData);
-          setLoadedDesignData(nextData);
-          setLastAction(null);
         }}
         onSaveLoaded={currentLoadedDesignId ? saveLoadedGangsheet : undefined}
       />
@@ -962,6 +947,7 @@ export default function Editor() {
         }}
         onDataChange={setArtboardData}
         initialData={loadedDesignData}
+        onHistoryChange={setHistoryState}
         onAddToCart={(item) => setCartItems((prev) => [...prev, item])}
       />
       <Sidebar
@@ -1009,10 +995,12 @@ export default function Editor() {
           attemptClearArtboard();
         }}
         isLoggedIn={isLoggedIn}
+        user={user}
         onSignOut={() => {
           setIsLoggedIn(false);
           setUser(null);
           localStorage.removeItem("token");
+          (window as any).google?.accounts?.id?.disableAutoSelect();
           toast.success("Successfully signed out");
         }}
       />
@@ -1175,6 +1163,7 @@ export default function Editor() {
           setIsLoggedIn(false);
           setUser(null);
           localStorage.removeItem("token");
+          (window as any).google?.accounts?.id?.disableAutoSelect();
           toast.success("Successfully signed out");
           setShowAccountModal(false);
         }}

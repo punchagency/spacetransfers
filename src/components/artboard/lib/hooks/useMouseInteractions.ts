@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+  import { useState, useEffect, useRef } from "react";
 import { ArtboardItem } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 import { getRenderedBounds } from "../utils";
+import type { CommitHistory } from "./useHistory";
 
 export const useMouseInteractions = (
   items: ArtboardItem[],
@@ -14,7 +15,8 @@ export const useMouseInteractions = (
   autoNestStickers: boolean,
   canvasWidth: number,
   marginSize: number,
-  spacing: number
+  spacing: number,
+  commitHistory?: CommitHistory
 ) => {
   const [isResizing, setIsResizing] = useState(false);
   const [resizeStart, setResizeStart] = useState<{
@@ -23,12 +25,12 @@ export const useMouseInteractions = (
     width: number;
     height: number;
   } | null>(null);
-  const [isDraggingItem, setIsDraggingItem] = useState(false);
+  const [isDraggingItem, setIsDraggingItem] = useState(false); 
   const [dragStart, setDragStart] = useState<{
     x: number;
     y: number;
     posX: number;
-    posY: number;
+    posY: number;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
   } | null>(null);
 
   const MAX_SHEET_HEIGHT_IN = 1200;
@@ -91,6 +93,7 @@ export const useMouseInteractions = (
     e.stopPropagation();
     const item = items.find((it) => it.id === itemId);
     if (!item) return;
+    commitHistory?.();
     setIsResizing(true);
     setResizeStart({
       x: e.clientX,
@@ -103,6 +106,7 @@ export const useMouseInteractions = (
   const handleDragStart = (e: React.MouseEvent, itemId: number) => {
     const item = items.find((it) => it.id === itemId);
     if (!item || item.locked) return;
+    commitHistory?.();
     setIsDraggingItem(true);
     setDragStart({ x: e.clientX, y: e.clientY, posX: item.posX, posY: item.posY });
   };

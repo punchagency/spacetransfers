@@ -18,10 +18,18 @@ export interface ArtboardItem {
   dropY?: number;
   velocityY?: number;
   gravityActive?: boolean;
+  skipAnimation?: boolean;
   originalUrl?: string;
   originalWidthIn?: number;
   originalHeightIn?: number;
   isDropping?: boolean;
+}
+
+export interface HistoryState {
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 export interface ArtboardProps {
@@ -38,6 +46,7 @@ export interface ArtboardProps {
   initialData?: any;
   onAddToCart?: (item: any) => void;
   onActionPerformed?: (action: { type: string; id?: number; payload?: any }) => void;
+  onHistoryChange?: (state: HistoryState) => void;
 }
 
 export interface HeaderInfo {

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MdAdd } from "react-icons/md";
+import { MdAdd, MdOutlineFileUpload } from "react-icons/md";
 import { getGridStyle } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
@@ -34,6 +34,7 @@ interface CanvasContainerProps {
   onDelete: () => void;
   onAddToCart: (item: any) => void;
   onCloseProperties: () => void;
+  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<void>;
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
@@ -71,6 +72,7 @@ export default function CanvasContainer({
   onDelete,
   onAddToCart,
   onCloseProperties,
+  onRemoveBg,
   onDragStart,
   onResizeStart,
   isDraggingItem,
@@ -113,41 +115,25 @@ export default function CanvasContainer({
   const offset = CANVAS.RULER_OFFSET_PX;
   const ppi = CANVAS.PIXELS_PER_INCH;
   const maxSheetHeightIn = 1200; // 100 feet
-  const minSheetHeightIn = CANVAS.SHEET_HEIGHT_IN;
 
+  const isSheetFull = useMemo(() => {
+    if (items.length === 0) return false;
+    const gap = CANVAS.GRID_GAP_IN;
+    const maxUsedIn = items.reduce((max, it) => {
+      const copies = it.copies > 0 ? it.copies : 1;
+      const groupH = copies <= 1 ? it.heightIn : copies * it.heightIn + (copies - 1) * gap;
+      return Math.max(max, it.posY + groupH);
+    }, 0);
+    return maxUsedIn >= maxSheetHeightIn - 1;
+  }, [items, maxSheetHeightIn]);
+
+  // The artboard canvas always represents the full sheet capacity so the left
+  // ruler (fixed at 1200 in) is reachable via scrolling. Content is placed
+  // within that space; the canvas height does not shrink to the content extent.
   const sheetHeightPx = useMemo(() => {
     if (items.length === 0) return 0;
-
-    const gap = CANVAS.GRID_GAP_IN;
-    const effectiveMargin = marginSize;
-    const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
-
-    const maxBottomIn = items.reduce((acc, it) => {
-      const copies = it.copies || 1;
-      const scaledWidth = it.widthIn;
-      const scaledHeight = it.heightIn;
-
-      const capacityCols = Math.max(
-        1,
-        Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
-      );
-      const visibleCols = Math.min(copies, capacityCols);
-      const rows = Math.ceil(copies / capacityCols);
-
-      const groupHeight =
-        rows * scaledHeight + Math.max(0, rows - 1) * gap;
-
-      const top = Math.max(effectiveMargin, it.posY);
-      const bottom = top + groupHeight;
-      return Math.max(acc, bottom);
-    }, 0);
-
-    const targetHeightIn = Math.min(
-      maxSheetHeightIn,
-      Math.max(minSheetHeightIn, maxBottomIn + effectiveMargin),
-    );
-    return targetHeightIn * ppi * zoom;
-  }, [items, canvasWidth, marginSize, ppi, zoom, minSheetHeightIn]);
+    return maxSheetHeightIn * ppi * zoom;
+  }, [items.length, ppi, zoom, maxSheetHeightIn]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -184,6 +170,12 @@ export default function CanvasContainer({
         scrollTopPx={scrollTop}
         viewportHeightPx={viewportHeight}
       />
+      {/* Toolbar portal slot — ArtboardItem portals into this when selected */}
+      <div
+        id="artboard-toolbar-portal"
+        className="absolute z-50 pointer-events-none"
+        style={{ top: offset, left: offset, right: 0 }}
+      />
 
       {items.length === 0 ? (
         <div
@@ -204,9 +196,10 @@ export default function CanvasContainer({
               bottom: 0,
               overflowY: "auto",
               overflowX: "hidden",
+              paddingBottom: `${ppi * zoom}px`,
             }}
             onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-            onClick={onCanvasClick}
+            onClick={(e) => { onCanvasClick(); if (e.target === e.currentTarget && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles(); }}
           >
             <div
               className="relative"
@@ -220,15 +213,15 @@ export default function CanvasContainer({
             >
               <CanvasMargins
                 showMargins={showMargins}
-                showRulers={showRulers}
                 marginSize={marginSize}
-                zoom={1}
+                heightIn={sheetHeightPx / (ppi * zoom)}
               />
               {items.map((it) => (
                 <ArtboardItem
                   key={it.id}
                   item={it}
                   isSelected={selectedId === it.id || selectedIds.has(it.id)}
+                  isPrimary={selectedId === it.id}
                   showProperties={showProperties[it.id] || false}
                   addedToCart={addedToCart.has(it.id)}
                   onSelect={(multi) => onItemSelect(it.id, multi)}
@@ -248,22 +241,52 @@ export default function CanvasContainer({
                   onSetPosY={itemActions.setPosY}
                   onAddToCart={() => onAddToCart(it)}
                   onCloseProperties={onCloseProperties}
+                  onRemoveBg={onRemoveBg}
                   onDragStart={(e) => onDragStart(e, it.id)}
                   onResizeStart={(e) => onResizeStart(e, it.id)}
                   isDragging={isDraggingItem}
                   canvasWidth={canvasWidth}
                   marginSize={marginSize}
+                  spacing={spacing}
+                  zoom={zoom}
+                  scrollTop={scrollTop}
+                  viewportHeight={viewportHeight}
                 />
               ))}
             </div>
           </div>
         </>
       )}
-      {isDragging && (
-        <div className="absolute inset-0 z-20 pointer-events-none">
-          <div className="w-full h-full border-2 border-dashed border-blue-400 rounded" />
+      {/* Persistent drop hint — shown when items exist and not currently dragging */}
+      {items.length > 0 && items.length < CANVAS.MAX_ITEMS && !isSheetFull && !isDragging && !isUploading && (
+        <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-auto flex justify-center pb-5">
+          <button
+            onClick={onBrowseFiles}
+            className="group flex items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 backdrop-blur-sm px-7 py-3.5 shadow-md hover:border-slate-500 hover:bg-white hover:shadow-lg transition-all duration-200 cursor-pointer"
+          >
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 group-hover:bg-slate-900 group-hover:text-white transition-colors duration-200 flex-shrink-0">
+              <MdOutlineFileUpload size={20} />
+            </span>
+            <span className="flex flex-col items-start">
+              <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Click anywhere or drop files to add more</span>
+              <span className="text-[11px] text-slate-400 mt-0.5">PNG · JPG · SVG</span>
+            </span>
+          </button>
         </div>
       )}
+
+      {/* {isDragging && (
+        <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center">
+          <div className="absolute inset-2 border-2 border-dashed border-blue-400 rounded-xl" />
+          <div className="relative flex flex-col items-center gap-3 rounded-2xl bg-blue-50/90 backdrop-blur-sm px-10 py-8 shadow-lg border border-blue-200">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-100 text-blue-500">
+              <MdOutlineFileUpload size={28} />
+            </div>
+            <div className="text-[15px] font-semibold text-blue-700">Drop to add to artboard</div>
+            <div className="text-[12px] text-blue-500">PNG • JPG • SVG</div>
+          </div>
+        </div>
+      )} */}
       {isUploading && (
         <div className="absolute inset-0 z-30 flex items-center justify-center">
           <div className="w-[420px] max-w-[92vw] rounded-2xl border border-gray-200 bg-white px-10 py-10 text-center shadow-lg">
@@ -284,7 +307,7 @@ export default function CanvasContainer({
               Uploading...
             </div>
             {uploadFileName ? (
-              <div className="mt-1 text-[12px] text-slate-500">
+              <div className="mt-1 text-[12px] text-slate-500 max-w-[220px] truncate text-center mx-auto" title={uploadFileName}>
                 {uploadFileName}
               </div>
             ) : null}

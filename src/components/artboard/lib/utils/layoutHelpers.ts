@@ -1,5 +1,37 @@
 import { CANVAS } from "../../../../config/artboard.config";
 
+const MAX_SHEET_HEIGHT_IN = 1200;
+
+/**
+ * Returns how many copies of an item can physically fit within the 1200" sheet
+ * height limit, capped at whatever the user requested.
+ */
+export function computeRenderCopies(
+  item: { widthIn: number; heightIn: number; copies: number },
+  canvasWidthIn: number,
+  marginIn: number,
+  spacingIn: number
+): number {
+  const effectiveMargin = Math.max(0, marginIn);
+  const gap = spacingIn;
+  const maxAvailableWidth = Math.max(0, canvasWidthIn - 2 * effectiveMargin);
+  const scaledWidth = Math.max(1e-6, item.widthIn);
+  const scaledHeight = Math.max(1e-6, item.heightIn);
+
+  const capacityCols = Math.max(
+    1,
+    Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap))
+  );
+  const maxGroupHeightAllowedIn = Math.max(0, MAX_SHEET_HEIGHT_IN - effectiveMargin);
+  const maxRows = Math.max(
+    1,
+    Math.floor((maxGroupHeightAllowedIn + gap) / (scaledHeight + gap))
+  );
+  const visibleColsCandidate = Math.max(1, Math.min(item.copies, capacityCols));
+  const maxCopiesThatFit = Math.max(1, maxRows * visibleColsCandidate);
+  return Math.max(1, Math.min(item.copies, maxCopiesThatFit));
+}
+
 export interface LayoutItem {
   id: number;
   widthIn: number;

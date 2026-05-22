@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { ArtboardItem } from "../../types";
 import { animateItemPosition } from "../utils";
-import { calculateGridLayout } from "../utils";
+import { calculateGridLayout, getRenderedGroupSize } from "../utils";
 import { snapToGridPoint } from "../utils";
 import { CANVAS, PRICING, UNIT } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
@@ -44,10 +44,10 @@ export const useArtboardEffects = (
   }, [items, counter, onDataChange]);
 
 
-  // Animate items only when gravity is active
+  // Animate items only when gravity is active (and not suppressed by a copies change)
   useEffect(() => {
     items.forEach((it) => {
-      if (!it.gravityActive) return;
+      if (!it.gravityActive || it.skipAnimation) return;
 
       const element = document.querySelector(
         `[data-item-id="${it.id}"]`
@@ -55,6 +55,13 @@ export const useArtboardEffects = (
       if (!element) return;
 
       const prevItem = prevItemsRef.current.find(p => p.id === it.id);
+      // Skip if position hasn't actually changed — avoids spurious shake before layout runs.
+      if (
+        prevItem &&
+        Math.abs(it.posX - prevItem.posX) <= 0.001 &&
+        Math.abs(it.posY - prevItem.posY) <= 0.001
+      ) return;
+
       animateItemPosition(element, it.posX, it.posY, true, prevItem?.posX, prevItem?.posY);
     });
 
@@ -89,19 +96,22 @@ export const useArtboardEffects = (
     );
 
     // Enforce max sheet height (100 feet = 1200 inches).
-    // Copies can stack vertically (wrapping), so we clamp using a conservative
-    // "worst-case" group height so nothing can exceed the ruler bottom.
+    // Use the actual rendered group height (multi-column aware) to avoid false positives.
     const MAX_SHEET_HEIGHT_IN = 1200;
     let didClamp = false;
+    const effectiveMarginForClamp = marginSize;
+    const maxAvailableWidthForClamp = Math.max(0, canvasWidth - 2 * effectiveMarginForClamp);
     const clampedUpdates = updates.map((u: any) => {
-      const itemH = typeof u.heightIn === "number" ? u.heightIn : 0;
       const copies = typeof u.copies === "number" && u.copies > 0 ? u.copies : 1;
-      const gap = CANVAS.GRID_GAP_IN;
-      // Worst case: all copies are stacked into rows, so groupHeight = copies*height + (copies-1)*gap.
-      const groupHeightIn = copies <= 1 ? itemH : copies * itemH + (copies - 1) * gap;
-      const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupHeightIn);
+      const { height: actualGroupH } = getRenderedGroupSize(
+        typeof u.widthIn === "number" ? u.widthIn : 0,
+        typeof u.heightIn === "number" ? u.heightIn : 0,
+        copies,
+        maxAvailableWidthForClamp,
+      );
+      const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - actualGroupH);
       const nextPosY = Math.max(0, Math.min(u.posY, maxPosY));
-      if (nextPosY !== u.posY) didClamp = true;
+      if (nextPosY < u.posY - 0.001) didClamp = true;
       return { ...u, posY: nextPosY };
     });
 
@@ -135,7 +145,14 @@ export const useArtboardEffects = (
             return it;
           }
 
-          return { ...it, posX: update.posX, posY: update.posY, gravityActive: hasMoved };
+          return {
+            ...it,
+            posX: update.posX,
+            posY: update.posY,
+            // When a copies change triggered this reflow, suppress animation and clear the flag.
+            gravityActive: it.skipAnimation ? false : hasMoved,
+            skipAnimation: false,
+          };
         }
         return it;
       });

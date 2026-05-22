@@ -140,12 +140,24 @@ export default function AccountSettingsModal({
 
         {/* Current Account */}
         <div className="mt-5 flex items-center gap-4 px-5">
-          <div className={`flex h-12 w-12 items-center justify-center rounded-full ${getAvatarBgClass(user?.name)} text-white font-medium uppercase`}>
-            {initials}
-          </div>
-          <div>
-            <p className="font-medium text-gray-900">{user?.name || "Guest"}</p>
-            <p className="text-sm text-gray-500">{user?.email || "No email provided"}</p>
+          {user?.avatarUrl ? (
+            <img
+              src={user.avatarUrl}
+              alt={user?.name || ""}
+              referrerPolicy="no-referrer"
+              className="h-12 w-12 rounded-full object-cover ring-2 ring-gray-100 flex-shrink-0"
+            />
+          ) : (
+            <div className={`flex h-12 w-12 items-center justify-center rounded-full ${getAvatarBgClass(user?.name)} text-white font-medium uppercase flex-shrink-0`}>
+              {initials}
+            </div>
+          )}
+          <div className="min-w-0">
+            <p className="font-medium text-gray-900 truncate">{user?.name || "Guest"}</p>
+            <p className="text-sm text-gray-500 truncate">{user?.email || "No email provided"}</p>
+            {user?.isGoogleAccount && (
+              <p className="text-xs text-gray-400 mt-0.5">Connected with Google</p>
+            )}
           </div>
         </div>
 

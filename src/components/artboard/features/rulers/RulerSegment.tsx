@@ -18,12 +18,12 @@ export default function RulerSegment({
     size: pos === base / 2 ? "large" : pos === base / 4 || pos === (3 * base) / 4 ? "medium" : "small",
   })).filter((t) => t.pos <= maxFraction + 1e-6);
 
-  const labelPosClass = "top-4 left-1";
+  const labelPosClass = vertical ? "top-1 right-1" : "top-4 left-1";
 
   return (
     <div
       className={`relative ${vertical
-        ? "flex-1 w-full border-t border-gray-300"
+        ? "flex-1 w-full h-full border-t border-gray-300"
         : "flex-1 h-full border-l border-gray-300"
         }`}
     >

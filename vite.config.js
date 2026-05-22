@@ -12,11 +12,19 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
-    }
+    },
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    exclude: ['@imgly/background-removal'],
   },
   server: {
     host: '0.0.0.0',
     port: 5000,
-    allowedHosts: true
+    allowedHosts: true,
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+      "Cross-Origin-Embedder-Policy": "credentialless",
+    },
   }
 })

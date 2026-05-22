@@ -6,6 +6,7 @@ import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
 import { CANVAS } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
+import type { CommitHistory } from "./useHistory";
 
 export const useDropHandler = (
   items: ArtboardItem[],
@@ -18,7 +19,8 @@ export const useDropHandler = (
   autoNestStickers: boolean,
   onRequestAutoNest: ((enabled: boolean) => void) | undefined,
   spacing: number,
-  marginSize: number
+  marginSize: number,
+  commitHistory?: CommitHistory
 ) => {
   const [isDragging, setIsDragging] = useState(false);
   const [lowDpiCount, setLowDpiCount] = useState(0);
@@ -363,7 +365,7 @@ export const useDropHandler = (
           originalHeightIn,
         };
 
-        if (!trimmedUrl) {
+        if (!trimmedUrl && file.type === "image/png") {
           const cropped = await cropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;
@@ -452,6 +454,7 @@ export const useDropHandler = (
       }
 
       // 2. Preserve NEW items at their drop position initially (avoid instant jump).
+      commitHistory?.();
       setItems((prev) => {
         // Keep existing items first so newly dropped singles are arranged after them
         // (below grouped/copies items in the packed layout).
@@ -595,15 +598,25 @@ export const useDropHandler = (
     setSelectedId(null);
   };
 
+  const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/svg+xml"];
+
+  const filterFiles = (files: File[]) => {
+    const accepted = files.filter((f) => ACCEPTED_IMAGE_TYPES.includes(f.type));
+    const pdfs = files.filter((f) => f.type === "application/pdf");
+    const other = files.filter((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type) && f.type !== "application/pdf");
+    if (pdfs.length > 0) {
+      toast.error(`PDF files are not supported. Please convert to PNG or JPG first.`);
+    }
+    if (other.length > 0) {
+      toast.error(`${other.length} unsupported file${other.length > 1 ? "s" : ""} skipped. Accepted: PNG, JPG, SVG.`);
+    }
+    return accepted;
+  };
+
   const onDropEvent = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
-    const allImageFiles = Array.from(e.dataTransfer.files || []).filter((f) => f.type.startsWith("image/"));
-    const droppedFiles = allImageFiles.filter((f) => f.type === "image/png");
-    if (allImageFiles.length > droppedFiles.length) {
-      const skipped = allImageFiles.length - droppedFiles.length;
-      toast.error(`Only PNG files are accepted. ${skipped} file${skipped > 1 ? "s" : ""} skipped.`);
-    }
+    const droppedFiles = filterFiles(Array.from(e.dataTransfer.files || []));
     const jsonData =
       e.dataTransfer.getData("application/json") ||
       e.dataTransfer.getData("text/plain");
@@ -626,12 +639,7 @@ export const useDropHandler = (
 
   const dropFilesAtCenter = async (files: FileList | File[]) => {
     const arr = Array.isArray(files) ? files : Array.from(files);
-    const allImageFiles = arr.filter((f) => f.type.startsWith("image/"));
-    const droppedFiles = allImageFiles.filter((f) => f.type === "image/png");
-    if (allImageFiles.length > droppedFiles.length) {
-      const skipped = allImageFiles.length - droppedFiles.length;
-      toast.error(`Only PNG files are accepted. ${skipped} file${skipped > 1 ? "s" : ""} skipped.`);
-    }
+    const droppedFiles = filterFiles(arr);
     if (droppedFiles.length === 0) return;
     if (droppedFiles.length >= 2 && !autoNestStickers) {
       onRequestAutoNest?.(true);

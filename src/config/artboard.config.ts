@@ -8,7 +8,7 @@ export const ZOOM = {
 } as const;
 
 // Canvas configuration
-export const CANVAS = { 
+export const CANVAS = {
   PIXELS_PER_INCH: 96,
   SHEET_WIDTH_IN: 23.5,
   SHEET_HEIGHT_IN: 23.5,
@@ -18,6 +18,7 @@ export const CANVAS = {
   RULER_OFFSET_PX: 32,
   GRID_GAP_IN: 0.06,
   SELECTION_BUFFER_IN: 0.084,
+  MAX_ITEMS: 1200,
 } as const;
 
 // Unit configuration

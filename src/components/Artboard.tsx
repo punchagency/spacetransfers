@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import toast from "react-hot-toast";
 import {
   useItemActions,
   useMouseInteractions,
   useDropHandler,
   useCanvasWidth,
   useArtboardEffects,
+  useHistory,
 } from "./artboard/lib/hooks";
 import { snapToGridPoint } from "./artboard/lib/utils";
 import { DpiWarning, CanvasContainer } from "./artboard/features/canvas";
@@ -25,6 +27,7 @@ export default function Artboard({
   onDataChange,
   initialData,
   onAddToCart,
+  onHistoryChange,
 }: ArtboardProps) {
   const [zoom, setZoom] = useState(1);
   const [items, setItems] = useState<any[]>([]);
@@ -59,6 +62,18 @@ export default function Artboard({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  const history = useHistory(items, setItems);
+
+  // Bubble history state up to parent (Editor → Header)
+  useEffect(() => {
+    onHistoryChange?.({
+      undo: history.undo,
+      redo: history.redo,
+      canUndo: history.canUndo,
+      canRedo: history.canRedo,
+    });
+  }, [history.undo, history.redo, history.canUndo, history.canRedo, onHistoryChange]);
+
   const {
     isDragging,
     lowDpiCount,
@@ -83,6 +98,7 @@ export default function Artboard({
       onRequestAutoNest,
       spacing,
       marginSize,
+      history.commit,
     );
   const itemActions = useItemActions(
     items,
@@ -90,7 +106,11 @@ export default function Artboard({
     selectedId,
     snapToGrid,
     snapToGridPoint,
+    canvasWidth,
+    marginSize,
+    spacing,
     onActionPerformed,
+    history.commit,
   );
   const { handleResizeStart, handleDragStart, isDraggingItem } =
     useMouseInteractions(
@@ -104,6 +124,7 @@ export default function Artboard({
       canvasWidth,
       marginSize,
       spacing,
+      history.commit,
     );
 
   useArtboardEffects(
@@ -128,19 +149,27 @@ export default function Artboard({
     if (initItems.length) {
       const maxId = initItems.reduce(
         (m: number, it: any) => Math.max(m, Number(it?.id) || 0),
-        0, 
+        0,
       );
       const initCounter =
         typeof initialData?.counter === "number" ? initialData.counter : 0;
       const target = Math.max(maxId, initCounter);
       setCounter((prev) => (prev < target ? target : prev));
     }
+    // Loading a different design discards prior history — those steps no longer make sense
+    history.reset();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
   const duplicateSelected = () => {
     if (selectedId == null) return;
+    if (items.length >= CANVAS.MAX_ITEMS) {
+      toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items to add more.`);
+      return;
+    }
     const target = items.find((it) => it.id === selectedId);
     if (!target) return;
+    history.commit();
     const newId = counter + 1;
     setCounter(newId);
     const copy = {
@@ -169,6 +198,7 @@ export default function Artboard({
     const allSame = uniqueSelected.every((it) => it.url === firstUrl);
 
     if (allSame) {
+      history.commit();
       const totalCopies = uniqueSelected.reduce(
         (sum, it) => sum + it.copies,
         0,
@@ -200,7 +230,7 @@ export default function Artboard({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,.svg,.pdf"
+        accept="image/png,image/jpeg,image/svg+xml"
         multiple
         className="hidden"
         onChange={async (e) => {
@@ -284,6 +314,7 @@ export default function Artboard({
             }
           }}
           onCloseProperties={() => setShowProperties({})}
+          onRemoveBg={itemActions.removeBg}
           onDragStart={handleDragStart}
           onResizeStart={handleResizeStart}
           isDraggingItem={isDraggingItem}

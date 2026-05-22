@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff, MdExpandMore } from "react-icons/md";
 import { FiMapPin } from "react-icons/fi";
 import { apiFetch } from "../../lib/utils/api";
@@ -15,6 +15,9 @@ interface AuthModalProps {
   resetEmail?: string | null;
 }
 
+const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || "";
+
+
 export default function AuthModal({
   isOpen,
   onClose,
@@ -30,6 +33,7 @@ export default function AuthModal({
     isSubAccountCreation ? "register" : initialView
   );
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
@@ -39,6 +43,20 @@ export default function AuthModal({
     region: "West",
   });
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
+  const googleBtnContainerRef = useRef<HTMLDivElement>(null);
+  // Stable ref so GIS callback always calls the latest handler
+  const credentialHandlerRef = useRef<((r: { credential: string }) => void) | null>(null);
+
+  // Load GIS script once globally
+  useEffect(() => {
+    if (document.getElementById("gsi-script")) return;
+    const script = document.createElement("script");
+    script.id = "gsi-script";
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -53,6 +71,7 @@ export default function AuthModal({
       setActiveResetToken(null);
     }
     setLoading(false);
+    setGoogleLoading(false);
     setShowPassword(false);
     setError(null);
     setFormData({
@@ -62,6 +81,68 @@ export default function AuthModal({
       region: "West",
     });
   }, [isOpen, initialView, isSubAccountCreation, resetToken, resetEmail]);
+
+  const handleGoogleCredential = async (response: { credential: string }) => {
+    setGoogleLoading(true);
+    setError(null);
+    try {
+      const result = await apiFetch("/auth/google", {
+        method: "POST",
+        body: JSON.stringify({ credential: response.credential }),
+      });
+      if (result.token) localStorage.setItem("token", result.token);
+      toast.success(result.isNew ? "Account created with Google!" : "Welcome back!");
+      onAuthSuccess(result.user);
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Google sign-in failed. Please try again.");
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+  // Keep ref pointing to the latest handler so GIS never calls a stale closure
+  credentialHandlerRef.current = handleGoogleCredential;
+
+  // Initialize GIS and render the official Google button into the container
+  useEffect(() => {
+    if (!isOpen || !GOOGLE_CLIENT_ID) return;
+    const showGoogle = mode === "auth" && !isSubAccountCreation;
+    if (!showGoogle) return;
+
+    let timerId: ReturnType<typeof setTimeout>;
+
+    const tryRender = () => {
+      const goog = (window as any).google;
+      if (!goog?.accounts?.id) {
+        timerId = setTimeout(tryRender, 300);
+        return;
+      }
+      const container = googleBtnContainerRef.current;
+      if (!container) return;
+
+      goog.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: (r: any) => credentialHandlerRef.current?.(r),
+        auto_select: false,
+        cancel_on_tap_outside: true,
+      });
+
+      const w = container.getBoundingClientRect().width || 320;
+      goog.accounts.id.renderButton(container, {
+        type: "standard",
+        shape: "rectangular",
+        theme: "outline",
+        text: view === "login" ? "signin_with" : "signup_with",
+        size: "large",
+        width: Math.max(200, Math.min(Math.floor(w), 400)),
+        logo_alignment: "left",
+      });
+    };
+
+    // Delay slightly so the modal DOM is fully laid out before measuring width
+    timerId = setTimeout(tryRender, 150);
+    return () => clearTimeout(timerId);
+  }, [isOpen, mode, isSubAccountCreation, view]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,7 +185,7 @@ export default function AuthModal({
         endpoint = "/auth/sub-accounts";
       }
 
-      const payload = view === "login" 
+      const payload = view === "login"
         ? { email: formData.email, password: formData.password }
         : { ...formData, role: "customer" };
 
@@ -142,10 +223,12 @@ export default function AuthModal({
 
   if (!isOpen) return null;
 
+  const showGoogleOption = mode === "auth" && !isSubAccountCreation;
+
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs p-4"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -182,6 +265,35 @@ export default function AuthModal({
             <MdClose className="h-5 w-5" />
           </button>
         </div>
+
+        {/* Google Sign-In */}
+        {showGoogleOption && (
+          <div className="mb-4">
+            {/* Google renders its official button into this container */}
+            <div
+              className={`w-full flex items-center justify-center min-h-[44px] transition-opacity duration-150 ${googleLoading ? "opacity-40 pointer-events-none" : ""}`}
+            >
+              <div ref={googleBtnContainerRef} className="w-full" />
+            </div>
+            {googleLoading && (
+              <div className="w-full flex items-center justify-center gap-2 py-2 text-xs text-gray-500">
+                <svg className="animate-spin h-4 w-4 text-gray-400 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                </svg>
+                Signing in with Google...
+              </div>
+            )}
+            <div className="relative mt-4 mb-1">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-200" />
+              </div>
+              <div className="relative flex justify-center">
+                <span className="bg-white px-3 text-xs text-gray-400">or continue with email</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -234,7 +346,7 @@ export default function AuthModal({
                   <MdPerson size={18} />
                 </div>
                 <input
-                  type="text"  
+                  type="text"
                   name="name"
                   required
                   value={formData.name}

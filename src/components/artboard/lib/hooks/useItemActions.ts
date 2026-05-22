@@ -2,6 +2,7 @@ import { ArtboardItem } from "../../types";
 import { apiFetch } from "../../../../lib/utils/api";
 import { CANVAS } from "../../../../config/artboard.config";
 import { computeRenderCopies } from "../utils/layoutHelpers";
+import type { CommitHistory } from "./useHistory";
 import toast from "react-hot-toast";
 
 export const useItemActions = (
@@ -17,16 +18,19 @@ export const useItemActions = (
     type: string;
     id?: number;
     payload?: any;
-  }) => void
+  }) => void,
+  commitHistory?: CommitHistory
 ) => {
   const emit = (action: { type: string; id?: number; payload?: any }) => {
     setTimeout(() => {
       onActionPerformed?.(action);
     }, 0);
   };
+  const commit = (tag?: string) => commitHistory?.(tag);
 
   const rotateSelected = () => {
     if (selectedId == null) return;
+    commit();
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId
@@ -43,6 +47,7 @@ export const useItemActions = (
 
   const toggleLockSelected = () => {
     if (selectedId == null) return;
+    commit();
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId ? { ...it, locked: !it.locked } : it
@@ -53,6 +58,7 @@ export const useItemActions = (
 
   const flipSelected = () => {
     if (selectedId == null) return;
+    commit();
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId ? { ...it, flipped: !it.flipped } : it
@@ -65,8 +71,14 @@ export const useItemActions = (
     if (selectedId == null) return;
     const item = items.find((it) => it.id === selectedId);
     if (!item) return;
+    commit();
 
     if (!item.autoCrop) {
+      // Optimistic update: flip toggle immediately so UI responds at once
+      setItems((prev) =>
+        prev.map((it) => (it.id === selectedId ? { ...it, autoCrop: true } : it))
+      );
+
       const sourceUrl = (item.originalUrl || item.url) as string;
 
       if (
@@ -103,6 +115,7 @@ export const useItemActions = (
         }
       }
 
+      // Canvas fallback: only useful for PNG images with transparency
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.onload = () => {
@@ -121,11 +134,13 @@ export const useItemActions = (
           minY = canvas.height,
           maxX = 0,
           maxY = 0;
+        let found = false;
 
         for (let y = 0; y < canvas.height; y++) {
           for (let x = 0; x < canvas.width; x++) {
             const alpha = data[(y * canvas.width + x) * 4 + 3];
-            if (alpha > 1) {
+            if (alpha > 10) {
+              found = true;
               if (x < minX) minX = x;
               if (x > maxX) maxX = x;
               if (y < minY) minY = y;
@@ -134,41 +149,26 @@ export const useItemActions = (
           }
         }
 
+        if (!found) {
+          emit({ type: "toggleAutoCrop", id: selectedId });
+          return;
+        }
+
         const cropWidth = maxX - minX + 1;
         const cropHeight = maxY - minY + 1;
 
-        // Create a new canvas with the cropped dimensions
         const croppedCanvas = document.createElement("canvas");
         const croppedCtx = croppedCanvas.getContext("2d");
         if (!croppedCtx) return;
 
         croppedCanvas.width = cropWidth;
         croppedCanvas.height = cropHeight;
+        croppedCtx.drawImage(img, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
-        // Draw only the cropped portion
-        croppedCtx.drawImage(
-          img,
-          minX,
-          minY,
-          cropWidth,
-          cropHeight,
-          0,
-          0,
-          cropWidth,
-          cropHeight
-        );
-
-        // Convert to data URL
         const croppedImageUrl = croppedCanvas.toDataURL("image/png");
 
         const originalWidthIn = item.originalWidthIn || item.widthIn;
-        const originalHeightIn = item.originalHeightIn || item.heightIn;
-        const dpi = Math.max(
-          1,
-          Math.round(
-            img.width && originalWidthIn ? img.width / originalWidthIn : 300
-          )
-        );
+        const dpi = Math.max(1, Math.round(img.width && originalWidthIn ? img.width / originalWidthIn : 300));
         const newWidthIn = cropWidth / dpi;
         const newHeightIn = cropHeight / dpi;
 
@@ -188,8 +188,12 @@ export const useItemActions = (
               : it
           )
         );
+        emit({ type: "toggleAutoCrop", id: selectedId });
       };
-      img.src = item.url;
+      img.onerror = () => {
+        emit({ type: "toggleAutoCrop", id: selectedId });
+      };
+      img.src = sourceUrl;
     } else {
       // Restore original image and dimensions
       setItems((prev) =>
@@ -205,13 +209,13 @@ export const useItemActions = (
             : it
         )
       );
+      emit({ type: "toggleAutoCrop", id: selectedId });
     }
-    emit({ type: "toggleAutoCrop", id: selectedId });
   };
 
   const toggleLinked = () => {
     if (selectedId == null) return;
-
+    commit();
     setItems((prev) => {
       const item = prev.find((it) => it.id === selectedId);
       if (!item) return prev;
@@ -271,6 +275,8 @@ export const useItemActions = (
       toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items before adding more copies.`);
       return;
     }
+    if (clamped === current.copies) return;
+    commit(`setCopies-${selectedId}`);
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId ? { ...it, copies: clamped, gravityActive: true, skipAnimation: true } : it
@@ -285,6 +291,7 @@ export const useItemActions = (
 
   const setWidthIn = (n: number) => {
     if (selectedId == null) return;
+    commit(`setWidthIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
         if (it.id === selectedId) {
@@ -306,6 +313,7 @@ export const useItemActions = (
 
   const setHeightIn = (n: number) => {
     if (selectedId == null) return;
+    commit(`setHeightIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
         if (it.id === selectedId) {
@@ -327,6 +335,7 @@ export const useItemActions = (
 
   const setPosX = (n: number) => {
     if (selectedId == null) return;
+    commit(`setPosX-${selectedId}`);
     const finalX = snapToGrid ? snapToGridPoint(n) : n;
     setItems((prev) =>
       prev.map((it) => (it.id === selectedId ? { ...it, posX: finalX } : it))
@@ -340,6 +349,7 @@ export const useItemActions = (
 
   const setPosY = (n: number) => {
     if (selectedId == null) return;
+    commit(`setPosY-${selectedId}`);
     const finalY = snapToGrid ? snapToGridPoint(n) : n;
     setItems((prev) =>
       prev.map((it) => (it.id === selectedId ? { ...it, posY: finalY } : it))
@@ -353,6 +363,7 @@ export const useItemActions = (
 
   const toggleExpandSelected = () => {
     if (selectedId == null) return;
+    commit();
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId ? { ...it, expanded: !it.expanded } : it
@@ -365,6 +376,7 @@ export const useItemActions = (
     if (selectedId == null) return;
     const item = items.find((it) => it.id === selectedId);
     if (!item) return;
+    commit();
 
     const { removeBackgroundAI } = await import("../utils/bgRemover");
     const result = await removeBackgroundAI(item.url, onProgress);
@@ -400,6 +412,7 @@ export const useItemActions = (
 
   const deleteSelected = () => {
     if (selectedId == null) return;
+    commit();
     setItems((prev) => {
       const snapshot = prev.find((it) => it.id === selectedId);
       const next = prev.filter((it) => it.id !== selectedId);

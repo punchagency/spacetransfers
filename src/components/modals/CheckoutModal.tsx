@@ -6,6 +6,7 @@ import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
 import ReviewStep from "../checkout/ReviewStep";
 import OrderSummary from "../checkout/OrderSummary";
+import { ErrorBoundary } from "../common/ErrorBoundary";
 import { LuShoppingCart } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
 import toast from "react-hot-toast";
@@ -192,6 +193,8 @@ export default function CheckoutModal({
   };
 
   const handleNextStep = async () => {
+    if (isSubmitting) return;
+
     if (step === 0) {
       if (!isCartValid) {
         toast.error("Your cart is empty.");
@@ -338,6 +341,11 @@ export default function CheckoutModal({
 
   const isCartEmpty = !cartItems || cartItems.length === 0;
 
+  const handleContinueDesigning = () => {
+    setStep(0);
+    onClose();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !isSubmitting) {
       // Don't trigger if target is a button or link (already handles Enter)
@@ -442,28 +450,63 @@ export default function CheckoutModal({
 
         {/* Content */}
         <div className="p-6 max-h-[70vh] overflow-y-auto">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className={`${isCartEmpty || step === 4 ? 'lg:col-span-3' : 'lg:col-span-2'} space-y-6`}>
-              <div ref={contentRef}>
-                {step === 0 && (
-                  <CartStep
-                    cartItems={cartItems}
-                    updateQuantity={updateQuantity}
-                    removeItem={removeItem}
-                  />
-                )}
+          <ErrorBoundary>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className={`${isCartEmpty || step === 4 ? 'lg:col-span-3' : 'lg:col-span-2'} space-y-6`}>
+                <div ref={contentRef}>
+                  {step === 0 && (
+                    <CartStep
+                      cartItems={cartItems}
+                      updateQuantity={updateQuantity}
+                      removeItem={removeItem}
+                    />
+                  )}
 
-                {step === 1 && (
-                  <CheckoutStep
-                    formData={formData}
-                    setFormData={setFormData}
-                    errors={checkoutErrors as any}
-                  />
-                )}
+                  {step === 1 && (
+                    <CheckoutStep
+                      formData={formData}
+                      setFormData={setFormData}
+                      errors={checkoutErrors as any}
+                    />
+                  )}
 
-                {step === 2 && (
-                  (stripePromise ? (
-                    <Elements stripe={stripePromise}>
+                  {step === 2 && (
+                    (stripePromise ? (
+                      <Elements stripe={stripePromise}>
+                        <PaymentStep
+                          payment={payment}
+                          setPayment={setPayment}
+                          shipping={shipping}
+                          setShipping={setShipping}
+                          cartItems={cartItems}
+                          customer={{
+                            firstName: formData.firstName,
+                            lastName: formData.lastName,
+                            email: formData.email,
+                            phone: formData.phone || undefined,
+                          }}
+                          shippingAddress={{
+                            street: formData.street,
+                            city: formData.city,
+                            state: formData.state,
+                            postalCode: formData.postalCode,
+                            country: formData.country || "US",
+                          }}
+                          isSubmitting={isSubmitting}
+                          stripeEnabled={true}
+                          paypalClientId={paypalClientId}
+                          onCardCompleteChange={setIsCardComplete}
+                          onCardHandlerReady={(handler) => {
+                            cardHandlerRef.current = handler;
+                          }}
+                          paypalData={paypalData}
+                          onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
+                            setPaypalData({ paypalOrderId, paypalCaptureId });
+                            setStep(3);
+                          }}
+                        />
+                      </Elements>
+                    ) : (
                       <PaymentStep
                         payment={payment}
                         setPayment={setPayment}
@@ -484,7 +527,7 @@ export default function CheckoutModal({
                           country: formData.country || "US",
                         }}
                         isSubmitting={isSubmitting}
-                        stripeEnabled={true}
+                        stripeEnabled={false}
                         paypalClientId={paypalClientId}
                         onCardCompleteChange={setIsCardComplete}
                         onCardHandlerReady={(handler) => {
@@ -496,153 +539,120 @@ export default function CheckoutModal({
                           setStep(3);
                         }}
                       />
-                    </Elements>
-                  ) : (
-                    <PaymentStep
-                      payment={payment}
-                      setPayment={setPayment}
+                    ))
+                  )}
+
+                  {step === 3 && (
+                    <ReviewStep
+                      formData={formData}
                       shipping={shipping}
-                      setShipping={setShipping}
-                      cartItems={cartItems}
-                      customer={{
-                        firstName: formData.firstName,
-                        lastName: formData.lastName,
-                        email: formData.email,
-                        phone: formData.phone || undefined,
-                      }}
-                      shippingAddress={{
-                        street: formData.street,
-                        city: formData.city,
-                        state: formData.state,
-                        postalCode: formData.postalCode,
-                        country: formData.country || "US",
-                      }}
-                      isSubmitting={isSubmitting}
-                      stripeEnabled={false}
-                      paypalClientId={paypalClientId}
-                      onCardCompleteChange={setIsCardComplete}
-                      onCardHandlerReady={(handler) => {
-                        cardHandlerRef.current = handler;
-                      }}
-                      paypalData={paypalData}
-                      onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                        setPaypalData({ paypalOrderId, paypalCaptureId });
-                        setStep(3);
-                      }}
+                      payment={payment}
                     />
-                  ))
-                )}
+                  )}
 
-                {step === 3 && (
-                  <ReviewStep
-                    formData={formData}
-                    shipping={shipping}
-                    payment={payment}
-                  />
-                )}
-
-                {step === 4 && (
-                  <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <div className="mb-6 rounded-full bg-green-100 p-6 animate-bounce">
-                      <MdCheckCircle className="h-20 w-20 text-green-500" />
-                    </div>
-                    <h2 className="mb-2 text-3xl font-extrabold text-gray-900">
-                      Order Placed Successfully!
-                    </h2>
-                    {orderId && (
-                      <div className="mb-4 text-lg font-medium text-blue-600 bg-blue-50 px-4 py-1 rounded-full border border-blue-100">
-                        Order #{orderId.slice(-8).toUpperCase()}
+                  {step === 4 && (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <div className="mb-6 rounded-full bg-green-100 p-6 animate-bounce">
+                        <MdCheckCircle className="h-20 w-20 text-green-500" />
                       </div>
-                    )}
-                    <p className="mb-8 max-w-md text-gray-600">
-                      Thank you for your purchase! We've received your order and will begin processing it right
-                      away. A confirmation email has been sent to <strong>{formData.email}</strong>.
-                    </p>
-                    <div className="flex flex-col sm:flex-row gap-4">
+                      <h2 className="mb-2 text-3xl font-extrabold text-gray-900">
+                        Order Placed Successfully!
+                      </h2>
+                      {orderId && (
+                        <div className="mb-4 text-lg font-medium text-blue-600 bg-blue-50 px-4 py-1 rounded-full border border-blue-100">
+                          Order #{orderId.slice(-8).toUpperCase()}
+                        </div>
+                      )}
+                      <p className="mb-8 max-w-md text-gray-600">
+                        Thank you for your purchase! We've received your order and will begin processing it right
+                        away. A confirmation email has been sent to <strong>{formData.email}</strong>.
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        <button
+                          onClick={handleContinueDesigning}
+                          className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-10 py-3 text-sm font-semibold text-white shadow-lg transition-all hover:bg-blue-700 hover:scale-105"
+                        >
+                          Continue Designing
+                        </button>  
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {!isCartEmpty && step < 4 && (
+                <div className="lg:col-span-1">
+                  {step === 0 ? (
+                    <div className="bg-white rounded-lg border border-gray-200 p-6 sticky top-6">
+                      <h2 className="text-lg font-semibold mb-6">CART SUMMARY</h2>
+
+                      <div className="border-t border-gray-200 pt-4 space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Subtotal</span>
+                          <span className="font-medium">
+                            ${subtotal.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Shipping</span>
+                          <span className="font-medium">
+                            ${shippingCost.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Tax ({(taxRate * 100).toFixed(1)}%)</span>
+                          <span className="font-medium">${tax.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
+                          <span>Total</span>
+                          <span>${total.toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 text-xs text-gray-600">
+                        Returns are easy! Free return within 7 days for items in
+                        original condition.
+                      </div>
+
                       <button
-                        onClick={onClose}
-                        className="rounded-lg bg-blue-600 px-10 py-3 text-sm font-semibold text-white shadow-lg transition-all hover:bg-blue-700 hover:scale-105"
+                        onClick={() => setStep(1)}
+                        className="w-full mt-4 rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700"
                       >
-                        Continue Designing
-                      </button>  
+                        Proceed to Checkout
+                      </button>
                     </div>
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <OrderSummary
+                      cartItems={cartItems}
+                      step={step}
+                      subtotal={subtotal}
+                      shippingCost={shippingCost}
+                      tax={tax}
+                      taxRate={taxRate}
+                      total={total}
+                      onNext={handleNextStep}
+                      isSubmitting={isSubmitting}
+                      disableNext={
+                        (step === 0 && !isCartValid) ||
+                        (step === 1 && !isCheckoutValid) ||
+                        (step === 2 && payment === "paypal") ||
+                        (step === 2 && payment === "card" && !isPaymentValid)
+                      }
+                      nextLabel={
+                        step === 2 && payment === "paypal"
+                          ? "Complete with PayPal"
+                          : step === 2 && payment === "card" && !isPaymentValid
+                            ? "Enter card details"
+                            : step === 3
+                              ? "Place Order"
+                              : undefined
+                      }
+                    />
+                  )}
+                </div>
+              )}
             </div>
-
-            {!isCartEmpty && step < 4 && (
-              <div className="lg:col-span-1">
-                {step === 0 ? (
-                  <div className="bg-white rounded-lg border border-gray-200 p-6 sticky top-6">
-                    <h2 className="text-lg font-semibold mb-6">CART SUMMARY</h2>
-
-                    <div className="border-t border-gray-200 pt-4 space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Subtotal</span>
-                        <span className="font-medium">
-                          ${subtotal.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Shipping</span>
-                        <span className="font-medium">
-                          ${shippingCost.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600">Tax ({(taxRate * 100).toFixed(1)}%)</span>
-                        <span className="font-medium">${tax.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
-                        <span>Total</span>
-                        <span>${total.toFixed(2)}</span>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 text-xs text-gray-600">
-                      Returns are easy! Free return within 7 days for items in
-                      original condition.
-                    </div>
-
-                    <button
-                      onClick={() => setStep(1)}
-                      className="w-full mt-4 rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700"
-                    >
-                      Proceed to Checkout
-                    </button>
-                  </div>
-                ) : (
-                  <OrderSummary
-                    cartItems={cartItems}
-                    step={step}
-                    subtotal={subtotal}
-                    shippingCost={shippingCost}
-                    tax={tax}
-                    taxRate={taxRate}
-                    total={total}
-                    onNext={handleNextStep}
-                    isSubmitting={isSubmitting}
-                    disableNext={
-                      (step === 0 && !isCartValid) ||
-                      (step === 1 && !isCheckoutValid) ||
-                      (step === 2 && payment === "paypal") ||
-                      (step === 2 && payment === "card" && !isPaymentValid)
-                    }
-                    nextLabel={
-                      step === 2 && payment === "paypal"
-                        ? "Complete with PayPal"
-                        : step === 2 && payment === "card" && !isPaymentValid
-                          ? "Enter card details"
-                          : step === 3
-                            ? "Place Order"
-                            : undefined
-                    }
-                  />
-                )}
-              </div>
-            )}
-          </div>
+          </ErrorBoundary>
         </div>
       </div>
     </div>
