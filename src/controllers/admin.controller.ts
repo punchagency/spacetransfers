@@ -681,6 +681,11 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
       throw error;
     }
 
+    if (!admin.passwordHash) {
+      const error = new Error("Admin account has no password set") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
     const ok = await bcrypt.compare(currentPassword, admin.passwordHash);
     if (!ok) {
       const error = new Error("Current password is incorrect") as CustomError;
