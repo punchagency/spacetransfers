@@ -604,6 +604,11 @@ export const loginWithGoogle = async (credential: string): Promise<AuthResponse 
   const { email, name, sub: googleId, picture: avatarUrl } = payload;
   const normalizedEmail = email.toLowerCase().trim();
 
+  // The /api/auth/google endpoint is the customer-facing Google sign-in flow.
+  // Only ever resolve it to a customer record — never a printer/admin, even if
+  // they happen to share an email. Without this guard, a Google sign-in could
+  // silently link to a non-customer account and the resulting JWT would carry
+  // a non-CUSTOMER role, triggering 403s on every /api/customer/* route.
   let user = await User.findOne({ googleId }) as any;
   if (!user) user = await User.findOne({ email: normalizedEmail }) as any;
 
@@ -612,6 +617,13 @@ export const loginWithGoogle = async (credential: string): Promise<AuthResponse 
   if (user) {
     if (user.status === "Suspended") {
       const error = new Error("Your account has been suspended. Please contact support.") as any;
+      error.statusCode = 403;
+      throw error;
+    }
+    if (user.role !== UserRoles.CUSTOMER) {
+      const error = new Error(
+        "An account with this email already exists with a different role. Please use the standard sign-in or contact support.",
+      ) as any;
       error.statusCode = 403;
       throw error;
     }
@@ -640,6 +652,15 @@ export const loginWithGoogle = async (credential: string): Promise<AuthResponse 
       subject: "Welcome to Space Transfers",
       html: buildCustomerWelcomeEmailHtml(user.name),
     }).catch(() => {});
+  }
+
+  // Belt-and-braces: by this point user.role must be CUSTOMER (we either just
+  // created a customer or refused the login above). Assert it before signing
+  // the JWT so a future code change can never produce a non-customer Google token.
+  if (user.role !== UserRoles.CUSTOMER) {
+    const error = new Error("Google sign-in resolved to a non-customer account") as any;
+    error.statusCode = 500;
+    throw error;
   }
 
   const token = signJwt({ sub: user.id, role: user.role });
