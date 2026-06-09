@@ -3,6 +3,7 @@ import app from "./app.js";
 import { connectToDatabase } from "./config/db.js";
 import { env } from "./config/env.js";
 import { processDueAdminNotificationEmailBatches } from "./services/adminNotifications.service.js";
+import { scheduleFridayPayouts } from "./services/payoutScheduler.service.js";
 
 const start = async (): Promise<void> => {
   const server = http.createServer(app);
@@ -30,6 +31,9 @@ const start = async (): Promise<void> => {
     setInterval(() => {
       processDueAdminNotificationEmailBatches().catch(() => {});
     }, 10_000);
+
+    // Start Friday payout scheduler (TEST MODE ONLY)
+    scheduleFridayPayouts();
   }
 };
 

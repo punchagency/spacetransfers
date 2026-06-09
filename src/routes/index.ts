@@ -6,6 +6,7 @@ import printerRoutes from "./printer.routes.js";
 import adminRoutes from "./admin.routes.js";
 import orderRoutes from "./order.routes.js";
 import healthRoutes from "./health.routes.js";
+import payoutRoutes from "./payout.routes.js";
 
 const router = express.Router();
 
@@ -16,5 +17,6 @@ router.use("/customer", customerRoutes);
 router.use("/printer", printerRoutes);
 router.use("/admin", adminRoutes);
 router.use("/orders", orderRoutes);
+router.use("/payouts", payoutRoutes);
 
 export default router;

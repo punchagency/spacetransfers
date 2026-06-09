@@ -9,6 +9,7 @@ interface Env {
   jwtSecret: string;
   jwtExpiresIn: string;
   appUrl: string;
+  printerAppUrl: string;
   smtpHost?: string;
   smtpPort?: number;
   smtpUser?: string;
@@ -19,6 +20,10 @@ interface Env {
   googleDrivePrivateKey?: string;
   googleDriveFolderId?: string;
   googleClientId?: string;
+  // Stripe Connect (TEST MODE ONLY)
+  stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
+  minimumPayoutAmountCents: number;
 }
 
 const cleanEnvString = (value?: string): string | undefined => {
@@ -40,6 +45,7 @@ export const env: Env = {
   jwtSecret: cleanEnvString(process.env.JWT_SECRET) || "change-me",
   jwtExpiresIn: cleanJwtExpiresIn(process.env.JWT_EXPIRES_IN),
   appUrl: cleanEnvString(process.env.APP_URL) || `http://localhost:${cleanEnvString(process.env.PORT) ? Number(cleanEnvString(process.env.PORT)) : 4000}`,
+  printerAppUrl: cleanEnvString(process.env.PRINTER_APP_URL) || "http://localhost:5173",
 
   smtpHost: cleanEnvString(process.env.SMTP_HOST),
   smtpPort: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined,
@@ -52,4 +58,10 @@ export const env: Env = {
   googleDrivePrivateKey: cleanEnvString(process.env.GOOGLE_DRIVE_PRIVATE_KEY),
   googleDriveFolderId: cleanEnvString(process.env.GOOGLE_DRIVE_FOLDER_ID),
   googleClientId: cleanEnvString(process.env.GOOGLE_CLIENT_ID),
+  // Stripe Connect (TEST MODE ONLY — use sk_test_* keys)
+  stripeSecretKey: cleanEnvString(process.env.STRIPE_SECRET_KEY),
+  stripeWebhookSecret: cleanEnvString(process.env.STRIPE_WEBHOOK_SECRET),
+  minimumPayoutAmountCents: process.env.MINIMUM_PAYOUT_AMOUNT_CENTS
+    ? Number(process.env.MINIMUM_PAYOUT_AMOUNT_CENTS)
+    : 1000,
 };

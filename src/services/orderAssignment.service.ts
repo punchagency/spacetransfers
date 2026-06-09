@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 import { Order } from "../models/order.model.js";
 import { User, UserRoles } from "../models/user.model.js";
 import { getLatLngFromState, getRegionFromState, haversineMiles, normalizeRegion } from "../utils/region.js";
+import { notifyPrinter } from "./printerNotifications.service.js";
+import { isPrinterAvailableAt } from "../utils/businessHours.js";
 
 const ACTIVE_ORDER_STATUSES = ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] as const;
 
@@ -24,7 +26,7 @@ type AssignmentResult =
 export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult> => {
   const startedAt = Date.now();
 
-  const order = await Order.findById(orderId).select("assignedPrinter status shippingAddress statusTimeline assignmentHistory");
+  const order = await Order.findById(orderId).select("assignedPrinter status priority shippingAddress statusTimeline assignmentHistory displayId");
   if (!order) {
     return { assigned: false, orderId, reason: "Order not found", tookMs: Date.now() - startedAt };
   }
@@ -53,7 +55,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   const dailyCountByPrinter = new Map<string, number>(dailyAgg.map((r: any) => [String(r._id), Number(r.dailyCount || 0)]));
 
   const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
-    .select("name companyName email regions rating defaultShippingAddress settings.jobCapacity")
+    .select("name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours")
     .lean();
 
   const customerCoord = getLatLngFromState(customerState);
@@ -72,12 +74,15 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
       const maxConcurrent = Number(p.settings?.jobCapacity?.maxConcurrent ?? 0) || null;
       const dailyMax = Number(p.settings?.jobCapacity?.dailyMax ?? 0) || null;
+      const autoAccept: boolean = p.settings?.jobCapacity?.autoAccept !== false; // default true
       const activeCount = activeCountByPrinter.get(printerId) ?? 0;
       const dailyCount = dailyCountByPrinter.get(printerId) ?? 0;
 
       const hasConcurrentCapacity = !maxConcurrent || activeCount < maxConcurrent;
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
-      const available = hasConcurrentCapacity && hasDailyCapacity;
+      // Auto-assign only runs for printers who have auto-accept ON and are within business hours
+      const withinBusinessHours = isPrinterAvailableAt(p, now);
+      const available = autoAccept && hasConcurrentCapacity && hasDailyCapacity && withinBusinessHours;
 
       return {
         printerId,
@@ -174,14 +179,21 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   console.log(
     `[AUTO_ASSIGN] order=${order._id} customerRegion=${customerRegion || "unknown"} selectedPrinter=${selected.printerName} printerId=${selected.printerId} distanceMiles=${Number.isFinite(selected.distanceMiles) ? selected.distanceMiles.toFixed(1) : "n/a"} tookMs=${tookMs}`
   );
-  console.log(
-    `[EMAIL MOCK] Customer notified: order ${order._id} assigned to ${selected.printerName}`
-  );
-  if (selected.printerEmail) {
-    console.log(
-      `[EMAIL MOCK] Printer notified: ${selected.printerEmail} received assigned order ${order._id}`
-    );
-  }
+
+  const isUrgent = String((order as any).priority || "").toUpperCase() === "URGENT";
+  const displayId = (order as any).displayId ? String((order as any).displayId) : String(order._id).slice(-6).toUpperCase();
+
+  notifyPrinter({
+    printerId: selected.printerId,
+    category: "jobs",
+    priority: isUrgent ? "high" : "medium",
+    title: isUrgent ? "Urgent job assigned" : "New job assigned",
+    message: `Order #${displayId} has been auto-assigned to you. ${reason}.`,
+    meta: { orderId: String(order._id), autoAssigned: true },
+    settingsKey: "newJobs",
+  }).catch((err) => {
+    console.error(`[AUTO_ASSIGN] Notification failed for printer ${selected.printerId}:`, err?.message);
+  });
 
   return {
     assigned: true,

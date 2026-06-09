@@ -4,6 +4,11 @@ import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { User } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
+import { PrinterNotification } from "../models/printerNotification.model.js";
+import { addPrinterNotificationClient, publishPrinterNotificationEvent, removePrinterNotificationClient } from "../services/printerNotificationsHub.js";
+import { notifyPrinter } from "../services/printerNotifications.service.js";
+import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { isPrinterAvailableAt } from "../utils/businessHours.js";
 import archiver from "archiver";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
@@ -177,18 +182,23 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
   }
 };
 
+const calcEarning = (order: any): number => {
+  const items: any[] = Array.isArray(order.items) ? order.items : [];
+  const fromItems = items.reduce((s: number, item: any) => {
+    const sub = typeof item.subtotal === "number"
+      ? item.subtotal
+      : (typeof item.unitPrice === "number" ? item.unitPrice * (item.quantity || 1) : 0);
+    return s + sub;
+  }, 0);
+  if (fromItems > 0) return fromItems;
+  return typeof order.pricing?.subtotal === "number"
+    ? order.pricing.subtotal
+    : (typeof order.pricing?.total === "number" ? order.pricing.total : 0);
+};
+
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
-    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
-    const partnerPricing = (printer as any)?.settings?.pricing || {};
-    const basePriceForOrder = (order: any) =>
-      computePartnerCostBreakdown({
-        items: Array.isArray(order?.items) ? order.items : [],
-        partnerPricing,
-        priority: order?.priority,
-        adjustments: Array.isArray(order?.pricing?.adjustments) ? order.pricing.adjustments : [],
-      }).subtotal;
 
     const now = new Date();
     const todayStart = new Date(now);
@@ -203,43 +213,49 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       assignedPrinter: printerId,
       updatedAt: { $gte: yesterdayStart }
     })
-      .select("displayId status updatedAt createdAt items pricing.adjustments priority customer")
+      .select("displayId status updatedAt createdAt items pricing priority customer")
       .lean();
 
-    const todayCompleted = printerOrders.filter(o => o.status === "COMPLETED" && o.updatedAt >= todayStart);
-    const todayEarnings = todayCompleted.reduce((sum, o) => sum + basePriceForOrder(o), 0);
+    const todayCompleted = printerOrders.filter(o =>
+      (o.status === "COMPLETED" || o.status === "SHIPPED") && o.updatedAt >= todayStart
+    );
+    const todayEarnings = todayCompleted.reduce((sum, o) => sum + calcEarning(o), 0);
 
-    const yesterdayCompleted = printerOrders.filter(o => o.status === "COMPLETED" && o.updatedAt >= yesterdayStart && o.updatedAt <= yesterdayEnd);
-    const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + basePriceForOrder(o), 0);
+    const yesterdayCompleted = printerOrders.filter(o =>
+      (o.status === "COMPLETED" || o.status === "SHIPPED") &&
+      o.updatedAt >= yesterdayStart && o.updatedAt <= yesterdayEnd
+    );
+    const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + calcEarning(o), 0);
 
     const completedTodayCount = todayCompleted.length;
     const completedYesterdayCount = yesterdayCompleted.length;
 
     const totalPendingCount = await Order.countDocuments({ assignedPrinter: printerId, status: "PENDING" });
-    const yesterdayPendingCount = await Order.countDocuments({ 
-      assignedPrinter: printerId, 
+    const yesterdayPendingCount = await Order.countDocuments({
+      assignedPrinter: printerId,
       status: "PENDING",
       createdAt: { $lt: todayStart }
     });
 
-    const [completedOrdersAll, completedOrdersBeforeToday] = await Promise.all([
+    // Total revenue = all earnings except cancelled/rejected — matches payout summary totalEarnings
+    const [allActiveOrders, allActiveBeforeToday] = await Promise.all([
       Order.find({
         assignedPrinter: printerId,
-        status: "COMPLETED",
+        status: { $nin: ["CANCELLED", "REJECTED"] },
       })
-        .select("items pricing.adjustments priority")
+        .select("items pricing")
         .lean(),
       Order.find({
         assignedPrinter: printerId,
-        status: "COMPLETED",
+        status: { $nin: ["CANCELLED", "REJECTED"] },
         updatedAt: { $lt: todayStart },
       })
-        .select("items pricing.adjustments priority")
+        .select("items pricing")
         .lean(),
     ]);
 
-    const totalRevenue = completedOrdersAll.reduce((sum, o) => sum + basePriceForOrder(o), 0);
-    const totalRevenueBeforeToday = completedOrdersBeforeToday.reduce((sum, o) => sum + basePriceForOrder(o), 0);
+    const totalRevenue = allActiveOrders.reduce((sum, o) => sum + calcEarning(o), 0);
+    const totalRevenueBeforeToday = allActiveBeforeToday.reduce((sum, o) => sum + calcEarning(o), 0);
 
     const getTrend = (current: number, previous: number) => {
       if (!previous || previous === 0) return { trend: "0%", trendUp: true };
@@ -304,27 +320,29 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       createdAt: job.createdAt.toISOString()
     }));
 
+    const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
     res.json({
       cards: [
-        { 
-          label: "Today's Earnings", 
-          value: `$${todayEarnings.toLocaleString()}`, 
+        {
+          label: "Today's Earnings",
+          value: fmtMoney(todayEarnings),
           ...earningsTrend
         },
-        { 
-          label: "Completed Orders", 
-          value: completedTodayCount.toLocaleString(), 
+        {
+          label: "Completed Orders",
+          value: completedTodayCount.toLocaleString(),
           ...completedTrend
         },
-        { 
-          label: "Pending Orders", 
-          value: totalPendingCount.toLocaleString(), 
-          trend: `${totalPendingCount - yesterdayPendingCount > 0 ? "+" : ""}${totalPendingCount - yesterdayPendingCount} since yesterday`, 
-          trendUp: totalPendingCount >= yesterdayPendingCount 
+        {
+          label: "Pending Orders",
+          value: totalPendingCount.toLocaleString(),
+          trend: `${totalPendingCount - yesterdayPendingCount > 0 ? "+" : ""}${totalPendingCount - yesterdayPendingCount}`,
+          trendUp: totalPendingCount <= yesterdayPendingCount
         },
-        { 
-          label: "Total Revenue", 
-          value: `$${totalRevenue.toLocaleString()}`,
+        {
+          label: "Total Revenue",
+          value: fmtMoney(totalRevenue),
           ...revenueTrend
         }
       ],
@@ -420,6 +438,23 @@ export const updateJobStatus = async (req: Request, res: Response, next: NextFun
     if (!job.statusTimeline) job.statusTimeline = [];
     job.statusTimeline.push({ status: status as any, time: new Date() });
     await job.save();
+
+    const pqLabelMap: Record<string, string> = {
+      PENDING: "Pending",
+      PROCESSING: "Processing",
+      PRINTING: "Printing",
+      QUALITY_CHECK: "Quality Check",
+      COMPLETED: "Completed",
+    };
+    notifyPrinter({
+      printerId: String(printerId),
+      category: "jobs",
+      priority: status === "COMPLETED" ? "medium" : "low",
+      title: `Print queue job → ${pqLabelMap[status] || status}`,
+      message: `Order ${(job as any).displayId || job.id} moved to ${pqLabelMap[status] || status}.`,
+      meta: { orderId: job.id, status },
+      settingsKey: "orderUpdates",
+    }).catch(() => {});
 
     res.json({
       id: job.id,
@@ -639,11 +674,20 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
     }
 
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
     if (!job) {
       const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
+    }
+
+    // Business hours enforcement for ACCEPT and REJECT
+    if (action === "ACCEPT" || action === "REJECT") {
+      const printer = await User.findById(printerId).select("settings.businessHours settings.jobCapacity name companyName email").lean();
+      if (printer && !isPrinterAvailableAt(printer)) {
+        const error = new Error("Action not allowed outside your configured business hours") as CustomError;
+        error.statusCode = 403;
+        throw error;
+      }
     }
 
     let nextStatus: any;
@@ -693,13 +737,85 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
 
     job.status = nextStatus;
     if (!job.statusTimeline) job.statusTimeline = [];
-    job.statusTimeline.push({ status: nextStatus as any, time: new Date() });
+    job.statusTimeline.push({
+      status: nextStatus as any,
+      time: new Date(),
+      ...(action === "REJECT" ? { message: reason } : {}),
+    });
     await job.save();
 
-    res.json({
-      id: job.id,
-      status: job.status
-    });
+    const displayId = (job as any).displayId || String(job._id).slice(-6).toUpperCase();
+    const rejectedAt = new Date().toISOString();
+
+    if (action === "REJECT") {
+      // Determine if the job was auto-assigned
+      const lastAssignment = Array.isArray((job as any).assignmentHistory)
+        ? (job as any).assignmentHistory.slice(-1)[0]
+        : null;
+      const wasAutoAssigned = lastAssignment?.mode === "AUTO";
+
+      const printerUser = await User.findById(printerId).select("name companyName email").lean();
+      const printerName = (printerUser as any)?.companyName || (printerUser as any)?.name || "Printer";
+      const printerEmail = (printerUser as any)?.email || "";
+
+      // Notify all admins with full details
+      notifyAllAdmins({
+        category: "orders",
+        priority: "high",
+        title: "Job rejected by printer",
+        message: `Order #${displayId} was rejected by ${printerName}${wasAutoAssigned ? " (auto-assigned job)" : ""}. Reason: ${reason}`,
+        meta: {
+          orderId: String(job._id),
+          displayId,
+          printerId: String(printerId),
+          printerName,
+          printerEmail,
+          rejectionReason: reason,
+          rejectedAt,
+          wasAutoAssigned,
+          previousStatus: "PENDING",
+        },
+      }).catch(() => {});
+
+      // Confirm to the printer that the rejection was recorded
+      notifyPrinter({
+        printerId: String(printerId),
+        category: "jobs",
+        priority: "medium",
+        title: "Job rejection confirmed",
+        message: `You successfully rejected Order #${displayId}. Reason: "${reason}". The admin has been notified.`,
+        meta: {
+          orderId: String(job._id),
+          displayId,
+          action: "REJECT",
+          status: nextStatus,
+          rejectionReason: reason,
+          rejectedAt,
+          wasAutoAssigned,
+        },
+        settingsKey: "orderUpdates",
+      }).catch(() => {});
+    } else {
+      // Generic notification for all other actions
+      const actionLabelMap: Record<string, { title: string; priority: "high" | "medium" | "low" }> = {
+        ACCEPT: { title: "Job accepted",         priority: "medium" },
+        START:  { title: "Job started printing", priority: "low"    },
+        PAUSE:  { title: "Job paused",           priority: "low"    },
+        RESUME: { title: "Job resumed",          priority: "low"    },
+      };
+      const { title: actionTitle, priority: actionPriority } = actionLabelMap[action] || { title: `Job action: ${action}`, priority: "low" as const };
+      notifyPrinter({
+        printerId: String(printerId),
+        category: "jobs",
+        priority: actionPriority,
+        title: actionTitle,
+        message: `Order #${displayId} — ${actionTitle.toLowerCase()}.`,
+        meta: { orderId: String(job._id), action, status: nextStatus },
+        settingsKey: "orderUpdates",
+      }).catch(() => {});
+    }
+
+    res.json({ id: job.id, status: job.status });
   } catch (error) {
     next(error);
   }
@@ -1509,6 +1625,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       if (label === "In Progress") return "Currently being processed";
       if (label === "Ready") return "Ready for packaging and shipment";
       if (label === "Completed") return "Job completed successfully";
+      if (label === "Cancelled") return "This job has been cancelled";
       return "";
     };
 
@@ -1636,26 +1753,8 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
 
     const storedPricing = (job as any).pricing || {};
     const currency = String(storedPricing.currency || "USD");
-    const storedAdjustments = Array.isArray(storedPricing.adjustments) ? storedPricing.adjustments : [];
 
-    const partner = printerId
-      ? await User.findById(printerId).select("settings.pricing").lean()
-      : null;
-    const partnerPricing = (partner as any)?.settings?.pricing || {};
-    const breakdown = computePartnerCostBreakdown({
-      items,
-      partnerPricing,
-      priority: (job as any).priority,
-      adjustments: storedAdjustments,
-    });
-
-    const base = roundMoney(breakdown.base);
-    const surcharges = roundMoney(breakdown.surcharges);
-    const partnerCost = roundMoney(breakdown.subtotal);
-    const total = partnerCost;
-    const earning = partnerCost;
-    const commission = 0;
-    const tax = 0;
+    const earning = roundMoney(calcEarning(job));
 
     res.json({
       id: String((job as any)._id),
@@ -1692,17 +1791,17 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         status: String((job as any).status || "").toUpperCase() === "CANCELLED" ? "cancelled" : "secured"
       },
       pricing: {
-        subtotal: base,
-        partnerCost,
-        rushFee: surcharges,
+        subtotal: earning,
+        partnerCost: earning,
+        rushFee: 0,
         shippingCost: null,
-        tax,
-        total,
+        tax: 0,
+        total: earning,
         currency
       },
       earnings: {
-        gross: total,
-        commission,
+        gross: earning,
+        commission: 0,
         net: earning,
         currency
       },
@@ -1850,7 +1949,91 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     pushStatus(next);
     await job.save();
 
+    const statusLabelMap: Record<string, string> = {
+      PENDING: "Pending Review",
+      PRINTING: "In Progress",
+      QUALITY_CHECK: "Ready for Packaging",
+      SHIPPED: "Shipped",
+      COMPLETED: "Completed",
+      CANCELLED: "Cancelled",
+    };
+    const statusLabel = statusLabelMap[next] || next;
+    notifyPrinter({
+      printerId: String(printerId),
+      category: "jobs",
+      priority: next === "COMPLETED" ? "medium" : "low",
+      title: `Job moved to ${statusLabel}`,
+      message: `Order ${(job as any).displayId || job.id} status updated to ${statusLabel}.`,
+      meta: { orderId: job.id, status: next },
+      settingsKey: "orderUpdates",
+    }).catch(() => {});
+
     res.json({ updated: true, id: job.id, status: normalized, updatedAt: job.updatedAt.toISOString() });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const cancelPrinterOrder = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orderId } = req.params as any;
+    const printerId = req.user?.id;
+    const id = Array.isArray(orderId) ? String(orderId[0] || "") : String(orderId || "");
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      const error = new Error("Invalid order id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const { reason } = req.body || {};
+    const cancelReason = typeof reason === "string" ? reason.trim() : "";
+
+    const job = await Order.findOne({ _id: id, assignedPrinter: printerId });
+    if (!job) {
+      const error = new Error("Order not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const current = String((job as any).status || "").toUpperCase();
+    if (current === "CANCELLED") {
+      const error = new Error("Order is already cancelled") as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+    if (current === "COMPLETED") {
+      const error = new Error("Cannot cancel a completed order") as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+
+    if (!job.statusTimeline) job.statusTimeline = [];
+    (job.statusTimeline as any).push({
+      status: "CANCELLED" as any,
+      time: new Date(),
+      message: cancelReason ? `Cancelled by printer: ${cancelReason}` : "Cancelled by printer",
+      actorRole: "PRINTER",
+      actorId: String(printerId || ""),
+      actorName: null,
+    } as any);
+
+    job.status = "CANCELLED" as any;
+    if (cancelReason) (job as any).rejectionReason = cancelReason;
+
+    await job.save();
+
+    notifyPrinter({
+      printerId: String(printerId),
+      category: "jobs",
+      priority: "high",
+      title: "Job cancelled",
+      message: `Order ${(job as any).displayId || job.id} has been cancelled.${cancelReason ? ` Reason: ${cancelReason}` : ""}`,
+      meta: { orderId: job.id, status: "CANCELLED" },
+      settingsKey: "orderUpdates",
+    }).catch(() => {});
+
+    res.json({ cancelled: true, id: job.id, status: "CANCELLED", updatedAt: job.updatedAt.toISOString() });
   } catch (error) {
     next(error);
   }
@@ -1903,8 +2086,6 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
   try {
     const printerId = req.user?.id;
     const { range = "30d" } = req.query;
-    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
-    const partnerPricing = (printer as any)?.settings?.pricing || {};
 
     let startDate: Date;
     const now = new Date();
@@ -1918,8 +2099,9 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
 
     const orders = await Order.find({
       assignedPrinter: printerId,
+      status: { $nin: ["CANCELLED", "REJECTED"] },
       createdAt: { $gte: startDate }
-    });
+    }).select("items pricing status createdAt").lean();
 
     let revenue = 0;
     let paidOut = 0;
@@ -1928,21 +2110,16 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
     const dailyRevenue: { [key: string]: number } = {};
 
     orders.forEach(order => {
-      const amount = computePartnerCostBreakdown({
-        items: Array.isArray((order as any).items) ? (order as any).items : [],
-        partnerPricing,
-        priority: (order as any).priority,
-        adjustments: Array.isArray((order as any)?.pricing?.adjustments) ? (order as any).pricing.adjustments : [],
-      }).subtotal;
+      const amount = calcEarning(order);
       revenue += amount;
 
-      if (["COMPLETED", "SHIPPED"].includes(order.status)) {
+      if (["COMPLETED", "SHIPPED"].includes(String(order.status))) {
         paidOut += amount;
       } else {
         pending += amount;
       }
 
-      const dateKey = order.createdAt.toISOString().split("T")[0];
+      const dateKey = new Date(order.createdAt).toISOString().split("T")[0];
       dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
     });
 
@@ -1980,41 +2157,51 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
 export const listEarningsJobs = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
-    const { status } = req.query;
-    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
-    const partnerPricing = (printer as any)?.settings?.pricing || {};
+    const { range = "all", status } = req.query;
 
     const query: any = { assignedPrinter: printerId };
-
-    if (status) {
-      if (status === "Paid") {
-        query.status = { $in: ["SHIPPED", "COMPLETED"] };
-      } else if (status === "Pending") {
-        query.status = { $nin: ["SHIPPED", "COMPLETED", "CANCELLED", "REJECTED"] };
-      }
+    const now = new Date();
+    if (range === "today") {
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      query.updatedAt = { $gte: start };
+    } else if (range === "7d") {
+      query.updatedAt = { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) };
+    } else if (range === "30d") {
+      query.updatedAt = { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
     }
 
-    const orders = await Order.find(query).sort({ updatedAt: -1 });
+    if (status === "Paid") {
+      query.status = { $in: ["SHIPPED", "COMPLETED"] };
+    } else if (status === "Pending") {
+      query.status = { $nin: ["SHIPPED", "COMPLETED", "CANCELLED", "REJECTED"] };
+    } else {
+      query.status = { $nin: ["CANCELLED", "REJECTED"] };
+    }
+
+    const orders = await Order.find(query)
+      .select("displayId items pricing status updatedAt customer")
+      .sort({ updatedAt: -1 })
+      .lean();
 
     const jobs = orders.map(order => {
-      const amount = computePartnerCostBreakdown({
-        items: Array.isArray((order as any).items) ? (order as any).items : [],
-        partnerPricing,
-        priority: (order as any).priority,
-        adjustments: Array.isArray((order as any)?.pricing?.adjustments) ? (order as any).pricing.adjustments : [],
-      }).subtotal;
-      const commission = 0;
-      const earning = amount;
-      const isPaid = ["SHIPPED", "COMPLETED"].includes(order.status);
+      const items: any[] = Array.isArray((order as any).items) ? (order as any).items : [];
+
+      const earning = calcEarning(order);
+
+      const isPaid = ["SHIPPED", "COMPLETED"].includes(String(order.status));
+
+      const firstName = items[0]?.name || items[0]?.type || "Print Job";
+      const detailsTitle = items.length > 1 ? `${firstName} +${items.length - 1} more` : firstName;
+      const detailsSub = `${items.reduce((s: number, i: any) => s + (i.quantity || 1), 0)} item(s)`;
 
       return {
-        id: order.id,
-        customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
-        amount: Number(amount.toFixed(2)),
+        id: (order as any).displayId || String((order as any)._id),
+        customer: `${(order as any).customer?.firstName || ""} ${(order as any).customer?.lastName || ""}`.trim() || "—",
+        details: { title: detailsTitle, sub: detailsSub },
         earning: Number(earning.toFixed(2)),
-        commission: Number(commission.toFixed(2)),
-        completed: order.updatedAt.toISOString().split("T")[0],
-        status: isPaid ? "Paid" : "Pending"
+        completed: new Date((order as any).updatedAt).toISOString().split("T")[0],
+        status: isPaid ? "Paid" : "Pending",
       };
     });
 
@@ -2028,8 +2215,6 @@ export const requestPayout = async (req: Request, res: Response, next: NextFunct
   try {
     const printerId = req.user?.id;
     const { amount, method } = req.body;
-    const printer = printerId ? await User.findById(printerId).select("settings.pricing").lean() : null;
-    const partnerPricing = (printer as any)?.settings?.pricing || {};
 
     const allowedMethods = ["bank_transfer", "paypal", "check"];
     if (!method || !allowedMethods.includes(method)) {
@@ -2047,17 +2232,9 @@ export const requestPayout = async (req: Request, res: Response, next: NextFunct
     const orders = await Order.find({
       assignedPrinter: printerId,
       status: { $in: ["SHIPPED", "COMPLETED"] }
-    });
+    }).select("items pricing").lean();
 
-    const totalAvailable = orders.reduce((sum, order) => {
-      const earning = computePartnerCostBreakdown({
-        items: Array.isArray((order as any).items) ? (order as any).items : [],
-        partnerPricing,
-        priority: (order as any).priority,
-        adjustments: Array.isArray((order as any)?.pricing?.adjustments) ? (order as any).pricing.adjustments : [],
-      }).subtotal;
-      return sum + earning;
-    }, 0);
+    const totalAvailable = orders.reduce((sum, order) => sum + calcEarning(order), 0);
 
     if (amount > totalAvailable) {
       const error = new Error(`Insufficient balance. Available pending earnings: $${totalAvailable.toFixed(2)}`) as CustomError;
@@ -2245,17 +2422,14 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
         sunday: defaultHours 
       },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
-      notifications: settings.notifications || { 
+      notifications: {
         email: {
-          newJobs: true,
-          jobUpdates: true,
-          payoutAlerts: true,
-          systemAlerts: true
+          newJobs:        settings.notifications?.email?.newJobs        ?? true,
+          orderUpdates:   settings.notifications?.email?.orderUpdates   ?? true,
+          payoutAlerts:   settings.notifications?.email?.payoutAlerts   ?? true,
+          accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
+          systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-        sms: {
-          urgentJobs: true,
-          payoutComplete: false
-        }
       },
       paymentMethod: {
         type: paymentMethod.type || "bank_transfer",
@@ -2330,17 +2504,14 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
         sunday: defaultHours 
       },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
-      notifications: settings.notifications || { 
+      notifications: {
         email: {
-          newJobs: true,
-          jobUpdates: true,
-          payoutAlerts: true,
-          systemAlerts: true
+          newJobs:        settings.notifications?.email?.newJobs        ?? true,
+          orderUpdates:   settings.notifications?.email?.orderUpdates   ?? true,
+          payoutAlerts:   settings.notifications?.email?.payoutAlerts   ?? true,
+          accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
+          systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-        sms: {
-          urgentJobs: true,
-          payoutComplete: false
-        }
       },
       paymentMethod: {
         type: paymentMethod.type || "bank_transfer",
@@ -2357,4 +2528,220 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
   } catch (error) {
     next(error);
   }
-}; 
+};
+
+// ─── Email Verification ───────────────────────────────────────────────────────
+
+export const requestEmailVerification = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    const user = await User.findById(printerId);
+    if (!user) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
+
+    if (user.verificationStatus?.email) {
+      return res.status(400).json({ message: "Email is already verified" });
+    }
+
+    // Rate limiting: 60-second cooldown between sends
+    const COOLDOWN_MS = 60_000;
+    if (user.emailVerificationSentAt) {
+      const elapsed = Date.now() - user.emailVerificationSentAt.getTime();
+      if (elapsed < COOLDOWN_MS) {
+        const retryAfterSecs = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
+        return res.status(429).json({
+          message: `Please wait ${retryAfterSecs}s before requesting another verification email`,
+          retryAfterSecs,
+        });
+      }
+    }
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    user.emailVerificationTokenHash = tokenHash;
+    user.emailVerificationExpiresAt = expiresAt;
+    user.emailVerificationSentAt = new Date();
+    await user.save();
+
+    const { sendEmail } = await import("../services/email.service.js");
+    const verifyUrl = `${env.printerAppUrl}/verify-email?token=${rawToken}`;
+    const displayName = user.companyName || user.name || "Printer";
+
+    await sendEmail({
+      to: user.email,
+      subject: "Verify your email address – Space Transfers",
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <body style="margin:0;padding:0;background:#f4f6f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+          <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 20px;">
+            <tr><td align="center">
+              <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                <tr><td style="background:linear-gradient(135deg,#2563EB,#1D4ED8);padding:32px 40px;">
+                  <p style="margin:0;color:#fff;font-size:22px;font-weight:700;">Space Transfers</p>
+                  <p style="margin:6px 0 0;color:#bfdbfe;font-size:13px;">Printer Partner Network</p>
+                </td></tr>
+                <tr><td style="padding:40px;">
+                  <p style="margin:0 0 8px;font-size:18px;font-weight:600;color:#111827;">Verify your email address</p>
+                  <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.6;">Hi ${displayName}, click the button below to verify your email address. This link expires in 24 hours.</p>
+                  <a href="${verifyUrl}" style="display:inline-block;padding:12px 28px;background:#2563EB;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;border-radius:8px;">Verify Email Address</a>
+                  <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;">Or copy this link: <a href="${verifyUrl}" style="color:#2563EB;">${verifyUrl}</a></p>
+                  <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;">If you didn't request this, you can safely ignore this email.</p>
+                </td></tr>
+              </table>
+            </td></tr>
+          </table>
+        </body>
+        </html>
+      `,
+    });
+
+    return res.json({
+      sent: true,
+      message: "Verification email sent",
+      nextAllowedAt: new Date(user.emailVerificationSentAt.getTime() + COOLDOWN_MS).toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── Printer Notifications ────────────────────────────────────────────────────
+
+export const streamPrinterNotifications = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+    addPrinterNotificationClient(printerId, res);
+
+    const interval = setInterval(() => {
+      try { res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`); }
+      catch { clearInterval(interval); }
+    }, 25_000);
+
+    req.on("close", () => {
+      clearInterval(interval);
+      removePrinterNotificationClient(printerId, res);
+    });
+  } catch (error) { next(error); }
+};
+
+export const listPrinterNotifications = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+
+    const { status, category, priority, q, limit = "30", cursor } = req.query;
+    const pageSize = Math.max(1, Math.min(100, parseInt(String(limit), 10) || 30));
+
+    const query: any = { printerId: new mongoose.Types.ObjectId(printerId) };
+
+    if (status === "unread") query.readAt = null;
+    if (typeof category === "string" && ["jobs", "orders", "system"].includes(category)) {
+      query.category = category;
+    }
+    if (typeof priority === "string" && ["high", "medium", "low"].includes(priority)) {
+      query.priority = priority;
+    }
+    if (typeof q === "string" && q.trim()) {
+      const re = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      query.$or = [{ title: re }, { message: re }];
+    }
+    if (typeof cursor === "string" && cursor.includes("_")) {
+      const [createdAtMsRaw, idRaw] = cursor.split("_");
+      const createdAtMs = Number(createdAtMsRaw);
+      if (Number.isFinite(createdAtMs) && mongoose.Types.ObjectId.isValid(idRaw)) {
+        query.$or = [
+          { createdAt: { $lt: new Date(createdAtMs) } },
+          { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } },
+        ];
+      }
+    }
+
+    const docs = await PrinterNotification.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(pageSize + 1)
+      .lean();
+
+    const hasNextPage = docs.length > pageSize;
+    const results = hasNextPage ? docs.slice(0, pageSize) : docs;
+    const nextCursor = hasNextPage
+      ? `${new Date(results[results.length - 1].createdAt).getTime()}_${String(results[results.length - 1]._id)}`
+      : null;
+
+    const unreadCount = await PrinterNotification.countDocuments({
+      printerId: new mongoose.Types.ObjectId(printerId),
+      readAt: null,
+    });
+
+    res.status(200).json({
+      notifications: results.map((n: any) => ({
+        id: String(n._id),
+        category: n.category,
+        priority: n.priority,
+        title: n.title,
+        message: n.message,
+        readAt: n.readAt || null,
+        createdAt: n.createdAt,
+      })),
+      unreadCount,
+      nextCursor,
+    });
+  } catch (error) { next(error); }
+};
+
+export const setPrinterNotificationRead = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+
+    const notificationId = String((req as any).params?.id || "");
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      const e = new Error("Invalid notification id") as any; e.statusCode = 400; throw e;
+    }
+
+    const read = req.body?.read !== undefined ? Boolean(req.body.read) : true;
+    const readAt = read ? new Date() : null;
+
+    const updated = await PrinterNotification.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(notificationId), printerId: new mongoose.Types.ObjectId(printerId) },
+      { $set: { readAt } },
+      { new: true }
+    ).lean();
+
+    if (!updated) {
+      const e = new Error("Notification not found") as any; e.statusCode = 404; throw e;
+    }
+
+    publishPrinterNotificationEvent(printerId, "notification.updated", {
+      id: String(updated._id),
+      readAt: updated.readAt || null,
+    });
+
+    res.status(200).json({ updated: true, id: String(updated._id), readAt: updated.readAt || null });
+  } catch (error) { next(error); }
+};
+
+export const markAllPrinterNotificationsRead = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+
+    const now = new Date();
+    await PrinterNotification.updateMany(
+      { printerId: new mongoose.Types.ObjectId(printerId), readAt: null },
+      { $set: { readAt: now } }
+    );
+
+    publishPrinterNotificationEvent(printerId, "notification.bulk_read", { readAt: now });
+    res.status(200).json({ updated: true });
+  } catch (error) { next(error); }
+};
