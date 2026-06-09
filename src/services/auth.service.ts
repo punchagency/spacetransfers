@@ -1,4 +1,5 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
+import { getRegionFromState, normalizeRegion } from "../utils/region.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
@@ -144,7 +145,14 @@ export const registerUser = async ({
   if (companyName) userPayload.companyName = companyName;
   if (phone) userPayload.phone = phone;
   if (website) userPayload.website = website;
-  const resolvedRegion = region || (resolvedRole === UserRoles.CUSTOMER ? "West" : undefined);
+  let resolvedRegion: string | undefined;
+  if (resolvedRole === UserRoles.CUSTOMER) {
+    // Auto-assign region from shipping address state; fall back to "West" if unresolvable
+    resolvedRegion =
+      normalizeRegion(getRegionFromState(address?.state)) || "West";
+  } else {
+    resolvedRegion = region;
+  }
   if (resolvedRegion) userPayload.regions = [resolvedRegion];
   if (address) {
     const addressData = {

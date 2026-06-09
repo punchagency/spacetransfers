@@ -1,21 +1,21 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
-import { 
-  listPrintQueue, 
-  updateJobStatus, 
-  listPrinterOrders, 
-  getPrinterEarnings, 
-  getDashboardStats, 
-  updateJobPriority, 
-  getJobDetails, 
-  getJobCustomerInfo, 
+import {
+  listPrintQueue,
+  updateJobStatus,
+  listPrinterOrders,
+  getPrinterEarnings,
+  getDashboardStats,
+  updateJobPriority,
+  getJobDetails,
+  getJobCustomerInfo,
   getPrinterJobOverview,
-  updateJobNotes, 
-  updateJobSpecs, 
-  executeJobAction, 
-  getJobAssets, 
-  createJobAssetBundle, 
+  updateJobNotes,
+  updateJobSpecs,
+  executeJobAction,
+  getJobAssets,
+  createJobAssetBundle,
   downloadJobAssetBundle,
   exportJobGangsheet,
   getExportJobStatus,
@@ -23,18 +23,24 @@ import {
   downloadGangsheetExport,
   getPrinterOrdersSummary,
   updatePrinterOrderStatus,
-  createJobShippingLabel, 
-  updateJobTracking, 
-  getOrderSummary, 
-  getEarningsSummary, 
-  listEarningsJobs, 
-  requestPayout, 
-  confirmPayoutRequest, 
-  getPrinterProfile, 
-  updatePrinterProfile, 
-  getPrinterSettings, 
+  cancelPrinterOrder,
+  createJobShippingLabel,
+  updateJobTracking,
+  getOrderSummary,
+  getEarningsSummary,
+  listEarningsJobs,
+  requestPayout,
+  confirmPayoutRequest,
+  getPrinterProfile,
+  updatePrinterProfile,
+  getPrinterSettings,
   updatePrinterSettings,
-  uploadProfileAsset
+  uploadProfileAsset,
+  requestEmailVerification,
+  listPrinterNotifications,
+  streamPrinterNotifications,
+  setPrinterNotificationRead,
+  markAllPrinterNotificationsRead,
 } from "../controllers/printer.controller.js";
 import { upload } from "../middleware/upload.js";
 
@@ -47,6 +53,7 @@ router.get("/print-queue", listPrintQueue);
 router.get("/profile", getPrinterProfile);
 router.patch("/profile", updatePrinterProfile);
 router.post("/profile/upload", upload.single("file"), uploadProfileAsset);
+router.post("/profile/verify-email", requestEmailVerification);
 router.get("/settings", getPrinterSettings);
 router.patch("/settings", updatePrinterSettings);
 router.get("/jobs/:jobId", getJobDetails);
@@ -61,6 +68,7 @@ router.get("/jobs/export-status/:exportJobId", getExportJobStatus);
 router.get("/exports/:exportId/file", downloadGangsheetExport);
 router.get("/orders/summary", getPrinterOrdersSummary);
 router.patch("/orders/:orderId/status", updatePrinterOrderStatus);
+router.post("/orders/:orderId/cancel", cancelPrinterOrder);
 router.post("/jobs/:jobId/label", createJobShippingLabel);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.patch("/jobs/:jobId/specs", updateJobSpecs);
@@ -76,4 +84,9 @@ router.post("/earnings/payout-requests", requestPayout);
 router.post("/earnings/payout-requests/:requestId/confirm", confirmPayoutRequest);
 router.get("/earnings", getPrinterEarnings);
 
-export default router; 
+router.get("/notifications", listPrinterNotifications);
+router.get("/notifications/stream", streamPrinterNotifications);
+router.patch("/notifications/:id/read", setPrinterNotificationRead);
+router.post("/notifications/mark-all-read", markAllPrinterNotificationsRead);
+
+export default router;

@@ -13,6 +13,7 @@ import { Design } from "../models/design.model.js";
 import { AdminNotification } from "../models/adminNotification.model.js";
 import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminNotificationClient } from "../services/adminNotificationsHub.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
@@ -982,7 +983,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 
     const notifications = {
       orderAssigned: settings.notifications?.email?.newJobs || false,
-      jobCompleted: settings.notifications?.email?.jobUpdates || false
+      jobCompleted: settings.notifications?.email?.orderUpdates || false
     };
 
     const capabilities = {
@@ -1166,6 +1167,27 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
       meta: { orderId: String(order._id), status: dbStatus }
     }).catch(() => {});
 
+    if (order.assignedPrinter) {
+      const labelMap: Record<string, string> = {
+        PENDING: "Pending Review",
+        PRINTING: "In Progress",
+        QUALITY_CHECK: "Ready for Packaging",
+        SHIPPED: "Shipped",
+        COMPLETED: "Completed",
+        CANCELLED: "Cancelled",
+      };
+      const statusLabel = labelMap[dbStatus] || dbStatus;
+      notifyPrinter({
+        printerId: String(order.assignedPrinter),
+        category: "orders",
+        priority: dbStatus === "CANCELLED" ? "high" : "medium",
+        title: `Order status changed to ${statusLabel}`,
+        message: `Order ${(order as any).displayId || String(order._id)} was updated to ${statusLabel} by admin.`,
+        meta: { orderId: String(order._id), status: dbStatus },
+        settingsKey: "orderUpdates",
+      }).catch(() => {});
+    }
+
     res.status(200).json({
       orderId: order._id,
       status: status,
@@ -1254,6 +1276,16 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       title: "Order assigned",
       message: `Order ${String(order._id)} → ${partner.companyName || partner.name}`,
       meta: { orderId: String(order._id), partnerId: String(partnerId) }
+    }).catch(() => {});
+
+    notifyPrinter({
+      printerId: String(partnerId),
+      category: "jobs",
+      priority: order.priority === "URGENT" ? "high" : "medium",
+      title: isReassignment ? "Job reassigned to you" : "New job assigned",
+      message: `Order ${(order as any).displayId || String(order._id)} has been assigned to you and is ready to start.`,
+      meta: { orderId: String(order._id) },
+      settingsKey: "newJobs",
     }).catch(() => {});
 
     console.log(

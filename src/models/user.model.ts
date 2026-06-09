@@ -33,6 +33,12 @@ export interface IUser extends Document {
   };
   resetPasswordTokenHash?: string | null;
   resetPasswordExpiresAt?: Date | null;
+  emailVerificationTokenHash?: string | null;
+  emailVerificationExpiresAt?: Date | null;
+  emailVerificationSentAt?: Date | null;
+  stripeConnectAccountId?: string | null;
+  stripeConnectOnboarded?: boolean;
+  payoutsEnabled?: boolean;
   artboardDraft?: any;
   cart?: any[];
   verificationStatus?: {
@@ -97,13 +103,10 @@ export interface IUser extends Document {
     notifications?: {
       email?: {
         newJobs?: boolean;
-        jobUpdates?: boolean;
+        orderUpdates?: boolean;
         payoutAlerts?: boolean;
+        accountUpdates?: boolean;
         systemAlerts?: boolean;
-      };
-      sms?: {
-        urgentJobs?: boolean;
-        payoutComplete?: boolean;
       };
     };
     paymentMethod?: {
@@ -222,6 +225,21 @@ const userSchema = new Schema<IUser>(
       type: Date,
       default: null
     },
+    emailVerificationTokenHash: {
+      type: String,
+      default: null
+    },
+    emailVerificationExpiresAt: {
+      type: Date,
+      default: null
+    },
+    emailVerificationSentAt: {
+      type: Date,
+      default: null
+    },
+    stripeConnectAccountId: { type: String, default: null },
+    stripeConnectOnboarded: { type: Boolean, default: false },
+    payoutsEnabled: { type: Boolean, default: true },
     artboardDraft: {
       type: Schema.Types.Mixed,
       default: null
@@ -291,21 +309,16 @@ const userSchema = new Schema<IUser>(
       },
       notifications: {
         email: {
-          newJobs: { type: Boolean, default: true },
-          jobUpdates: { type: Boolean, default: true },
-          payoutAlerts: { type: Boolean, default: true },
-          systemAlerts: { type: Boolean, default: true }
+          newJobs:        { type: Boolean, default: true },
+          orderUpdates:   { type: Boolean, default: true },
+          payoutAlerts:   { type: Boolean, default: true },
+          accountUpdates: { type: Boolean, default: true },
+          systemAlerts:   { type: Boolean, default: true },
         },
-        sms: {
-          urgentJobs: { type: Boolean, default: true },
-          payoutComplete: { type: Boolean, default: false }
-        }
       },
       paymentMethod: {
-        type: { type: String, enum: ["bank_transfer", "paypal", "check"] },
-        accountNumber: String,
-        routingNumber: String,
-        paypalEmail: String
+        type: { type: String, enum: ["stripe_connect"] },
+        stripeConnectAccountId: String,
       },
       printingCapabilities: {
         maxSheetSizeIn: { width: Number, height: Number },
