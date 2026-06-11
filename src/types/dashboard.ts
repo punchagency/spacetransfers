@@ -16,6 +16,7 @@ export type DashboardJobStatus =
 
 export interface DashboardJob {
   id: string;
+  displayId?: string | null;
   customerName: string;
   order: string;
   deadline: string;

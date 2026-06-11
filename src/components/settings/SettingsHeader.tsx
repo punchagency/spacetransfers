@@ -1,4 +1,3 @@
-import { FiSave } from "react-icons/fi";
 
 const SettingsHeader = () => {
   return (
@@ -9,10 +8,10 @@ const SettingsHeader = () => {
           Manage your partner profile and preferences
         </p>
       </div>
-      <button className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
+      {/* <button className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
         <FiSave className="w-4 h-4" />
         <span>Save Changes</span>
-      </button>
+      </button> */}
     </div>
   );
 };

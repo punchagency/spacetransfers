@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+button,
+a,
+select,
+[role="button"],
+[role="tab"],
+[role="option"],
+[role="menuitem"] {
+  cursor: pointer;
+}
+
+button:disabled,
+button[disabled],
+select:disabled,
+select[disabled] {
+  cursor: not-allowed;
+}
+
 @keyframes space-roll {
   from {
     transform: rotate(0deg);
@@ -9,13 +26,58 @@
   }
 }
 
+@keyframes space-roll-anime {
+  0% {
+    transform: rotate(0deg);
+    animation-timing-function: cubic-bezier(0.08, 0.85, 0.22, 1);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes space-pulse-anime {
+  0% {
+    transform: scale(1.22);
+    animation-timing-function: cubic-bezier(0, 0, 0.58, 1);
+  }
+  75% {
+    transform: scale(0.92);
+    animation-timing-function: cubic-bezier(0.42, 0, 1, 1);
+  }
+  100% {
+    transform: scale(1.22);
+  }
+}
+
 .space-loader-ring {
-  animation: space-roll 2s linear infinite;
+  animation: space-roll 1.15s linear infinite;
   transform-origin: center;
+  will-change: transform;
+  background: conic-gradient(
+    from 0deg,
+    rgba(37, 99, 235, 0) 0deg,
+    rgba(37, 99, 235, 0) 28deg,
+    rgba(37, 99, 235, 1) 60deg,
+    rgba(99, 102, 241, 0.7) 92deg,
+    rgba(37, 99, 235, 0) 128deg,
+    rgba(37, 99, 235, 0) 360deg
+  );
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+  filter: none;
+}
+
+.space-loader-core {
+  animation: space-pulse-anime 1100ms linear infinite;
+  transform-origin: center;
+  will-change: transform;
+  filter: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .space-loader-ring {
-    animation: none;
+  .space-loader-ring,
+  .space-loader-core {
+    animation: none !important;
   }
 }

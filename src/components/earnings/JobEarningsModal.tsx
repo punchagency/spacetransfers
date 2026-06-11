@@ -103,28 +103,8 @@ export const JobEarningsModal = ({
         {/* Financial Breakdown */}
         <div className="pt-6 border-t border-gray-100 space-y-3">
           <div className="flex justify-between items-center">
-            <span className="text-sm text-gray-600 font-medium">
-              Total Job Amount
-            </span>
-            <span className="text-sm font-bold text-gray-900">
-              {job.amount}
-            </span>
-          </div>
-          <div className="flex justify-between items-center">
-            <span className="text-sm text-gray-600 font-medium">
-              Platform Commission (20%)
-            </span>
-            <span className="text-sm font-medium text-gray-600">
-              -{job.commission}
-            </span>
-          </div>
-          <div className="flex justify-between items-center pt-3 border-t border-gray-100">
-            <span className="text-sm font-bold text-gray-900">
-              Your Earning (80%)
-            </span>
-            <span className="text-base font-bold text-blue-600">
-              {job.earning}
-            </span>
+            <span className="text-sm font-bold text-gray-900">Your Earning</span>
+            <span className="text-base font-bold text-blue-600">{job.earning}</span>
           </div>
         </div>
 

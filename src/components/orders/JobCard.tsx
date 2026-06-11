@@ -14,9 +14,10 @@ interface JobCardProps {
   onToggle: (id: string) => void;
   onPrimaryAction?: (id: string, status: Order["status"]) => void;
   onSecondaryAction?: (id: string) => void;
+  onCancel?: (id: string) => void;
 }
 
-export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryAction }: JobCardProps) => {
+export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryAction, onCancel }: JobCardProps) => {
   const getStatusBadgeStyles = (status: string) => {
     switch (status) {
       case "Pending Review":
@@ -27,6 +28,8 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
         return "bg-purple-50 text-purple-600 border border-purple-100";
       case "Completed":
         return "bg-green-50 text-green-600 border border-green-100";
+      case "Cancelled":
+        return "bg-red-50 text-red-500 border border-red-100";
       default:
         return "bg-gray-50 text-gray-600 border border-gray-100";
     }
@@ -76,6 +79,18 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
             onClick={(e) => {
               e.stopPropagation();
               onPrimaryAction?.(job.id, job.status);
+            }}
+            className="w-full sm:w-auto px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium hover:bg-gray-50 transition-colors"
+          >
+            View Details
+          </button>
+        );
+      case "Cancelled":
+        return (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSecondaryAction?.(job.id);
             }}
             className="w-full sm:w-auto px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium hover:bg-gray-50 transition-colors"
           >
@@ -186,7 +201,20 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
 
           {/* Action Column */}
           <div className="flex flex-col items-center gap-2">
-            {renderActionButton(job.status)}
+            <div className="flex items-center gap-2 flex-wrap justify-center">
+              {renderActionButton(job.status)}
+              {!["Completed", "Cancelled"].includes(job.status) && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCancel?.(job.id);
+                  }}
+                  className="w-full sm:w-auto px-4 py-2 bg-red-600 text-white rounded-2xl text-sm font-medium hover:bg-red-700 active:bg-red-800 transition-colors"
+                >
+                  Cancel Job
+                </button>
+              )}
+            </div>
             <button
               onClick={(e) => {
                 e.stopPropagation();

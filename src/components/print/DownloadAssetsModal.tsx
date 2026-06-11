@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FiDownload } from "react-icons/fi";
 import { Modal } from "../common/Modal";
 import type { PrintJob } from "../../types/printQueue";
@@ -8,7 +8,6 @@ import { DownloadFormatSelector } from "./download-assets/DownloadFormatSelector
 import { DownloadAssetsFooter } from "./download-assets/DownloadAssetsFooter";
 import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, saveBlobToDisk } from "../../utils/api";
 import toast from "react-hot-toast";
-import { SpaceLoader } from "../common/SpaceLoader";
 import { DriveSaveModal } from "../drive/DriveSaveModal";
 import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResumable } from "../../utils/drive";
 
@@ -19,7 +18,21 @@ type ApiAsset = {
   heightPx?: number;
   dpi?: number;
   downloadUrl: string;
+  thumbnailUrl?: string | null;
+  sizeBytes: number;
 };
+
+const formatBytes = (bytes: number) => {
+  if (bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+};
+
+// Fetch pages concurrently — 4 at a time — and update assets as they arrive.
+const PAGE_LIMIT = 200;
+const CONCURRENT_PAGES = 4;
 
 interface DownloadAssetsModalProps {
   isOpen: boolean;
@@ -33,48 +46,168 @@ export const DownloadAssetsModal = ({
   job,
 }: DownloadAssetsModalProps) => {
   const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
-  const [downloadFormat, setDownloadFormat] = useState<"zip" | "individual">(
-    "zip",
-  );
+  const [downloadFormat, setDownloadFormat] = useState<"zip" | "individual">("zip");
   const [assets, setAssets] = useState<ApiAsset[]>([]);
+  const [totalCount, setTotalCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [working, setWorking] = useState(false);
-  const [transfer, setTransfer] = useState<{ phase: "download" | "upload"; loaded: number; total: number | null } | null>(null);
+  const [transfer, setTransfer] = useState<{
+    phase: "download" | "upload";
+    loaded: number;
+    total: number | null;
+  } | null>(null);
   const [driveModalOpen, setDriveModalOpen] = useState(false);
+  const cancelRef = useRef(false);
+
+  // O(1) lookup map — rebuilt only when assets array changes.
+  const assetsById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
+
+  const mappedAssets = useMemo(
+    () =>
+      assets.map((a) => ({
+        id: a.id,
+        name: a.filename || "Unnamed Asset",
+        size: formatBytes(a.sizeBytes || 0),
+        type: "artwork" as const,
+        fileType: (a.filename?.split(".").pop()?.toLowerCase() as any) || "png",
+        thumbnailUrl: a.thumbnailUrl || null,
+      })),
+    [assets],
+  );
 
   const totalSize = useMemo(() => {
-    return "—";
-  }, []);
+    const bytes = assets
+      .filter((a) => selectedAssets.has(a.id))
+      .reduce((sum, a) => sum + (a.sizeBytes || 0), 0);
+    return formatBytes(bytes);
+  }, [assets, selectedAssets]);
+
+  // Stream a large array into state in RAF chunks so the main thread never blocks.
+  const streamIntoState = useCallback(
+    (all: ApiAsset[], startFrom: number, knownTotal: number) => {
+      if (cancelRef.current) return;
+      const CHUNK = 300;
+      const chunk = all.slice(startFrom, startFrom + CHUNK);
+      if (chunk.length === 0) {
+        setLoadingMore(false);
+        return;
+      }
+      setAssets((prev) => [...prev, ...chunk]);
+      const next = startFrom + CHUNK;
+      if (next < all.length) {
+        requestAnimationFrame(() => streamIntoState(all, next, knownTotal));
+      } else {
+        setTotalCount(knownTotal);
+        setLoadingMore(false);
+      }
+    },
+    [],
+  );
+
+  const loadAssets = useCallback(async () => {
+    cancelRef.current = false;
+    setAssets([]);
+    setSelectedAssets(new Set());
+    setTotalCount(null);
+    setLoadingMore(false);
+    setLoading(true);
+
+    try {
+      // Request page 1. If the backend supports pagination, `r.total` will be set.
+      // If it doesn't, it returns everything at once — we handle both paths.
+      const r = await apiFetch(
+        `/printer/jobs/${encodeURIComponent(job.id)}/assets?limit=${PAGE_LIMIT}&page=1`,
+      );
+      if (cancelRef.current) return;
+
+      const first: ApiAsset[] = Array.isArray(r?.assets) ? r.assets : [];
+      const serverTotal: number =
+        typeof r?.total === "number" ? r.total : first.length;
+
+      if (first.length === 0) {
+        setTotalCount(0);
+        setLoading(false);
+        return;
+      }
+
+      // Show the first PAGE_LIMIT items immediately — printer can start selecting.
+      const instant = first.slice(0, PAGE_LIMIT);
+      setAssets(instant);
+      setTotalCount(serverTotal);
+      setLoading(false);
+
+      // If the backend returned MORE than PAGE_LIMIT in one shot (no pagination support),
+      // stream the remainder into state without blocking the main thread.
+      if (first.length > PAGE_LIMIT) {
+        setLoadingMore(true);
+        requestAnimationFrame(() => streamIntoState(first, PAGE_LIMIT, first.length));
+        return;
+      }
+
+      // Backend supports pagination — fetch remaining pages concurrently.
+      if (serverTotal > first.length) {
+        setLoadingMore(true);
+        const totalPages = Math.ceil(serverTotal / PAGE_LIMIT);
+        const pageNums = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+
+        for (let i = 0; i < pageNums.length; i += CONCURRENT_PAGES) {
+          if (cancelRef.current) return;
+          const batch = await Promise.all(
+            pageNums.slice(i, i + CONCURRENT_PAGES).map((p) =>
+              apiFetch(
+                `/printer/jobs/${encodeURIComponent(job.id)}/assets?limit=${PAGE_LIMIT}&page=${p}`,
+              )
+                .then((res): ApiAsset[] => (Array.isArray(res?.assets) ? res.assets : []))
+                .catch((): ApiAsset[] => []),
+            ),
+          );
+          if (cancelRef.current) return;
+          setAssets((prev) => [...prev, ...batch.flat()]);
+        }
+        setLoadingMore(false);
+      }
+    } catch (e: any) {
+      if (!cancelRef.current) toast.error(e?.message || "Failed to load assets");
+    } finally {
+      if (!cancelRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  }, [job.id, streamIntoState]);
 
   useEffect(() => {
     if (!isOpen) return;
-    setSelectedAssets(new Set());
-    setLoading(true);
-    apiFetch(`/printer/jobs/${encodeURIComponent(job.id)}/assets`)
-      .then((r) => {
-        setAssets(Array.isArray(r?.assets) ? r.assets : []);
-      })
-      .catch((e: any) => toast.error(e?.message || "Failed to load assets"))
-      .finally(() => setLoading(false));
-  }, [isOpen, job.id]);
+    loadAssets();
+    return () => {
+      cancelRef.current = true;
+    };
+  }, [isOpen, loadAssets]);
 
-  const toggleAsset = (id: string) => {
-    const newSelected = new Set(selectedAssets);
-    if (newSelected.has(id)) {
-      newSelected.delete(id);
-    } else {
-      newSelected.add(id);
+  // Auto-switch to ZIP when a large selection is made — browsers block 10k+ individual file dialogs.
+  useEffect(() => {
+    if (selectedAssets.size > 50 && downloadFormat === "individual") {
+      setDownloadFormat("zip");
     }
-    setSelectedAssets(newSelected);
-  };
+  }, [selectedAssets.size, downloadFormat]);
 
-  const toggleAll = () => {
-    if (selectedAssets.size === assets.length) {
-      setSelectedAssets(new Set());
-    } else {
-      setSelectedAssets(new Set(assets.map((a) => a.id)));
-    }
-  };
+  const toggleAsset = useCallback((id: string) => {
+    setSelectedAssets((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback(() => {
+    setSelectedAssets((prev) =>
+      prev.size === assets.length
+        ? new Set()
+        : new Set(assets.map((a) => a.id)),
+    );
+  }, [assets]);
 
   const headerContent = (
     <div className="flex items-start gap-3">
@@ -103,7 +236,8 @@ export const DownloadAssetsModal = ({
     const url = `${getApiBaseUrl()}/printer/jobs/${encodeURIComponent(job.id)}/assets/bundle/download?include=${encodeURIComponent(includeParam)}`;
     return await fetchBlobWithProgress(url, {
       headers: getAuthHeader(),
-      onProgress: (p) => setTransfer({ phase: "download", loaded: p.loaded, total: p.total }),
+      onProgress: (p) =>
+        setTransfer({ phase: "download", loaded: p.loaded, total: p.total }),
     });
   };
 
@@ -111,23 +245,45 @@ export const DownloadAssetsModal = ({
     if (selectedAssets.size === 0) return;
     if (working) return;
     setWorking(true);
-    setTransfer({ phase: "download", loaded: 0, total: null });
 
     try {
       if (downloadFormat === "individual") {
-        for (const id of selectedAssets) {
-          const asset = assets.find((a) => a.id === id);
-          if (!asset) continue;
-          const out = await fetchBlobWithProgress(asset.downloadUrl, {
-            onProgress: (p) => setTransfer({ phase: "download", loaded: p.loaded, total: p.total }),
-          });
-          saveBlobToDisk(out.blob, out.filename || asset.filename || "asset");
-        }
-        toast.success("Downloads started");
+        const ids = Array.from(selectedAssets);
+        const total = ids.length;
+        let completed = 0;
+        setTransfer({ phase: "download", loaded: 0, total });
+
+        const addedUrls = new Set<string>();
+        const queue = [...ids];
+        const CONCURRENCY = 6;
+
+        const worker = async () => {
+          while (true) {
+            const id = queue.shift();
+            if (id === undefined) break;
+            const asset = assetsById.get(id); // O(1)
+            if (!asset?.downloadUrl || addedUrls.has(asset.downloadUrl)) {
+              completed++;
+              setTransfer({ phase: "download", loaded: completed, total });
+              continue;
+            }
+            addedUrls.add(asset.downloadUrl);
+            const out = await fetchBlobWithProgress(asset.downloadUrl);
+            saveBlobToDisk(out.blob, out.filename || asset.filename || "asset");
+            completed++;
+            setTransfer({ phase: "download", loaded: completed, total });
+          }
+        };
+
+        await Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, ids.length) }, worker),
+        );
+        toast.success(`${completed} file${completed !== 1 ? "s" : ""} downloaded`);
         onClose();
         return;
       }
 
+      setTransfer({ phase: "download", loaded: 0, total: null });
       const out = await downloadZipBlob();
       saveBlobToDisk(out.blob, out.filename || `original_assets_${job.orderId}.zip`);
       toast.success("Bundle downloaded");
@@ -140,19 +296,31 @@ export const DownloadAssetsModal = ({
     }
   };
 
-  const driveClientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID as string | undefined;
+  const driveClientId = (import.meta as any).env
+    ?.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
-  const saveZipToDrive = async ({ accessToken, folderId }: { accessToken: string; folderId: string | null }) => {
+  const saveZipToDrive = async ({
+    accessToken,
+    folderId,
+  }: {
+    accessToken: string;
+    folderId: string | null;
+  }) => {
     if (selectedAssets.size === 0) return;
     if (working) return;
     setWorking(true);
     setTransfer({ phase: "download", loaded: 0, total: null });
     try {
       const downloaded = await downloadZipBlob();
-      const fileName = downloaded.filename || `original_assets_${job.orderId}.zip`;
+      const fileName =
+        downloaded.filename || `original_assets_${job.orderId}.zip`;
       const mimeType = downloaded.contentType || "application/zip";
 
-      setTransfer({ phase: "upload", loaded: 0, total: Math.max(downloaded.blob.size, 1) });
+      setTransfer({
+        phase: "upload",
+        loaded: 0,
+        total: Math.max(downloaded.blob.size, 1),
+      });
       const uploadUrl = await createResumableUploadSession({
         accessToken,
         fileName,
@@ -163,7 +331,8 @@ export const DownloadAssetsModal = ({
         accessToken,
         uploadUrl,
         blob: downloaded.blob,
-        onProgress: (p) => setTransfer({ phase: "upload", loaded: p.loaded, total: p.total }),
+        onProgress: (p) =>
+          setTransfer({ phase: "upload", loaded: p.loaded, total: p.total }),
       });
       const link = await getDriveFileWebViewLink(accessToken, fileId);
       toast.success("Saved to Google Drive");
@@ -177,6 +346,10 @@ export const DownloadAssetsModal = ({
     }
   };
 
+  const loadedCount = assets.length;
+  const knownTotal = totalCount ?? loadedCount;
+  const loadPct = knownTotal > 0 ? Math.round((loadedCount / knownTotal) * 100) : 0;
+
   return (
     <>
       <Modal
@@ -185,31 +358,41 @@ export const DownloadAssetsModal = ({
         className="max-w-[800px] bg-white"
         title={headerContent}
       >
-        <div className="space-y-6">
+        <div className="space-y-4">
           <AssetStatsBar
             selectedCount={selectedAssets.size}
             totalSize={totalSize}
-            totalAssets={assets.length}
+            loadedAssets={loadedCount}
+            totalAssets={knownTotal}
             onToggleAll={toggleAll}
+            isLoadingMore={loadingMore}
           />
 
-          {loading ? (
-            <div className="py-6">
-              <SpaceLoader label="Loading assets…" />
+          {/* Background load progress bar */}
+          {loadingMore && knownTotal > 0 && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px] text-gray-400">
+                <span>Loading assets in background…</span>
+                <span>
+                  {loadedCount.toLocaleString()} / {knownTotal.toLocaleString()}
+                </span>
+              </div>
+              <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-400 rounded-full transition-all duration-300"
+                  style={{ width: `${loadPct}%` }}
+                />
+              </div>
             </div>
-          ) : (
-            <AssetList
-              assets={assets.map((a) => ({
-                id: a.id,
-                name: a.filename,
-                size: "",
-                type: "artwork",
-                fileType: "png",
-              }))}
-              selectedAssets={selectedAssets}
-              onToggleAsset={toggleAsset}
-            />
           )}
+
+          <AssetList
+            assets={mappedAssets}
+            selectedAssets={selectedAssets}
+            onToggleAsset={toggleAsset}
+            isLoading={loading}
+            isLoadingMore={loadingMore}
+          />
 
           {selectedAssets.size > 0 && (
             <DownloadFormatSelector
@@ -219,9 +402,29 @@ export const DownloadAssetsModal = ({
           )}
 
           {transfer ? (
-            <div className="text-xs text-gray-500">
-              {transfer.phase === "download" ? "Downloading" : "Uploading"}{" "}
-              {transfer.total ? `${Math.round((transfer.loaded / Math.max(1, transfer.total)) * 100)}%` : `${Math.round(transfer.loaded / (1024 * 1024))} MB`}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px] text-gray-500">
+                <span>
+                  {transfer.phase === "download" ? "Downloading" : "Uploading"}
+                </span>
+                <span>
+                  {downloadFormat === "individual" && transfer.phase === "download"
+                    ? `${transfer.loaded.toLocaleString()} / ${(transfer.total ?? 0).toLocaleString()} files`
+                    : transfer.total
+                      ? `${Math.round((transfer.loaded / Math.max(1, transfer.total)) * 100)}%`
+                      : `${(transfer.loaded / (1024 * 1024)).toFixed(1)} MB`}
+                </span>
+              </div>
+              {transfer.total && (
+                <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 rounded-full transition-all duration-150"
+                    style={{
+                      width: `${Math.round((transfer.loaded / Math.max(1, transfer.total)) * 100)}%`,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           ) : null}
 

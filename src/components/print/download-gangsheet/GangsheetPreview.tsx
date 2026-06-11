@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
 
 const VIEWPORT_SIZE_IN = 23.5;
 
-export const GangsheetPreview = ({
+const GangsheetPreviewComponent = ({
   previewDataUrl,
   sheetWidthIn,
   sheetHeightIn,
@@ -15,6 +15,12 @@ export const GangsheetPreview = ({
 }) => {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewportPx, setViewportPx] = useState(0);
+  const [imgError, setImgError] = useState(false);
+
+  // Reset error state whenever the URL changes so a corrected URL gets a fresh attempt.
+  useEffect(() => { setImgError(false); }, [previewDataUrl]);
+
+  const handleImgError = useCallback(() => setImgError(true), []);
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -71,11 +77,18 @@ export const GangsheetPreview = ({
                 }}
               />
 
-              {previewDataUrl ? (
-                <img src={previewDataUrl} alt="Gangsheet preview" className="absolute top-0 left-0" style={imgStyle} />
+              {previewDataUrl && !imgError ? (
+                <img
+                  src={previewDataUrl}
+                  alt=""
+                  decoding="async"
+                  className="absolute top-0 left-0"
+                  style={imgStyle}
+                  onError={handleImgError}
+                />
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500">
-                  Preview unavailable
+                  {imgError ? "Preview failed to load" : "Preview unavailable"}
                 </div>
               )}
 
@@ -87,3 +100,7 @@ export const GangsheetPreview = ({
     </div>
   );
 };
+
+// memo prevents re-rendering when the parent re-renders for unrelated reasons.
+// The preview URL is the only thing that ever changes and it's already stable across polls.
+export const GangsheetPreview = memo(GangsheetPreviewComponent);

@@ -10,9 +10,7 @@ export interface EarningsJob {
   customer: string;
   details: EarningsJobDetails;
   completed: string;
-  amount: string;
   earning: string;
-  commission: string;
   status: EarningsJobStatus;
 }
 
@@ -25,4 +23,3 @@ export interface EarningsStatCard {
   isPositive?: boolean;
   isWarning?: boolean;
 }
-

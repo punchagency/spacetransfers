@@ -1,22 +1,35 @@
-import { useEffect, useMemo, useState } from "react";
-import { FiX } from "react-icons/fi";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FiAlertTriangle, FiX } from "react-icons/fi";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Modal } from "../components/common/Modal";
 import { SearchInput } from "../components/common/SearchInput";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { JobCard } from "../components/orders/JobCard";
 import type { OrdersTab, OrdersTabLabel, Order } from "../types/orders";
-import { apiFetch } from "../utils/api";
+import { apiFetch, getApiBaseUrl } from "../utils/api";
 import toast from "react-hot-toast";
 
 const Orders = () => {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<OrdersTabLabel>("Pending");
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<OrdersTabLabel>(() => {
+    const tab = searchParams.get("tab") as OrdersTabLabel | null;
+    const valid: OrdersTabLabel[] = ["All Jobs", "Pending", "In Progress", "Ready", "Completed", "Cancelled"];
+    return tab && valid.includes(tab) ? tab : "All Jobs";
+  });
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [jobs, setJobs] = useState<Order[]>([]);
   const [urgentCount, setUrgentCount] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [bulkExporting, setBulkExporting] = useState(false);
+  const [bulkExportProgress, setBulkExportProgress] = useState<{ current: number; total: number } | null>(null);
+  const [showBulkExportProgress, setShowBulkExportProgress] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const cancelReasonRef = useRef<HTMLTextAreaElement>(null);
   const [tabs, setTabs] = useState<OrdersTab[]>([
     { label: "All Jobs", count: 0 },
     { label: "Pending", count: 0 },
@@ -28,7 +41,7 @@ const Orders = () => {
 
   const mapOrder = (o: any): Order => {
     const actualId = String(o.actualId || o.id || "");
-    const displayId = actualId ? `#ORD-${actualId.slice(-6).toUpperCase()}` : "#ORD";
+    const displayId = typeof o.displayId === "string" && o.displayId ? String(o.displayId) : actualId;
     const status = String(o.status || "Pending Review") as any;
     const customerName = String(o.customerName || "");
     return {
@@ -95,9 +108,14 @@ const Orders = () => {
 
   const filteredOrders = useMemo(() => jobs, [jobs]);
 
+  const getDisplayIdFor = (id: string) => {
+    const found = jobs.find((j) => j.id === id);
+    return found?.displayId || id;
+  };
+
   const downloadExport = async (exportId: string, fileName: string) => {
     const token = localStorage.getItem("printer_token");
-    const res = await fetch(`http://localhost:4000/api/printer/exports/${encodeURIComponent(exportId)}/file`, {
+    const res = await fetch(`${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) throw new Error("Download failed");
@@ -142,6 +160,31 @@ const Orders = () => {
     }
   };
 
+  const handleCancelClick = (id: string) => {
+    setCancelTarget(id);
+    setCancelReason("");
+    setTimeout(() => cancelReasonRef.current?.focus(), 50);
+  };
+
+  const handleCancelConfirm = async () => {
+    if (!cancelTarget) return;
+    setCancelLoading(true);
+    try {
+      await apiFetch(`/printer/orders/${encodeURIComponent(cancelTarget)}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: cancelReason.trim() }),
+      });
+      toast.success("Job cancelled");
+      setCancelTarget(null);
+      setCancelReason("");
+      await Promise.all([fetchOrders({ append: false }), refreshSummary()]);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to cancel job");
+    } finally {
+      setCancelLoading(false);
+    }
+  };
+
   const handleBulkComplete = async () => {
     try {
       for (const id of selectedJobs) {
@@ -159,20 +202,32 @@ const Orders = () => {
   };
 
   const handleBulkExport = async () => {
+    if (bulkExporting) return;
+    setBulkExporting(true);
+    setBulkExportProgress({ current: 0, total: selectedJobs.length });
+    setShowBulkExportProgress(false);
+    const timer = window.setTimeout(() => setShowBulkExportProgress(true), 1000);
     try {
-      for (const id of selectedJobs) {
+      for (let i = 0; i < selectedJobs.length; i += 1) {
+        const id = selectedJobs[i];
+        setBulkExportProgress({ current: i + 1, total: selectedJobs.length });
         const r = await apiFetch(`/printer/jobs/${encodeURIComponent(id)}/gangsheet/export`, {
           method: "POST",
           body: JSON.stringify({ format: "PNG", toDrive: false }),
         });
         const exportId = String(r?.exportId || "");
         if (exportId) {
-          await downloadExport(exportId, `gangsheet_${id}_600dpi.png`);
+          await downloadExport(exportId, `gangsheet_${getDisplayIdFor(id)}_600dpi.png`);
         }
       }
       toast.success("Export started");
     } catch (e: any) {
       toast.error(e?.message || "Export failed");
+    } finally {
+      window.clearTimeout(timer);
+      setShowBulkExportProgress(false);
+      setBulkExportProgress(null);
+      setBulkExporting(false);
     }
   };
 
@@ -256,11 +311,13 @@ const Orders = () => {
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Jobs & Orders</h1>
             <p className="text-gray-500 mt-1 text-sm">
-              Manage and track all your fulfillment jobs.{" "}
-              <span className="text-red-600 font-medium">
-                {tabs.find((t) => t.label === "Pending")?.count || 0} jobs awaiting your action •{" "}
-                {urgentCount} urgent
-              </span>
+              Manage and track all your fulfillment jobs.
+              {!loading && (tabs.find((t) => t.label === "Pending")?.count || urgentCount) ? (
+                <span className="text-red-600 font-medium">
+                  {" "}{tabs.find((t) => t.label === "Pending")?.count || 0} jobs awaiting your action •{" "}
+                  {urgentCount} urgent
+                </span>
+              ) : null}
             </p>
           </div>
 
@@ -324,6 +381,7 @@ const Orders = () => {
                     Mark as Complete
                   </button>
                   <button
+                    disabled={bulkExporting}
                     onClick={() => void handleBulkExport()}
                     className="px-3 py-1.5 bg-white text-gray-700 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
                   >
@@ -337,6 +395,12 @@ const Orders = () => {
               >
                 <FiX className="w-5 h-5" />
               </button>
+            </div>
+          )}
+
+          {bulkExporting && showBulkExportProgress && bulkExportProgress && (
+            <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+              <SpaceLoader label={`Exporting selected… ${bulkExportProgress.current}/${bulkExportProgress.total}`} />
             </div>
           )}
 
@@ -372,8 +436,20 @@ const Orders = () => {
       {/* Jobs List */}
       <div className="space-y-4">
         {loading ? (
-          <div className="bg-white border border-gray-200 rounded-xl p-10">
-            <SpaceLoader label="Loading jobs…" />
+          <div className="flex items-center justify-center min-h-[400px]">
+            <SpaceLoader />
+          </div>
+        ) : filteredOrders.length === 0 ? (
+          <div className="bg-white border border-gray-200 rounded-xl p-14 flex flex-col items-center gap-3 text-center">
+            <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
+              <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+            </div>
+            <p className="text-gray-900 font-semibold">No jobs found</p>
+            <p className="text-gray-400 text-sm">
+              {query ? `No results for "${query}"` : activeTab === "All Jobs" ? "You have no jobs yet." : `No ${activeTab.toLowerCase()} jobs at the moment.`}
+            </p>
           </div>
         ) : (
           filteredOrders.map((job) => (
@@ -384,6 +460,7 @@ const Orders = () => {
               onToggle={handleToggleJob}
               onPrimaryAction={(id, status) => void handlePrimaryAction(id, status)}
               onSecondaryAction={(id) => navigate(`/orders/${encodeURIComponent(id)}`)}
+              onCancel={handleCancelClick}
             />
           ))
         )}
@@ -399,6 +476,60 @@ const Orders = () => {
           </button>
         </div>
       )}
+
+      {/* Cancel Confirmation Modal */}
+      <Modal
+        isOpen={cancelTarget !== null}
+        onClose={() => { if (!cancelLoading) { setCancelTarget(null); setCancelReason(""); } }}
+        title={
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
+              <FiAlertTriangle className="w-4 h-4 text-red-500" />
+            </div>
+            <span className="text-base font-bold text-gray-900">Cancel Job</span>
+          </div>
+        }
+        className="max-w-md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Are you sure you want to cancel{" "}
+            <span className="font-semibold text-gray-900">
+              {cancelTarget ? (jobs.find((j) => j.id === cancelTarget)?.displayId || cancelTarget) : ""}
+            </span>
+            ? This action cannot be undone.
+          </p>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+              Reason <span className="text-gray-400 font-normal normal-case tracking-normal">(optional)</span>
+            </label>
+            <textarea
+              ref={cancelReasonRef}
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              placeholder="e.g. Customer requested cancellation, artwork issues..."
+              rows={3}
+              className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all resize-none"
+            />
+          </div>
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={() => { setCancelTarget(null); setCancelReason(""); }}
+              disabled={cancelLoading}
+              className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-200 transition-colors disabled:opacity-50"
+            >
+              Keep Job
+            </button>
+            <button
+              onClick={() => void handleCancelConfirm()}
+              disabled={cancelLoading}
+              className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-semibold hover:bg-red-600 transition-colors disabled:opacity-50"
+            >
+              {cancelLoading ? "Cancelling…" : "Cancel Job"}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

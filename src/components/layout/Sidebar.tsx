@@ -5,7 +5,8 @@ import {
   AiOutlineSetting,
 } from "react-icons/ai";
 import { LuPrinter } from "react-icons/lu";
-import { FiHome } from "react-icons/fi";
+import { FiHome, FiUser } from "react-icons/fi";
+import { useProfileStore } from "../../state/ProfileStore";
 const nav = [
   { label: "Home", icon: FiHome, path: "/dashboard" },
   { label: "Jobs & Orders", iconSrc: "/menu.svg", path: "/orders" },
@@ -25,6 +26,7 @@ const bottomNav = [
 export const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { name, avatarUrl } = useProfileStore();
 
   return (
     <aside className="w-65 bg-white border-r border-gray-200 h-full flex flex-col py-2">
@@ -83,16 +85,23 @@ export const Sidebar = () => {
         ))}
       </div>
 
-      <div className="mt-auto px-6 py-6 border-t border-gray-100">
+      <div className="mt-auto px-4 py-4 border-t border-gray-100">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-medium text-sm">
-            JP
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-gray-900">
-              John Partner
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={name}
+              className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+            />
+          ) : (
+            <div className="w-10 h-10 rounded-full bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0">
+              <FiUser className="w-5 h-5 text-gray-400" />
             </div>
-            <div className="text-xs text-gray-500">ID: #12345</div>
+          )}
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-gray-900 truncate">
+              {name || "Printer"}
+            </div>
           </div>
         </div>
       </div>

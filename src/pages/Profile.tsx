@@ -1,11 +1,53 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ProfileHeader } from "../components/profile/ProfileHeader";
 import { ProfileOverview } from "../components/profile/ProfileOverview";
 import { ProfileBusinessInfo } from "../components/profile/ProfileBusinessInfo";
-import type { ProfileTabId } from "../types/profile";
+import type { ProfileTabId, PrinterProfile } from "../types/profile";
+import { apiFetch } from "../utils/api";
+import { SpaceLoader } from "../components/common/SpaceLoader";
+import { toast } from "react-hot-toast";
+import { useNotificationsStore } from "../state/NotificationsStore";
 
 const Profile = () => {
   const [activeTab, setActiveTab] = useState<ProfileTabId>("overview");
+  const [profile, setProfile] = useState<PrinterProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { notifications } = useNotificationsStore();
+
+  const fetchProfile = async () => {
+    try {
+      setLoading(true);
+      const data = await apiFetch("/printer/profile");
+      setProfile(data);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to fetch profile");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchProfile();
+  }, []);
+
+  // Show success toast + refetch when returning from email verification link
+  useEffect(() => {
+    if (searchParams.get("emailVerified") === "1") {
+      setSearchParams({}, { replace: true });
+      toast.success("Email verified successfully!");
+      fetchProfile();
+    }
+  }, []);
+
+  // Real-time: refetch when the SSE system pushes an email_verified notification
+  useEffect(() => {
+    const latest = notifications[0];
+    if (latest?.meta?.type === "email_verified" && !latest.readAt) {
+      fetchProfile();
+    }
+  }, [notifications]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -16,34 +58,56 @@ const Profile = () => {
         </p>
       </div>
 
-      <ProfileHeader />
+      {loading ? (
+        <div className="flex items-center justify-center min-h-[400px]">
+          <SpaceLoader />
+        </div>
+      ) : !profile ? (
+        <div className="flex flex-col items-center justify-center min-h-[400px]">
+          <p className="text-gray-500">Profile not found</p>
+          <button
+            onClick={fetchProfile}
+            className="mt-4 text-blue-600 hover:underline"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <>
+          <ProfileHeader profile={profile} onUpdate={fetchProfile} />
 
-      <div className="border-b border-gray-200 flex items-center gap-6">
-        <button
-          onClick={() => setActiveTab("overview")}
-          className={`pb-3 text-sm font-medium ${
-            activeTab === "overview"
-              ? "text-blue-600 border-b-2 border-blue-600"
-              : "text-gray-500 hover:text-gray-900"
-          }`}
-        >
-          Overview
-        </button>
-        <button
-          onClick={() => setActiveTab("business")}
-          className={`pb-3 text-sm font-medium ${
-            activeTab === "business"
-              ? "text-blue-600 border-b-2 border-blue-600"
-              : "text-gray-500 hover:text-gray-900"
-          }`}
-        >
-          Business Info
-        </button>
-      </div>
+          <div className="border-b border-gray-200 flex items-center gap-6">
+            <button
+              onClick={() => setActiveTab("overview")}
+              className={`pb-3 text-sm font-medium ${
+                activeTab === "overview"
+                  ? "text-blue-600 border-b-2 border-blue-600"
+                  : "text-gray-500 hover:text-gray-900"
+              }`}
+            >
+              Overview
+            </button>
+            <button
+              onClick={() => setActiveTab("business")}
+              className={`pb-3 text-sm font-medium ${
+                activeTab === "business"
+                  ? "text-blue-600 border-b-2 border-blue-600"
+                  : "text-gray-500 hover:text-gray-900"
+              }`}
+            >
+              Business Info
+            </button>
+          </div>
 
-      {activeTab === "overview" && <ProfileOverview />}
+          {activeTab === "overview" && (
+            <ProfileOverview profile={profile} onUpdate={fetchProfile} />
+          )}
 
-      {activeTab === "business" && <ProfileBusinessInfo />}
+          {activeTab === "business" && (
+            <ProfileBusinessInfo profile={profile} onUpdate={fetchProfile} />
+          )}
+        </>
+      )}
     </div>
   );
 };

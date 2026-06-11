@@ -4,6 +4,7 @@ export interface Asset {
   size: string;
   type: "artwork" | "preview" | "proofs" | "production" | "documents";
   fileType: "pdf" | "png" | "jpg" | "xlsx";
+  thumbnailUrl?: string | null;
 }
 
 export const MOCK_ASSETS: Asset[] = [

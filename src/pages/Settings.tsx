@@ -1,141 +1,57 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SettingsHeader from "../components/settings/SettingsHeader";
-import PrintingCapabilitiesSection from "../components/settings/PrintingCapabilitiesSection";
 import BusinessHoursSection from "../components/settings/BusinessHoursSection";
 import JobCapacitySection from "../components/settings/JobCapacitySection";
 import NotificationsSection from "../components/settings/NotificationsSection";
-import PaymentMethodSection from "../components/settings/PaymentMethodSection";
-import type { PrimaryMethod } from "../types/settings";
+import PayoutSettingsSection from "../components/settings/PayoutSettingsSection";
+import { apiFetch } from "../utils/api";
+import { SpaceLoader } from "../components/common/SpaceLoader";
 
 const Settings = () => {
-  const [autoAcceptJobs, setAutoAcceptJobs] = useState(true);
-  const [mondayEnabled, setMondayEnabled] = useState(true);
-  const [tuesdayEnabled, setTuesdayEnabled] = useState(true);
-  const [wednesdayEnabled, setWednesdayEnabled] = useState(false);
-  const [thursdayEnabled, setThursdayEnabled] = useState(false);
-  const [fridayEnabled, setFridayEnabled] = useState(false);
-  const [saturdayEnabled, setSaturdayEnabled] = useState(false);
-  const [sundayEnabled, setSundayEnabled] = useState(false);
-  const [emailNewJobs, setEmailNewJobs] = useState(true);
-  const [emailJobUpdates, setEmailJobUpdates] = useState(true);
-  const [emailPayoutAlerts, setEmailPayoutAlerts] = useState(true);
-  const [emailSystemAlerts, setEmailSystemAlerts] = useState(true);
-  const [smsUrgentJobs, setSmsUrgentJobs] = useState(true);
-  const [smsPayoutComplete, setSmsPayoutComplete] = useState(false);
-  const [primaryMethod, setPrimaryMethod] = useState<PrimaryMethod>("bank");
+  const [settingsData, setSettingsData] = useState<any>(null);
+  const [payoutStatus, setPayoutStatus] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const [sheetSize, setSheetSize] = useState("");
-  const [maxResolution, setMaxResolution] = useState("");
-  const [selectedInks, setSelectedInks] = useState<string[]>([]);
-  const [selectedFilms, setSelectedFilms] = useState<string[]>([]);
+  useEffect(() => {
+    Promise.all([
+      apiFetch("/printer/settings").catch(() => null),
+      apiFetch("/payouts/printer/connect/status").catch(() => null),
+    ]).then(([settings, payout]) => {
+      setSettingsData(settings);
+      setPayoutStatus(payout);
+      setLoading(false);
+    });
+  }, []);
 
   return (
     <div className="flex flex-col gap-8">
       <SettingsHeader />
 
-      <div className="space-y-8">
-        <PrintingCapabilitiesSection
-          sheetSize={sheetSize}
-          onSheetSizeChange={setSheetSize}
-          maxResolution={maxResolution}
-          onMaxResolutionChange={setMaxResolution}
-          selectedInks={selectedInks}
-          onToggleInk={(ink) =>
-            setSelectedInks((prev) =>
-              prev.includes(ink)
-                ? prev.filter((i) => i !== ink)
-                : [...prev, ink],
-            )
-          }
-          selectedFilms={selectedFilms}
-          onToggleFilm={(film) =>
-            setSelectedFilms((prev) =>
-              prev.includes(film)
-                ? prev.filter((f) => f !== film)
-                : [...prev, film],
-            )
-          }
-        />
+      {loading ? (
+        <div className="flex items-center justify-center min-h-[400px]">
+          <SpaceLoader />
+        </div>
+      ) : (
+        <div className="space-y-8">
+          <div id="business-hours">
+            <BusinessHoursSection initialData={settingsData} />
+          </div>
 
-        <BusinessHoursSection
-          days={[
-            {
-              label: "Monday",
-              enabled: mondayEnabled,
-              setEnabled: setMondayEnabled,
-              start: "9:00am",
-              end: "6:00pm",
-            },
-            {
-              label: "Tuesday",
-              enabled: tuesdayEnabled,
-              setEnabled: setTuesdayEnabled,
-              start: "9:00am",
-              end: "",
-            },
-            {
-              label: "Wednesday",
-              enabled: wednesdayEnabled,
-              setEnabled: setWednesdayEnabled,
-              start: "",
-              end: "",
-            },
-            {
-              label: "Thursday",
-              enabled: thursdayEnabled,
-              setEnabled: setThursdayEnabled,
-              start: "",
-              end: "",
-            },
-            {
-              label: "Friday",
-              enabled: fridayEnabled,
-              setEnabled: setFridayEnabled,
-              start: "",
-              end: "",
-            },
-            {
-              label: "Saturday",
-              enabled: saturdayEnabled,
-              setEnabled: setSaturdayEnabled,
-              start: "",
-              end: "",
-            },
-            {
-              label: "Sunday",
-              enabled: sundayEnabled,
-              setEnabled: setSundayEnabled,
-              start: "",
-              end: "",
-            },
-          ]}
-        />
+          <div id="job-capacity">
+            <JobCapacitySection autoAcceptInitial={settingsData?.jobCapacity?.autoAccept !== false} />
+          </div>
 
-        <JobCapacitySection
-          autoAcceptJobs={autoAcceptJobs}
-          setAutoAcceptJobs={setAutoAcceptJobs}
-        />
+          <div id="notifications">
+            <NotificationsSection
+              initialPrefs={settingsData?.notifications?.email ?? null}
+            />
+          </div>
 
-        <NotificationsSection
-          emailNewJobs={emailNewJobs}
-          setEmailNewJobs={setEmailNewJobs}
-          emailJobUpdates={emailJobUpdates}
-          setEmailJobUpdates={setEmailJobUpdates}
-          emailPayoutAlerts={emailPayoutAlerts}
-          setEmailPayoutAlerts={setEmailPayoutAlerts}
-          emailSystemAlerts={emailSystemAlerts}
-          setEmailSystemAlerts={setEmailSystemAlerts}
-          smsUrgentJobs={smsUrgentJobs}
-          setSmsUrgentJobs={setSmsUrgentJobs}
-          smsPayoutComplete={smsPayoutComplete}
-          setSmsPayoutComplete={setSmsPayoutComplete}
-        />
-
-        <PaymentMethodSection
-          primaryMethod={primaryMethod}
-          setPrimaryMethod={setPrimaryMethod}
-        />
-      </div>
+          <div id="payout-settings">
+            <PayoutSettingsSection initialStatus={payoutStatus} />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

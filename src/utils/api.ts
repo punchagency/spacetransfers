@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://localhost:4000/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
 export async function apiFetch(endpoint: string, options: RequestInit = {}) {
   const token = localStorage.getItem("printer_token");
@@ -21,7 +21,7 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
       headers,
     });
   } catch {
-    throw new Error("API server is not reachable. Start the backend on http://localhost:4000.");
+    throw new Error(`API server is not reachable. Check that the backend is running at ${API_BASE_URL}.`);
   }
 
   let data: any = null;

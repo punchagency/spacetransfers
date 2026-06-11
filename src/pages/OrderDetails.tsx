@@ -16,6 +16,7 @@ import { GangsheetPreview } from "../components/print/download-gangsheet/Gangshe
 type Overview = {
   id: string;
   orderId: string;
+  displayId?: string | null;
   status: string;
   priority: string;
   createdAt: string;
@@ -26,7 +27,7 @@ type Overview = {
   timeline: { status: string; time: string; message?: string | null }[];
   faceThumbnail?: string | null;
   pricing?: { subtotal: number | null; partnerCost?: number | null; rushFee: number; shippingCost: number | null; tax: number | null; total: number; currency: string };
-  earnings?: { gross: number; commission: number; net: number; currency: string };
+  earnings?: { gross: number; net: number; currency: string; commission?: number };
   payment?: { method: string | null; status: string };
 };
 
@@ -99,9 +100,11 @@ export default function OrderDetailsPage() {
   useEffect(() => {
     if (!jobId) return;
     setLoading(true);
+    const previewFetch = apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`)
+      .catch(() => null);
     Promise.all([
       apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-      apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`),
+      previewFetch,
     ])
       .then(([ov, prev]) => {
         setOverview(ov || null);
@@ -125,7 +128,7 @@ export default function OrderDetailsPage() {
       try {
         const [ov, prev] = await Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`),
+          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`).catch(() => null),
         ]);
         if (!alive) return;
         setOverview(ov || null);
@@ -160,7 +163,7 @@ export default function OrderDetailsPage() {
         pendingRefresh = null;
         Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`),
+          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`).catch(() => null),
         ])
           .then(([ov, prev]) => {
             setOverview(ov || null);
@@ -250,7 +253,7 @@ export default function OrderDetailsPage() {
         headers: getAuthHeader(),
         onProgress: (p) => setGangsheetDownloadProgress(p),
       });
-      saveBlobToDisk(out.blob, out.filename || `gangsheet_${overview.id}_600dpi.png`);
+      saveBlobToDisk(out.blob, out.filename || `gangsheet_${overview.orderId}_600dpi.png`);
       toast.success("Gangsheet downloaded");
     } catch (e: any) {
       toast.error(e?.message || "Download failed");
@@ -282,7 +285,7 @@ export default function OrderDetailsPage() {
         },
       });
 
-      const fileName = downloaded.filename || `gangsheet_${overview.id}_600dpi.png`;
+      const fileName = downloaded.filename || `gangsheet_${overview.orderId}_600dpi.png`;
       const mimeType = downloaded.contentType || "image/png";
 
       setDriveProgress({ phase: "upload", loaded: 0, total: Math.max(downloaded.blob.size, 1) });
@@ -413,7 +416,7 @@ export default function OrderDetailsPage() {
                 <StatusTimeline
                   job={{
                     id: overview.id,
-                    orderId: `#ORD-${overview.id.slice(-6).toUpperCase()}`,
+                    orderId: overview.orderId,
                     customer: overview.customer.name,
                     sheetSize: overview.specs.sheetSize,
                     orderDescription: `${overview.specs.itemsCount} Items`,
@@ -426,7 +429,7 @@ export default function OrderDetailsPage() {
                 <PrintSpecifications
                   job={{
                     id: overview.id,
-                    orderId: `#ORD-${overview.id.slice(-6).toUpperCase()}`,
+                    orderId: overview.orderId,
                     customer: overview.customer.name,
                     sheetSize: overview.specs.sheetSize,
                     orderDescription: `${overview.specs.itemsCount} Items`,
@@ -493,14 +496,11 @@ export default function OrderDetailsPage() {
                         {formatMoney(overview.earnings?.net || 0, currency)}
                       </div>
                     </div>
-                    <div className="mt-2 text-xs text-gray-500">
-                      Commission: {formatMoney(overview.earnings?.commission || 0, currency)}
-                    </div>
                   </div>
                 </div>
 
                 <OrderDetails
-                  orderId={`#ORD-${overview.id.slice(-6).toUpperCase()}`}
+                  orderId={overview.orderId}
                   createdAt={new Date(overview.createdAt).toLocaleString()}
                   dueDate={new Date(overview.createdAt).toLocaleDateString()}
                   itemsCount={overview.specs.itemsCount}
@@ -514,7 +514,7 @@ export default function OrderDetailsPage() {
       {showAssets && overview && (
         <DownloadAssetsModal isOpen={true} onClose={() => setShowAssets(false)} job={{
           id: overview.id,
-          orderId: `#ORD-${overview.id.slice(-6).toUpperCase()}`,
+          orderId: overview.orderId,
           customer: overview.customer.name,
           sheetSize: overview.specs.sheetSize,
           orderDescription: `${overview.specs.itemsCount} Items`,
@@ -527,7 +527,7 @@ export default function OrderDetailsPage() {
       <DriveSaveModal
         isOpen={driveModalOpen}
         onClose={() => setDriveModalOpen(false)}
-        fileName={overview ? `gangsheet_${overview.id}_600dpi.png` : "gangsheet.png"}
+        fileName={overview ? `gangsheet_${overview.orderId}_600dpi.png` : "gangsheet.png"}
         clientId={driveClientId}
         onConnected={(v) => void saveGangsheetToDrive(v)}
       />

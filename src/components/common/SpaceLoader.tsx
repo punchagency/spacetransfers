@@ -4,7 +4,7 @@ type SpaceLoaderProps = {
   layout?: "block" | "inline";
 };
 
-export const SpaceLoader = ({ size = 44, label, layout = "block" }: SpaceLoaderProps) => {
+export const SpaceLoader = ({ size = 65, layout = "block" }: SpaceLoaderProps) => {
   const rootClass =
     layout === "inline"
       ? "inline-flex items-center justify-center gap-2"
@@ -13,18 +13,17 @@ export const SpaceLoader = ({ size = 44, label, layout = "block" }: SpaceLoaderP
   return (
     <div role="status" aria-live="polite" className={rootClass}>
       <div className="relative" style={{ width: size, height: size }}>
-        <div className="absolute inset-0 rounded-full border-2 border-gray-200" />
-        <div className="absolute inset-0 rounded-full border-2 border-blue-600 border-t-transparent space-loader-ring" />
+        <div aria-hidden="true" className="absolute inset-0 rounded-full space-loader-glow" />
+        {/* <div aria-hidden="true" className="absolute inset-0 rounded-full border-[3px] border-gray-200/80" /> */}
+        <div aria-hidden="true" className="absolute inset-0 rounded-full space-loader-ring" />
         <img
           src="/space.svg"
           loading="lazy"
           decoding="async"
           alt=""
-          className="absolute inset-0 m-auto w-[62%] h-[62%]"
+          className="absolute inset-0 m-auto w-[85%] h-[85%] space-loader-core"
         />
       </div>
-      <span className="sr-only">Loading</span>
-      {label ? <div className="text-sm text-gray-500">{label}</div> : null}
     </div>
   );
 };

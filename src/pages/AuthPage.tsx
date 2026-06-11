@@ -7,7 +7,7 @@ const AuthPage = ({ onLogin }: AuthPageProps) => {
   const [isSignIn, setIsSignIn] = useState(false);
 
   return (
-    <div className="flex min-h-screen w-full font-sans bg-white overflow-hidden">
+    <div className="flex h-screen w-full font-sans bg-white overflow-hidden">
       <AuthBanner isSignIn={isSignIn} />
       <AuthForm
         isSignIn={isSignIn}

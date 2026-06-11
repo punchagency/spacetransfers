@@ -2,14 +2,17 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FiLogOut, FiUser, FiChevronDown, FiSettings } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import { useProfileStore } from '../../state/ProfileStore';
+import { UserAvatar } from './UserAvatar';
 
 export const UserMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const { avatarUrl: globalAvatarUrl } = useProfileStore();
 
   const userStr = localStorage.getItem('printer_user');
-  const user = userStr ? JSON.parse(userStr) : { name: 'Printer', email: 'printer@company.com', avatarUrl: null, region: null };
+  const user = userStr ? JSON.parse(userStr) : { name: 'Printer', email: 'printer@company.com', avatarUrl: null };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -42,17 +45,17 @@ export const UserMenu = () => {
         aria-expanded={isOpen}
         aria-haspopup="true"
       >
-        <img
-          src={user.avatarUrl || "/profile1.jpg"}
-          alt="avatar"
-          className="w-9 h-9 rounded-full object-cover border border-gray-200 shadow-sm"
+        <UserAvatar
+          src={globalAvatarUrl || user.avatarUrl}
+          className="w-9 h-9 rounded-full border border-gray-200 shadow-sm"
+          iconClassName="w-4 h-4"
         />
         <div className="hidden md:block text-left leading-tight">
           <div className="text-sm font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
             {user.companyName || user.name}
           </div>
           <div className="text-[11px] text-gray-500">
-            {user.email}{user.region ? ` • ${user.region}` : ""}
+            {user.email}
           </div>
         </div>
         <FiChevronDown

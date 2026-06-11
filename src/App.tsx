@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
+import VerifyEmailPage from "./pages/VerifyEmailPage";
 import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
 import OrderDetails from "./pages/OrderDetails";
@@ -9,6 +10,8 @@ import Earnings from "./pages/Earnings";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import { DashboardLayout } from "./components/layout/DashboardLayout";
+import { NotificationsStoreProvider } from "./state/NotificationsStore";
+import { ProfileStoreProvider } from "./state/ProfileStore";
 import { Toaster } from "react-hot-toast";
 import "./App.css";
 
@@ -23,6 +26,9 @@ function App() {
     <BrowserRouter>
       <Toaster position="top-right" />
       <Routes>
+        {/* Public email verification route — no auth required */}
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
+
         <Route
           path="/auth"
           element={
@@ -37,7 +43,11 @@ function App() {
         <Route
           element={
             isAuthenticated ? (
-              <DashboardLayout />
+              <ProfileStoreProvider>
+                <NotificationsStoreProvider>
+                  <DashboardLayout />
+                </NotificationsStoreProvider>
+              </ProfileStoreProvider>
             ) : (
               <Navigate to="/auth" replace />
             )

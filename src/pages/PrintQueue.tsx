@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { FiHelpCircle, FiEye } from "react-icons/fi";
+import { StatusBadge } from "../components/common/StatusBadge";
 import { useSearchParams } from "react-router-dom";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { SearchInput } from "../components/common/SearchInput";
@@ -64,7 +65,11 @@ export const getTabActiveStyles = (label: string) => {
 
 const PrintQueue = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState("All Jobs");
+  const [activeTab, setActiveTab] = useState(() => {
+    const tab = searchParams.get("tab");
+    const valid = ["All Jobs", "Pending", "Urgent", "Processing", "Printing", "Quality Check", "Completed"];
+    return tab && valid.includes(tab) ? tab : "All Jobs";
+  });
   const [selectedJob, setSelectedJob] = useState<PrintJob | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [jobs, setJobs] = useState<PrintJob[]>([]);
@@ -75,22 +80,18 @@ const PrintQueue = () => {
     setIsModalOpen(true);
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "Printing":
-        return "text-amber-600";
-      case "Completed":
-        return "text-green-600";
-      case "Quality Check":
-        return "text-emerald-700";
-      case "Processing":
-        return "text-indigo-600";
-      case "Urgent":
-        return "text-red-500";
-      case "Pending":
-        return "text-gray-600";
-      default:
-        return "text-gray-600";
+  const formatDeadline = (dateStr: string) => {
+    if (!dateStr) return "";
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return (
+        d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+        ", " +
+        d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+      );
+    } catch {
+      return dateStr;
     }
   };
 
@@ -119,17 +120,13 @@ const PrintQueue = () => {
     },
     {
       header: "Status",
-      key: "status" as keyof PrintJob,
-      render: (job: PrintJob) => (
-        <span className={`font-medium ${getStatusColor(job.status)}`}>
-          {job.status}
-        </span>
-      ),
+      render: (job: PrintJob) => <StatusBadge status={job.status} />,
     },
     {
       header: "Deadline",
-      key: "deadline" as keyof PrintJob,
-      className: "text-gray-700",
+      render: (job: PrintJob) => (
+        <span className="text-gray-700">{formatDeadline(job.deadline)}</span>
+      ),
     },
     {
       header: "Actions",
@@ -165,11 +162,10 @@ const PrintQueue = () => {
               : "Pending";
 
           const id = String(j.id || "");
-          const displayId = id ? `#ORD-${id.slice(-6).toUpperCase()}` : "#ORD";
 
           return {
             id,
-            orderId: displayId,
+            orderId: String(j.orderId || j.displayId || id),
             customer: String(j.customer || ""),
             sheetSize: String(j.sheetSize || ""),
             orderDescription: String(j.orderDescription || ""),
@@ -291,8 +287,8 @@ const PrintQueue = () => {
 
       {/* Table Card */}
       {loading ? (
-        <div className="bg-white border border-gray-200 rounded-xl p-10">
-          <SpaceLoader label="Loading print queue…" />
+        <div className="flex items-center justify-center min-h-[400px]">
+          <SpaceLoader />
         </div>
       ) : (
         <GenericTable<PrintJob>
