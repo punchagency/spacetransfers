@@ -2,6 +2,26 @@ import { BsPerson } from "react-icons/bs";
 import { IoLocationOutline } from "react-icons/io5";
 import { IoMdCheckmarkCircleOutline } from "react-icons/io";
 
+const REGION_BY_STATE: Record<string, string> = {
+  WA:"West",OR:"West",CA:"West",NV:"West",ID:"West",MT:"West",WY:"West",
+  UT:"West",AZ:"West",NM:"West",CO:"West",AK:"West",HI:"West",
+  ND:"Midwest",SD:"Midwest",NE:"Midwest",KS:"Midwest",MN:"Midwest",
+  IA:"Midwest",MO:"Midwest",WI:"Midwest",IL:"Midwest",MI:"Midwest",
+  IN:"Midwest",OH:"Midwest",
+  TX:"South",OK:"South",AR:"South",LA:"South",MS:"South",AL:"South",
+  TN:"South",KY:"South",WV:"South",VA:"South",NC:"South",SC:"South",
+  GA:"South",FL:"South",MD:"South",DC:"South",DE:"South",
+  PA:"Northeast",NY:"Northeast",VT:"Northeast",ME:"Northeast",
+  NH:"Northeast",MA:"Northeast",RI:"Northeast",CT:"Northeast",NJ:"Northeast",
+};
+
+const REGION_COLORS: Record<string, string> = {
+  West:      "bg-blue-50 text-blue-700 border-blue-200",
+  Midwest:   "bg-amber-50 text-amber-700 border-amber-200",
+  South:     "bg-green-50 text-green-700 border-green-200",
+  Northeast: "bg-purple-50 text-purple-700 border-purple-200",
+};
+
 interface FormData {
   firstName: string;
   lastName: string;
@@ -25,6 +45,11 @@ export default function CheckoutStep({
   setFormData,
   errors,
 }: CheckoutStepProps) {
+  const detectedRegion =
+    formData.state.trim().length === 2
+      ? REGION_BY_STATE[formData.state.trim().toUpperCase()] ?? null
+      : null;
+
   return (
     <>
       <div className="bg-white rounded-lg border mb-5 border-gray-200 p-6">
@@ -210,6 +235,13 @@ export default function CheckoutStep({
           </div>
         </div>
       </div>
+
+      {detectedRegion && (
+        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-xs font-medium ${REGION_COLORS[detectedRegion] ?? "bg-slate-50 text-slate-600 border-slate-200"}`}>
+          <IoLocationOutline className="w-4 h-4 flex-shrink-0" />
+          <span>Service Region: <strong>{detectedRegion}</strong> — your order will be matched with a printer in this region.</span>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <div className="flex items-center justify-between mb-4">

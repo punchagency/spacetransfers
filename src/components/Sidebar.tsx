@@ -268,23 +268,19 @@ export default function Sidebar({
                                         <span className="text-[12px] font-semibold text-slate-800">Auto-Nest </span>
                                         <Toggle checked={settings.autoNestStickers} onChange={() => onUpdateSetting('autoNestStickers', !settings.autoNestStickers)} />
                                     </div>
-                                    <p className="text-[12px] text-gray-500">Automatically arrange stickers efficiently</p>
+                                    <p className="text-[12px] text-gray-500">Automatically arrange efficiently</p>
                                 </div>
 
                                 <div className="mt-4">
-                                    <label className="text-[12px] font-semibold text-slate-700 block mb-2">Item Spacing</label>
+                                    <label className="text-[12px] font-semibold text-slate-700 block mb-2">Item Spacing Inches</label>
                                     <div className="relative">
                                         <SpacingInput
                                             value={settings.spacing}
-                                            disabled={settings.autoNestStickers}
+                                            disabled={false}
                                             onChange={(v) => onUpdateSetting('spacing', v)}
                                         />
                                     </div>
-                                    <p className="text-[12px] text-gray-500 mt-2">
-                                        {settings.autoNestStickers
-                                            ? "Disabled while Auto-Nest is ON"
-                                            : "Space between items"}
-                                    </p>
+                                    <p className="text-[12px] text-gray-500 mt-2">Space between items</p>
                                 </div>
                             </div>
                         )}

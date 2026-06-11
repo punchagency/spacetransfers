@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdClose, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
-import { CANVAS } from "../config/artboard.config";
+import { CANVAS, PRICING } from "../config/artboard.config";
 type HeaderInfo = {
   hasItem: boolean;
   areaSf?: number;
@@ -10,6 +10,7 @@ type HeaderInfo = {
   name?: string;
   price?: number;
   imageNames?: string[];
+  lowDpiCount?: number;
 };
 
 function ItemCountBadge({ count }: { count: number }) {
@@ -210,7 +211,53 @@ export default function Header({
             </span>
           )}
           <span className="text-gray-300">|</span>
-          <span>${(info?.price ?? 0).toFixed(2)}</span>
+          {(info?.lowDpiCount ?? 0) > 0 && (
+            <span className="relative group" tabIndex={0}>
+              <span className="relative flex items-center justify-center w-5 h-5 rounded-full bg-[#EDAE00] cursor-default">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                {(info?.lowDpiCount ?? 0) > 1 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[14px] h-[14px] px-[3px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center leading-none tabular-nums">
+                    {info!.lowDpiCount! > 100 ? "100+" : info!.lowDpiCount}
+                  </span>
+                )}
+              </span>
+              <span className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-[9999] hidden group-hover:flex group-focus:flex flex-col gap-1 w-64 rounded-xl border border-[#EDAE00]/40 bg-[#FFFBEB] shadow-lg px-3 py-2.5 text-left pointer-events-none">
+                <span className="text-[12px] font-semibold text-[#92600A]">Low DPI Detected</span>
+                <span className="text-[11px] leading-[1.5] text-[#92600A]">
+                  {info!.lowDpiCount} {info!.lowDpiCount === 1 ? "image has" : "images have"} a resolution below 300 DPI.
+                </span>
+                <span className="text-[11px] leading-[1.5] text-[#92600A]">
+                  For optimal DTF printing quality, images should be at least 300 DPI at print size.
+                </span>
+              </span>
+            </span>
+          )}
+          <span className="text-gray-300">|</span>
+          <span
+            className="relative cursor-default group"
+            tabIndex={0}
+          >
+            ${(info?.price ?? 0).toFixed(2)}
+            <span className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-[9999] hidden group-hover:flex group-focus:flex flex-col gap-1.5 min-w-[172px] rounded-xl border border-gray-200 bg-white shadow-lg px-4 py-3 text-left pointer-events-none">
+              <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-0.5">Pricing Breakdown</span>
+              <span className="flex justify-between gap-4 text-[12px] text-gray-700">
+                <span>Rate</span>
+                <span className="font-medium tabular-nums">${PRICING.PRICE_PER_SQ_FT.toFixed(2)}&nbsp;/&nbsp;sq&nbsp;ft</span>
+              </span>
+              <span className="flex justify-between gap-4 text-[12px] text-gray-700">
+                <span>Area</span>
+                <span className="font-medium tabular-nums">{(info?.areaSf ?? 0).toFixed(3)}&nbsp;sq&nbsp;ft</span>
+              </span>
+              <span className="mt-1 flex justify-between gap-4 border-t border-gray-100 pt-1.5 text-[12px] font-semibold text-gray-900">
+                <span>Total</span>
+                <span className="tabular-nums">${(info?.price ?? 0).toFixed(2)}</span>
+              </span>
+            </span>
+          </span>
         </div>
         {!isLoggedIn ? (
           <button
@@ -281,17 +328,10 @@ export default function Header({
         <button
           onClick={onMenuClick}
           onMouseEnter={onMenuClick}
-          className="p-2 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer relative w-10 h-10 flex items-center justify-center"
-          aria-label={isSidebarOpen ? "Close menu" : "Open menu"}
+          className="p-2 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer w-10 h-10 flex items-center justify-center"
+          aria-label="Open menu"
         >
-          <MdMenu
-            size={24}
-            className={`absolute transition-all duration-200 ${isSidebarOpen ? "opacity-0 rotate-90 scale-75" : "opacity-100 rotate-0 scale-100"}`}
-          />
-          <MdClose
-            size={24}
-            className={`absolute transition-all duration-200 ${isSidebarOpen ? "opacity-100 rotate-0 scale-100" : "opacity-0 -rotate-90 scale-75"}`}
-          />
+          <MdMenu size={24} />
         </button>
       </div>
     </header>

@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff, MdExpandMore } from "react-icons/md";
-import { FiMapPin } from "react-icons/fi";
+import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
 import toast from "react-hot-toast";
 
@@ -40,7 +39,6 @@ export default function AuthModal({
     name: "",
     email: "",
     password: "",
-    region: "West",
   });
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
@@ -78,7 +76,6 @@ export default function AuthModal({
       name: "",
       email: resetEmail || "",
       password: "",
-      region: "West",
     });
   }, [isOpen, initialView, isSubAccountCreation, resetToken, resetEmail]);
 
@@ -176,7 +173,7 @@ export default function AuthModal({
         setActiveResetToken(null);
         setMode("auth");
         setView("login");
-        setFormData({ name: "", email: formData.email, password: "", region: "West" });
+        setFormData({ name: "", email: formData.email, password: "" });
         return;
       }
 
@@ -378,34 +375,6 @@ export default function AuthModal({
             </div>
           </div>
 
-          {mode === "auth" && view === "register" && (
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Region
-              </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                  <FiMapPin size={18} />
-                </div>
-                <select
-                  name="region"
-                  required
-                  value={formData.region}
-                  onChange={handleChange}
-                  className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
-                >
-                  <option value="Northeast">Northeast</option>
-                  <option value="Midwest">Midwest</option>
-                  <option value="South">South</option>
-                  <option value="West">West</option>
-                </select>
-                <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-gray-400">
-                  <MdExpandMore size={20} />
-                </div>
-              </div>
-            </div>
-          )}
-
           {mode === "auth" && (
             <div>
             <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
@@ -479,7 +448,7 @@ export default function AuthModal({
                 setMode("auth");
                 setView("login");
                 setError(null);
-                setFormData({ name: "", email: "", password: "", region: "West" });
+                setFormData({ name: "", email: "", password: "" });
               }}
               className="text-sm font-bold text-blue-600 hover:text-blue-700"
             >

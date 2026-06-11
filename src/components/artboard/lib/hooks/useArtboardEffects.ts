@@ -16,6 +16,7 @@ export const useArtboardEffects = (
   autoNestStickers: boolean,
   marginSize: number,
   isDraggingItem: boolean,
+  isResizing: boolean,
   showRulers: boolean,
   onHeaderInfoChange?: (info: any) => void,
   initialData?: any,
@@ -75,7 +76,7 @@ export const useArtboardEffects = (
     const configChanged = lastConfig.marginSize !== marginSize || lastConfig.spacing !== spacing;
     const isAnyItemDropping = items.some(it => it.isDropping);
 
-    if (canvasWidth === 0 || isAnyItemDropping || (!autoNestStickers && !hasGravity && !configChanged)) {
+    if (isResizing || canvasWidth === 0 || isAnyItemDropping || (!autoNestStickers && !hasGravity && !configChanged)) {
       prevItemsRef.current = items;
       return;
     }
@@ -126,7 +127,15 @@ export const useArtboardEffects = (
       const needsUpdate = prev.some(it => {
         const update = updatesToUse.find((u) => u.id === it.id);
         if (!update) return false;
-        return Math.abs(update.posX - it.posX) > 0.001 || Math.abs(update.posY - it.posY) > 0.001;
+        // Check position AND flow geometry — flow shape can change without position moving
+        // (e.g. copies count changes within an already-placed group in the same lane).
+        return (
+          Math.abs(update.posX - it.posX) > 0.001 ||
+          Math.abs(update.posY - it.posY) > 0.001 ||
+          update.flowCols !== it.flowCols ||
+          update.flowStartCol !== it.flowStartCol ||
+          update.flowEndCol !== it.flowEndCol
+        );
       });
 
       if (!needsUpdate && !configChanged) return prev;
@@ -140,15 +149,24 @@ export const useArtboardEffects = (
           const shouldFollowLayout = !isBeingDragged && (autoNestStickers || it.gravityActive || configChanged);
 
           if (!shouldFollowLayout) {
-            // If order changed but we shouldn't follow layout yet (dragging), 
-            // we still need to preserve the gravityActive flag if it's set elsewhere
-            return it;
+            // Don't move position, but always sync flow geometry so ArtboardItem renders
+            // the correct stepped shape within the shared lane (flowStartCol/flowEndCol
+            // must reflect the item's current cursor position in the unified grid).
+            return {
+              ...it,
+              flowCols: update.flowCols,
+              flowStartCol: update.flowStartCol,
+              flowEndCol: update.flowEndCol,
+            };
           }
 
           return {
             ...it,
             posX: update.posX,
             posY: update.posY,
+            flowCols: update.flowCols,
+            flowStartCol: update.flowStartCol,
+            flowEndCol: update.flowEndCol,
             // When a copies change triggered this reflow, suppress animation and clear the flag.
             gravityActive: it.skipAnimation ? false : hasMoved,
             skipAnimation: false,
@@ -157,7 +175,7 @@ export const useArtboardEffects = (
         return it;
       });
     });
-  }, [items, canvasWidth, autoNestStickers, spacing, marginSize, lastConfig, setItems, isDraggingItem, selectedId]);
+  }, [items, canvasWidth, autoNestStickers, spacing, marginSize, lastConfig, setItems, isDraggingItem, isResizing, selectedId]);
 
   // Snap to grid
   useEffect(() => {
@@ -277,6 +295,7 @@ export const useArtboardEffects = (
         name: displayName,
         price: totalPrice,
         imageNames,
+        lowDpiCount: items.filter((it) => typeof it.dpi === "number" && it.dpi < 300).length,
       });
     }
   }, [items, canvasWidth, marginSize, onHeaderInfoChange]);

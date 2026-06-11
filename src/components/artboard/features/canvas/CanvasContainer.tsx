@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MdAdd, MdOutlineFileUpload } from "react-icons/md";
+import { MdAdd, MdOutlineFileUpload, MdArrowUpward } from "react-icons/md";
 import { getGridStyle } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
@@ -87,6 +87,23 @@ export default function CanvasContainer({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [toolbarHidden, setToolbarHidden] = useState(false);
+  const prevScrollTopRef = useRef(0);
+  const scrollStopTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (scrollStopTimerRef.current !== null) {
+      window.clearTimeout(scrollStopTimerRef.current);
+      scrollStopTimerRef.current = null;
+    }
+  }, []);
+
+  const handleScrollToTop = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: 0, behavior: "smooth" });
+    setToolbarHidden(false);
+  };
 
   const clampedMenu = useMemo(() => {
     if (!menu) return null;
@@ -170,10 +187,14 @@ export default function CanvasContainer({
         scrollTopPx={scrollTop}
         viewportHeightPx={viewportHeight}
       />
-      {/* Toolbar portal slot — ArtboardItem portals into this when selected */}
+      {/* Toolbar portal slot — ArtboardItem portals into this when selected.
+          Slides up + fades out while the user scrolls down, returns when they
+          scroll up or stop. */}
       <div
         id="artboard-toolbar-portal"
-        className="absolute z-50 pointer-events-none"
+        className={`absolute z-50 pointer-events-none transition-all duration-200 ease-out ${
+          toolbarHidden ? "-translate-y-3 opacity-0" : "translate-y-0 opacity-100"
+        }`}
         style={{ top: offset, left: offset, right: 0 }}
       />
 
@@ -198,8 +219,34 @@ export default function CanvasContainer({
               overflowX: "hidden",
               paddingBottom: `${ppi * zoom}px`,
             }}
-            onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-            onClick={(e) => { onCanvasClick(); if (e.target === e.currentTarget && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles(); }}
+            onScroll={(e) => {
+              const target = e.target as HTMLDivElement;
+              const curr = target.scrollTop;
+              setScrollTop(curr);
+
+              // Direction-aware toolbar visibility.
+              // Small delta threshold prevents flicker from sub-pixel scroll jitter on trackpads.
+              const delta = curr - prevScrollTopRef.current;
+              prevScrollTopRef.current = curr;
+              if (delta > 4 && curr > 60) {
+                setToolbarHidden(true);
+              } else if (delta < -4) {
+                setToolbarHidden(false);
+              }
+
+              // When scrolling stops, bring the toolbar back.
+              if (scrollStopTimerRef.current !== null) {
+                window.clearTimeout(scrollStopTimerRef.current);
+              }
+              scrollStopTimerRef.current = window.setTimeout(() => {
+                setToolbarHidden(false);
+                scrollStopTimerRef.current = null;
+              }, 220);
+
+              onCloseProperties();
+            }}
+            onClick={(e) => { if (e.target === e.currentTarget) onCanvasClick(); }}
+            onDoubleClick={(e) => { if (e.target === e.currentTarget && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles(); }}
           >
             <div
               className="relative"
@@ -232,6 +279,7 @@ export default function CanvasContainer({
                   onFlip={itemActions.flipSelected}
                   onDuplicate={onDuplicate}
                   onDelete={onDelete}
+                  onIncreaseDpi={itemActions.increaseDpi}
                   onToggleAutoCrop={itemActions.toggleAutoCrop}
                   onSetCopies={itemActions.setCopies}
                   onToggleLinked={itemActions.toggleLinked}
@@ -268,12 +316,33 @@ export default function CanvasContainer({
               <MdOutlineFileUpload size={20} />
             </span>
             <span className="flex flex-col items-start">
-              <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Click anywhere or drop files to add more</span>
+              <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
               <span className="text-[11px] text-slate-400 mt-0.5">PNG · JPG · SVG</span>
             </span>
           </button>
         </div>
       )}
+
+      {/* Scroll-to-Top — fixed bottom-right, appears once the user has scrolled
+          past ~300px. Always mounted so the show/hide is a pure CSS transition
+          rather than a remount jolt. */}
+      <button
+        onClick={handleScrollToTop}
+        aria-label="Scroll to top"
+        title="Scroll to top"
+        className={`fixed z-50 flex items-center justify-center w-12 h-12 rounded-full bg-slate-900 text-white shadow-[0_8px_24px_rgba(0,0,0,0.18)] hover:bg-slate-700 active:scale-95 transition-all duration-200 ease-out ${
+          scrollTop > 300
+            ? "opacity-100 translate-y-0 pointer-events-auto"
+            : "opacity-0 translate-y-3 pointer-events-none"
+        }`}
+        style={{
+          // Respect iOS home indicator + Android nav bar / notch.
+          bottom: "max(1.25rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))",
+          right: "max(1rem, env(safe-area-inset-right, 0px))",
+        }}
+      >
+        <MdArrowUpward className="w-6 h-6" />
+      </button>
 
       {/* {isDragging && (
         <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center">

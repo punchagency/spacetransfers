@@ -164,6 +164,11 @@ body {
   animation: bgGlow 1.4s ease-in-out infinite;
 }
 
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
 /* Custom scrollbar for sidebar */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;

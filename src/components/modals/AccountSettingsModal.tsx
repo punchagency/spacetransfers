@@ -200,9 +200,18 @@ export default function AccountSettingsModal({
                   }}
                 >
                   <div className="flex items-center gap-3">
-                    <div className={`flex h-10 w-10 items-center justify-center rounded-full ${getAvatarBgClass(linkedMainAccount.name)} text-white text-sm font-medium uppercase`}>
-                      {linkedMainAccount.name?.[0] || "?"}
-                    </div>
+                    {linkedMainAccount.avatarUrl ? (
+                      <img
+                        src={linkedMainAccount.avatarUrl}
+                        alt={linkedMainAccount.name || ""}
+                        referrerPolicy="no-referrer"
+                        className="h-10 w-10 rounded-full object-cover flex-shrink-0"
+                      />
+                    ) : (
+                      <div className={`flex h-10 w-10 items-center justify-center rounded-full ${getAvatarBgClass(linkedMainAccount.name)} text-white text-sm font-medium uppercase flex-shrink-0`}>
+                        {linkedMainAccount.name?.[0] || "?"}
+                      </div>
+                    )}
                     <div>
                       <p className="text-sm font-medium text-gray-900">
                         {linkedMainAccount.name}
@@ -246,9 +255,18 @@ export default function AccountSettingsModal({
                     }}
                   >
                     <div className="flex items-center gap-3">
-                      <div className={`flex h-10 w-10 items-center justify-center rounded-full ${getAvatarBgClass(account.name)} text-white text-sm font-medium uppercase`}>
-                        {account.name?.[0] || "?"}
-                      </div>
+                      {account.avatarUrl ? (
+                        <img
+                          src={account.avatarUrl}
+                          alt={account.name || ""}
+                          referrerPolicy="no-referrer"
+                          className="h-10 w-10 rounded-full object-cover flex-shrink-0"
+                        />
+                      ) : (
+                        <div className={`flex h-10 w-10 items-center justify-center rounded-full ${getAvatarBgClass(account.name)} text-white text-sm font-medium uppercase flex-shrink-0`}>
+                          {account.name?.[0] || "?"}
+                        </div>
+                      )}
                       <div>
                         <p className="text-sm font-medium text-gray-900">
                           {account.name}

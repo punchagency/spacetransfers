@@ -26,6 +26,11 @@ interface ArtboardItemProps {
     autoCrop: boolean;
     copies: number;
     linked: boolean;
+    flowCols?: number;
+    flowStartCol?: number;
+    flowEndCol?: number;
+    dpi?: number;
+    hasFade?: boolean;
   };
   isSelected: boolean;
   isPrimary: boolean;
@@ -39,6 +44,7 @@ interface ArtboardItemProps {
   onFlip: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onIncreaseDpi: () => void;
   onToggleAutoCrop: () => void;
   onSetCopies: (n: number) => void;
   onToggleLinked: () => void;
@@ -74,6 +80,7 @@ export default function ArtboardItem({
   onFlip,
   onDuplicate,
   onDelete,
+  onIncreaseDpi,
   onToggleAutoCrop,
   onSetCopies,
   onToggleLinked,
@@ -100,41 +107,23 @@ export default function ArtboardItem({
   const [bgProgress, setBgProgress] = useState<{ phase: string; pct: number } | null>(null);
   const [panelInitialPos, setPanelInitialPos] = useState({ x: 0, y: 0 });
   const itemRef = useRef<HTMLDivElement>(null);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDragRef = useRef<(() => void) | null>(null);
   const dragActivatedRef = useRef(false);
-  const savedMouseRef = useRef<{ clientX: number; clientY: number } | null>(null);
 
-  const cancelLongPress = useCallback(() => {
-    if (longPressTimerRef.current != null) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
+  const cancelPendingDrag = useCallback(() => {
+    pendingDragRef.current?.();
+    pendingDragRef.current = null;
   }, []);
 
-  useEffect(() => () => cancelLongPress(), [cancelLongPress]);
+  useEffect(() => () => cancelPendingDrag(), [cancelPendingDrag]);
 
-  // Compute viewport-relative position for the panel when it first opens
+  // Dock the panel to the right side of the image.
   useEffect(() => {
     if (!showProperties || !itemRef.current) return;
     const rect = itemRef.current.getBoundingClientRect();
-    const panelWidth = 320; // w-80
-    const panelEstimatedHeight = 420; // rough estimate; clamp will correct if needed
-    const HEADER_PX = 40; // matches h-10 in Header.tsx
-    const TOP_SAFE_PX = HEADER_PX + 8;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    let x = rect.right + 12;
-    if (x + panelWidth > vw - 8) {
-      x = rect.left - panelWidth - 12;
-    }
-    if (x < 8) x = 8;
-    let y = Math.max(TOP_SAFE_PX, rect.top);
-    const maxY = Math.max(TOP_SAFE_PX, vh - panelEstimatedHeight - 8);
-    if (y > maxY) y = maxY;
-    setPanelInitialPos({ x, y });
-  // Only recompute when the panel opens (showProperties flips to true)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showProperties]);
+    const gap = 12;
+    setPanelInitialPos({ x: rect.right + gap, y: rect.top });
+  }, [showProperties, item.posX, item.posY, zoom, scrollTop]);
 
   // Detect whether the image has a solid background by sampling the 4 corners.
   // All-transparent corners → already no background → disable Remove BG.
@@ -181,6 +170,23 @@ export default function ArtboardItem({
     }
   };
 
+  const isLowDpi = typeof item.dpi === "number" && item.dpi < 300;
+  const PT_TO_IN = 1 / 72;
+  const isTooSmall = item.widthIn < 2 * PT_TO_IN || item.heightIn < 2 * PT_TO_IN;
+
+  const hasFade = !!item.hasFade;
+
+  // Priority: too-small (red) > fade (orange) > low-dpi (amber) > normal (blue)
+  const borderColor = isTooSmall ? "#EF4444" : hasFade ? "#F97316" : isLowDpi ? "#EDAE00" : "#3b82f6";
+  const borderColorHover = isTooSmall ? "#EF4444" : hasFade ? "#F97316" : isLowDpi ? "#EDAE00" : "#60a5fa";
+  const handleColor = isTooSmall
+    ? "bg-red-500"
+    : hasFade
+    ? "bg-orange-500"
+    : isLowDpi
+    ? "bg-[#EDAE00]"
+    : "bg-blue-500";
+
   const effectiveMargin = marginSize;
   const MAX_SHEET_HEIGHT_IN = 1200;
   const gap = spacing;
@@ -194,8 +200,31 @@ export default function ArtboardItem({
 
   const renderCopies = computeRenderCopies(item, canvasWidth, effectiveMargin, gap);
 
-  const visibleCols = Math.max(1, Math.min(renderCopies, capacityCols));
-  const rows = Math.max(1, Math.ceil(renderCopies / visibleCols));
+  // Flow geometry — provided by calculateGridLayout when items share a lane.
+  // Otherwise fall back to a fully-packed grid (first cell at col 0).
+  const hasFlow =
+    typeof item.flowCols === "number" &&
+    typeof item.flowStartCol === "number" &&
+    typeof item.flowEndCol === "number";
+  const flowCols = hasFlow
+    ? Math.max(1, item.flowCols!)
+    : Math.max(1, Math.min(renderCopies, capacityCols));
+  const flowStartCol = hasFlow ? Math.max(0, item.flowStartCol!) : 0;
+  const flowEndColRaw = hasFlow
+    ? Math.max(0, item.flowEndCol!)
+    : renderCopies > 0
+      ? (renderCopies - 1) % flowCols
+      : 0;
+  const flowEndCol = Math.min(flowCols - 1, flowEndColRaw);
+
+  const visibleCols = flowCols;
+  const rows = (() => {
+    if (renderCopies <= 0) return 1;
+    const firstRowCapacity = Math.max(1, flowCols - flowStartCol);
+    if (renderCopies <= firstRowCapacity) return 1;
+    const remaining = renderCopies - firstRowCapacity;
+    return 1 + Math.ceil(remaining / flowCols);
+  })();
 
   const groupWidthInchesRaw = visibleCols * scaledWidth + (visibleCols - 1) * gap;
   const groupHeightInches = rows * scaledHeight + (rows - 1) * gap;
@@ -208,6 +237,17 @@ export default function ArtboardItem({
   const ppi = CANVAS.PIXELS_PER_INCH;
   const groupWidthPx = groupWidthInches * ppi;
   const totalGroupHeightPx = rows * scaledHeight * ppi + Math.max(0, rows - 1) * gap * ppi;
+
+  // Step geometry — the bordered region can have an inward step on the top-left
+  // (partial first row) and/or the bottom-right (partial last row) so it hugs
+  // the item's actual cells inside a flow lane.
+  const hasPartialFirstRow = rows > 1 && flowStartCol > 0;
+  const hasPartialLastRow = rows > 1 && flowEndCol < flowCols - 1;
+  const firstRowStartXPx = flowStartCol * (scaledWidth + gap) * ppi;
+  const firstRowBottomStepYPx = (scaledHeight + gap) * ppi;
+  const lastRowEndXPx =
+    ((flowEndCol + 1) * scaledWidth + flowEndCol * gap) * ppi;
+  const lastRowTopPx = (rows - 1) * (scaledHeight + gap) * ppi;
 
   // Virtual rendering: derive which rows fall inside the current scroll viewport.
   // Item positions inside the canvas div are in un-zoomed CSS pixels; after the
@@ -263,37 +303,47 @@ export default function ArtboardItem({
         })()
       : null;
 
+  // Build the bordered region as a polygon that hugs the actual cells, with
+  // optional inward steps on the top-left (partial first row) and bottom-right
+  // (partial last row). Used for both the SVG outline and the clip-path that
+  // limits the inner content div's hit area to occupied cells.
+  const polygonPoints: Array<[number, number]> = [];
+  polygonPoints.push([firstRowStartXPx, 0]);
+  polygonPoints.push([groupWidthPx, 0]);
+  if (hasPartialLastRow) {
+    polygonPoints.push([groupWidthPx, lastRowTopPx]);
+    polygonPoints.push([lastRowEndXPx, lastRowTopPx]);
+    polygonPoints.push([lastRowEndXPx, totalGroupHeightPx]);
+  } else {
+    polygonPoints.push([groupWidthPx, totalGroupHeightPx]);
+  }
+  polygonPoints.push([0, totalGroupHeightPx]);
+  if (hasPartialFirstRow) {
+    polygonPoints.push([0, firstRowBottomStepYPx]);
+    polygonPoints.push([firstRowStartXPx, firstRowBottomStepYPx]);
+  }
+
+  const polygonPathD =
+    polygonPoints
+      .map((p, i) => `${i === 0 ? "M" : "L"} ${p[0]} ${p[1]}`)
+      .join(" ") + " Z";
+
+  const polygonClipPath =
+    hasPartialFirstRow || hasPartialLastRow
+      ? `polygon(${polygonPoints.map((p) => `${p[0]}px ${p[1]}px`).join(", ")})`
+      : undefined;
+
   return (
     <div
       ref={itemRef}
       data-item-id={item.id}
-      className={`absolute rounded-md transition-shadow duration-300 ease-out ${
-        isSelected
-          ? "ring-4 ring-blue-500"
-          : isHovered
-          ? "ring-4 ring-blue-400"
-          : ""
-      }`}
+      className="absolute rounded-md transition-shadow duration-300 ease-out"
       style={{
         left: `${clampedLeft * CANVAS.PIXELS_PER_INCH}px`,
         top: `${clampedTop * CANVAS.PIXELS_PER_INCH}px`,
         touchAction: "none",
         zIndex: isSelected ? 1000 : item.copies > 1 ? 30 : 10,
-      }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => { setIsHovered(false); cancelLongPress(); }}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (dragActivatedRef.current) {
-          dragActivatedRef.current = false;
-          return;
-        }
-        if (e.shiftKey) {
-          onSelect(true);
-        } else {
-          onSelect(false);
-          onToggleProperties();
-        }
+        pointerEvents: "none",
       }}
     >
       {isPrimary && (() => {
@@ -308,6 +358,8 @@ export default function ArtboardItem({
             onFlip={onFlip}
             onDuplicate={onDuplicate}
             onDelete={onDelete}
+            onIncreaseDpi={onIncreaseDpi}
+            currentDpi={item.dpi}
             onRemoveBg={handleRemoveBg}
             bgStatus={bgStatus}
             isRemovingBg={isRemovingBg}
@@ -339,21 +391,56 @@ export default function ArtboardItem({
       {/* Group Layout for Copies — virtual rows, absolute positioned */}
       <div
         className="relative"
-        style={{ width: `${groupWidthPx}px`, height: `${totalGroupHeightPx}px` }}
+        style={{
+          width: `${groupWidthPx}px`,
+          height: `${totalGroupHeightPx}px`,
+          pointerEvents: "auto",
+          clipPath: polygonClipPath,
+        }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => { setIsHovered(false); cancelPendingDrag(); }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onSelect(false);
+          if (!showProperties) onToggleProperties();
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (dragActivatedRef.current) {
+            dragActivatedRef.current = false;
+            return;
+          }
+          if (e.shiftKey) {
+            onSelect(true);
+          } else {
+            onSelect(false);
+          }
+        }}
       >
         {Array.from({ length: Math.max(0, lastVisibleRow - firstVisibleRow + 1) }, (_, ri) => {
           const row = firstVisibleRow + ri;
           return Array.from({ length: visibleCols }, (_, col) => {
-            const index = row * visibleCols + col;
-            if (index >= renderCopies) return null;
+            // Skip cells outside this item's occupied flow region.
+            if (row === 0 && col < flowStartCol) return null;
+            if (row === rows - 1 && col > flowEndCol) return null;
+            const firstRowCapacity = flowCols - flowStartCol;
+            const index =
+              row === 0
+                ? col - flowStartCol
+                : firstRowCapacity + (row - 1) * flowCols + col;
+            if (index < 0 || index >= renderCopies) return null;
             return (
               <img
                 key={index}
                 src={item.url}
                 crossOrigin="anonymous"
+                draggable={false}
                 alt={`copy-${index}`}
                 className={`object-contain cursor-default rounded-sm ${
-                  isSelected && renderCopies > 1 ? "border border-blue-500" : ""
+                  isSelected && renderCopies > 1
+                    ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : isLowDpi ? "border-[#EDAE00]" : "border-blue-500"}`
+                    : ""
                 }`}
                 style={{
                   position: "absolute",
@@ -365,17 +452,31 @@ export default function ArtboardItem({
                 }}
                 onMouseDown={(e) => {
                   e.stopPropagation();
+                  e.preventDefault();
                   dragActivatedRef.current = false;
-                  savedMouseRef.current = { clientX: e.clientX, clientY: e.clientY };
-                  cancelLongPress();
-                  longPressTimerRef.current = setTimeout(() => {
-                    longPressTimerRef.current = null;
-                    dragActivatedRef.current = true;
-                    if (savedMouseRef.current) {
-                      onDragStart(savedMouseRef.current as unknown as React.MouseEvent);
+                  cancelPendingDrag();
+                  const startX = e.clientX;
+                  const startY = e.clientY;
+                  const THRESHOLD_SQ = 4 * 4;
+
+                  const onMove = (moveEvt: MouseEvent) => {
+                    const dx = moveEvt.clientX - startX;
+                    const dy = moveEvt.clientY - startY;
+                    if (dx * dx + dy * dy >= THRESHOLD_SQ) {
+                      cleanup();
+                      dragActivatedRef.current = true;
+                      onDragStart({ clientX: startX, clientY: startY } as React.MouseEvent);
                     }
-                  }, 500);
-                  document.addEventListener("mouseup", () => cancelLongPress(), { once: true });
+                  };
+                  const onUp = () => cleanup();
+                  const cleanup = () => {
+                    document.removeEventListener("mousemove", onMove);
+                    document.removeEventListener("mouseup", onUp);
+                    pendingDragRef.current = null;
+                  };
+                  document.addEventListener("mousemove", onMove);
+                  document.addEventListener("mouseup", onUp, { once: true });
+                  pendingDragRef.current = cleanup;
                 }}
               />
             );
@@ -393,23 +494,70 @@ export default function ArtboardItem({
             />
           </div>
         )}
+        {(isTooSmall || hasFade) && (
+          <div className="absolute bottom-1 left-1 z-30 flex gap-1 pointer-events-auto group/warn cursor-default">
+            {isTooSmall && (
+              <span className="w-4 h-4 rounded-full bg-red-500 border border-white flex items-center justify-center text-white text-[9px] font-bold leading-none select-none">
+                !
+              </span>
+            )}
+            {hasFade && (
+              <span className="w-4 h-4 rounded-full bg-orange-500 border border-white flex items-center justify-center leading-none select-none">
+                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </span>
+            )}
+            <div className="absolute bottom-full left-0 mb-1.5 hidden group-hover/warn:flex flex-col gap-1 min-w-[220px] max-w-[280px] rounded-xl border border-gray-200 bg-white shadow-lg px-3 py-2.5 pointer-events-none z-50">
+              {isTooSmall && (
+                <p className="text-[11px] leading-snug text-red-600 font-medium">
+                  Items smaller than 2pt may not print properly.
+                </p>
+              )}
+              {hasFade && (
+                <p className="text-[11px] leading-snug text-orange-600 font-medium">
+                  DTF Technology cannot print fades. Please remove transparency gradients or fading into transparency.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+      {(isSelected || isHovered) && (
+        <svg
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+        >
+          <path
+            d={polygonPathD}
+            fill="none"
+            stroke={isSelected ? borderColor : borderColorHover}
+            strokeWidth={4}
+            strokeLinejoin="round"
+            strokeDasharray={isTooSmall ? "6 3" : undefined}
+          />
+        </svg>
+      )}
       {isSelected && (
         <>
           <span
-            className="absolute -top-2 -left-2 w-3.5 h-3.5 rounded-full bg-blue-500 border-2 border-white cursor-nwse-resize"
+            className={`absolute -top-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nwse-resize pointer-events-auto`}
             onMouseDown={onResizeStart}
           />
           <span
-            className="absolute -top-2 -right-2 w-3.5 h-3.5 rounded-full bg-blue-500 border-2 border-white cursor-nesw-resize"
+            className={`absolute -top-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nesw-resize pointer-events-auto`}
             onMouseDown={onResizeStart}
           />
           <span
-            className="absolute -bottom-2 -left-2 w-3.5 h-3.5 rounded-full bg-blue-500 border-2 border-white cursor-nesw-resize"
+            className={`absolute -bottom-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nesw-resize pointer-events-auto`}
             onMouseDown={onResizeStart}
           />
           <span
-            className="absolute -bottom-2 -right-2 w-3.5 h-3.5 rounded-full bg-blue-500 border-2 border-white cursor-nwse-resize"
+            className={`absolute -bottom-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nwse-resize pointer-events-auto`}
             onMouseDown={onResizeStart}
           />
         </>

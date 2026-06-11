@@ -24,6 +24,9 @@ export const useDropHandler = (
 ) => {
   const [isDragging, setIsDragging] = useState(false);
   const [lowDpiCount, setLowDpiCount] = useState(0);
+  const [fadeCount, setFadeCount] = useState(0);
+  const lowDpiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadFileName, setUploadFileName] = useState<string | null>(null);
@@ -32,6 +35,37 @@ export const useDropHandler = (
   const canceledRef = useRef(false);
   const warnedMaxHeightRef = useRef(false);
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  const detectFade = (url: string): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          const MAX = 300;
+          const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight, 1));
+          const w = Math.max(1, Math.round(img.naturalWidth * scale));
+          const h = Math.max(1, Math.round(img.naturalHeight * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) { resolve(false); return; }
+          ctx.drawImage(img, 0, 0, w, h);
+          const data = ctx.getImageData(0, 0, w, h).data;
+          let visible = 0;
+          let semi = 0;
+          for (let i = 3; i < data.length; i += 4) {
+            const a = data[i];
+            if (a > 5) visible++;
+            if (a > 5 && a < 250) semi++;
+          }
+          resolve(visible > 0 && semi / visible > 0.05);
+        } catch { resolve(false); }
+      };
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
 
   const cancelUploads = () => {
     canceledRef.current = true;
@@ -135,69 +169,98 @@ export const useDropHandler = (
         img.onload = () => {
           const canvas = document.createElement("canvas");
           const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            resolve(null);
-            return;
-          }
+          if (!ctx) { resolve(null); return; }
+
           canvas.width = img.width;
           canvas.height = img.height;
           ctx.drawImage(img, 0, 0);
 
           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const data = imageData.data;
+          const w = canvas.width;
+          const h = canvas.height;
 
-          let minX = canvas.width,
-            minY = canvas.height,
-            maxX = 0,
-            maxY = 0;
+          // Check if ANY pixel has transparency (not just corners)
+          let hasTransparency = false;
+          for (let i = 3; i < data.length; i += 4) {
+            if (data[i] < 250) { hasTransparency = true; break; }
+          }
+
+          let minX = w, minY = h, maxX = -1, maxY = -1;
           let found = false;
 
-          const alphaThreshold = 10;
-          for (let y = 0; y < canvas.height; y++) {
-            for (let x = 0; x < canvas.width; x++) {
-              const alpha = data[(y * canvas.width + x) * 4 + 3];
-              if (alpha > alphaThreshold) {
-                found = true;
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
+          if (hasTransparency) {
+            // Alpha-based: tight bounding box of non-transparent pixels
+            for (let y = 0; y < h; y++) {
+              for (let x = 0; x < w; x++) {
+                if (data[(y * w + x) * 4 + 3] > 10) {
+                  found = true;
+                  if (x < minX) minX = x;
+                  if (x > maxX) maxX = x;
+                  if (y < minY) minY = y;
+                  if (y > maxY) maxY = y;
+                }
+              }
+            }
+          } else {
+            // Sample the full border strip (~2% of the shorter side) for background color
+            const borderW = Math.max(2, Math.round(Math.min(w, h) * 0.02));
+            let sumR = 0, sumG = 0, sumB = 0, count = 0;
+
+            for (let y = 0; y < borderW; y++) {
+              for (let x = 0; x < w; x++) {
+                let i = (y * w + x) * 4;
+                sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+                i = ((h - 1 - y) * w + x) * 4;
+                sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+              }
+            }
+            for (let x = 0; x < borderW; x++) {
+              for (let y = borderW; y < h - borderW; y++) {
+                let i = (y * w + x) * 4;
+                sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+                i = (y * w + (w - 1 - x)) * 4;
+                sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+              }
+            }
+
+            const bgR = count > 0 ? sumR / count : 255;
+            const bgG = count > 0 ? sumG / count : 255;
+            const bgB = count > 0 ? sumB / count : 255;
+            const colorThreshold = 30;
+
+            for (let y = 0; y < h; y++) {
+              for (let x = 0; x < w; x++) {
+                const i = (y * w + x) * 4;
+                const dr = data[i] - bgR;
+                const dg = data[i + 1] - bgG;
+                const db = data[i + 2] - bgB;
+                if (Math.sqrt(dr * dr + dg * dg + db * db) > colorThreshold) {
+                  found = true;
+                  if (x < minX) minX = x;
+                  if (x > maxX) maxX = x;
+                  if (y < minY) minY = y;
+                  if (y > maxY) maxY = y;
+                }
               }
             }
           }
 
-          if (!found) {
-            resolve(null);
-            return;
-          }
+          if (!found || maxX < minX || maxY < minY) { resolve(null); return; }
 
           const cropWidth = maxX - minX + 1;
           const cropHeight = maxY - minY + 1;
 
           const croppedCanvas = document.createElement("canvas");
           const croppedCtx = croppedCanvas.getContext("2d");
-          if (!croppedCtx) {
-            resolve(null);
-            return;
-          }
+          if (!croppedCtx) { resolve(null); return; }
 
           croppedCanvas.width = cropWidth;
           croppedCanvas.height = cropHeight;
-          croppedCtx.drawImage(
-            img,
-            minX,
-            minY,
-            cropWidth,
-            cropHeight,
-            0,
-            0,
-            cropWidth,
-            cropHeight
-          );
+          croppedCtx.drawImage(img, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
-          const croppedUrl = croppedCanvas.toDataURL("image/png");
           resolve({
-            url: croppedUrl,
+            url: croppedCanvas.toDataURL("image/png"),
             widthPx: cropWidth,
             heightPx: cropHeight,
             widthIn: cropWidth / dpi,
@@ -211,6 +274,7 @@ export const useDropHandler = (
 
     const start = counter + 1;
     let lowDpiImages = 0;
+    let fadeImages = 0;
 
     const createItemFromUrl = async (
       url: string,
@@ -249,6 +313,7 @@ export const useDropHandler = (
         name,
         gravityActive: false,
         isDropping: true,
+        dpi,
         originalUrl: originalUrlOverride || url,
         originalWidthIn: widthIn,
         originalHeightIn: heightIn,
@@ -264,6 +329,17 @@ export const useDropHandler = (
         baseItem.posX = baseItem.posX + deltaX;
         baseItem.posY = baseItem.posY + deltaY;
       }
+
+      const maxPrintableWidthUrl = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+      if (baseItem.widthIn > maxPrintableWidthUrl) {
+        const scale = maxPrintableWidthUrl / baseItem.widthIn;
+        baseItem.heightIn = baseItem.heightIn * scale;
+        baseItem.widthIn = maxPrintableWidthUrl;
+        toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
+      }
+
+      baseItem.hasFade = await detectFade(baseItem.url);
+      if (baseItem.hasFade) fadeImages++;
 
       return baseItem;
     };
@@ -324,10 +400,9 @@ export const useDropHandler = (
           assetResponse = null;
         }
 
-        const dpi = Math.max(
-          1,
-          Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300)
-        );
+        const rawDpi = Math.max(1, Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300));
+        // Mirror server normalization: values < 150 (e.g. 72 dpi JFIF defaults) are treated as unknown
+        const dpi = rawDpi < 150 ? 300 : rawDpi;
         if (dpi < 300) lowDpiImages++;
 
         const serverUrl = assetResponse?.url || localInfo.url;
@@ -360,12 +435,13 @@ export const useDropHandler = (
           name: file.name,
           gravityActive: false,
           isDropping: true,
+          dpi,
           originalUrl: serverUrl,
           originalWidthIn,
           originalHeightIn,
         };
 
-        if (!trimmedUrl && file.type === "image/png") {
+        if (!trimmedUrl) {
           const cropped = await cropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;
@@ -377,6 +453,17 @@ export const useDropHandler = (
             baseItem.posY = baseItem.posY + deltaY;
           }
         }
+
+        const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+        if (baseItem.widthIn > maxPrintableWidth) {
+          const scale = maxPrintableWidth / baseItem.widthIn;
+          baseItem.heightIn = baseItem.heightIn * scale;
+          baseItem.widthIn = maxPrintableWidth;
+          toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
+        }
+
+        baseItem.hasFade = await detectFade(baseItem.url);
+        if (baseItem.hasFade) fadeImages++;
 
         created.push(baseItem);
       }
@@ -407,8 +494,14 @@ export const useDropHandler = (
     }
 
     if (lowDpiImages > 0) {
+      if (lowDpiTimerRef.current) clearTimeout(lowDpiTimerRef.current);
       setLowDpiCount(lowDpiImages);
-      setTimeout(() => setLowDpiCount(0), 8000);
+      lowDpiTimerRef.current = setTimeout(() => setLowDpiCount(0), 7000);
+    }
+    if (fadeImages > 0) {
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+      setFadeCount(fadeImages);
+      fadeTimerRef.current = setTimeout(() => setFadeCount(0), 7000);
     }
 
     const autoNestForDrop = autoNestStickers || dropped.length >= 2;
@@ -492,12 +585,15 @@ export const useDropHandler = (
             prev.map((it) => {
               const update = finalUpdates.find((u) => u.id === it.id);
               const isNew = newIds.has(it.id);
-              if (isNew) return { ...it, isDropping: false };
+              if (isNew) return it; // keep isDropping:true — cleared in onComplete or on drag start
               if (update && pushedIds.has(it.id)) {
                 return {
                   ...it,
                   posX: update.posX,
                   posY: update.posY,
+                  flowCols: update.flowCols,
+                  flowStartCol: update.flowStartCol,
+                  flowEndCol: update.flowEndCol,
                   gravityActive: true,
                 };
               }
@@ -573,18 +669,21 @@ export const useDropHandler = (
               ease: "power2.out",
               immediateRender: true,
               onComplete: () => {
-                // Commit final coordinates in React state
                 setItems((prev) =>
-                  prev.map((it) =>
-                    it.id === item.id
-                      ? {
-                          ...it,
-                          posX: update.posX,
-                          posY: update.posY,
-                          isDropping: false,
-                        }
-                      : it
-                  )
+                  prev.map((it) => {
+                    if (it.id !== item.id) return it;
+                    // User dragged the item before animation finished — don't override
+                    if (!it.isDropping) return it;
+                    return {
+                      ...it,
+                      posX: update.posX,
+                      posY: update.posY,
+                      flowCols: update.flowCols,
+                      flowStartCol: update.flowStartCol,
+                      flowEndCol: update.flowEndCol,
+                      isDropping: false,
+                    };
+                  })
                 );
                 animateBounce(element, update.posY);
               },
@@ -654,6 +753,7 @@ export const useDropHandler = (
   return {
     isDragging,
     lowDpiCount,
+    fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,

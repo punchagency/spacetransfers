@@ -96,12 +96,13 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
   };
 
   if (!isOpen) return null;
-
+ 
   return (
     <div
       onClick={onClose}
       className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-xs z-50"
     >
+
       <div
         onClick={(e) => e.stopPropagation()}
         className="bg-white rounded-[18px] shadow-lg w-full max-w-md mx-4"

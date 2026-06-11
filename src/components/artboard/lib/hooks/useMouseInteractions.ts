@@ -1,4 +1,5 @@
-  import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
+import { gsap } from "gsap";
 import { ArtboardItem } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
@@ -16,7 +17,8 @@ export const useMouseInteractions = (
   canvasWidth: number,
   marginSize: number,
   spacing: number,
-  commitHistory?: CommitHistory
+  commitHistory?: CommitHistory,
+  onRequestAutoNest?: (enabled: boolean) => void,
 ) => {
   const [isResizing, setIsResizing] = useState(false);
   const [resizeStart, setResizeStart] = useState<{
@@ -35,6 +37,9 @@ export const useMouseInteractions = (
 
   const MAX_SHEET_HEIGHT_IN = 1200;
   const warnedMaxHeightRef = useRef(false);
+  const warnedMaxWidthRef = useRef(false);
+  const autoNestWasActiveRef = useRef(false);
+  const MAX_WIDTH_ERROR = "Image width cannot exceed the printable area of the film after margins are applied.";
 
   const getGroupHeightWorstIn = (item: Pick<ArtboardItem, "heightIn" | "copies">) => {
     const heightIn = typeof item.heightIn === "number" ? item.heightIn : 0;
@@ -94,6 +99,10 @@ export const useMouseInteractions = (
     const item = items.find((it) => it.id === itemId);
     if (!item) return;
     commitHistory?.();
+    if (autoNestStickers) {
+      autoNestWasActiveRef.current = true;
+      onRequestAutoNest?.(false);
+    }
     setIsResizing(true);
     setResizeStart({
       x: e.clientX,
@@ -107,6 +116,13 @@ export const useMouseInteractions = (
     const item = items.find((it) => it.id === itemId);
     if (!item || item.locked) return;
     commitHistory?.();
+    const el = document.querySelector(`[data-item-id="${itemId}"]`) as HTMLElement | null;
+    if (el) gsap.killTweensOf(el);
+    if (item.isDropping) {
+      setItems((prev) =>
+        prev.map((it) => (it.id === itemId ? { ...it, isDropping: false } : it))
+      );
+    }
     setIsDraggingItem(true);
     setDragStart({ x: e.clientX, y: e.clientY, posX: item.posX, posY: item.posY });
   };
@@ -127,7 +143,16 @@ export const useMouseInteractions = (
         if (item.linked) {
           const ratio = resizeStart.height / resizeStart.width;
           const avgDelta = (deltaX + deltaY / ratio) / 2;
-          const finalWidth = Math.max(0.5, resizeStart.width + avgDelta);
+          const rawWidth = Math.max(0.5, resizeStart.width + avgDelta);
+
+          const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+          const widthAfterWidthClamp = Math.min(rawWidth, maxPrintableWidth);
+          if (widthAfterWidthClamp < rawWidth && !warnedMaxWidthRef.current) {
+            toast.error(MAX_WIDTH_ERROR);
+            warnedMaxWidthRef.current = true;
+          }
+
+          const finalWidth = widthAfterWidthClamp;
           const finalHeight = finalWidth * ratio;
 
           // Clamp height so even in worst-case vertical wrapping, the item group bottom fits.
@@ -147,7 +172,7 @@ export const useMouseInteractions = (
             clampedHeight !== finalHeight || item.posY > maxPosY;
           if (didClamp) maybeToastMaxHeight();
 
-          const updated = prevItems.map((it) =>
+          return prevItems.map((it) =>
             it.id === selectedId
               ? {
                   ...it,
@@ -157,13 +182,14 @@ export const useMouseInteractions = (
                 }
               : it,
           );
-          const nextItem = updated.find((it) => it.id === selectedId);
-          if (!nextItem) return updated;
-          const resolvedY = resolveCollisionPosY(updated, nextItem);
-          return updated.map((it) =>
-            it.id === selectedId ? { ...it, posY: Math.min(resolvedY, maxPosY) } : it,
-          );
         } else {
+          const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+          const clampedWidth = Math.min(newWidth, maxPrintableWidth);
+          if (clampedWidth < newWidth && !warnedMaxWidthRef.current) {
+            toast.error(MAX_WIDTH_ERROR);
+            warnedMaxWidthRef.current = true;
+          }
+
           const copies = typeof item.copies === "number" && item.copies > 0 ? item.copies : 1;
           const gap = CANVAS.GRID_GAP_IN;
           const maxHeightInByBottom =
@@ -178,21 +204,15 @@ export const useMouseInteractions = (
             clampedHeight !== newHeight || item.posY > maxPosY;
           if (didClamp) maybeToastMaxHeight();
 
-          const updated = prevItems.map((it) =>
+          return prevItems.map((it) =>
             it.id === selectedId
               ? {
                   ...it,
-                  widthIn: newWidth,
+                  widthIn: clampedWidth,
                   heightIn: clampedHeight,
                   posY: Math.min(it.posY, maxPosY),
                 }
               : it,
-          );
-          const nextItem = updated.find((it) => it.id === selectedId);
-          if (!nextItem) return updated;
-          const resolvedY = resolveCollisionPosY(updated, nextItem);
-          return updated.map((it) =>
-            it.id === selectedId ? { ...it, posY: Math.min(resolvedY, maxPosY) } : it,
           );
         }
       });
@@ -201,6 +221,11 @@ export const useMouseInteractions = (
     const handleMouseUp = () => {
       setIsResizing(false);
       setResizeStart(null);
+      warnedMaxWidthRef.current = false;
+      if (autoNestWasActiveRef.current) {
+        autoNestWasActiveRef.current = false;
+        onRequestAutoNest?.(true);
+      }
     };
 
     document.addEventListener("mousemove", handleMouseMove);
@@ -306,6 +331,14 @@ export const useMouseInteractions = (
     const handleMouseUp = () => {
       setIsDraggingItem(false);
       setDragStart(null);
+      // Clear gravityActive so the layout effect doesn't snap the item back after release
+      if (selectedId != null) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === selectedId ? { ...it, gravityActive: false } : it
+          )
+        );
+      }
     };
 
     document.addEventListener("mousemove", handleMouseMove);
@@ -320,5 +353,6 @@ export const useMouseInteractions = (
     handleResizeStart,
     handleDragStart,
     isDraggingItem,
+    isResizing,
   };
 };

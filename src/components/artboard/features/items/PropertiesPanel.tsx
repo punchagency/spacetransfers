@@ -119,26 +119,54 @@ function CopiesInput({ value, onChange }: { value: number; onChange: (n: number)
   );
 }
 
-const HEADER_HEIGHT = 40; // matches h-10 in Header.tsx
+const HEADER_HEIGHT = 40;
 const TOP_SAFE_PX = HEADER_HEIGHT + 8;
-const PANEL_WIDTH_PX = 320; // matches w-80
+const PANEL_WIDTH_PX = 288;
 const EDGE_PADDING_PX = 8;
+const TOOLBAR_GAP_PX = 12;
 
-// Clamp panel position so it never overlaps the top toolbar or escapes the viewport.
 function clampPanelPos(x: number, y: number, panelHeightPx: number) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const maxX = Math.max(EDGE_PADDING_PX, vw - PANEL_WIDTH_PX - EDGE_PADDING_PX);
   const maxY = Math.max(TOP_SAFE_PX, vh - panelHeightPx - EDGE_PADDING_PX);
-  return {
-    x: Math.min(Math.max(EDGE_PADDING_PX, x), maxX),
-    y: Math.min(Math.max(TOP_SAFE_PX, y), maxY),
-  };
+  let clampedX = Math.min(Math.max(EDGE_PADDING_PX, x), maxX);
+  let clampedY = Math.min(Math.max(TOP_SAFE_PX, y), maxY);
+
+  const toolbar = document.querySelector("[data-action-toolbar]") as HTMLElement | null;
+  if (toolbar) {
+    const tb = toolbar.getBoundingClientRect();
+    if (tb.width > 0 && tb.height > 0) {
+      const tbLeft = tb.left - TOOLBAR_GAP_PX;
+      const tbRight = tb.right + TOOLBAR_GAP_PX;
+      const tbTop = tb.top - TOOLBAR_GAP_PX;
+      const tbBottom = tb.bottom + TOOLBAR_GAP_PX;
+
+      const overlapsX = clampedX < tbRight && clampedX + PANEL_WIDTH_PX > tbLeft;
+      const overlapsY = clampedY < tbBottom && clampedY + panelHeightPx > tbTop;
+
+      if (overlapsX && overlapsY) {
+        const leftSlot = tbLeft - PANEL_WIDTH_PX;
+        const rightSlot = tbRight;
+        const fitsLeft = leftSlot >= EDGE_PADDING_PX;
+        const fitsRight = rightSlot + PANEL_WIDTH_PX <= vw - EDGE_PADDING_PX;
+
+        if (fitsLeft || fitsRight) {
+          const distLeft = fitsLeft ? Math.abs(clampedX - leftSlot) : Infinity;
+          const distRight = fitsRight ? Math.abs(clampedX - rightSlot) : Infinity;
+          clampedX = distLeft <= distRight ? leftSlot : rightSlot;
+        } else {
+          clampedY = Math.min(tbBottom, maxY);
+        }
+      }
+    }
+  }
+
+  return { x: clampedX, y: clampedY };
 }
 
 export default function PropertiesPanel({
   item,
-  addedToCart,
   initialPos,
   onClose,
   onToggleAutoCrop,
@@ -148,7 +176,6 @@ export default function PropertiesPanel({
   onSetHeightIn,
   onSetPosX,
   onSetPosY,
-  onAddToCart,
 }: PropertiesPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -160,12 +187,22 @@ export default function PropertiesPanel({
     clampPanelPos(initialPos.x, initialPos.y, 420)
   );
 
-  // Sync position when the panel first opens; clamp fully into viewport
+  const prevAnchorRef = useRef(initialPos);
+  const firstSyncRef = useRef(true);
   useEffect(() => {
-    setPos(clampPanelPos(initialPos.x, initialPos.y, measureHeight()));
-  }, [initialPos]);
+    if (firstSyncRef.current) {
+      setPos(clampPanelPos(initialPos.x, initialPos.y, measureHeight()));
+      prevAnchorRef.current = initialPos;
+      firstSyncRef.current = false;
+      return;
+    }
+    const dx = initialPos.x - prevAnchorRef.current.x;
+    const dy = initialPos.y - prevAnchorRef.current.y;
+    prevAnchorRef.current = initialPos;
+    if (dx === 0 && dy === 0) return;
+    setPos((p) => clampPanelPos(p.x + dx, p.y + dy, measureHeight()));
+  }, [initialPos.x, initialPos.y]);
 
-  // Re-clamp on viewport resize so the panel can never end up under the header / off-screen
   useEffect(() => {
     const onResize = () => {
       setPos((p) => clampPanelPos(p.x, p.y, measureHeight()));
@@ -174,7 +211,6 @@ export default function PropertiesPanel({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Close when clicking outside the panel
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
@@ -186,7 +222,7 @@ export default function PropertiesPanel({
   }, [onClose]);
 
   const onHeaderMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
+    if ((e.target as HTMLElement).closest("button, input")) return;
     e.preventDefault();
     draggingRef.current = true;
     dragStartRef.current = {
@@ -214,32 +250,44 @@ export default function PropertiesPanel({
   return (
     <div
       ref={panelRef}
-      style={{ position: "fixed", left: pos.x, top: pos.y, zIndex: 9999 }}
-      className="w-80 bg-white border border-gray-300 shadow-2xl rounded-xl select-none"
+      style={{
+        position: "fixed",
+        left: pos.x,
+        top: pos.y,
+        zIndex: 9999,
+      }}
+      className="w-72 bg-white border border-gray-300 rounded-md shadow-2xl select-none overflow-hidden"
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
     >
+      {/* Header */}
       <div
-        className="flex items-center justify-between px-3 py-2.5 border-b border-gray-300 cursor-grab active:cursor-grabbing"
+        className="flex items-center gap-1.5 px-2.5 py-2 border-b border-gray-200 cursor-grab active:cursor-grabbing"
         onMouseDown={onHeaderMouseDown}
       >
-        <span className="font-semibold text-[14px]">Properties</span>
-        <button className="p-1 text-gray-600 hover:text-black" onClick={(e) => { e.stopPropagation(); onClose(); }}>
-          <MdClose className="w-4 h-4" />
+        <div className="flex-1 min-w-0">
+          <div
+            className="text-[12px] font-semibold text-gray-900 truncate"
+            title={item.name || `Item #${item.id}`}
+          >
+            {item.name || `Item #${item.id}`}
+          </div>
+        </div>
+        <button
+          className="p-1 rounded-full text-gray-500 hover:text-black hover:bg-gray-100 transition-colors shrink-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          title="Close"
+        >
+          <MdClose className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      <div className="px-3 py-2.5 flex items-center justify-between">
-        <div className="text-[12px]">
-          <div className="font-medium text-gray-900 truncate max-w-[240px]" title={item.name || `Item #${item.id}`}>{item.name || `Item #${item.id}`}</div>
-          <div className="text-gray-500">
-            {item.copies > 1 ? `${item.copies} linked copies` : "1 copy"}
-          </div>
-        </div>
-      </div>
-
+      {/* Auto Crop */}
       <div
-        className="px-3 py-2.5 border-t border-gray-300 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer"
+        className="px-3 py-2.5 border-b border-gray-200 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer"
         onClick={onToggleAutoCrop}
       >
         <div>
@@ -260,12 +308,14 @@ export default function PropertiesPanel({
         </button>
       </div>
 
-      <div className="px-3 py-2.5 border-t border-gray-300">
+      {/* Number of Copies */}
+      <div className="px-3 py-2.5 border-b border-gray-200">
         <div className="text-[12px] font-medium text-gray-900 mb-2">Number of Copies</div>
         <CopiesInput value={item.copies} onChange={onSetCopies} />
       </div>
 
-      <div className="px-3 py-2.5 border-t border-gray-300">
+      {/* Dimensions */}
+      <div className="px-3 py-2.5 border-b border-gray-200">
         <div className="flex items-center justify-between mb-2">
           <div className="text-[12px] font-medium text-gray-900">Dimensions</div>
           <button
@@ -284,7 +334,8 @@ export default function PropertiesPanel({
         </div>
       </div>
 
-      <div className="px-3 py-2.5 border-t border-gray-300">
+      {/* Position */}
+      <div className="px-3 py-2.5">
         <div className="text-[12px] font-medium text-gray-900 mb-2">Position</div>
         <div className="grid grid-cols-2 gap-2">
           <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} />

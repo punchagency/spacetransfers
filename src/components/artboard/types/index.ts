@@ -23,6 +23,15 @@ export interface ArtboardItem {
   originalWidthIn?: number;
   originalHeightIn?: number;
   isDropping?: boolean;
+  dpi?: number;
+  hasFade?: boolean;
+  // Unified flow geometry — when set, copies render at cells within a shared
+  // grid so multiple grouped items can occupy a single fluid layout.
+  // flowCols is the total columns of the shared grid; flowStartCol/flowEndCol
+  // mark where this item's copies begin (first row) and end (last row).
+  flowCols?: number;
+  flowStartCol?: number;
+  flowEndCol?: number;
 }
 
 export interface HistoryState {
@@ -57,4 +66,5 @@ export interface HeaderInfo {
   name?: string;
   price?: number;
   imageNames?: string[];
+  lowDpiCount?: number;
 }

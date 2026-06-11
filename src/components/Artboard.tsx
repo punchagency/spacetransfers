@@ -9,7 +9,7 @@ import {
   useHistory,
 } from "./artboard/lib/hooks";
 import { snapToGridPoint } from "./artboard/lib/utils";
-import { DpiWarning, CanvasContainer } from "./artboard/features/canvas";
+import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import type { ArtboardProps } from "./artboard/types";
 import { CANVAS } from "../config/artboard.config";
 
@@ -77,6 +77,7 @@ export default function Artboard({
   const {
     isDragging,
     lowDpiCount,
+    fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,
@@ -112,7 +113,7 @@ export default function Artboard({
     onActionPerformed,
     history.commit,
   );
-  const { handleResizeStart, handleDragStart, isDraggingItem } =
+  const { handleResizeStart, handleDragStart, isDraggingItem, isResizing } =
     useMouseInteractions(
       items,
       setItems,
@@ -125,6 +126,7 @@ export default function Artboard({
       marginSize,
       spacing,
       history.commit,
+      onRequestAutoNest,
     );
 
   useArtboardEffects(
@@ -137,6 +139,7 @@ export default function Artboard({
     autoNestStickers,
     marginSize,
     isDraggingItem,
+    isResizing,
     showRulers,
     onHeaderInfoChange,
     initialData,
@@ -177,8 +180,14 @@ export default function Artboard({
       id: newId,
       posX: target.posX + 0.5,
       posY: target.posY + 0.5,
+      gravityActive: true,
     };
-    setItems((prev) => [...prev, copy]);
+    setItems((prev) => {
+      const idx = prev.findIndex((it) => it.id === selectedId);
+      const next = [...prev];
+      next.splice(idx === -1 ? next.length : idx + 1, 0, copy);
+      return next;
+    });
     setSelectedId(newId);
   };
 
@@ -226,7 +235,10 @@ export default function Artboard({
       id="artboard-main-container"
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
     >
-      <DpiWarning count={lowDpiCount} />
+      <ArtboardWarning
+        lowDpiCount={lowDpiCount > 0 ? items.filter((it) => typeof it.dpi === "number" && it.dpi < 300).length : 0}
+        fadeCount={fadeCount > 0 ? items.filter((it) => it.hasFade).length : 0}
+      />
       <input
         ref={fileInputRef}
         type="file"

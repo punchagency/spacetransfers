@@ -19,10 +19,21 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
     headers,
   });
 
-  const data = await response.json();
+  // Some error responses (auth gates) can return empty bodies; guard JSON.parse.
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
 
   if (!response.ok) {
-    throw new Error(data.message || "Something went wrong");
+    const error: Error & { status?: number; data?: any } = new Error(
+      data?.message || `Request failed with status ${response.status}`,
+    );
+    error.status = response.status;
+    error.data = data;
+    throw error;
   }
 
   return data;

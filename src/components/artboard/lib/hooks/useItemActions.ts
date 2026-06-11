@@ -5,6 +5,9 @@ import { computeRenderCopies } from "../utils/layoutHelpers";
 import type { CommitHistory } from "./useHistory";
 import toast from "react-hot-toast";
 
+const DPI_STEP = 50;
+const DPI_MAX = 600;
+
 export const useItemActions = (
   items: ArtboardItem[],
   setItems: React.Dispatch<React.SetStateAction<ArtboardItem[]>>,
@@ -19,7 +22,7 @@ export const useItemActions = (
     id?: number;
     payload?: any;
   }) => void,
-  commitHistory?: CommitHistory
+  commitHistory?: CommitHistory,
 ) => {
   const emit = (action: { type: string; id?: number; payload?: any }) => {
     setTimeout(() => {
@@ -115,7 +118,7 @@ export const useItemActions = (
         }
       }
 
-      // Canvas fallback: only useful for PNG images with transparency
+      // Canvas fallback: works for both transparent PNGs and solid-background images
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.onload = () => {
@@ -129,22 +132,71 @@ export const useItemActions = (
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
+        const w = canvas.width;
+        const h = canvas.height;
 
-        let minX = canvas.width,
-          minY = canvas.height,
-          maxX = 0,
-          maxY = 0;
+        // Check if ANY pixel has transparency (not just corners)
+        let hasTransparency = false;
+        for (let i = 3; i < data.length; i += 4) {
+          if (data[i] < 250) { hasTransparency = true; break; }
+        }
+
+        let minX = w, minY = h, maxX = -1, maxY = -1;
         let found = false;
 
-        for (let y = 0; y < canvas.height; y++) {
-          for (let x = 0; x < canvas.width; x++) {
-            const alpha = data[(y * canvas.width + x) * 4 + 3];
-            if (alpha > 10) {
-              found = true;
-              if (x < minX) minX = x;
-              if (x > maxX) maxX = x;
-              if (y < minY) minY = y;
-              if (y > maxY) maxY = y;
+        if (hasTransparency) {
+          // Alpha-based: tight bounding box of non-transparent pixels
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              if (data[(y * w + x) * 4 + 3] > 10) {
+                found = true;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+              }
+            }
+          }
+        } else {
+          // Sample the full border strip (~2% of the shorter side) for background color
+          const borderW = Math.max(2, Math.round(Math.min(w, h) * 0.02));
+          let sumR = 0, sumG = 0, sumB = 0, count = 0;
+
+          for (let y = 0; y < borderW; y++) {
+            for (let x = 0; x < w; x++) {
+              let i = (y * w + x) * 4;
+              sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+              i = ((h - 1 - y) * w + x) * 4;
+              sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+            }
+          }
+          for (let x = 0; x < borderW; x++) {
+            for (let y = borderW; y < h - borderW; y++) {
+              let i = (y * w + x) * 4;
+              sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+              i = (y * w + (w - 1 - x)) * 4;
+              sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2]; count++;
+            }
+          }
+
+          const bgR = count > 0 ? sumR / count : 255;
+          const bgG = count > 0 ? sumG / count : 255;
+          const bgB = count > 0 ? sumB / count : 255;
+          const colorThreshold = 30;
+
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              const i = (y * w + x) * 4;
+              const dr = data[i] - bgR;
+              const dg = data[i + 1] - bgG;
+              const db = data[i + 2] - bgB;
+              if (Math.sqrt(dr * dr + dg * dg + db * db) > colorThreshold) {
+                found = true;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+              }
             }
           }
         }
@@ -291,6 +343,11 @@ export const useItemActions = (
 
   const setWidthIn = (n: number) => {
     if (selectedId == null) return;
+    const maxPrintableWidth = canvasWidth - 2 * marginSize;
+    if (n > maxPrintableWidth) {
+      toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
+      return;
+    }
     commit(`setWidthIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
@@ -313,6 +370,16 @@ export const useItemActions = (
 
   const setHeightIn = (n: number) => {
     if (selectedId == null) return;
+    const current = items.find((it) => it.id === selectedId);
+    if (current?.linked && current.heightIn > 0) {
+      const ratio = current.widthIn / current.heightIn;
+      const resultingWidth = n * ratio;
+      const maxPrintableWidth = canvasWidth - 2 * marginSize;
+      if (resultingWidth > maxPrintableWidth) {
+        toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
+        return;
+      }
+    }
     commit(`setHeightIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
@@ -429,6 +496,40 @@ export const useItemActions = (
     });
   };
 
+  const increaseDpi = () => {
+    if (selectedId == null) return;
+    const item = items.find((it) => it.id === selectedId);
+    if (!item) return;
+
+    const currentDpi = Math.max(1, Math.round(item.dpi || 300));
+    // Below print-ready threshold: jump straight to 300 in a single click.
+    // At or above 300: incremental +50 boosts for fine-tuning.
+    const newDpi =
+      currentDpi < 300
+        ? 300
+        : Math.min(currentDpi + DPI_STEP, DPI_MAX);
+    if (newDpi <= currentDpi) {
+      toast("Already at maximum DPI.", { icon: "ℹ️" });
+      return;
+    }
+
+    commit(`increaseDpi-${selectedId}`);
+
+    // DPI is purely a metadata/quality field — the item's widthIn, heightIn,
+    // posX, and posY are deliberately untouched so the canvas layout stays put.
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === selectedId ? { ...it, dpi: newDpi } : it,
+      ),
+    );
+
+    emit({
+      type: "increaseDpi",
+      id: selectedId,
+      payload: { from: currentDpi, to: newDpi },
+    });
+  };
+
   return {
     rotateSelected,
     toggleLockSelected,
@@ -443,5 +544,6 @@ export const useItemActions = (
     toggleExpandSelected,
     deleteSelected,
     removeBg,
+    increaseDpi,
   };
 };

@@ -40,6 +40,9 @@ export interface LayoutItem {
   posY: number;
   gravityActive?: boolean;
   copies?: number;
+  flowCols?: number;
+  flowStartCol?: number;
+  flowEndCol?: number;
 }
 
 export const getRenderedGroupSize = (
@@ -104,107 +107,157 @@ export const calculateGridLayout = (
   items: LayoutItem[],
   canvasWidth: number,
   spacing: number,
-  autoNestStickers: boolean,
+  _autoNestStickers: boolean,
   margin: number = 0.15
 ): LayoutItem[] => {
-  const selectionBuffer = CANVAS.SELECTION_BUFFER_IN;
-  const tightGapIn = 2 / 96;
-  const minSpacing = autoNestStickers
-    ? Math.min(Math.max(spacing, 0), tightGapIn)
-    : Math.max(spacing, 0.08);
+  const cellGap = Math.max(0, spacing);
   const maxWidth = canvasWidth - margin * 2;
 
-  const enriched = items.map((it, idx) => {
-    const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
-    const { width, height } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
-    const packedWidth = width + selectionBuffer;
-    const packedHeight = height + selectionBuffer;
-    return {
-      it,
-      idx,
-      isGroup: copies > 1,
-      packedWidth,
-      packedHeight,
-      footprint: packedWidth * packedHeight,
-    };
-  });
+  // Group items by exact dimensions; same-dim items share a continuous flow grid.
+  const dimKey = (it: LayoutItem) =>
+    `${it.widthIn.toFixed(4)}x${it.heightIn.toFixed(4)}`;
 
-  const ordered = [
-    ...enriched.filter((e) => e.isGroup).sort((a, b) => a.idx - b.idx),
-    ...enriched.filter((e) => !e.isGroup).sort((a, b) => a.idx - b.idx),
-  ];
+  const laneMap = new Map<string, LayoutItem[]>();
+  const laneOrder: string[] = [];
+  for (const it of items) {
+    const key = dimKey(it);
+    if (!laneMap.has(key)) { laneMap.set(key, []); laneOrder.push(key); }
+    laneMap.get(key)!.push(it);
+  }
 
-  const placed: Array<{
-    it: any;
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  }> = [];
+  const updatesById = new Map<number, LayoutItem>();
 
-  ordered.forEach((entry) => {
-    const w = entry.packedWidth + minSpacing;
-    const h = entry.packedHeight + minSpacing;
+  // nextY: top of the next available full-width row (relative to margin).
+  let nextY = 0;
+  // partialRow: when the previous lane's last row is partial, track its right
+  // edge so the next lane can be side-packed into the leftover space.
+  type PartialRowState = { y: number; h: number; rightX: number };
+  let partialRow: PartialRowState | null = null;
 
-    const xCoords = [0, ...placed.map((p) => p.x + p.w), ...placed.map((p) => p.x)];
-    const yCoords = [0, ...placed.map((p) => p.y + p.h), ...placed.map((p) => p.y)];
+  for (const key of laneOrder) {
+    const lane = laneMap.get(key)!;
+    if (lane.length === 0) continue;
+    const w = lane[0].widthIn;
+    const h = lane[0].heightIn;
 
-    const uniqueX = Array.from(new Set(xCoords)).sort((a, b) => a - b);
-    const uniqueY = Array.from(new Set(yCoords)).sort((a, b) => a - b);
+    const savedPartialRow: PartialRowState | null = partialRow;
 
-    let bestPos = { x: 0, y: 0 };
-    let found = false;
-    const eps = 1e-4;
+    // Side-pack region: a single row to the right of the previous lane's partial
+    // row. Items only enter here if all of their copies fit consecutively — we
+    // never split an item across regions.
+    let sidePackAvailable = false;
+    let sidePackStartX = 0;
+    let sidePackY = 0;
+    let sidePackCols = 0;
+    let sidePackRowH = h;
 
-    for (const y of uniqueY) {
-      for (const x of uniqueX) {
-        if (x + w > maxWidth + eps) continue;
-
-        let overlaps = false;
-        for (const p of placed) {
-          if (
-            x + eps < p.x + p.w &&
-            x + w - eps > p.x &&
-            y + eps < p.y + p.h &&
-            y + h - eps > p.y
-          ) {
-            overlaps = true;
-            break;
-          }
-        }
-
-        if (!overlaps) {
-          bestPos = { x, y };
-          found = true;
-          break;
-        }
+    if (savedPartialRow !== null) {
+      const sideStartX = savedPartialRow.rightX + cellGap;
+      const sideAvailW = maxWidth - sideStartX;
+      if (sideAvailW >= w) {
+        sidePackAvailable = true;
+        sidePackStartX = sideStartX;
+        sidePackY = savedPartialRow.y;
+        sidePackCols = Math.max(
+          1,
+          Math.floor((sideAvailW + cellGap) / Math.max(1e-6, w + cellGap))
+        );
+        sidePackRowH = Math.max(savedPartialRow.h, h);
       }
-      if (found) break;
     }
 
-    if (!found) {
-      // Fallback if something goes wrong, though shouldn't happen
-      const maxY = placed.length > 0 ? Math.max(...placed.map(p => p.y + p.h)) : 0;
-      bestPos = { x: 0, y: maxY };
+    // Wrap region: full canvas width, starting at canvas left below the
+    // side-pack row (or at nextY when no side-pack). Anything that doesn't fit
+    // in the side-pack row flows here strictly left-to-right.
+    const wrapMaxCols = Math.max(
+      1,
+      Math.floor((maxWidth + cellGap) / Math.max(1e-6, w + cellGap))
+    );
+    const wrapStartY = sidePackAvailable
+      ? sidePackY + sidePackRowH + cellGap
+      : nextY;
+
+    let sideCursor = 0;
+    let wrapCursor = 0;
+    let wrapStarted = false;
+
+    for (const item of lane) {
+      const copies =
+        typeof item.copies === "number" && item.copies > 0 ? item.copies : 1;
+
+      const fitsInSidePack =
+        sidePackAvailable && !wrapStarted && sideCursor + copies <= sidePackCols;
+
+      if (fitsInSidePack) {
+        const startCol = sideCursor;
+
+        updatesById.set(item.id, {
+          ...item,
+          posX: margin + sidePackStartX + startCol * (w + cellGap),
+          posY: margin + sidePackY,
+          gravityActive: false,
+          flowCols: copies,
+          flowStartCol: 0,
+          flowEndCol: copies - 1,
+        });
+
+        sideCursor += copies;
+      } else {
+        wrapStarted = true;
+        const startIdx = wrapCursor;
+        const endIdx = wrapCursor + copies - 1;
+        const startCol = startIdx % wrapMaxCols;
+        const startRow = Math.floor(startIdx / wrapMaxCols);
+        const endCol = endIdx % wrapMaxCols;
+        const endRow = Math.floor(endIdx / wrapMaxCols);
+        const itemRows = endRow - startRow + 1;
+
+        const boundingLeftCol = itemRows === 1 ? startCol : 0;
+        const boundingRightCol = itemRows === 1 ? endCol : wrapMaxCols - 1;
+        const boundingCols = boundingRightCol - boundingLeftCol + 1;
+
+        updatesById.set(item.id, {
+          ...item,
+          posX: margin + boundingLeftCol * (w + cellGap),
+          posY: margin + wrapStartY + startRow * (h + cellGap),
+          gravityActive: false,
+          flowCols: boundingCols,
+          flowStartCol: startCol - boundingLeftCol,
+          flowEndCol: endCol - boundingLeftCol,
+        });
+
+        wrapCursor += copies;
+      }
     }
 
-    placed.push({
-      it: entry.it,
-      x: bestPos.x,
-      y: bestPos.y,
-      w,
-      h,
-    });
-  });
+    if (wrapStarted) {
+      const wrapRows = Math.ceil(wrapCursor / wrapMaxCols);
+      const lastRowFilled = wrapCursor - (wrapRows - 1) * wrapMaxCols;
+      const lastRowY = wrapStartY + (wrapRows - 1) * (h + cellGap);
 
-  const updates: LayoutItem[] = placed.map((p) => ({
-    ...p.it,
-    posX: margin + p.x + selectionBuffer / 2,
-    posY: margin + p.y + selectionBuffer / 2 + 0.02,
-    gravityActive: false,
-  }));
+      if (lastRowFilled > 0 && lastRowFilled < wrapMaxCols) {
+        partialRow = {
+          y: lastRowY,
+          h,
+          rightX: lastRowFilled * (w + cellGap) - cellGap,
+        };
+      } else {
+        partialRow = null;
+      }
 
-  return updates;
+      const wrapBottomY = wrapStartY + wrapRows * h + (wrapRows - 1) * cellGap;
+      nextY = Math.max(nextY, wrapBottomY + cellGap);
+    } else if (sideCursor > 0) {
+      partialRow = {
+        y: sidePackY,
+        h: sidePackRowH,
+        rightX: sidePackStartX + sideCursor * (w + cellGap) - cellGap,
+      };
+      nextY = Math.max(nextY, sidePackY + sidePackRowH + cellGap);
+    }
+  }
+
+  return items.map((it) => updatesById.get(it.id) ?? it);
 };
 
 export const calculateDropPosition = (

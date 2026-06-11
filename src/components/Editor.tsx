@@ -107,16 +107,53 @@ export default function Editor() {
   });
 
   useEffect(() => {
-    localStorage.setItem("cart", JSON.stringify(cartItems));
+    // Persist cart, stripping only the heavy base64 data: URLs that blow the
+    // ~5MB localStorage quota (captured artboard thumbnails, embedded image
+    // blobs). Structural data (items, artboardData, pricing, size) is kept so
+    // the cart still restores on reload for guests.
+    const stripDataUrls = (val: any): any => {
+      if (val == null) return val;
+      if (typeof val === "string") return val.startsWith("data:") ? null : val;
+      if (Array.isArray(val)) return val.map(stripDataUrls);
+      if (typeof val === "object") {
+        const out: any = {};
+        for (const k of Object.keys(val)) out[k] = stripDataUrls(val[k]);
+        return out;
+      }
+      return val;
+    };
 
-    // Sync to server if logged in
-    if (isLoggedIn && user?.id) {
+    const writeCart = (payload: any[]) => {
+      localStorage.setItem("cart", JSON.stringify(payload));
+    };
+
+    try {
+      writeCart(cartItems);
+    } catch {
+      // Quota likely exceeded — retry without data: URLs.
+      try {
+        writeCart(cartItems.map(stripDataUrls));
+      } catch {
+        // Still failed — clear so a stale half-write doesn't break next load.
+        try {
+          localStorage.removeItem("cart");
+        } catch {}
+      }
+    }
+
+    // Sync to server only for actual customer accounts. Other roles hit a
+    // guaranteed 403 from the /customer/* role middleware, which would spam
+    // the console on every cart mutation.
+    if (isLoggedIn && user?.id && user?.role === "CUSTOMER") {
       apiFetch("/customer/cart", {
         method: "PUT",
         body: JSON.stringify({ cart: cartItems }),
-      }).catch((err) => console.error("Failed to sync cart to server", err));
+      }).catch(() => {
+        // Silent — the local cart state is the source of truth for the UI;
+        // the server sync is best-effort persistence across devices.
+      });
     }
-  }, [cartItems, isLoggedIn, user?.id]);
+  }, [cartItems, isLoggedIn, user?.id, user?.role]);
 
   // Keyboard shortcuts: Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z (or Ctrl+Y) = redo.
   // Skipped while typing in form fields so we don't hijack the browser's native
@@ -533,7 +570,7 @@ export default function Editor() {
     showRulers: true,
     showMargins: false,
     snapToGrid: false,
-    autoNestStickers: false,
+    autoNestStickers: true,
     spacing: 0.1,
     marginSize: 0.15,
   });
@@ -615,7 +652,10 @@ export default function Editor() {
 
       setCartItems((prev) => [...prev, gangSheetItem]);
 
-      if (forceFullSheetPrice) {
+      if (forceFullSheetPrice && user?.role === "CUSTOMER") {
+        // Fire-and-forget: the email notification is non-critical. Gated on a
+        // confirmed customer role so non-customer sessions don't generate a
+        // guaranteed 403 from the /customer/* role middleware.
         const utilizationPct =
           typeof headerInfo?.areaSf === "number" && fullSheetAreaSf > 0
             ? (headerInfo.areaSf / fullSheetAreaSf) * 100
@@ -629,7 +669,9 @@ export default function Editor() {
             sheetHeightIn: CANVAS.SHEET_HEIGHT_IN,
             utilizationPct,
           }),
-        }).catch((e) => console.warn("Failed to send utilization warning email", e));
+        }).catch(() => {
+          // Silent — the cart flow has already succeeded; the email is best-effort.
+        });
       }
 
       // Try to capture image in background
@@ -716,7 +758,7 @@ export default function Editor() {
     // Sheet width is fixed at 23.5", so we only gate on height utilization.
     const notFullyUtilized = usedHeight < CANVAS.SHEET_HEIGHT_IN - 0.01;
 
-    if (notFullyUtilized) {
+    if (isLoggedIn && notFullyUtilized) {
       const fullSheetAreaSf =
         (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
         PRICING.SQUARE_INCHES_PER_SQ_FT;
@@ -942,9 +984,7 @@ export default function Editor() {
         marginSize={settings.marginSize}
         autoNestStickers={settings.autoNestStickers}
         spacing={settings.spacing}
-        onRequestAutoNest={(enabled) => {
-          if (enabled) updateSetting("autoNestStickers", true);
-        }}
+        onRequestAutoNest={(enabled) => updateSetting("autoNestStickers", enabled)}
         onDataChange={setArtboardData}
         initialData={loadedDesignData}
         onHistoryChange={setHistoryState}
@@ -1042,6 +1082,21 @@ export default function Editor() {
             autoCrop: it.autoCrop !== false,
           }));
 
+          // Pre-flight: the /customer/designs routes are gated to CUSTOMER role
+          // server-side. Without this check the user clicks Save, waits, and
+          // gets a useless "Forbidden" toast. Catch it up-front with a clear message.
+          if (!isLoggedIn || !user?.id) {
+            toast.error("Please sign in to save your design.");
+            setShowAuthModal(true);
+            return;
+          }
+          if (user.role !== "CUSTOMER") {
+            toast.error(
+              "This account can't save designs. Please sign in with a customer account.",
+            );
+            return;
+          }
+
           let toastId: string | undefined;
           try {
             setIsGangsheetBusy(true);
@@ -1100,13 +1155,16 @@ export default function Editor() {
               await pending();
             }
           } catch (err: any) {
-            toast.error(
-              err?.message ||
-                (currentLoadedDesignId
-                  ? "Failed to update gangsheet"
-                  : "Failed to save gangsheet"),
-              toastId ? { id: toastId } : undefined,
-            );
+            // Auth gate from /customer/* role middleware — translate "Forbidden"
+            // into something the user can act on.
+            const isAuthGate = err?.status === 403 || err?.status === 401;
+            const fallback = currentLoadedDesignId
+              ? "Failed to update gangsheet"
+              : "Failed to save gangsheet";
+            const message = isAuthGate
+              ? "Your session can't save designs. Please sign in with a customer account."
+              : err?.message || fallback;
+            toast.error(message, toastId ? { id: toastId } : undefined);
           } finally {
             setIsGangsheetBusy(false);
           }
