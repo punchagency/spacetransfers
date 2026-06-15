@@ -59,6 +59,7 @@ export interface IUser extends Document {
     postalCode: string;
     country: string;
     verified: boolean;
+    coordinates?: { lat: number; lng: number };
   };
   certifications?: {
     name: string;
@@ -148,6 +149,7 @@ export interface IUser extends Document {
     state: string;
     postalCode: string;
     country: string;
+    coordinates?: { lat: number; lng: number };
   };
   createdAt: Date;
   updatedAt: Date;
@@ -169,8 +171,10 @@ const userSchema = new Schema<IUser>(
     googleId: {
       type: String,
       default: null,
-      sparse: true,
-      unique: true,
+      // Uniqueness is enforced via a partial index below. `sparse: true` + `default: null`
+      // is a trap: sparse only skips documents where the field is *absent*, but the default
+      // value materialises the field as `null` on every insert, so MongoDB sees many docs
+      // with googleId === null and rejects duplicates with E11000.
     },
     name: {
       type: String,
@@ -261,7 +265,11 @@ const userSchema = new Schema<IUser>(
       state: String,
       postalCode: String,
       country: String,
-      verified: { type: Boolean, default: false }
+      verified: { type: Boolean, default: false },
+      coordinates: {
+        lat: { type: Number },
+        lng: { type: Number },
+      },
     },
     certifications: [
       {
@@ -363,15 +371,27 @@ const userSchema = new Schema<IUser>(
     },
     defaultShippingAddress: {
       street: String,
-      city: String, 
+      city: String,
       state: String,
       postalCode: String,
-      country: String
+      country: String,
+      coordinates: {
+        lat: { type: Number },
+        lng: { type: Number },
+      },
     }
   },
   {
     timestamps: true
-  } 
+  }
+);
+
+// Partial unique index on googleId: only enforced when the field is a non-null
+// string (i.e., an actual Google account ID). This lets every non-Google user
+// keep googleId === null without colliding with each other on the unique key.
+userSchema.index(
+  { googleId: 1 },
+  { unique: true, partialFilterExpression: { googleId: { $type: "string" } } },
 );
 
 export const User = mongoose.model<IUser>("User", userSchema);

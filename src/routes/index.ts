@@ -7,12 +7,14 @@ import adminRoutes from "./admin.routes.js";
 import orderRoutes from "./order.routes.js";
 import healthRoutes from "./health.routes.js";
 import payoutRoutes from "./payout.routes.js";
+import geocodingRoutes from "./geocoding.routes.js";
 
 const router = express.Router();
 
 router.use("/health", healthRoutes);
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
+router.use("/geocode", geocodingRoutes);
 router.use("/customer", customerRoutes);
 router.use("/printer", printerRoutes);
 router.use("/admin", adminRoutes);

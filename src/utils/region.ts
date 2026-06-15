@@ -9,20 +9,23 @@ export const normalizeRegion = (region: string | undefined | null): "West" | "Mi
   return null;
 };
 
-export const getRegionFromState = (state: string | undefined): "West" | "Midwest" | "South" | "Northeast" => {
-  if (!state) return "West";
+export const getRegionFromState = (
+  state: string | undefined | null
+): "West" | "Midwest" | "South" | "Northeast" | null => {
+  if (!state) return null;
   const s = state.trim().toUpperCase();
+  if (!s) return null;
 
-  const west = ["WA", "OR", "CA", "NV", "ID", "MT", "WY", "UT", "AZ", "NM", "CO", "AK", "HI"];
-  const midwest = ["ND", "SD", "NE", "KS", "MN", "IA", "MO", "WI", "IL", "MI", "IN", "OH"];
-  const south = ["TX", "OK", "AR", "LA", "MS", "AL", "TN", "KY", "WV", "VA", "NC", "SC", "GA", "FL", "MD", "DC", "DE"];
-  const northeast = ["PA", "NY", "VT", "ME", "NH", "MA", "RI", "CT", "NJ"];
+  const west      = ["WA","OR","CA","NV","ID","MT","WY","UT","AZ","NM","CO","AK","HI"];
+  const midwest   = ["ND","SD","NE","KS","MN","IA","MO","WI","IL","MI","IN","OH"];
+  const south     = ["TX","OK","AR","LA","MS","AL","TN","KY","WV","VA","NC","SC","GA","FL","MD","DC","DE"];
+  const northeast = ["PA","NY","VT","ME","NH","MA","RI","CT","NJ"];
 
-  if (west.includes(s)) return "West";
-  if (midwest.includes(s)) return "Midwest";
-  if (south.includes(s)) return "South";
+  if (west.includes(s))      return "West";
+  if (midwest.includes(s))   return "Midwest";
+  if (south.includes(s))     return "South";
   if (northeast.includes(s)) return "Northeast";
-  return "West";
+  return null; // Not a recognised US state code — no region assigned
 };
 
 const STATE_CENTROIDS: Record<string, { lat: number; lon: number }> = {
@@ -100,4 +103,30 @@ export const haversineMiles = (
   const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
   const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
   return R * c;
+};
+
+// Geographic centers of each service region (used for coordinate-based assignment)
+export const REGION_CENTROIDS: Record<"West" | "Midwest" | "South" | "Northeast", { lat: number; lon: number }> = {
+  West:      { lat: 39.0,  lon: -115.5 },
+  Midwest:   { lat: 41.5,  lon: -91.5  },
+  South:     { lat: 33.0,  lon: -87.0  },
+  Northeast: { lat: 42.5,  lon: -72.5  },
+};
+
+/**
+ * Derive a service region from coordinates using nearest-centroid (haversine).
+ * More accurate than state-name matching when the state code is unavailable.
+ */
+export const getRegionFromCoords = (
+  lat: number,
+  lng: number
+): "West" | "Midwest" | "South" | "Northeast" => {
+  const regions = Object.keys(REGION_CENTROIDS) as Array<"West" | "Midwest" | "South" | "Northeast">;
+  let closest = regions[0];
+  let minDist = Infinity;
+  for (const r of regions) {
+    const d = haversineMiles({ lat, lon: lng }, REGION_CENTROIDS[r]);
+    if (d < minDist) { minDist = d; closest = r; }
+  }
+  return closest;
 };

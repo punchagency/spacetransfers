@@ -67,6 +67,9 @@ export interface IOrder extends Document {
     state: string;
     postalCode: string;
     country: string;
+    detectedRegion?: string;
+    coordinates?: { lat: number; lng: number };
+    geocoded?: boolean;
   };
   shippingMethod: string;
   payment: {
@@ -202,7 +205,13 @@ const orderSchema = new Schema<IOrder>(
       city: { type: String, required: true },
       state: { type: String, required: true },
       postalCode: { type: String, required: true },
-      country: { type: String, required: true }
+      country: { type: String, required: true },
+      detectedRegion: { type: String },
+      coordinates: {
+        lat: { type: Number },
+        lng: { type: Number }
+      },
+      geocoded: { type: Boolean, default: false }
     },
     shippingMethod: {
       type: String,
