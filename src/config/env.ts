@@ -24,6 +24,10 @@ interface Env {
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
   minimumPayoutAmountCents: number;
+  // Cloudinary
+  cloudinaryCloudName: string;
+  cloudinaryApiKey: string;
+  cloudinaryApiSecret: string;
 }
 
 const cleanEnvString = (value?: string): string | undefined => {
@@ -64,4 +68,7 @@ export const env: Env = {
   minimumPayoutAmountCents: process.env.MINIMUM_PAYOUT_AMOUNT_CENTS
     ? Number(process.env.MINIMUM_PAYOUT_AMOUNT_CENTS)
     : 1000,
+  cloudinaryCloudName: cleanEnvString(process.env.CLOUDINARY_CLOUD_NAME) || "",
+  cloudinaryApiKey: cleanEnvString(process.env.CLOUDINARY_API_KEY) || "",
+  cloudinaryApiSecret: cleanEnvString(process.env.CLOUDINARY_API_SECRET) || "",
 };

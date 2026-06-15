@@ -1,5 +1,6 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
-import { getRegionFromState, normalizeRegion } from "../utils/region.js";
+import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
+import { geocodeAddress, isUSCountry } from "../utils/geocoding.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
@@ -116,11 +117,6 @@ export const registerUser = async ({
       error.statusCode = 400;
       throw error;
     }
-    if (!region) {
-      const error = new Error("Region is required for Printer registration") as any;
-      error.statusCode = 400;
-      throw error;
-    }
     if (!address || !address.street || !address.city || !address.state || !address.postalCode || !address.country) {
       const error = new Error("Address is required for Printer registration") as any;
       error.statusCode = 400;
@@ -145,32 +141,71 @@ export const registerUser = async ({
   if (companyName) userPayload.companyName = companyName;
   if (phone) userPayload.phone = phone;
   if (website) userPayload.website = website;
-  let resolvedRegion: string | undefined;
-  if (resolvedRole === UserRoles.CUSTOMER) {
-    // Auto-assign region from shipping address state; fall back to "West" if unresolvable
-    resolvedRegion =
-      normalizeRegion(getRegionFromState(address?.state)) || "West";
-  } else {
-    resolvedRegion = region;
-  }
-  if (resolvedRegion) userPayload.regions = [resolvedRegion];
+  // ── Auto-geocode address and derive region ─────────────────────────────────
+  let resolvedRegion: string;
+  let addressCoordinates: { lat: number; lng: number } | undefined;
+
   if (address) {
-    const addressData = {
-      street: String(address.street || ""),
-      city: String(address.city || ""),
-      state: String(address.state || ""),
+    // Attempt Census geocoding for accurate region + coordinate storage
+    let geocoded = null;
+    try {
+      geocoded = await geocodeAddress({
+        street:  address.street,
+        city:    address.city,
+        state:   address.state,
+        zip:     address.postalCode,
+        country: address.country,
+      });
+    } catch {
+      // Non-fatal — fall back to state-based detection below
+    }
+
+    if (geocoded) {
+      // Normalize address fields to geocoded values
+      address = {
+        street:     geocoded.street     || address.street,
+        city:       geocoded.city       || address.city,
+        state:      geocoded.state      || address.state,
+        postalCode: geocoded.zip        || address.postalCode,
+        country:    address.country,
+      };
+      addressCoordinates = { lat: geocoded.lat, lng: geocoded.lng };
+      resolvedRegion =
+        normalizeRegion(getRegionFromState(geocoded.state)) ??
+        getRegionFromCoords(geocoded.lat, geocoded.lng);
+    } else {
+      // Fallback: derive from state code
+      resolvedRegion =
+        normalizeRegion(getRegionFromState(address.state)) ??
+        getRegionFromState(address.state) ??
+        "West";
+    }
+
+    console.log(
+      `[region-assign] role=${resolvedRole} state=${address.state} ` +
+      `region=${resolvedRegion} geocoded=${!!geocoded}`
+    );
+  } else {
+    // No address provided (e.g. basic customer registration without address)
+    resolvedRegion = normalizeRegion(region) ?? "West";
+  }
+
+  if (resolvedRegion) userPayload.regions = [resolvedRegion];
+
+  if (address) {
+    const addressData: any = {
+      street:     String(address.street     || ""),
+      city:       String(address.city       || ""),
+      state:      String(address.state      || ""),
       postalCode: String(address.postalCode || ""),
-      country: String(address.country || "")
+      country:    String(address.country    || ""),
     };
+    if (addressCoordinates) addressData.coordinates = addressCoordinates;
 
     userPayload.defaultShippingAddress = addressData;
 
-    // Synchronize to businessAddress for printers
     if (resolvedRole === UserRoles.PRINTER) {
-      userPayload.businessAddress = {
-        ...addressData,
-        verified: false
-      };
+      userPayload.businessAddress = { ...addressData, verified: false };
     }
   }
 
@@ -310,7 +345,7 @@ export const listSubAccounts = async (userId: string): Promise<UserResponse[]> =
 
   const linkedUsers = await User.find({
     $or: [{ _id: parentId }, { parentAccount: parentId }],
-  }).select("name email role companyName phone parentAccount isSubAccount");
+  }).select("name email role companyName phone parentAccount isSubAccount avatarUrl googleId");
 
   const currentId = currentUser._id.toString();
 
@@ -325,6 +360,8 @@ export const listSubAccounts = async (userId: string): Promise<UserResponse[]> =
       phone: user.phone,
       isSubAccount: Boolean((user as any).isSubAccount),
       parentAccount: (user as any).parentAccount ? String((user as any).parentAccount) : null,
+      avatarUrl: (user as any).avatarUrl || null,
+      isGoogleAccount: !!(user as any).googleId,
     }));
 };
 
@@ -456,7 +493,9 @@ export const switchSubAccount = async (currentUserId: string, targetUserId: stri
       name: targetUser.name,
       email: targetUser.email,
       role: targetUser.role,
-      companyName: targetUser.companyName
+      companyName: targetUser.companyName,
+      avatarUrl: targetUser.avatarUrl || null,
+      isGoogleAccount: !!targetUser.googleId,
     },
     token
   };

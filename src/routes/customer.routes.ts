@@ -1,5 +1,5 @@
 import express from "express";
-import { authenticate, requireRoles } from "../middleware/auth.js";
+import { authenticate, maybeAuthenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
 import {
   createOrder,
@@ -37,6 +37,12 @@ import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
 
+// Asset upload is available to guests (maybeAuthenticate) so unauthenticated
+// users still get server-side DPI/trim metadata and the low-DPI warning fires.
+router.post("/assets", maybeAuthenticate, upload.single("file"), uploadAsset);
+router.post("/assets/trim", maybeAuthenticate, trimAsset);
+router.get("/assets", maybeAuthenticate, listAssets);
+
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));
 
 router.patch("/account", updateAccount);
@@ -47,9 +53,6 @@ router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
 router.get("/orders/:orderId/tracking", getOrderTracking);
 router.post("/orders/:orderId/reorder", reorder);
-router.post("/assets", upload.single("file"), uploadAsset);
-router.post("/assets/trim", trimAsset);
-router.get("/assets", listAssets);
 router.get("/artboard-draft", getArtboardDraft);
 router.put("/artboard-draft", upsertArtboardDraft);
 router.delete("/artboard-draft", clearArtboardDraft);

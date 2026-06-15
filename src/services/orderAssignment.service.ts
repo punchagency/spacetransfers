@@ -1,7 +1,12 @@
 import mongoose from "mongoose";
 import { Order } from "../models/order.model.js";
 import { User, UserRoles } from "../models/user.model.js";
-import { getLatLngFromState, getRegionFromState, haversineMiles, normalizeRegion } from "../utils/region.js";
+import {
+  getLatLngFromState,
+  getRegionFromState,
+  haversineMiles,
+  normalizeRegion
+} from "../utils/region.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
 
@@ -26,17 +31,62 @@ type AssignmentResult =
 export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult> => {
   const startedAt = Date.now();
 
-  const order = await Order.findById(orderId).select("assignedPrinter status priority shippingAddress statusTimeline assignmentHistory displayId");
+  const order = await Order.findById(orderId).select(
+    "assignedPrinter status priority shippingAddress statusTimeline assignmentHistory displayId"
+  );
   if (!order) {
     return { assigned: false, orderId, reason: "Order not found", tookMs: Date.now() - startedAt };
   }
 
   if (order.assignedPrinter) {
-    return { assigned: false, orderId: String(order._id), reason: "Order already assigned", tookMs: Date.now() - startedAt };
+    return {
+      assigned: false,
+      orderId: String(order._id),
+      reason: "Order already assigned",
+      tookMs: Date.now() - startedAt
+    };
   }
 
   const customerState = order.shippingAddress?.state;
-  const customerRegion = normalizeRegion(getRegionFromState(customerState));
+
+  // Always compute the region live from the state code — never trust the stored
+  // detectedRegion field, which may contain stale "West" defaults from old orders.
+  // getRegionFromState returns null for any unrecognised / non-US state code.
+  const customerRegion: string | null = getRegionFromState(customerState);
+
+  // Use stored coordinates when available; fall back to state centroid.
+  const storedCoords = (order.shippingAddress as any).coordinates;
+  const customerCoord: { lat: number; lon: number } | null =
+    storedCoords?.lat != null && storedCoords?.lng != null
+      ? { lat: storedCoords.lat, lon: storedCoords.lng }
+      : getLatLngFromState(customerState);
+
+  console.log(
+    `[AUTO_ASSIGN] START orderId=${order._id} customerState=${customerState || "unknown"} ` +
+    `customerRegion=${customerRegion || "null"}`
+  );
+
+  // Hard block: if we cannot map the customer's state to a US region, do not assign.
+  if (!customerRegion) {
+    const tookMs = Date.now() - startedAt;
+    const reason = `Customer state '${customerState || "not provided"}' is not a recognised US state — region unknown, assignment blocked.`;
+    console.log(`[AUTO_ASSIGN] BLOCKED orderId=${order._id} reason="${reason}" tookMs=${tookMs}`);
+    order.assignmentHistory = order.assignmentHistory || [];
+    order.assignmentHistory.push({
+      time: new Date(),
+      mode: "AUTO",
+      selectedPrinterId: null,
+      selectedPrinterName: null,
+      customerRegion: null,
+      customerState: customerState || null,
+      candidatesConsidered: 0,
+      candidatesSameRegion: 0,
+      reason,
+      tookMs
+    } as any);
+    await order.save();
+    return { assigned: false, orderId: String(order._id), reason, tookMs };
+  }
 
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -45,42 +95,50 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     { $match: { assignedPrinter: { $ne: null }, status: { $in: ACTIVE_ORDER_STATUSES as any } } },
     { $group: { _id: "$assignedPrinter", activeCount: { $sum: 1 } } }
   ]);
-
   const dailyAgg = await Order.aggregate([
     { $match: { assignedPrinter: { $ne: null }, createdAt: { $gte: startOfDay } } },
     { $group: { _id: "$assignedPrinter", dailyCount: { $sum: 1 } } }
   ]);
 
-  const activeCountByPrinter = new Map<string, number>(loadAgg.map((r: any) => [String(r._id), Number(r.activeCount || 0)]));
-  const dailyCountByPrinter = new Map<string, number>(dailyAgg.map((r: any) => [String(r._id), Number(r.dailyCount || 0)]));
+  const activeCountByPrinter = new Map<string, number>(
+    loadAgg.map((r: any) => [String(r._id), Number(r.activeCount || 0)])
+  );
+  const dailyCountByPrinter = new Map<string, number>(
+    dailyAgg.map((r: any) => [String(r._id), Number(r.dailyCount || 0)])
+  );
 
   const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
-    .select("name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours")
+    .select(
+      "name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours"
+    )
     .lean();
-
-  const customerCoord = getLatLngFromState(customerState);
 
   const candidates = printers
     .map((p: any) => {
       const printerId = String(p._id);
-      const printerRegions = Array.isArray(p.regions) ? p.regions : [];
-      const normalizedRegions = printerRegions.map((r: any) => normalizeRegion(r)).filter(Boolean);
       const printerState = p.defaultShippingAddress?.state;
-      const printerRegion = normalizedRegions[0] || (printerState ? normalizeRegion(getRegionFromState(printerState)) : null);
-      const printerCoord = getLatLngFromState(printerState);
 
+      // Always derive region from the printer's physical state address — same pipeline
+      // as customer detection. The stored p.regions array is intentionally ignored here
+      // because it can be stale, misconfigured, or set by old registration code.
+      const printerRegion: string | null = printerState
+        ? normalizeRegion(getRegionFromState(printerState))
+        : null;
+
+      const printerCoord = getLatLngFromState(printerState);
       const distanceMiles =
-        customerCoord && printerCoord ? haversineMiles(customerCoord, printerCoord) : Number.POSITIVE_INFINITY;
+        customerCoord && printerCoord
+          ? haversineMiles(customerCoord, printerCoord)
+          : Number.POSITIVE_INFINITY;
 
       const maxConcurrent = Number(p.settings?.jobCapacity?.maxConcurrent ?? 0) || null;
       const dailyMax = Number(p.settings?.jobCapacity?.dailyMax ?? 0) || null;
-      const autoAccept: boolean = p.settings?.jobCapacity?.autoAccept !== false; // default true
+      const autoAccept: boolean = p.settings?.jobCapacity?.autoAccept !== false;
       const activeCount = activeCountByPrinter.get(printerId) ?? 0;
       const dailyCount = dailyCountByPrinter.get(printerId) ?? 0;
 
       const hasConcurrentCapacity = !maxConcurrent || activeCount < maxConcurrent;
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
-      // Auto-assign only runs for printers who have auto-accept ON and are within business hours
       const withinBusinessHours = isPrinterAvailableAt(p, now);
       const available = autoAccept && hasConcurrentCapacity && hasDailyCapacity && withinBusinessHours;
 
@@ -101,28 +159,61 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     })
     .filter((c) => c.available);
 
-  const candidatesSameRegion = customerRegion ? candidates.filter((c) => c.printerRegion === customerRegion) : [];
-  const pool = candidatesSameRegion.length > 0 ? candidatesSameRegion : candidates;
+  console.log(
+    `[AUTO_ASSIGN] CANDIDATES total=${printers.length} available=${candidates.length} ` +
+    `regions=[${[...new Set(candidates.map((c) => c.printerRegion || "unknown"))].join(",")}]`
+  );
+  for (const c of candidates) {
+    console.log(
+      `[AUTO_ASSIGN] CANDIDATE printer="${c.printerName}" state=${c.printerState || "?"} ` +
+      `region=${c.printerRegion || "unknown"} matchesCustomer=${c.printerRegion === customerRegion}`
+    );
+  }
+
+  // Strict same-region only — cross-region assignment is never allowed.
+  const candidatesSameRegion = customerRegion
+    ? candidates.filter((c) => c.printerRegion === customerRegion)
+    : [];
+
+  const pool = candidatesSameRegion;
+
+  if (pool.length > 0) {
+    console.log(
+      `[AUTO_ASSIGN] POOL same-region=${customerRegion} count=${pool.length} ` +
+      `printers=[${pool.map((c) => `${c.printerName}(${c.printerState})`).join(",")}]`
+    );
+  }
 
   if (pool.length === 0) {
     const tookMs = Date.now() - startedAt;
+    const noRegionReason =
+      candidates.length === 0
+        ? "No available printers"
+        : `No available printers in region (${customerRegion || "unknown"}). Cross-region assignment is disabled.`;
+
+    console.log(
+      `[AUTO_ASSIGN] UNASSIGNED orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
+      `totalAvailable=${candidates.length} sameRegion=0 reason="${noRegionReason}" tookMs=${tookMs}`
+    );
+
     order.assignmentHistory = order.assignmentHistory || [];
     order.assignmentHistory.push({
       time: new Date(),
       mode: "AUTO",
       selectedPrinterId: null,
       selectedPrinterName: null,
-      customerRegion: customerRegion,
+      customerRegion,
       customerState: customerState || null,
       candidatesConsidered: candidates.length,
-      candidatesSameRegion: candidatesSameRegion.length,
-      reason: "No available printers",
+      candidatesSameRegion: 0,
+      reason: noRegionReason,
       tookMs
     } as any);
     await order.save();
-    return { assigned: false, orderId: String(order._id), reason: "No available printers", tookMs };
+    return { assigned: false, orderId: String(order._id), reason: noRegionReason, tookMs };
   }
 
+  // Sort within the pool: distance → utilization → rating → id (deterministic)
   pool.sort((a, b) => {
     const aDist = Number.isFinite(a.distanceMiles) ? a.distanceMiles : Number.POSITIVE_INFINITY;
     const bDist = Number.isFinite(b.distanceMiles) ? b.distanceMiles : Number.POSITIVE_INFINITY;
@@ -145,10 +236,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   }
   order.statusTimeline = order.statusTimeline || [];
 
-  const reason =
-    candidatesSameRegion.length > 0
-      ? `Auto-assigned (same region: ${customerRegion || "Unknown"})`
-      : `Auto-assigned (fallback: nearest available printer)`;
+  const reason = `Auto-assigned (same region: ${customerRegion || "Unknown"})`;
 
   order.statusTimeline.push({
     status: String(order.status || "PENDING"),
@@ -166,7 +254,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     mode: "AUTO",
     selectedPrinterId: selected.printerId,
     selectedPrinterName: selected.printerName,
-    customerRegion: customerRegion,
+    customerRegion,
     customerState: customerState || null,
     candidatesConsidered: candidates.length,
     candidatesSameRegion: candidatesSameRegion.length,
@@ -176,12 +264,20 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
   await order.save();
 
+  const distStr = Number.isFinite(selected.distanceMiles)
+    ? `${selected.distanceMiles.toFixed(1)}mi`
+    : "n/a";
+
   console.log(
-    `[AUTO_ASSIGN] order=${order._id} customerRegion=${customerRegion || "unknown"} selectedPrinter=${selected.printerName} printerId=${selected.printerId} distanceMiles=${Number.isFinite(selected.distanceMiles) ? selected.distanceMiles.toFixed(1) : "n/a"} tookMs=${tookMs}`
+    `[AUTO_ASSIGN] ASSIGNED orderId=${order._id} ` +
+    `customerRegion=${customerRegion || "unknown"} printerRegion=${selected.printerRegion || "unknown"} ` +
+    `printer="${selected.printerName}"(${selected.printerState}) dist=${distStr} tookMs=${tookMs}`
   );
 
   const isUrgent = String((order as any).priority || "").toUpperCase() === "URGENT";
-  const displayId = (order as any).displayId ? String((order as any).displayId) : String(order._id).slice(-6).toUpperCase();
+  const displayId = (order as any).displayId
+    ? String((order as any).displayId)
+    : String(order._id).slice(-6).toUpperCase();
 
   notifyPrinter({
     printerId: selected.printerId,
@@ -190,9 +286,11 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     title: isUrgent ? "Urgent job assigned" : "New job assigned",
     message: `Order #${displayId} has been auto-assigned to you. ${reason}.`,
     meta: { orderId: String(order._id), autoAssigned: true },
-    settingsKey: "newJobs",
+    settingsKey: "newJobs"
   }).catch((err) => {
-    console.error(`[AUTO_ASSIGN] Notification failed for printer ${selected.printerId}:`, err?.message);
+    console.error(
+      `[AUTO_ASSIGN] Notification failed for printer ${selected.printerId}: ${err?.message}`
+    );
   });
 
   return {

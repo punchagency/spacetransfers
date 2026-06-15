@@ -7,14 +7,17 @@ import { Settings } from "../models/settings.model.js";
 import sharp from "sharp";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
+import os from "node:os";
 import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
 import fs from "fs";
 import path from "path";
 import { alphaTrimToFile, smartTrimToFile } from "../utils/aiCrop.js";
 import { isRembgEnabled, runRembg } from "../utils/rembg.js";
+import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { getRegionFromState, normalizeRegion } from "../utils/region.js";
+import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
+import { geocodeAddress } from "../utils/geocoding.js";
 import { sendEmail } from "../services/email.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 
@@ -22,14 +25,43 @@ interface CustomError extends Error {
   statusCode?: number;
 }
 
-// Derive thumbnail URL from any asset URL by replacing its extension with -thumb200.webp.
-// The thumbnail is generated on-demand by the /uploads middleware on first access.
+// For Cloudinary URLs use URL transformation; for legacy local URLs derive -thumb200.webp path.
 const computeThumbUrl = (assetUrl: string | null | undefined): string | null => {
   if (!assetUrl) return null;
+  if (isCloudinaryUrl(assetUrl)) return cloudinaryThumbUrl(assetUrl);
   const lastSlash = assetUrl.lastIndexOf("/");
   const lastDot = assetUrl.lastIndexOf(".");
   if (lastDot <= lastSlash) return null;
   return assetUrl.substring(0, lastDot) + "-thumb200.webp";
+};
+
+// Trim an image buffer using temp files, optionally running rembg first.
+// Returns the trimmed PNG as a Buffer. Temp files are written to os.tmpdir().
+const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomUUID();
+  const inputPath = path.join(tmpDir, `${id}-input.png`);
+  const trimmedPath = path.join(tmpDir, `${id}-trim.png`);
+  const cleanup = () => {
+    fs.unlink(inputPath, () => {});
+    fs.unlink(trimmedPath, () => {});
+  };
+  try {
+    await sharp(inputBuffer, { limitInputPixels: false }).png().toFile(inputPath);
+    if (isRembgEnabled()) {
+      const rembgPath = path.join(tmpDir, `${id}-rembg.png`);
+      await runRembg(inputPath, rembgPath);
+      const alphaThreshold = parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
+      const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
+      await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
+      fs.unlink(rembgPath, () => {});
+    } else {
+      await smartTrimToFile(inputPath, trimmedPath);
+    }
+    return await fs.promises.readFile(trimmedPath);
+  } finally {
+    cleanup();
+  }
 };
 
 export const trimAsset = async (req: Request, res: Response, next: NextFunction) => {
@@ -41,61 +73,61 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       throw error;
     }
   
-    const marker = "/uploads/";
-    const idx = url.lastIndexOf(marker);
-    if (idx === -1) {
+    // Accept Cloudinary URLs and legacy local /uploads/ URLs.
+    const isLocal = url.includes("/uploads/");
+    const isCdn = isCloudinaryUrl(url);
+    if (!isLocal && !isCdn) {
       const error = new Error("Invalid asset url") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const filename = url.substring(idx + marker.length);
-    const safeFilename = path.basename(filename);
-    const sourcePath = path.join(process.cwd(), "uploads", safeFilename);
-
-    if (!fs.existsSync(sourcePath)) {
-      const error = new Error("Asset file not found") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const trimProto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
-    const trimHost = req.get("host") || "";
-    const trimBase = (env.appUrl && !env.appUrl.includes("localhost"))
-      ? env.appUrl
-      : (trimHost ? `${trimProto}://${trimHost}` : `http://localhost:${env.port || 4000}`);
-    const parsed = path.parse(safeFilename);
-    const trimmedFilename = `${parsed.name}-trim.png`;
-    const trimmedPath = path.join(process.cwd(), "uploads", trimmedFilename);
-
-    const alphaThreshold =
-      parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
-    const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
-
-    if (isRembgEnabled()) {
-      const rembgPath = path.join(process.cwd(), "uploads", `${parsed.name}-rembg.png`);
-      await runRembg(sourcePath, rembgPath);
-      await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
+    // Fetch the source image into a buffer.
+    let sourceBuffer: Buffer;
+    if (isLocal) {
+      const marker = "/uploads/";
+      const idx = url.lastIndexOf(marker);
+      const safeFilename = path.basename(url.substring(idx + marker.length));
+      const localPath = path.join(process.cwd(), "uploads", safeFilename);
+      if (fs.existsSync(localPath)) {
+        sourceBuffer = await fs.promises.readFile(localPath);
+      } else {
+        // File not on disk (e.g. from a different server); fetch via HTTP if absolute URL.
+        if (!/^https?:\/\//i.test(url)) {
+          const error = new Error("Asset file not found") as CustomError;
+          error.statusCode = 404;
+          throw error;
+        }
+        const r = await fetch(url);
+        if (!r.ok) {
+          const error = new Error("Asset file not found") as CustomError;
+          error.statusCode = 404;
+          throw error;
+        }
+        sourceBuffer = Buffer.from(await r.arrayBuffer());
+      }
     } else {
-      await smartTrimToFile(sourcePath, trimmedPath);
+      const r = await fetch(url);
+      if (!r.ok) {
+        const error = new Error("Asset file not found") as CustomError;
+        error.statusCode = 404;
+        throw error;
+      }
+      sourceBuffer = Buffer.from(await r.arrayBuffer());
     }
 
-    const meta = await sharp(trimmedPath, { limitInputPixels: false }).metadata();
+    const trimmedBuffer = await trimBuffer(sourceBuffer);
+
+    const { url: trimmedUrl } = await uploadBufferToCloudinary(trimmedBuffer, "space-transfers/trimmed");
+
+    const meta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
     const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
     const trimmedWidthPx = meta.width || null;
     const trimmedHeightPx = meta.height || null;
-    const trimmedWidthIn =
-      trimmedWidthPx ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : null;
-    const trimmedHeightIn =
-      trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
+    const trimmedWidthIn = trimmedWidthPx ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : null;
+    const trimmedHeightIn = trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
 
-    res.json({
-      trimmedUrl: `${trimBase}/uploads/${trimmedFilename}`,
-      trimmedWidthPx,
-      trimmedHeightPx,
-      trimmedWidthIn,
-      trimmedHeightIn,
-    });
+    res.json({ trimmedUrl, trimmedWidthPx, trimmedHeightPx, trimmedWidthIn, trimmedHeightIn });
   } catch (error) {
     next(error);
   }
@@ -378,15 +410,16 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     const currentUser = req.user?.id
       ? await User.findById(req.user.id).select("regions").lean()
       : null;
-    const resolvedCustomerRegion =
-      normalizeRegion(customer?.region) ||
-      normalizeRegion(currentUser?.regions?.[0]) ||
-      normalizeRegion(getRegionFromState(shippingAddress?.state)) ||
-      "West";
 
+    // Derive region strictly from the shipping address state — same function used during
+    // auto-assignment. Returns null for non-US / unknown state codes; never defaults to "West".
+    const stateBasedRegion = getRegionFromState(shippingAddress?.state);
+    const stateCoord = getLatLngFromState(shippingAddress?.state);
+
+    // customer.region field is cosmetic only — do not use it to override the address region.
     const normalizedCustomer = {
       ...customer,
-      region: resolvedCustomerRegion
+      region: stateBasedRegion || null
     };
 
     const nextOrderDisplayId = async () => {
@@ -399,12 +432,22 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       return `DTF-${String(seq).padStart(4, "0")}`;
     };
 
+    const enrichedShippingAddress = {
+      ...shippingAddress,
+      // Only store detectedRegion when we have a confirmed US state — never store "West" as a
+      // default, because the assignment service reads this field and a stale "West" causes
+      // false-positive region matches with West-region printers.
+      detectedRegion: stateBasedRegion ?? undefined,
+      coordinates: stateCoord ? { lat: stateCoord.lat, lng: stateCoord.lon } : undefined,
+      geocoded: false
+    };
+
     const order = new Order({
       user: req.user?.id,
       displayId: await nextOrderDisplayId(),
       items: orderItems,
       customer: normalizedCustomer,
-      shippingAddress,
+      shippingAddress: enrichedShippingAddress,
       shippingMethod,
       payment,
       pricing,
@@ -421,6 +464,35 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         order.displayId = await nextOrderDisplayId();
       }
     }
+
+    // Fire-and-forget: geocode to verify/correct state code and get precise coordinates.
+    // The assignment service uses detectedRegion from the order — this updates it in the background.
+    const orderId = order.id;
+    (async () => {
+      try {
+        const geo = await geocodeAddress({
+          street: shippingAddress.street,
+          city: shippingAddress.city,
+          state: shippingAddress.state,
+          zip: shippingAddress.postalCode,
+          country: shippingAddress.country
+        });
+        if (geo) {
+          const geoRegion =
+            normalizeRegion(getRegionFromState(geo.state)) ??
+            getRegionFromCoords(geo.lat, geo.lng);
+          await Order.findByIdAndUpdate(orderId, {
+            "shippingAddress.detectedRegion": geoRegion,
+            "shippingAddress.coordinates": { lat: geo.lat, lng: geo.lng },
+            "shippingAddress.geocoded": true,
+            "customer.region": geoRegion
+          });
+          console.log(`[ORDER_GEO] orderId=${orderId} geocodedState=${geo.state} region=${geoRegion} lat=${geo.lat} lng=${geo.lng}`);
+        }
+      } catch (err: any) {
+        console.warn(`[ORDER_GEO] orderId=${orderId} geocoding failed (non-fatal): ${err?.message}`);
+      }
+    })();
 
     notifyAllAdmins({
       category: "orders",
@@ -872,15 +944,15 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    const fileBuffer = req.file.buffer;
+
     // Deduplication: if this user already uploaded the exact same file, reuse it.
-    const fileBuffer = await fs.promises.readFile(req.file.path);
     const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-    const existingAsset = await Asset.findOne({
-      user: new mongoose.Types.ObjectId(String(req.user?.id)),
+    const existingAsset = req.user?.id ? await Asset.findOne({
+      user: new mongoose.Types.ObjectId(String(req.user.id)),
       contentHash,
-    }).lean() as any;
+    }).lean() as any : null;
     if (existingAsset) {
-      await fs.promises.unlink(req.file.path).catch(() => {});
       const thumbUrl = computeThumbUrl(existingAsset.trimmedUrl || existingAsset.url);
       const normDpi = existingAsset.dpi || 300;
       return res.json({
@@ -903,16 +975,12 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       });
     }
 
-    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
-    const host = req.get("host") || "";
-    const publicBase = (env.appUrl && !env.appUrl.includes("localhost"))
-      ? env.appUrl
-      : (host ? `${proto}://${host}` : `http://localhost:${env.port || 4000}`);
-    const fileUrl = `${publicBase}/uploads/${req.file.filename}`;
+    // Upload original to Cloudinary.
+    const { url: fileUrl } = await uploadBufferToCloudinary(fileBuffer, "space-transfers/assets");
 
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
     try {
-      const metadata = await sharp(req.file.path, { limitInputPixels: false }).metadata();
+      const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
       widthPx = metadata.width;
       heightPx = metadata.height;
       dpi = metadata.density || 300;
@@ -928,44 +996,50 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
     const heightIn = heightPx && normalizedDpi ? +(heightPx / normalizedDpi).toFixed(4) : undefined;
 
+    // Trim and upload trimmed version to Cloudinary.
     let trimmedUrl: string | undefined;
     let trimmedWidthPx: number | undefined;
     let trimmedHeightPx: number | undefined;
     let trimmedWidthIn: number | undefined;
     let trimmedHeightIn: number | undefined;
     try {
-      const dir = path.dirname(req.file.path);
-      const parsed = path.parse(req.file.filename);
-      const trimmedFilename = `${parsed.name}-trim.png`;
-      const trimmedPath = path.join(dir, trimmedFilename);
-
-      const alphaThreshold =
-        parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
-      const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
-
-      if (isRembgEnabled()) {
-        const rembgPath = path.join(dir, `${parsed.name}-rembg.png`);
-        await runRembg(req.file.path, rembgPath);
-        await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
-      } else {
-        await smartTrimToFile(req.file.path, trimmedPath);
-      }
-
-      const trimmedMeta = await sharp(trimmedPath, { limitInputPixels: false }).metadata();
+      const trimmedBuffer = await trimBuffer(fileBuffer);
+      const { url: tUrl } = await uploadBufferToCloudinary(trimmedBuffer, "space-transfers/trimmed");
+      trimmedUrl = tUrl;
+      const trimmedMeta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
       trimmedWidthPx = trimmedMeta.width;
       trimmedHeightPx = trimmedMeta.height;
-      trimmedWidthIn =
-        trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
-      trimmedHeightIn =
-        trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
-
-      trimmedUrl = `${publicBase}/uploads/${trimmedFilename}`;
+      trimmedWidthIn = trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
+      trimmedHeightIn = trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
     } catch {
       trimmedUrl = undefined;
     }
 
+    // Cloudinary thumbnail is derived from the URL — no local generation needed.
+    const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
+
+    // Guest uploads: return metadata without persisting to the database
+    if (!req.user?.id) {
+      return res.status(201).json({
+        url: fileUrl,
+        trimmedUrl: trimmedUrl || null,
+        thumbnailUrl,
+        originalFilename: req.file.originalname,
+        sizeBytes: req.file.size,
+        widthPx,
+        heightPx,
+        dpi: normalizedDpi,
+        widthIn,
+        heightIn,
+        trimmedWidthPx: trimmedWidthPx || null,
+        trimmedHeightPx: trimmedHeightPx || null,
+        trimmedWidthIn: trimmedWidthIn || null,
+        trimmedHeightIn: trimmedHeightIn || null,
+      });
+    }
+
     const asset = new Asset({
-      user: req.user?.id,
+      user: req.user.id,
       url: fileUrl,
       trimmedUrl,
       originalFilename: req.file.originalname,
@@ -980,29 +1054,6 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     });
 
     await asset.save();
-
-    // Eagerly generate the 200px WebP thumbnail in the background so the first
-    // view is instant instead of waiting for the on-demand middleware to fire.
-    setImmediate(async () => {
-      try {
-        const dir = path.dirname(req.file!.path);
-        const parsed = path.parse(req.file!.filename);
-        // Prefer the trimmed PNG (no background), fall back to original
-        const trimmedFilename = `${parsed.name}-trim.png`;
-        const trimmedExists = fs.existsSync(path.join(dir, trimmedFilename));
-        const srcFilename = trimmedExists ? trimmedFilename : req.file!.filename;
-        const srcStem = path.parse(srcFilename).name;
-        const thumbPath = path.join(dir, `${srcStem}-thumb200.webp`);
-        if (!fs.existsSync(thumbPath)) {
-          await sharp(path.join(dir, srcFilename), { limitInputPixels: false })
-            .resize(200, 200, { fit: "inside", withoutEnlargement: true })
-            .webp({ quality: 80 })
-            .toFile(thumbPath);
-        }
-      } catch { /* non-critical */ }
-    });
-
-    const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
 
     res.status(201).json({
       id: asset.id,

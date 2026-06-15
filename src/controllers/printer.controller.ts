@@ -9,6 +9,8 @@ import { addPrinterNotificationClient, publishPrinterNotificationEvent, removePr
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
+import { geocodeAddress } from "../utils/geocoding.js";
+import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import archiver from "archiver";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
@@ -21,6 +23,7 @@ import { GangsheetExportAudit } from "../models/gangsheetExportAudit.model.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
 import sharp from "sharp";
 
 // In-memory export job queue — lets the HTTP response return immediately while
@@ -150,33 +153,19 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    const publicUrl = `/uploads/${file.filename}`;
-
     if (type === "avatar") {
-      // Optimize image
-      const optimizedFilename = `opt-${file.filename}`;
-      const optimizedPath = path.join(path.dirname(file.path), optimizedFilename);
-      
-      await sharp(file.path)
+      const optimizedBuffer = await sharp(file.buffer)
         .resize(400, 400, { fit: "cover" })
-        .toFormat("webp")
-        .toFile(optimizedPath);
-
-      user.avatarUrl = `/uploads/${optimizedFilename}`;
+        .webp({ quality: 80 })
+        .toBuffer();
+      const { url } = await uploadBufferToCloudinary(optimizedBuffer, "space-transfers/avatars");
+      user.avatarUrl = url;
       await user.save();
-      
-      return res.json({ 
-        message: "Avatar uploaded and optimized", 
-        url: user.avatarUrl 
-      });
-    } else if (type === "certification") {
-      return res.json({ 
-        message: "Document uploaded successfully", 
-        url: publicUrl 
-      });
+      return res.json({ message: "Avatar uploaded and optimized", url });
     }
 
-    res.json({ url: publicUrl });
+    const { url } = await uploadBufferToCloudinary(file.buffer, "space-transfers/certifications");
+    res.json({ message: "Document uploaded successfully", url });
   } catch (error) {
     next(error);
   }
@@ -961,8 +950,9 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
+    const bundleBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : `http://localhost:${env.port || 4000}`;
     res.status(201).json({
-      bundleDownloadUrl: `http://localhost:${env.port || 4000}/api/printer/jobs/${encodeURIComponent(String(job.id))}/assets/bundle/download${
+      bundleDownloadUrl: `${bundleBase}/api/printer/jobs/${encodeURIComponent(String(job.id))}/assets/bundle/download${
         include === "ALL"
           ? `?include=ALL`
           : Array.isArray(include)
@@ -1481,8 +1471,8 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
     }
 
     const mockTrackingNumber = `1Z${Math.random().toString(36).substring(2, 18).toUpperCase()}`;
-    const port = env.port || 4000;
-    const labelUrl = `http://localhost:${port}/uploads/label-${job.id}.pdf`;
+    const labelBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : `http://localhost:${env.port || 4000}`;
+    const labelUrl = `${labelBase}/uploads/label-${job.id}.pdf`;
 
     job.trackingNumber = mockTrackingNumber;
     job.carrier = carrier || "UPS";
@@ -2365,7 +2355,52 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
     }
     
     if (businessAddress) {
-      user.businessAddress = { ...user.businessAddress, ...businessAddress };
+      // Merge new fields onto the existing address first
+      const merged = { ...(user.businessAddress as any || {}), ...businessAddress };
+      user.businessAddress = merged;
+
+      // Re-geocode and recalculate region whenever the address changes
+      try {
+        const geocoded = await geocodeAddress({
+          street:  merged.street,
+          city:    merged.city,
+          state:   merged.state,
+          zip:     merged.postalCode,
+        });
+
+        if (geocoded) {
+          user.businessAddress = {
+            street:      geocoded.street     || merged.street,
+            city:        geocoded.city       || merged.city,
+            state:       geocoded.state      || merged.state,
+            postalCode:  geocoded.zip        || merged.postalCode,
+            country:     merged.country,
+            verified:    merged.verified ?? false,
+            coordinates: { lat: geocoded.lat, lng: geocoded.lng },
+          } as any;
+
+          const newRegion =
+            normalizeRegion(getRegionFromState(geocoded.state)) ??
+            getRegionFromCoords(geocoded.lat, geocoded.lng);
+          user.regions = [newRegion];
+
+          console.log(
+            `[region-assign] role=PRINTER id=${user.id} state=${geocoded.state} ` +
+            `region=${newRegion} geocoded=true (profile update)`
+          );
+        } else {
+          // Fallback: derive from state code
+          const fallbackRegion = getRegionFromState(merged.state);
+          if (fallbackRegion) user.regions = [fallbackRegion];
+          console.log(
+            `[region-assign] role=PRINTER id=${user.id} state=${merged.state} ` +
+            `region=${fallbackRegion} geocoded=false (profile update fallback)`
+          );
+        }
+      } catch (geoErr) {
+        console.error("[geocoding] profile update geocoding error:", geoErr);
+        // Keep existing region on error — don't overwrite with a bad value
+      }
     }
 
     if (certifications) {
@@ -2383,7 +2418,8 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
         website: user.website || "N/A",
         businessDetails: user.businessDetails,
         businessAddress: user.businessAddress,
-        certifications: user.certifications
+        certifications: user.certifications,
+        regions: user.regions || [],
       }
     });
   } catch (error) {
