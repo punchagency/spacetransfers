@@ -12,6 +12,95 @@ import { isPrinterAvailableAt } from "../utils/businessHours.js";
 
 const ACTIVE_ORDER_STATUSES = ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] as const;
 
+// ── Pure, DB-free selection logic ─────────────────────────────────────────────
+// Exported so it can be unit-tested without a MongoDB connection.
+
+export interface PrinterCandidate {
+  printerId: string;
+  printerName: string;
+  printerState: string | null;
+  printerRegion: string | null;
+  distanceMiles: number;
+  rating: number;
+  activeCount: number;
+  maxConcurrent: number | null;
+}
+
+export type SelectionResult =
+  | {
+      assigned: true;
+      selected: PrinterCandidate;
+      customerRegion: string;
+      candidatesConsidered: number;
+      candidatesSameRegion: number;
+    }
+  | {
+      assigned: false;
+      customerRegion: string | null;
+      reason: string;
+      candidatesConsidered: number;
+      candidatesSameRegion: number;
+    };
+
+/**
+ * Core matching algorithm — pure function, no I/O.
+ * Mirrors exactly what autoAssignOrder does after it builds the candidate list.
+ * Returns the best printer for the order, or null with a reason.
+ */
+export const selectPrinterFromCandidates = (
+  customerState: string | null | undefined,
+  candidates: PrinterCandidate[]
+): SelectionResult => {
+  const customerRegion: string | null = getRegionFromState(customerState);
+
+  if (!customerRegion) {
+    return {
+      assigned: false,
+      customerRegion: null,
+      reason: `Customer state '${customerState || "not provided"}' is not a recognised US state — region unknown, assignment blocked.`,
+      candidatesConsidered: candidates.length,
+      candidatesSameRegion: 0,
+    };
+  }
+
+  // Strict same-region filter — cross-region is always blocked.
+  const sameRegion = candidates.filter((c) => c.printerRegion === customerRegion);
+
+  if (sameRegion.length === 0) {
+    const reason =
+      candidates.length === 0
+        ? "No available printers"
+        : `No available printers in region (${customerRegion}). Cross-region assignment is disabled.`;
+    return {
+      assigned: false,
+      customerRegion,
+      reason,
+      candidatesConsidered: candidates.length,
+      candidatesSameRegion: 0,
+    };
+  }
+
+  // Sort: nearest → lowest utilisation → highest rating → stable id
+  const sorted = [...sameRegion].sort((a, b) => {
+    const aDist = Number.isFinite(a.distanceMiles) ? a.distanceMiles : Infinity;
+    const bDist = Number.isFinite(b.distanceMiles) ? b.distanceMiles : Infinity;
+    if (aDist !== bDist) return aDist - bDist;
+    const aUtil = a.maxConcurrent ? a.activeCount / a.maxConcurrent : a.activeCount;
+    const bUtil = b.maxConcurrent ? b.activeCount / b.maxConcurrent : b.activeCount;
+    if (aUtil !== bUtil) return aUtil - bUtil;
+    if (a.rating !== b.rating) return b.rating - a.rating;
+    return a.printerId.localeCompare(b.printerId);
+  });
+
+  return {
+    assigned: true,
+    selected: sorted[0],
+    customerRegion,
+    candidatesConsidered: candidates.length,
+    candidatesSameRegion: sameRegion.length,
+  };
+};
+
 type AssignmentResult =
   | {
       assigned: true;
@@ -109,7 +198,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
   const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
     .select(
-      "name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours"
+      "name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours availabilityStatus"
     )
     .lean();
 
@@ -118,12 +207,13 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       const printerId = String(p._id);
       const printerState = p.defaultShippingAddress?.state;
 
-      // Always derive region from the printer's physical state address — same pipeline
-      // as customer detection. The stored p.regions array is intentionally ignored here
-      // because it can be stale, misconfigured, or set by old registration code.
-      const printerRegion: string | null = printerState
-        ? normalizeRegion(getRegionFromState(printerState))
-        : null;
+      // Prefer the live address-state lookup (same pipeline as customer detection).
+      // Fall back to the stored regions[0] only when the address gives no result —
+      // covers printers created via the admin UI that have a regions[] but no shipping address.
+      const printerRegion: string | null =
+        normalizeRegion(getRegionFromState(printerState)) ||
+        normalizeRegion(p.regions?.[0]) ||
+        null;
 
       const printerCoord = getLatLngFromState(printerState);
       const distanceMiles =
@@ -140,7 +230,8 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       const hasConcurrentCapacity = !maxConcurrent || activeCount < maxConcurrent;
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
       const withinBusinessHours = isPrinterAvailableAt(p, now);
-      const available = autoAccept && hasConcurrentCapacity && hasDailyCapacity && withinBusinessHours;
+      const acceptingOrders = !p.availabilityStatus || p.availabilityStatus === "open";
+      const available = acceptingOrders && autoAccept && hasConcurrentCapacity && hasDailyCapacity && withinBusinessHours;
 
       return {
         printerId,

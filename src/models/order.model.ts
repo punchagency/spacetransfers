@@ -12,6 +12,8 @@ export interface IOrderItem {
   subtotal?: number;
   sheetWidthIn?: number;
   sheetHeightIn?: number;
+  itemSpacingIn?: number;
+  sheetMarginIn?: number;
   previewImage?: string;
   artboardItems?: Array<{
     id: number;
@@ -23,6 +25,7 @@ export interface IOrderItem {
     posX: number;
     posY: number;
     rotation: number;
+    flipped?: boolean;
     copies: number;
     linked: boolean;
   }>;
@@ -154,6 +157,12 @@ const orderItemSchema = new Schema<IOrderItem>(
     sheetHeightIn: {
       type: Number
     },
+    itemSpacingIn: {
+      type: Number
+    },
+    sheetMarginIn: {
+      type: Number
+    },
     previewImage: {
       type: String
     },
@@ -169,6 +178,7 @@ const orderItemSchema = new Schema<IOrderItem>(
           posX: { type: Number, required: true },
           posY: { type: Number, required: true },
           rotation: { type: Number, default: 0 },
+          flipped: { type: Boolean, default: false },
           copies: { type: Number, default: 1 },
           linked: { type: Boolean, default: false }
         }

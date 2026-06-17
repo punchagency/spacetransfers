@@ -25,14 +25,14 @@ interface CustomError extends Error {
 const resolveOrderRegion = (
   order: any,
   userRegionMap?: Map<string, string | null>
-): string => {
+): string | null => {
   const userId = order?.user ? String(order.user) : null;
   const regionFromUser = userId && userRegionMap ? userRegionMap.get(userId) : null;
   return (
     normalizeRegion(order?.customer?.region) ||
     normalizeRegion(regionFromUser || undefined) ||
     normalizeRegion(getRegionFromState(order?.shippingAddress?.state)) ||
-    "West"
+    null
   );
 };
 
@@ -764,14 +764,17 @@ export const getRevenueChart = async (req: Request, res: Response, next: NextFun
 
 export const listOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { 
-      status, 
-      partnerId, 
-      search, 
-      limit = "20" 
+    const {
+      status,
+      partnerId,
+      search,
+      cursor,
+      limit = "20"
     } = req.query;
 
     const query: any = {};
+    // Extra compound filters that can't be merged directly into query
+    const extraFilters: any[] = [];
 
     if (status) {
       const statusMap: { [key: string]: string } = {
@@ -790,20 +793,40 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     }
 
     if (search) {
-      const searchRegex = new RegExp(search as string, "i");
-      query.$or = [
+      const searchRegex = new RegExp((search as string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const searchOr: any[] = [
         { "customer.firstName": searchRegex },
         { "customer.lastName": searchRegex },
         { "customer.email": searchRegex }
       ];
-      
       if (mongoose.Types.ObjectId.isValid(search as string)) {
-        query.$or.push({ _id: search as string });
+        searchOr.push({ _id: search as string });
+      }
+      extraFilters.push({ $or: searchOr });
+    }
+
+    // Keyset cursor: "${createdAt.getTime()}_${_id}" — use the last underscore as
+    // the delimiter so ObjectIds containing underscores (unusual but possible) don't break.
+    if (cursor && typeof cursor === "string" && cursor.includes("_")) {
+      const underscoreIdx = cursor.lastIndexOf("_");
+      const cursorTsStr = cursor.slice(0, underscoreIdx);
+      const cursorId = cursor.slice(underscoreIdx + 1);
+      const cursorTs = Number(cursorTsStr);
+      if (Number.isFinite(cursorTs) && mongoose.Types.ObjectId.isValid(cursorId)) {
+        const cursorDate = new Date(cursorTs);
+        extraFilters.push({
+          $or: [
+            { createdAt: { $lt: cursorDate } },
+            { createdAt: cursorDate, _id: { $lt: new mongoose.Types.ObjectId(cursorId) } }
+          ]
+        });
       }
     }
 
+    const finalQuery = extraFilters.length === 0 ? query : { ...query, $and: extraFilters };
+
     const pageSize = parseInt(limit as string);
-    const orders = await Order.find(query)
+    const orders = await Order.find(finalQuery)
       .select("-items.artboardItems")
       .sort({ createdAt: -1, _id: -1 })
       .limit(pageSize + 1)
@@ -1209,7 +1232,7 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const { partnerId, priority = "Normal" } = req.body;
+    const { partnerId, priority = "Normal", force = false } = req.body;
 
     if (!partnerId) {
       const error = new Error("partnerId is required") as CustomError;
@@ -1229,6 +1252,27 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       const error = new Error("Partner not found or is not a printer") as CustomError;
       error.statusCode = 404;
       throw error;
+    }
+
+    // Region check — warn on cross-region unless admin explicitly passes force:true.
+    const customerRegion = normalizeRegion(getRegionFromState(order.shippingAddress?.state || "")) || null;
+    const printerRegion = normalizeRegion(getRegionFromState((partner.defaultShippingAddress as any)?.state || ""))
+      || normalizeRegion(getRegionFromState((partner as any).businessAddress?.state || ""))
+      || partner.regions?.[0]
+      || null;
+    const isCrossRegion = customerRegion && printerRegion && customerRegion !== printerRegion;
+    if (isCrossRegion && !force) {
+      return res.status(409).json({
+        code: "CROSS_REGION_ASSIGNMENT",
+        message: `Customer is in ${customerRegion} but printer is in ${printerRegion}. Pass force:true to override.`,
+        customerRegion,
+        printerRegion,
+      });
+    }
+    if (isCrossRegion) {
+      console.warn(
+        `[MANUAL_ASSIGN] CROSS-REGION override: order=${order._id} customerRegion=${customerRegion} printerRegion=${printerRegion} admin=${req.user?.email}`
+      );
     }
 
     const previousPartnerId = order.assignedPrinter;
@@ -1260,11 +1304,14 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       mode: "MANUAL",
       selectedPrinterId: String(partnerId),
       selectedPrinterName: partner.companyName || partner.name,
-      customerRegion: null,
+      customerRegion,
       customerState: order.shippingAddress?.state || null,
+      printerRegion,
+      crossRegion: Boolean(isCrossRegion),
+      forceOverride: Boolean(isCrossRegion && force),
       candidatesConsidered: 0,
       candidatesSameRegion: 0,
-      reason: message,
+      reason: isCrossRegion ? `[CROSS-REGION OVERRIDE] ${message}` : message,
       tookMs: 0
     } as any);
 
@@ -1289,13 +1336,15 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     }).catch(() => {});
 
     console.log(
-      `[MANUAL_ASSIGN] order=${order._id} partnerId=${partnerId} partnerName=${partner.companyName || partner.name} priority=${order.priority}`
+      `[MANUAL_ASSIGN] order=${order._id} partnerId=${partnerId} partnerName=${partner.companyName || partner.name} ` +
+      `priority=${order.priority} customerRegion=${customerRegion} printerRegion=${printerRegion} crossRegion=${Boolean(isCrossRegion)}`
     );
 
     res.status(200).json({
       orderId: order._id,
       assignedPartnerId: partnerId,
-      status: "Pending"
+      status: "Pending",
+      regionInfo: { customerRegion, printerRegion, crossRegion: Boolean(isCrossRegion) }
     });
   } catch (error) {
     next(error);
@@ -1482,6 +1531,22 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         name: (order.assignedPrinter as unknown as IUser).companyName,
         email: (order.assignedPrinter as unknown as IUser).email
       } : null,
+
+      regionInfo: (() => {
+        const orderCustomerRegion = resolveOrderRegion(order, oneUserRegionMap);
+        const printerDoc = order.assignedPrinter as unknown as IUser | null;
+        const orderPrinterRegion = printerDoc
+          ? normalizeRegion(getRegionFromState((printerDoc.defaultShippingAddress as any)?.state || ""))
+            || normalizeRegion(getRegionFromState((printerDoc as any).businessAddress?.state || ""))
+            || printerDoc.regions?.[0]
+            || null
+          : null;
+        return {
+          customerRegion: orderCustomerRegion,
+          printerRegion: orderPrinterRegion,
+          crossRegion: Boolean(orderCustomerRegion && orderPrinterRegion && orderCustomerRegion !== orderPrinterRegion),
+        };
+      })(),
 
       preview: {
         designId,
@@ -1832,6 +1897,7 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
           name: 1,
           email: 1,
           status: 1,
+          availabilityStatus: 1,
           regions: 1,
           rating: 1,
           ordersCompleted: 1,
@@ -1868,6 +1934,7 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
       name: p.companyName || p.name,
       email: p.email,
       status: p.status,
+      availabilityStatus: p.availabilityStatus ?? "open",
       regions: p.regions || [],
       rating: p.rating || 5.0,
       ordersCompleted: p.ordersCompleted,
@@ -1918,6 +1985,12 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       status: "COMPLETED"
     });
 
+    const detectedRegion =
+      (partner as any).detectedRegion ||
+      normalizeRegion(getRegionFromState((partner as any).businessAddress?.state || "")) ||
+      normalizeRegion(getRegionFromState((partner.defaultShippingAddress as any)?.state || "")) ||
+      (partner.regions?.[0] ?? null);
+
     res.status(200).json({
       id: partner._id,
       name: partner.companyName || partner.name,
@@ -1925,6 +1998,7 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       contactName: partner.name,
       status: partner.status,
       regions: partner.regions || [],
+      detectedRegion,
       ordersCompleted,
       rating: partner.rating || 5.0,
       email: partner.email,

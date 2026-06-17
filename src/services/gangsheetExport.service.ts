@@ -93,12 +93,12 @@ const loadImageBuffer = async (url: string) => {
 // with XOR-folding so the full array is never JSON-stringified into one huge string.
 const computeItemsHash = (items: Array<{
   assetId: string; croppedUrl: string; widthIn: number; heightIn: number;
-  posX: number; posY: number; rotation: number; copies: number;
+  posX: number; posY: number; rotation: number; flipped: boolean; copies: number;
 }>): string => {
   const h = crypto.createHash("sha1");
   h.update(`n=${items.length};`);
   for (const it of items) {
-    h.update(`${it.assetId}|${it.croppedUrl}|${it.widthIn}|${it.heightIn}|${it.posX}|${it.posY}|${it.rotation}|${it.copies};`);
+    h.update(`${it.assetId}|${it.croppedUrl}|${it.widthIn}|${it.heightIn}|${it.posX}|${it.posY}|${it.rotation}|${it.flipped ? 1 : 0}|${it.copies};`);
   }
   return h.digest("hex");
 };
@@ -106,11 +106,12 @@ const computeItemsHash = (items: Array<{
 const computeCacheKey = (payload: {
   v: number; jobId: string; printerId: string; dpi: number;
   sheet: { widthIn: number; heightIn: number }; cropToContent: boolean;
-  crop: any; itemsHash: string; png: any;
+  crop: any; itemsHash: string; png: any; gapIn: number; marginIn: number;
 }) => {
   const raw = `v=${payload.v};job=${payload.jobId};printer=${payload.printerId};dpi=${payload.dpi};`
     + `sheet=${payload.sheet.widthIn}x${payload.sheet.heightIn};crop=${payload.cropToContent};`
-    + `cropRect=${JSON.stringify(payload.crop)};items=${payload.itemsHash};png=${JSON.stringify(payload.png)}`;
+    + `cropRect=${JSON.stringify(payload.crop)};items=${payload.itemsHash};png=${JSON.stringify(payload.png)};`
+    + `gap=${payload.gapIn};margin=${payload.marginIn}`;
   return crypto.createHash("sha1").update(raw).digest("hex");
 };
 
@@ -127,6 +128,8 @@ const computeContentBoundsIn = ({
   sheetWidthIn,
   sheetHeightIn,
   artboardItems,
+  itemSpacingIn,
+  sheetMarginIn,
 }: {
   sheetWidthIn: number;
   sheetHeightIn: number;
@@ -138,7 +141,13 @@ const computeContentBoundsIn = ({
     rotation?: number;
     copies?: number;
   }>;
+  itemSpacingIn?: number | null;
+  sheetMarginIn?: number | null;
 }) => {
+  const gapIn = typeof itemSpacingIn === "number" && itemSpacingIn >= 0 ? itemSpacingIn : GROUP_GAP_IN;
+  const marginIn = typeof sheetMarginIn === "number" && sheetMarginIn >= 0 ? sheetMarginIn : 0;
+  const effectiveWidthIn = sheetWidthIn - 2 * marginIn;
+
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
@@ -153,14 +162,14 @@ const computeContentBoundsIn = ({
     const rotation = typeof it.rotation === "number" ? it.rotation : 0;
     const rotated = computeRotatedBounds(wIn, hIn, rotation);
 
-    const capacityCols = Math.max(1, Math.floor((sheetWidthIn + GROUP_GAP_IN) / Math.max(1e-6, wIn + GROUP_GAP_IN)));
+    const capacityCols = Math.max(1, Math.floor((effectiveWidthIn + gapIn) / Math.max(1e-6, wIn + gapIn)));
     const cols = Math.max(1, Math.min(copies, capacityCols));
 
     for (let idx = 0; idx < copies; idx++) {
       const col = idx % cols;
       const row = Math.floor(idx / cols);
-      const xIn = Number(it.posX || 0) + col * (wIn + GROUP_GAP_IN);
-      const yIn = Number(it.posY || 0) + row * (hIn + GROUP_GAP_IN);
+      const xIn = Number(it.posX || 0) + col * (wIn + gapIn);
+      const yIn = Number(it.posY || 0) + row * (hIn + gapIn);
 
       const cx = xIn + wIn / 2;
       const cy = yIn + hIn / 2;
@@ -201,6 +210,8 @@ export const exportGangsheetPng24 = async ({
   cropToContent = false,
   maxComposites,
   format = "png",
+  itemSpacingIn,
+  sheetMarginIn,
 }: {
   jobId: string;
   printerId: string;
@@ -214,6 +225,7 @@ export const exportGangsheetPng24 = async ({
     posX: number;
     posY: number;
     rotation?: number;
+    flipped?: boolean;
     copies?: number;
   }>;
   dpi: number;
@@ -222,6 +234,10 @@ export const exportGangsheetPng24 = async ({
   maxComposites?: number;
   /** Output format. 'webp' for browser previews (5-10x smaller); 'png' (default) for DTF print export. */
   format?: "png" | "webp";
+  /** Inter-copy gap in inches — must match the artboard spacing setting. Defaults to GROUP_GAP_IN if omitted. */
+  itemSpacingIn?: number | null;
+  /** Left/right margin in inches — must match the artboard margin setting. Defaults to 0 if omitted. */
+  sheetMarginIn?: number | null;
 }): Promise<{
   fileName: string;
   filePath: string;
@@ -236,7 +252,7 @@ export const exportGangsheetPng24 = async ({
 }> => {
   await acquireRenderSlot();
   try {
-  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format });
+  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, itemSpacingIn, sheetMarginIn });
   } finally {
     releaseRenderSlot();
   }
@@ -244,16 +260,20 @@ export const exportGangsheetPng24 = async ({
 
 const _doExport = async ({
   jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput,
-  cropToContent = false, maxComposites, format = "png",
+  cropToContent = false, maxComposites, format = "png", itemSpacingIn, sheetMarginIn,
 }: {
   jobId: string; printerId: string; sheetWidthIn?: number | null; sheetHeightIn?: number | null;
   artboardItems: Array<{ assetId: string; croppedUrl?: string; widthIn: number; heightIn: number;
-    posX: number; posY: number; rotation?: number; copies?: number }>;
+    posX: number; posY: number; rotation?: number; flipped?: boolean; copies?: number }>;
   dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
+  itemSpacingIn?: number | null; sheetMarginIn?: number | null;
 }) => {
   const rawDpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
   const heightIn = Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
+  const gapIn = typeof itemSpacingIn === "number" && itemSpacingIn >= 0 ? itemSpacingIn : GROUP_GAP_IN;
+  const marginIn = typeof sheetMarginIn === "number" && sheetMarginIn >= 0 ? sheetMarginIn : 0;
+  const effectiveWidthIn = widthIn - 2 * marginIn;
 
   const normalizedItems = (Array.isArray(artboardItems) ? artboardItems : [])
     .map((it) => ({
@@ -264,6 +284,7 @@ const _doExport = async ({
       posX: Number(it.posX || 0),
       posY: Number(it.posY || 0),
       rotation: typeof it.rotation === "number" ? it.rotation : 0,
+      flipped: it.flipped === true,
       copies: Math.max(1, Number(it.copies || 1)),
     }))
     .sort((a, b) => {
@@ -282,6 +303,8 @@ const _doExport = async ({
         sheetWidthIn: widthIn,
         sheetHeightIn: heightIn,
         artboardItems: normalizedItems,
+        itemSpacingIn: gapIn,
+        sheetMarginIn: marginIn,
       })
     : null;
 
@@ -316,7 +339,7 @@ const _doExport = async ({
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
   const itemsHash = computeItemsHash(normalizedItems.slice(0, capForKey));
   const cacheKey = computeCacheKey({
-    v: 5,
+    v: 7,
     jobId,
     printerId,
     dpi,
@@ -327,6 +350,8 @@ const _doExport = async ({
     png: format === "webp"
       ? { format: "webp", quality: 85, effort: 6 }
       : { format: "png", compressionLevel: 9, adaptiveFiltering: true, effort: 10, normTransparent: true },
+    gapIn,
+    marginIn,
   });
 
   const fileName = `gangsheet_${jobId}_${dpi}dpi_${cacheKey.slice(0, 12)}.${format}`;
@@ -402,8 +427,10 @@ const _doExport = async ({
     return u;
   };
 
-  const prepareUnique = (srcUrl: string, wPx: number, hPx: number, rot: number, assetId: string): Promise<CachedBuf | null> => {
-    const key = `${srcUrl}|${wPx}|${hPx}|${rot}`;
+  const prepareUnique = (srcUrl: string, wPx: number, hPx: number, rot: number, flipped: boolean, assetId: string): Promise<CachedBuf | null> => {
+    // Include flipped in the dedup key — a flipped and non-flipped version of the same
+    // image at the same size are two distinct buffers.
+    const key = `${srcUrl}|${wPx}|${hPx}|${rot}|${flipped ? 1 : 0}`;
     const hit = bufCache.get(key);
     if (hit) return hit;
     const p = (async (): Promise<CachedBuf | null> => {
@@ -415,9 +442,15 @@ const _doExport = async ({
           (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
           (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
         ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
-        const out = await sharp(buf, { limitInputPixels: false })
+        // Apply transforms in the same order as the artboard CSS:
+        //   transform: scaleX(-1) rotate(Xdeg)
+        // CSS applies right-to-left: rotate first, then flip. Sharp mirrors this:
+        //   resize → rotate → flop (horizontal flip).
+        let pipeline = sharp(buf, { limitInputPixels: false })
           .resize(wPx, hPx, { fit: "fill" })
-          .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+        if (flipped) pipeline = pipeline.flop();
+        const out = await pipeline
           .ensureAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
@@ -440,10 +473,10 @@ const _doExport = async ({
     if (!(wIn > 0) || !(hIn > 0)) continue;
     const srcUrl = resolveUrl(it);
     if (!srcUrl) continue;
-    const key = `${srcUrl}|${Math.round(wIn * dpi)}|${Math.round(hIn * dpi)}|${it.rotation ?? 0}`;
+    const key = `${srcUrl}|${Math.round(wIn * dpi)}|${Math.round(hIn * dpi)}|${it.rotation ?? 0}|${it.flipped ? 1 : 0}`;
     if (!uniqueKeys.has(key)) {
       uniqueKeys.add(key);
-      uniqueJobs.push(prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.assetId));
+      uniqueJobs.push(prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.flipped, it.assetId));
     }
   }
   const LOAD_BATCH = 16;
@@ -460,7 +493,7 @@ const _doExport = async ({
     if (!(wIn > 0) || !(hIn > 0)) continue;
     const srcUrl = resolveUrl(it);
     if (!srcUrl) continue;
-    const cached = await prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.assetId);
+    const cached = await prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.flipped, it.assetId);
     if (!cached) continue;
     preparedItems.push({ it, data: cached.data, info: cached.info });
   }
@@ -471,15 +504,15 @@ const _doExport = async ({
     const copies = it.copies;
     const wIn = it.widthIn;
     const hIn = it.heightIn;
-    const capacityCols = Math.max(1, Math.floor((widthIn + GROUP_GAP_IN) / Math.max(1e-6, wIn + GROUP_GAP_IN)));
+    const capacityCols = Math.max(1, Math.floor((effectiveWidthIn + gapIn) / Math.max(1e-6, wIn + gapIn)));
     const cols = Math.max(1, Math.min(copies, capacityCols));
 
     for (let idx = 0; idx < copies; idx++) {
       if (placements.length >= compositesCap) break;
       const col = idx % cols;
       const row = Math.floor(idx / cols);
-      const xIn = Number(it.posX || 0) + col * (wIn + GROUP_GAP_IN);
-      const yIn = Number(it.posY || 0) + row * (hIn + GROUP_GAP_IN);
+      const xIn = Number(it.posX || 0) + col * (wIn + gapIn);
+      const yIn = Number(it.posY || 0) + row * (hIn + gapIn);
 
       const cropLeftIn = crop ? crop.leftIn : 0;
       const cropTopIn = crop ? crop.topIn : 0;

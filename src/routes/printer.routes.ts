@@ -21,6 +21,7 @@ import {
   getExportJobStatus,
   getJobGangsheetPreview,
   downloadGangsheetExport,
+  downloadGangsheetPreviewPdf,
   getPrinterOrdersSummary,
   updatePrinterOrderStatus,
   cancelPrinterOrder,
@@ -41,6 +42,8 @@ import {
   streamPrinterNotifications,
   setPrinterNotificationRead,
   markAllPrinterNotificationsRead,
+  getAvailabilityStatus,
+  updateAvailabilityStatus,
 } from "../controllers/printer.controller.js";
 import { upload } from "../middleware/upload.js";
 
@@ -64,6 +67,7 @@ router.get("/jobs/:jobId/gangsheet/preview", getJobGangsheetPreview);
 router.post("/jobs/:jobId/assets/bundle", createJobAssetBundle);
 router.get("/jobs/:jobId/assets/bundle/download", downloadJobAssetBundle);
 router.post("/jobs/:jobId/gangsheet/export", exportJobGangsheet);
+router.get("/jobs/:jobId/gangsheet/preview-pdf", downloadGangsheetPreviewPdf);
 router.get("/jobs/export-status/:exportJobId", getExportJobStatus);
 router.get("/exports/:exportId/file", downloadGangsheetExport);
 router.get("/orders/summary", getPrinterOrdersSummary);
@@ -83,6 +87,9 @@ router.get("/earnings/summary", getEarningsSummary);
 router.post("/earnings/payout-requests", requestPayout);
 router.post("/earnings/payout-requests/:requestId/confirm", confirmPayoutRequest);
 router.get("/earnings", getPrinterEarnings);
+
+router.get("/availability", getAvailabilityStatus);
+router.patch("/availability", updateAvailabilityStatus);
 
 router.get("/notifications", listPrinterNotifications);
 router.get("/notifications/stream", streamPrinterNotifications);
