@@ -142,7 +142,10 @@ export const registerUser = async ({
   if (phone) userPayload.phone = phone;
   if (website) userPayload.website = website;
   // ── Auto-geocode address and derive region ─────────────────────────────────
-  let resolvedRegion: string;
+  // resolvedRegion is null when we genuinely cannot determine the region — we
+  // never default to "West" because a wrong stored region causes false-positive
+  // matches in the assignment service.
+  let resolvedRegion: string | null = null;
   let addressCoordinates: { lat: number; lng: number } | undefined;
 
   if (address) {
@@ -161,7 +164,6 @@ export const registerUser = async ({
     }
 
     if (geocoded) {
-      // Normalize address fields to geocoded values
       address = {
         street:     geocoded.street     || address.street,
         city:       geocoded.city       || address.city,
@@ -174,23 +176,23 @@ export const registerUser = async ({
         normalizeRegion(getRegionFromState(geocoded.state)) ??
         getRegionFromCoords(geocoded.lat, geocoded.lng);
     } else {
-      // Fallback: derive from state code
-      resolvedRegion =
-        normalizeRegion(getRegionFromState(address.state)) ??
-        getRegionFromState(address.state) ??
-        "West";
+      resolvedRegion = normalizeRegion(getRegionFromState(address.state));
     }
 
     console.log(
       `[region-assign] role=${resolvedRole} state=${address.state} ` +
-      `region=${resolvedRegion} geocoded=${!!geocoded}`
+      `region=${resolvedRegion ?? "null"} geocoded=${!!geocoded}`
     );
   } else {
-    // No address provided (e.g. basic customer registration without address)
-    resolvedRegion = normalizeRegion(region) ?? "West";
+    // No address provided — only accept a region hint if it normalizes cleanly.
+    // Never default to "West": an unknown region is better than a wrong one.
+    resolvedRegion = normalizeRegion(region) ?? null;
   }
 
-  if (resolvedRegion) userPayload.regions = [resolvedRegion];
+  if (resolvedRegion) {
+    userPayload.regions = [resolvedRegion];
+    userPayload.detectedRegion = resolvedRegion;
+  }
 
   if (address) {
     const addressData: any = {

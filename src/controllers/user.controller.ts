@@ -13,6 +13,8 @@ export const getCurrentUser = async (req: Request, res: Response, next: NextFunc
     if (user.companyName) userResponse.companyName = user.companyName;
     if (user.phone) userResponse.phone = user.phone;
     if (user.defaultShippingAddress) userResponse.defaultShippingAddress = user.defaultShippingAddress;
+    userResponse.detectedRegion = (user as any).detectedRegion ?? null;
+    userResponse.regions = user.regions || [];
 
     res.json({ user: userResponse });
   } catch (error) {

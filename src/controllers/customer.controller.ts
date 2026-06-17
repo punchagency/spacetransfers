@@ -138,34 +138,72 @@ export const updateAccount = async (req: Request, res: Response, next: NextFunct
     const { name, defaultShippingAddress, companyName, phone } = req.body;
     const userId = req.user?.id;
 
-    const updateData: any = {};
-    if (name) updateData.name = name;
-    if (companyName) updateData.companyName = companyName;
-    if (phone) updateData.phone = phone;
-    if (defaultShippingAddress) updateData.defaultShippingAddress = defaultShippingAddress;
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { $set: updateData },
-      { new: true, runValidators: true }
-    ).select("-passwordHash");
-
-    if (!updatedUser) {
+    const user = await User.findById(userId);
+    if (!user) {
       const error = new Error("User not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const userResponse: any = {
-      id: updatedUser.id,
-      name: updatedUser.name,
-      email: updatedUser.email,
-      role: updatedUser.role
-    };
+    if (name) user.name = name;
+    if (companyName) user.companyName = companyName;
+    if (phone) user.phone = phone;
 
-    if (updatedUser.companyName) userResponse.companyName = updatedUser.companyName;
-    if (updatedUser.phone) userResponse.phone = updatedUser.phone;
-    if (updatedUser.defaultShippingAddress) userResponse.defaultShippingAddress = updatedUser.defaultShippingAddress;
+    if (defaultShippingAddress && typeof defaultShippingAddress === "object") {
+      // Merge onto existing address so partial updates (e.g. just postalCode) don't wipe other fields.
+      const merged: any = { ...(user.defaultShippingAddress as any || {}), ...defaultShippingAddress };
+      user.defaultShippingAddress = merged;
+
+      // Re-derive region whenever the address changes.
+      const stateCode = String(merged.state || "").trim();
+      let newRegion = normalizeRegion(getRegionFromState(stateCode));
+
+      if (!newRegion) {
+        // Geocode in the background and patch the user record once we have a result.
+        // We don't await here so the response is not delayed.
+        (async () => {
+          try {
+            const geo = await geocodeAddress({
+              street: merged.street, city: merged.city, state: merged.state,
+              zip: merged.postalCode, country: merged.country,
+            });
+            if (!geo) return;
+            const geoRegion = normalizeRegion(getRegionFromState(geo.state)) ?? getRegionFromCoords(geo.lat, geo.lng);
+            await User.updateOne(
+              { _id: userId },
+              {
+                $set: {
+                  "defaultShippingAddress.coordinates": { lat: geo.lat, lng: geo.lng },
+                  "defaultShippingAddress.state": geo.state || merged.state,
+                  regions: [geoRegion],
+                  detectedRegion: geoRegion,
+                },
+              }
+            );
+            console.log(`[region-assign] role=CUSTOMER id=${userId} state=${geo.state} region=${geoRegion} geocoded=true (account update)`);
+          } catch (geoErr) {
+            console.error("[region-assign] geocode failed during account update:", (geoErr as any)?.message);
+          }
+        })().catch(() => {});
+      } else {
+        user.regions = [newRegion];
+        (user as any).detectedRegion = newRegion;
+        console.log(`[region-assign] role=CUSTOMER id=${userId} state=${stateCode} region=${newRegion} geocoded=false (account update)`);
+      }
+    }
+
+    await user.save();
+
+    const userResponse: any = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      detectedRegion: (user as any).detectedRegion ?? user.regions?.[0] ?? null,
+    };
+    if (user.companyName) userResponse.companyName = user.companyName;
+    if (user.phone) userResponse.phone = user.phone;
+    if (user.defaultShippingAddress) userResponse.defaultShippingAddress = user.defaultShippingAddress;
 
     res.json({ user: userResponse });
   } catch (error) {

@@ -151,6 +151,12 @@ export interface IUser extends Document {
     country: string;
     coordinates?: { lat: number; lng: number };
   };
+  // Canonical computed region — single source of truth for both customers and printers.
+  // Derived from defaultShippingAddress.state (or businessAddress.state for printers) via
+  // getRegionFromState / geocoding. Stored so queries can filter by region without
+  // recomputing it live on every request.
+  detectedRegion?: "West" | "Midwest" | "South" | "Northeast" | null;
+  availabilityStatus?: "open" | "paused" | "stopped";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -379,6 +385,16 @@ const userSchema = new Schema<IUser>(
         lat: { type: Number },
         lng: { type: Number },
       },
+    },
+    detectedRegion: {
+      type: String,
+      enum: ["West", "Midwest", "South", "Northeast", null],
+      default: null,
+    },
+    availabilityStatus: {
+      type: String,
+      enum: ["open", "paused", "stopped"],
+      default: "open",
     }
   },
   {

@@ -25,6 +25,7 @@ import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
 import sharp from "sharp";
+import PDFDocument from "pdfkit";
 
 // In-memory export job queue — lets the HTTP response return immediately while
 // the (potentially slow) PNG render runs in the background.
@@ -1180,7 +1181,11 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
           artboardItems,
           dpi: 300,
-          cropToContent: true,
+          // Full sheet — matches the artboard layout 1:1. No crop offset so
+          // item positions are identical between the preview and the download.
+          cropToContent: false,
+          itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
+          sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
         });
 
         // Structural errors (format mismatch, wrong dimensions, missing alpha) indicate a
@@ -1322,6 +1327,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
+              itemSpacingIn: "$$item.itemSpacingIn",
+              sheetMarginIn: "$$item.sheetMarginIn",
               artboardItems: {
                 $map: {
                   input: { $ifNull: ["$$item.artboardItems", []] },
@@ -1334,6 +1341,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
                     posX: "$$ai.posX",
                     posY: "$$ai.posY",
                     rotation: "$$ai.rotation",
+                    flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
                   },
                 },
@@ -1382,6 +1390,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       dpi: resolution,
       maxComposites: 10000,
       format: "webp",
+      itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
+      sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
     });
 
     // Build a public-facing base URL from the request so the preview URL works
@@ -1444,6 +1454,171 @@ export const downloadGangsheetExport = async (req: Request, res: Response, next:
     res.setHeader("Content-Disposition", `attachment; filename="${String((exp as any).fileName)}"`);
     res.setHeader("Cache-Control", "no-store");
     fs.createReadStream(String((exp as any).filePath)).pipe(res);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobId } = req.params as any;
+    const printerId = req.user?.id;
+
+    if (!jobId || !mongoose.Types.ObjectId.isValid(String(jobId))) {
+      const error = new Error("Invalid job id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!printerId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    const [jobRaw] = await (Order as any).aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(String(jobId)), assignedPrinter: new mongoose.Types.ObjectId(String(printerId)) } },
+      { $project: {
+        displayId: 1,
+        items: {
+          $map: {
+            input: { $ifNull: ["$items", []] },
+            as: "item",
+            in: {
+              type: "$$item.type",
+              widthIn: "$$item.widthIn",
+              heightIn: "$$item.heightIn",
+              sheetWidthIn: "$$item.sheetWidthIn",
+              sheetHeightIn: "$$item.sheetHeightIn",
+              itemSpacingIn: "$$item.itemSpacingIn",
+              sheetMarginIn: "$$item.sheetMarginIn",
+              artboardItems: {
+                $map: {
+                  input: { $ifNull: ["$$item.artboardItems", []] },
+                  as: "ai",
+                  in: {
+                    assetId: "$$ai.assetId",
+                    croppedUrl: "$$ai.croppedUrl",
+                    widthIn: "$$ai.widthIn",
+                    heightIn: "$$ai.heightIn",
+                    posX: "$$ai.posX",
+                    posY: "$$ai.posY",
+                    rotation: "$$ai.rotation",
+                    flipped: "$$ai.flipped",
+                    copies: "$$ai.copies",
+                  },
+                },
+              },
+            },
+          },
+        },
+      }},
+    ]);
+
+    if (!jobRaw) {
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
+    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
+    if (artboardItems.length === 0) {
+      const error = new Error("No artboard items found for this job") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
+      ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
+      ? gangsheetItem.widthIn : 23.5;
+    const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
+      ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
+      ? gangsheetItem.heightIn : 23.5;
+
+    // Render the full gangsheet as PNG at 150 DPI (auto-capped to stay within memory limits).
+    // PNG format preserves exact colors for PDF embedding; the cache key differs from the
+    // webp preview so both can coexist on disk without conflict.
+    const rendered = await exportGangsheetPng24({
+      jobId: String(jobId),
+      printerId: String(printerId),
+      sheetWidthIn,
+      sheetHeightIn,
+      artboardItems,
+      dpi: 150,
+      cropToContent: false,
+      format: "png",
+      itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
+      sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
+    });
+
+    const actualDpi = rendered.dpi;
+    const filePath = rendered.filePath;
+
+    // Get actual pixel dimensions from the rendered file.
+    const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
+    const imgWidthPx = meta.width ?? Math.round(sheetWidthIn * actualDpi);
+    const imgHeightPx = meta.height ?? Math.round(sheetHeightIn * actualDpi);
+
+    // Split into portrait pages, each covering PAGE_HEIGHT_IN inches of the sheet.
+    // Using the sheet width as page height keeps pages square and readable for standard sheets.
+    const PAGE_HEIGHT_IN = Math.min(sheetWidthIn, 23.5);
+    const PAGE_HEIGHT_PTS = PAGE_HEIGHT_IN * 72;          // 1 PDF point = 1/72 inch
+    const PAGE_WIDTH_PTS = sheetWidthIn * 72;
+    const FOOTER_H_PTS = 20;                               // thin footer strip for page numbers
+    const numPages = Math.ceil(sheetHeightIn / PAGE_HEIGHT_IN);
+
+    const displayId = jobRaw.displayId
+      ? String(jobRaw.displayId)
+      : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
+
+    const doc = new PDFDocument({ autoFirstPage: false, margin: 0, compress: true });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="gangsheet_${displayId}_preview.pdf"`);
+    res.setHeader("Cache-Control", "no-store");
+    doc.pipe(res);
+
+    for (let pageIdx = 0; pageIdx < numPages; pageIdx++) {
+      const stripTopIn = pageIdx * PAGE_HEIGHT_IN;
+      const stripHeightIn = Math.min(PAGE_HEIGHT_IN, sheetHeightIn - stripTopIn);
+
+      const stripTopPx = Math.round(stripTopIn * actualDpi);
+      const stripHeightPx = Math.min(
+        Math.round(stripHeightIn * actualDpi),
+        imgHeightPx - stripTopPx,
+      );
+
+      if (stripHeightPx <= 0) break;
+
+      const stripBuf = await sharp(filePath, { limitInputPixels: false })
+        .extract({ left: 0, top: stripTopPx, width: imgWidthPx, height: stripHeightPx })
+        .png({ compressionLevel: 6 })
+        .toBuffer();
+
+      // PDF page: image area + footer.
+      const imgHeightOnPage = (stripHeightIn / PAGE_HEIGHT_IN) * PAGE_HEIGHT_PTS;
+      doc.addPage({ size: [PAGE_WIDTH_PTS, imgHeightOnPage + FOOTER_H_PTS], margin: 0 });
+
+      // Full-bleed image at the top of the page.
+      doc.image(stripBuf, 0, 0, { width: PAGE_WIDTH_PTS, height: imgHeightOnPage });
+
+      // Footer: order ID left, page number center, sheet dimensions right.
+      const footerY = imgHeightOnPage + 4;
+      doc.fillColor("#888888").fontSize(7).font("Helvetica");
+      doc.text(displayId, 8, footerY, { lineBreak: false });
+      doc.text(
+        `Page ${pageIdx + 1} / ${numPages}`,
+        0, footerY,
+        { width: PAGE_WIDTH_PTS, align: "center", lineBreak: false },
+      );
+      doc.text(
+        `${sheetWidthIn.toFixed(2)}" × ${sheetHeightIn.toFixed(2)}"`,
+        0, footerY,
+        { width: PAGE_WIDTH_PTS - 8, align: "right", lineBreak: false },
+      );
+    }
+
+    doc.end();
   } catch (error) {
     next(error);
   }
@@ -2293,7 +2468,9 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
       website: user.website || "N/A",
       avatarUrl: user.avatarUrl,
       regions: user.regions || [],
+      detectedRegion: (user as any).detectedRegion ?? null,
       status: user.status || "Active",
+      availabilityStatus: (user as any).availabilityStatus ?? "open",
       memberSince: user.createdAt,
       totalJobs,
       verificationStatus: user.verificationStatus || {
@@ -2383,6 +2560,7 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
             normalizeRegion(getRegionFromState(geocoded.state)) ??
             getRegionFromCoords(geocoded.lat, geocoded.lng);
           user.regions = [newRegion];
+          (user as any).detectedRegion = newRegion;
 
           console.log(
             `[region-assign] role=PRINTER id=${user.id} state=${geocoded.state} ` +
@@ -2391,7 +2569,10 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
         } else {
           // Fallback: derive from state code
           const fallbackRegion = getRegionFromState(merged.state);
-          if (fallbackRegion) user.regions = [fallbackRegion];
+          if (fallbackRegion) {
+            user.regions = [fallbackRegion];
+            (user as any).detectedRegion = fallbackRegion;
+          }
           console.log(
             `[region-assign] role=PRINTER id=${user.id} state=${merged.state} ` +
             `region=${fallbackRegion} geocoded=false (profile update fallback)`
@@ -2420,6 +2601,7 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
         businessAddress: user.businessAddress,
         certifications: user.certifications,
         regions: user.regions || [],
+        detectedRegion: (user as any).detectedRegion ?? null,
       }
     });
   } catch (error) {
@@ -2779,5 +2961,37 @@ export const markAllPrinterNotificationsRead = async (req: Request, res: Respons
 
     publishPrinterNotificationEvent(printerId, "notification.bulk_read", { readAt: now });
     res.status(200).json({ updated: true });
+  } catch (error) { next(error); }
+};
+
+export const getAvailabilityStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+    const user = await User.findById(printerId).select("availabilityStatus").lean();
+    if (!user) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
+    res.json({ availabilityStatus: (user as any).availabilityStatus ?? "open" });
+  } catch (error) { next(error); }
+};
+
+export const updateAvailabilityStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const printerId = req.user?.id;
+    if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+
+    const { status } = req.body as { status?: string };
+    const valid = ["open", "paused", "stopped"] as const;
+    if (!status || !valid.includes(status as any)) {
+      const e = new Error("status must be one of: open, paused, stopped") as any;
+      e.statusCode = 400;
+      throw e;
+    }
+
+    await User.updateOne(
+      { _id: new mongoose.Types.ObjectId(printerId) },
+      { $set: { availabilityStatus: status } }
+    );
+
+    res.json({ availabilityStatus: status });
   } catch (error) { next(error); }
 };

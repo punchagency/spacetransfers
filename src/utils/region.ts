@@ -9,11 +9,64 @@ export const normalizeRegion = (region: string | undefined | null): "West" | "Mi
   return null;
 };
 
+// Full state name → 2-letter code. Lets us resolve inputs like "California" or
+// "California (CA)" that the checkout/profile UI sends instead of a bare "CA".
+const STATE_NAME_TO_CODE: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA",
+  colorado: "CO", connecticut: "CT", delaware: "DE", "district of columbia": "DC",
+  florida: "FL", georgia: "GA", hawaii: "HI", idaho: "ID", illinois: "IL",
+  indiana: "IN", iowa: "IA", kansas: "KS", kentucky: "KY", louisiana: "LA",
+  maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI", minnesota: "MN",
+  mississippi: "MS", missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
+  "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+  "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK",
+  oregon: "OR", pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC",
+  "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT", vermont: "VT",
+  virginia: "VA", washington: "WA", "west virginia": "WV", wisconsin: "WI",
+  wyoming: "WY",
+};
+
+const ALL_STATE_CODES = new Set([
+  "WA","OR","CA","NV","ID","MT","WY","UT","AZ","NM","CO","AK","HI",
+  "ND","SD","NE","KS","MN","IA","MO","WI","IL","MI","IN","OH",
+  "TX","OK","AR","LA","MS","AL","TN","KY","WV","VA","NC","SC","GA","FL","MD","DC","DE",
+  "PA","NY","VT","ME","NH","MA","RI","CT","NJ",
+]);
+
+/**
+ * Resolves a 2-letter US state code from many input shapes:
+ *   "CA"  •  "ca"  •  "California"  •  "California (CA)"  •  " CA "
+ * Returns null when no valid US state can be determined.
+ */
+export const resolveStateCode = (state: string | undefined | null): string | null => {
+  if (!state) return null;
+  const raw = String(state).trim();
+  if (!raw) return null;
+
+  // 1) Parenthetical code, e.g. "California (CA)" → "CA"
+  const paren = raw.match(/\(([A-Za-z]{2})\)/);
+  if (paren) {
+    const code = paren[1].toUpperCase();
+    if (ALL_STATE_CODES.has(code)) return code;
+  }
+
+  // 2) Already a bare 2-letter code
+  const upper = raw.toUpperCase();
+  if (upper.length === 2 && ALL_STATE_CODES.has(upper)) return upper;
+
+  // 3) Full state name (strip any trailing "(XX)" first)
+  const nameOnly = raw.replace(/\([^)]*\)/g, "").trim().toLowerCase();
+  if (STATE_NAME_TO_CODE[nameOnly]) return STATE_NAME_TO_CODE[nameOnly];
+
+  // 4) Last resort: any 2-letter token that is a valid code
+  const token = upper.split(/[^A-Z]+/).find((t) => t.length === 2 && ALL_STATE_CODES.has(t));
+  return token || null;
+};
+
 export const getRegionFromState = (
   state: string | undefined | null
 ): "West" | "Midwest" | "South" | "Northeast" | null => {
-  if (!state) return null;
-  const s = state.trim().toUpperCase();
+  const s = resolveStateCode(state);
   if (!s) return null;
 
   const west      = ["WA","OR","CA","NV","ID","MT","WY","UT","AZ","NM","CO","AK","HI"];
@@ -83,8 +136,8 @@ const STATE_CENTROIDS: Record<string, { lat: number; lon: number }> = {
 };
 
 export const getLatLngFromState = (state: string | undefined | null): { lat: number; lon: number } | null => {
-  if (!state) return null;
-  const s = String(state).trim().toUpperCase();
+  const s = resolveStateCode(state);
+  if (!s) return null;
   return STATE_CENTROIDS[s] || null;
 };
 
