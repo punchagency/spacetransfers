@@ -6,6 +6,8 @@ import { User } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
 import { PrinterNotification } from "../models/printerNotification.model.js";
 import { addPrinterNotificationClient, publishPrinterNotificationEvent, removePrinterNotificationClient } from "../services/printerNotificationsHub.js";
+import { broadcastToAllAdmins } from "../services/adminNotificationsHub.js";
+import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
@@ -23,6 +25,8 @@ import { GangsheetExportAudit } from "../models/gangsheetExportAudit.model.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import { autoAssignOrder } from "../services/orderAssignment.service.js";
+import { triggerShipStationWorkflow } from "../services/shipstation.service.js";
 import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
 import sharp from "sharp";
 import PDFDocument from "pdfkit";
@@ -1971,6 +1975,15 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         currency
       },
       warnings: { hasWarning },
+      // Shipping & ShipStation fields — needed by the printer app to show tracking info
+      // and to determine whether ShipStation is still processing.
+      trackingNumber: (job as any).trackingNumber || null,
+      carrier: (job as any).carrier || null,
+      trackingUrl: (job as any).trackingUrl || null,
+      shipStationTriggeredAt: (job as any).shipStationTriggeredAt
+        ? new Date((job as any).shipStationTriggeredAt).toISOString()
+        : null,
+      shipStationLabelUrl: (job as any).shipStationLabelUrl || null,
       recentExports: exports.map((e: any) => ({
         id: String(e._id),
         fileName: e.fileName,
@@ -2114,6 +2127,17 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     pushStatus(next);
     await job.save();
 
+    // When the printer marks a job "Ready for Packaging" (QUALITY_CHECK), fire the
+    // ShipStation workflow async: create a shipping order, generate a label, retrieve
+    // the tracking number, and auto-advance the job to SHIPPED.
+    if (next === "QUALITY_CHECK") {
+      triggerShipStationWorkflow(String(job._id)).catch((err: any) => {
+        console.error(
+          `[SS] Fire-and-forget workflow error for order ${job._id}: ${err?.message}`
+        );
+      });
+    }
+
     const statusLabelMap: Record<string, string> = {
       PENDING: "Pending Review",
       PRINTING: "In Progress",
@@ -2145,7 +2169,7 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
     const printerId = req.user?.id;
     const id = Array.isArray(orderId) ? String(orderId[0] || "") : String(orderId || "");
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(String(printerId || ""))) {
       const error = new Error("Invalid order id") as CustomError;
       error.statusCode = 400;
       throw error;
@@ -2154,7 +2178,12 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
     const { reason } = req.body || {};
     const cancelReason = typeof reason === "string" ? reason.trim() : "";
 
-    const job = await Order.findOne({ _id: id, assignedPrinter: printerId });
+    // Load the job — must belong to this printer
+    const job = await Order.findOne({
+      _id: new mongoose.Types.ObjectId(id),
+      assignedPrinter: new mongoose.Types.ObjectId(String(printerId)),
+    }).select("status displayId statusTimeline assignmentHistory customer");
+
     if (!job) {
       const error = new Error("Order not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
@@ -2173,32 +2202,129 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    if (!job.statusTimeline) job.statusTimeline = [];
-    (job.statusTimeline as any).push({
-      status: "CANCELLED" as any,
-      time: new Date(),
-      message: cancelReason ? `Cancelled by printer: ${cancelReason}` : "Cancelled by printer",
+    // Look up printer name for logging
+    const printerUser = await User.findById(printerId).select("name companyName").lean();
+    const printerName = String((printerUser as any)?.companyName || (printerUser as any)?.name || printerId);
+
+    const displayId = (job as any).displayId || String(job._id).slice(-6).toUpperCase();
+    const now = new Date();
+
+    const timelineEntry = {
+      status: "PENDING",
+      time: now,
+      message: cancelReason
+        ? `Returned to admin queue — cancelled by printer (${printerName}): ${cancelReason}`
+        : `Returned to admin queue — cancelled by printer (${printerName})`,
       actorRole: "PRINTER",
-      actorId: String(printerId || ""),
-      actorName: null,
-    } as any);
+      actorId: String(printerId),
+      actorName: printerName,
+    };
 
-    job.status = "CANCELLED" as any;
-    if (cancelReason) (job as any).rejectionReason = cancelReason;
+    const historyEntry = {
+      time: now,
+      mode: "AUTO",
+      selectedPrinterId: null,
+      selectedPrinterName: null,
+      customerRegion: null,
+      customerState: null,
+      candidatesConsidered: 0,
+      candidatesSameRegion: 0,
+      reason: `Cancelled by printer ${printerName}${cancelReason ? `: ${cancelReason}` : ""}`,
+      tookMs: 0,
+    };
 
-    await job.save();
+    const setFields: Record<string, any> = {
+      status: "PENDING",
+      returnedAt: now,
+      cancelledByPrinterId: new mongoose.Types.ObjectId(String(printerId)),
+      cancelledByPrinterName: printerName,
+      updatedAt: now,   // updateOne() skips Mongoose timestamps middleware; set explicitly
+    };
+    if (cancelReason) setFields.rejectionReason = cancelReason;
 
+    // Use a direct MongoDB updateOne so that:
+    //   $unset  — atomically removes the assignedPrinter field (doc.save() with null is unreliable for ObjectId refs)
+    //   $set    — writes status, returnedAt, cancelledByPrinterName in one round-trip
+    //   $push   — appends audit entries without re-loading the full arrays
+    await Order.updateOne(
+      { _id: new mongoose.Types.ObjectId(id) },
+      {
+        $set: setFields,
+        $unset: { assignedPrinter: "" },
+        $push: {
+          statusTimeline: timelineEntry,
+          assignmentHistory: historyEntry,
+        },
+      }
+    );
+
+    console.log(
+      `[REASSIGN] Printer "${printerName}" released order ${id} (${displayId}) → PENDING, assignedPrinter cleared` +
+        (cancelReason ? ` — reason: ${cancelReason}` : "")
+    );
+
+    // Fire the customer-facing SSE event so their order page updates immediately
+    publishOrderEvent(id, "order.status.changed", {
+      orderId: id,
+      status: "PENDING",
+      from: current,
+      to: "PENDING",
+      updatedAt: now,
+      lastTimelineEntry: timelineEntry,
+    });
+
+    // Notify all admins — persists in notification feed AND pushes via SSE
+    notifyAllAdmins({
+      category: "orders",
+      priority: "high",
+      title: "Job returned to admin queue",
+      message: `Order #${displayId} was cancelled by ${printerName} and returned to the queue.${cancelReason ? ` Reason: ${cancelReason}` : ""}`,
+      meta: {
+        orderId: id,
+        displayId,
+        printerId: String(printerId),
+        printerName,
+        cancelledAt: now.toISOString(),
+        cancelReason: cancelReason || null,
+        type: "printer_cancelled",
+      },
+    }).catch(() => {});
+
+    // Instant SSE push to every connected admin browser tab — triggers live orders-list refresh
+    broadcastToAllAdmins("order.returned_to_queue", {
+      orderId: id,
+      displayId,
+      printerId: String(printerId),
+      printerName,
+      cancelledAt: now.toISOString(),
+      cancelReason: cancelReason || null,
+    });
+
+    // Notify the cancelling printer
     notifyPrinter({
       printerId: String(printerId),
       category: "jobs",
-      priority: "high",
-      title: "Job cancelled",
-      message: `Order ${(job as any).displayId || job.id} has been cancelled.${cancelReason ? ` Reason: ${cancelReason}` : ""}`,
-      meta: { orderId: job.id, status: "CANCELLED" },
+      priority: "medium",
+      title: "Job returned to queue",
+      message: `Order #${displayId} has been released and returned to the admin queue.`,
+      meta: { orderId: id, status: "PENDING" },
       settingsKey: "orderUpdates",
     }).catch(() => {});
 
-    res.json({ cancelled: true, id: job.id, status: "CANCELLED", updatedAt: job.updatedAt.toISOString() });
+    // Attempt auto-reassignment — fire and forget; the order is already in the queue either way
+    autoAssignOrder(id)
+      .then((result) => {
+        if (result.assigned) {
+          console.log(`[REASSIGN] SUCCESS orderId=${id} → printer="${(result as any).printerName}"`);
+        } else {
+          console.log(`[REASSIGN] NO_MATCH orderId=${id} reason="${result.reason}" — stays in admin queue`);
+        }
+      })
+      .catch((err: any) => {
+        console.error(`[REASSIGN] ERROR orderId=${id}: ${err?.message}`);
+      });
+
+    res.json({ cancelled: true, id, status: "PENDING", reassigning: true });
   } catch (error) {
     next(error);
   }

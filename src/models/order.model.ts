@@ -96,6 +96,14 @@ export interface IOrder extends Document {
   trackingUrl?: string;
   trackingEvents?: ITrackingEvent[];
   assignedPrinter?: mongoose.Types.ObjectId;
+  returnedAt?: Date;
+  cancelledByPrinterId?: mongoose.Types.ObjectId;
+  cancelledByPrinterName?: string;
+  // ShipStation fulfillment
+  shipStationOrderId?: string;
+  shipStationShipmentId?: string;
+  shipStationLabelUrl?: string;
+  shipStationTriggeredAt?: Date | null;
   priority: "NORMAL" | "URGENT";
   notes?: string;
   specs?: {
@@ -276,6 +284,13 @@ const orderSchema = new Schema<IOrder>(
       type: Schema.Types.ObjectId,
       ref: "User"
     },
+    returnedAt: { type: Date, default: null },
+    cancelledByPrinterId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    cancelledByPrinterName: { type: String, default: null },
+    shipStationOrderId: { type: String, default: null },
+    shipStationShipmentId: { type: String, default: null },
+    shipStationLabelUrl: { type: String, default: null },
+    shipStationTriggeredAt: { type: Date, default: null },
     priority: {
       type: String,
       enum: ["NORMAL", "URGENT"],
@@ -373,6 +388,8 @@ orderSchema.post("save", function (doc: any) {
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ displayId: 1 }, { unique: true, sparse: true });
 orderSchema.index({ assignedPrinter: 1, createdAt: -1 });
+orderSchema.index({ returnedAt: -1, createdAt: -1 });
+orderSchema.index({ updatedAt: -1, _id: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 

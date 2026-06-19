@@ -133,6 +133,269 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
   }
 };
 
+// ── AI Upscale ──────────────────────────────────────────────────────────────
+
+// ── Upscaling constants ───────────────────────────────────────────────────────
+
+const REPLICATE_ESRGAN_MODEL = "nightmareai/real-esrgan";
+const REPLICATE_POLL_INTERVAL_MS = 2_500;
+const REPLICATE_TIMEOUT_MS = 90_000;
+const VALID_REPLICATE_SCALES = [2, 4, 8] as const;
+
+// SwinIR-realworld 4× — best free model on HuggingFace Inference API.
+const HF_SR_MODEL = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr";
+const HF_MODEL_LOAD_TIMEOUT_MS = 60_000; // wait up to 60 s for cold-start
+const MAX_OUTPUT_PX = 8_000;             // prevent runaway output sizes
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function fetchImageBuffer(url: string): Promise<Buffer> {
+  if (url.startsWith("data:")) {
+    const commaIdx = url.indexOf(",");
+    if (commaIdx < 0) throw new Error("Malformed data URL");
+    return Buffer.from(url.slice(commaIdx + 1), "base64");
+  }
+  if (url.includes("/uploads/")) {
+    const marker = "/uploads/";
+    const idx = url.lastIndexOf(marker);
+    const safeFilename = path.basename(url.substring(idx + marker.length));
+    const localPath = path.join(process.cwd(), "uploads", safeFilename);
+    if (fs.existsSync(localPath)) return fs.promises.readFile(localPath);
+  }
+  const r = await fetch(url);
+  if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
+  return Buffer.from(await r.arrayBuffer());
+}
+
+/**
+ * Post-processes any upscaled buffer with a light unsharp mask.
+ * AI models produce inherently sharper results so the pass is gentler;
+ * the pure-sharp fallback gets a stronger pass because interpolation
+ * introduces softness that must be compensated.
+ */
+async function applySharpening(
+  buffer: Buffer,
+  strength: "light" | "strong",
+): Promise<Buffer> {
+  // sigma, m1 (flat areas), m2 (edge areas)
+  const params =
+    strength === "strong"
+      ? { sigma: 1.0, m1: 2.5, m2: 0.8 }
+      : { sigma: 0.7, m1: 1.2, m2: 0.5 };
+  return sharp(buffer, { limitInputPixels: false })
+    .sharpen(params)
+    .toBuffer();
+}
+
+// ── Tier 1: Replicate Real-ESRGAN ────────────────────────────────────────────
+
+async function upscaleWithReplicate(
+  publicUrl: string,
+  scale: number,
+  apiToken: string,
+): Promise<Buffer> {
+  const replicateScale =
+    VALID_REPLICATE_SCALES.find((s) => s >= scale) ?? VALID_REPLICATE_SCALES[VALID_REPLICATE_SCALES.length - 1];
+
+  const createRes = await fetch(
+    `https://api.replicate.com/v1/models/${REPLICATE_ESRGAN_MODEL}/predictions`,
+    {
+      method: "POST",
+      headers: { Authorization: `Token ${apiToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ input: { image: publicUrl, scale: replicateScale, face_enhance: false } }),
+    },
+  );
+  if (!createRes.ok) {
+    const body = await createRes.text().catch(() => "");
+    throw new Error(`Replicate ${createRes.status}: ${body.slice(0, 200)}`);
+  }
+
+  let prediction: { id: string; status: string; output?: string; error?: string } =
+    await createRes.json();
+
+  const deadline = Date.now() + REPLICATE_TIMEOUT_MS;
+  while (
+    prediction.status !== "succeeded" &&
+    prediction.status !== "failed" &&
+    prediction.status !== "canceled"
+  ) {
+    if (Date.now() > deadline) throw new Error("Replicate AI upscaling timed out (90 s)");
+    await new Promise((r) => setTimeout(r, REPLICATE_POLL_INTERVAL_MS));
+    const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+      headers: { Authorization: `Token ${apiToken}` },
+    });
+    if (!pollRes.ok) throw new Error(`Replicate poll failed (${pollRes.status})`);
+    prediction = await pollRes.json();
+  }
+
+  if (prediction.status !== "succeeded" || !prediction.output) {
+    throw new Error(`Replicate failed: ${prediction.error ?? "unknown"}`);
+  }
+
+  const imgRes = await fetch(prediction.output);
+  if (!imgRes.ok) throw new Error("Could not download upscaled image from Replicate CDN");
+  return Buffer.from(await imgRes.arrayBuffer());
+}
+
+// ── Tier 2: HuggingFace SwinIR-realworld (free) ───────────────────────────────
+
+async function upscaleWithHuggingFace(
+  sourceBuffer: Buffer,
+  apiToken: string,
+  attempt = 0,
+): Promise<Buffer> {
+  const res = await fetch(
+    `https://api-inference.huggingface.co/models/${HF_SR_MODEL}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        "Content-Type": "application/octet-stream",
+        "Accept": "image/png",
+      },
+      body: new Uint8Array(sourceBuffer),
+    },
+  );
+
+  // 503 = model is cold-starting — wait the suggested time, then retry once.
+  if (res.status === 503 && attempt === 0) {
+    let waitMs = 20_000;
+    try {
+      const body: any = await res.json();
+      if (typeof body?.estimated_time === "number") {
+        waitMs = Math.min(body.estimated_time * 1_000 + 3_000, HF_MODEL_LOAD_TIMEOUT_MS);
+      }
+    } catch { /* body not JSON */ }
+    console.log(`[UPSCALE] HuggingFace model loading — waiting ${Math.round(waitMs / 1000)}s`);
+    await new Promise((r) => setTimeout(r, waitMs));
+    return upscaleWithHuggingFace(sourceBuffer, apiToken, 1);
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`HuggingFace ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// ── Tier 3: Sharp multi-pass with unsharp mask (no API key needed) ────────────
+//
+// Single-pass Lanczos3 at high scale factors produces visible softness because
+// the interpolation has no information to reconstruct missing detail.
+// Breaking the upscale into 2× passes and applying an unsharp mask after each
+// pass significantly improves perceived sharpness for print materials.
+
+async function upscaleWithSharp(
+  sourceBuffer: Buffer,
+  originalWidthPx: number,
+  originalHeightPx: number,
+  scale: number,
+): Promise<Buffer> {
+  // Cap output dimensions so we don't produce gigapixel images.
+  const maxScale = MAX_OUTPUT_PX / Math.max(originalWidthPx, originalHeightPx, 1);
+  const clampedScale = Math.min(scale, maxScale);
+
+  let buf = sourceBuffer;
+  let currentW = originalWidthPx;
+  let currentH = originalHeightPx;
+  const targetW = Math.round(originalWidthPx * clampedScale);
+  const targetH = Math.round(originalHeightPx * clampedScale);
+
+  // Multi-pass: each pass doubles the size and applies an unsharp mask.
+  // This is substantially better than a single large resize because each pass
+  // restores edge information that would otherwise be averaged away.
+  while (currentW < targetW || currentH < targetH) {
+    const nextW = Math.min(currentW * 2, targetW);
+    const nextH = Math.min(currentH * 2, targetH);
+    buf = await sharp(buf, { limitInputPixels: false })
+      .resize(nextW, nextH, { kernel: sharp.kernel.lanczos3, fastShrinkOnLoad: false })
+      // Unsharp mask: moderate sigma keeps fine detail, low m2 avoids haloing.
+      .sharpen({ sigma: 0.9, m1: 2.0, m2: 0.7 })
+      .png({ compressionLevel: 6 })
+      .toBuffer();
+    currentW = nextW;
+    currentH = nextH;
+  }
+
+  return buf;
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+
+export const upscaleAsset = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { url, scale: rawScale } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return next(Object.assign(new Error("url is required"), { statusCode: 400 }));
+    }
+
+    const scale = Math.min(8, Math.max(2, Math.round(Number(rawScale) || 2)));
+
+    const sourceBuffer = await fetchImageBuffer(url);
+    const originalMeta = await sharp(sourceBuffer, { limitInputPixels: false }).metadata();
+    const originalWidthPx = originalMeta.width ?? 0;
+    const originalHeightPx = originalMeta.height ?? 0;
+
+    let upscaledBuffer: Buffer = undefined as any;
+    let tier = "";
+
+    // Each tier falls through to the next if it errors (billing, quota, cold-start failure, etc.)
+    if (env.replicateApiToken) {
+      try {
+        let publicUrl = url;
+        if (url.startsWith("data:") || url.includes("/uploads/")) {
+          const { url: tempUrl } = await uploadBufferToCloudinary(sourceBuffer, "space-transfers/upscale-input");
+          publicUrl = tempUrl;
+        }
+        upscaledBuffer = await upscaleWithReplicate(publicUrl, scale, env.replicateApiToken);
+        upscaledBuffer = await applySharpening(upscaledBuffer, "light");
+        tier = "replicate";
+      } catch (replicateErr: any) {
+        console.warn(`[UPSCALE] Replicate failed (${replicateErr?.message}) — falling back`);
+        env.replicateApiToken = undefined; // suppress on future requests this session
+        // fall through to next tier below
+        upscaledBuffer = undefined as any;
+        tier = "";
+      }
+    }
+
+    if (!upscaledBuffer! && env.hfApiToken) {
+      try {
+        upscaledBuffer = await upscaleWithHuggingFace(sourceBuffer, env.hfApiToken);
+        upscaledBuffer = await applySharpening(upscaledBuffer, "light");
+        tier = "huggingface";
+      } catch (hfErr: any) {
+        console.warn(`[UPSCALE] HuggingFace failed (${hfErr?.message}) — falling back to sharp`);
+        upscaledBuffer = undefined as any;
+        tier = "";
+      }
+    }
+
+    if (!upscaledBuffer!) {
+      upscaledBuffer = await upscaleWithSharp(sourceBuffer, originalWidthPx, originalHeightPx, scale);
+      tier = "sharp";
+    }
+
+    console.log(`[UPSCALE] ${tier} — ${originalWidthPx}×${originalHeightPx} → scale ${scale}`);
+
+    const { url: upscaledUrl } = await uploadBufferToCloudinary(upscaledBuffer, "space-transfers/upscaled");
+    const upscaledMeta = await sharp(upscaledBuffer, { limitInputPixels: false }).metadata();
+
+    res.json({
+      upscaledUrl,
+      originalWidthPx,
+      originalHeightPx,
+      widthPx: upscaledMeta.width ?? Math.round(originalWidthPx * scale),
+      heightPx: upscaledMeta.height ?? Math.round(originalHeightPx * scale),
+      scale,
+      tier,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const updateAccount = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, defaultShippingAddress, companyName, phone } = req.body;

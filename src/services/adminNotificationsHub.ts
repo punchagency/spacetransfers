@@ -38,3 +38,17 @@ export const publishAdminNotificationEvent = (adminId: string, event: string, da
   if (set.size === 0) clientsByAdminId.delete(adminId);
 };
 
+export const broadcastToAllAdmins = (event: string, data: any) => {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const [adminId, set] of clientsByAdminId) {
+    for (const c of set) {
+      try {
+        c.res.write(payload);
+      } catch {
+        set.delete(c);
+      }
+    }
+    if (set.size === 0) clientsByAdminId.delete(adminId);
+  }
+};
+

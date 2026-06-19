@@ -117,8 +117,8 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     const partners = partnerStats[0] || { active: 0, suspended: 0 };
 
     const recentOrdersRaw = await Order.find()
-      .sort({ createdAt: -1 })
-      .limit(5)
+      .sort({ updatedAt: -1 })
+      .limit(10)
       .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
 
     const recentUserIds = Array.from(
@@ -162,6 +162,10 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         profits: Number(profit.toFixed(2)),
         status: order.status,
         createdAt: order.createdAt,
+        updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
+        returnedAt: (order as any).returnedAt ? new Date((order as any).returnedAt).toISOString() : null,
+        cancelledByPrinterName: (order as any).cancelledByPrinterName || null,
+        isReturnedToQueue: !!(order as any).returnedAt,
         assignedPartner: (order.assignedPrinter as unknown as IUser)?.companyName || null,
         region: resolveOrderRegion(order, recentUserRegionMap)
       };
@@ -805,8 +809,9 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       extraFilters.push({ $or: searchOr });
     }
 
-    // Keyset cursor: "${createdAt.getTime()}_${_id}" — use the last underscore as
-    // the delimiter so ObjectIds containing underscores (unusual but possible) don't break.
+    // Keyset cursor — format: "${updatedAt.getTime()}_${_id}"
+    // updatedAt is bumped on every write (save, updateOne with explicit $set), so it's the
+    // single reliable sort key for "most recently touched first".
     if (cursor && typeof cursor === "string" && cursor.includes("_")) {
       const underscoreIdx = cursor.lastIndexOf("_");
       const cursorTsStr = cursor.slice(0, underscoreIdx);
@@ -814,11 +819,12 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       const cursorTs = Number(cursorTsStr);
       if (Number.isFinite(cursorTs) && mongoose.Types.ObjectId.isValid(cursorId)) {
         const cursorDate = new Date(cursorTs);
+        const cursorObjId = new mongoose.Types.ObjectId(cursorId);
         extraFilters.push({
           $or: [
-            { createdAt: { $lt: cursorDate } },
-            { createdAt: cursorDate, _id: { $lt: new mongoose.Types.ObjectId(cursorId) } }
-          ]
+            { updatedAt: { $lt: cursorDate } },
+            { updatedAt: cursorDate, _id: { $lt: cursorObjId } },
+          ],
         });
       }
     }
@@ -828,7 +834,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const pageSize = parseInt(limit as string);
     const orders = await Order.find(finalQuery)
       .select("-items.artboardItems")
-      .sort({ createdAt: -1, _id: -1 })
+      .sort({ updatedAt: -1, _id: -1 })
       .limit(pageSize + 1)
       .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions")
       .lean();
@@ -877,6 +883,10 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         profits: Number(profits.toFixed(2)),
         status: order.status,
         createdAt: order.createdAt,
+        updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
+        returnedAt: (order as any).returnedAt ? new Date((order as any).returnedAt).toISOString() : null,
+        cancelledByPrinterName: (order as any).cancelledByPrinterName || null,
+        isReturnedToQueue: !!(order as any).returnedAt,
         assignedPartnerId: (order.assignedPrinter as any)?._id
           ? String((order.assignedPrinter as any)._id)
           : (order.assignedPrinter ? String(order.assignedPrinter) : null),
@@ -890,7 +900,8 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     let nextCursor = null;
     if (hasNextPage) {
       const lastOrder = results[results.length - 1];
-      nextCursor = `${lastOrder.createdAt.getTime()}_${lastOrder._id}`;
+      const lastUpdatedAt = (lastOrder as any).updatedAt ?? lastOrder.createdAt;
+      nextCursor = `${new Date(lastUpdatedAt).getTime()}_${lastOrder._id}`;
     }
 
     res.status(200).json({
