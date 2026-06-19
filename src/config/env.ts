@@ -28,6 +28,16 @@ interface Env {
   cloudinaryCloudName: string;
   cloudinaryApiKey: string;
   cloudinaryApiSecret: string;
+  // ShipStation
+  shipStationApiKey?: string;
+  shipStationApiSecret?: string;
+  shipStationCarrierId?: string;   // e.g. "stamps_com" | "ups" | "fedex"
+  shipStationServiceCode?: string; // e.g. "usps_priority_mail" | "ups_ground"
+  shipStationPollIntervalMs: number;
+  shipStationMaxPollingDays: number;
+  // AI Upscaling — Replicate (best, ~$0.002/img) and/or HuggingFace (free tier)
+  replicateApiToken?: string;
+  hfApiToken?: string;
 }
 
 const cleanEnvString = (value?: string): string | undefined => {
@@ -71,4 +81,17 @@ export const env: Env = {
   cloudinaryCloudName: cleanEnvString(process.env.CLOUDINARY_CLOUD_NAME) || "",
   cloudinaryApiKey: cleanEnvString(process.env.CLOUDINARY_API_KEY) || "",
   cloudinaryApiSecret: cleanEnvString(process.env.CLOUDINARY_API_SECRET) || "",
+  // ShipStation
+  shipStationApiKey: cleanEnvString(process.env.SHIPSTATION_API_KEY),
+  shipStationApiSecret: cleanEnvString(process.env.SHIPSTATION_API_SECRET),
+  shipStationCarrierId: cleanEnvString(process.env.SHIPSTATION_CARRIER_ID),
+  shipStationServiceCode: cleanEnvString(process.env.SHIPSTATION_SERVICE_CODE),
+  shipStationPollIntervalMs: process.env.SHIPSTATION_POLL_INTERVAL_MS
+    ? Number(process.env.SHIPSTATION_POLL_INTERVAL_MS)
+    : 30 * 60 * 1000, // 30 minutes
+  shipStationMaxPollingDays: process.env.SHIPSTATION_MAX_POLLING_DAYS
+    ? Number(process.env.SHIPSTATION_MAX_POLLING_DAYS)
+    : 30,
+  replicateApiToken: cleanEnvString(process.env.REPLICATE_API_TOKEN),
+  hfApiToken: cleanEnvString(process.env.HF_API_TOKEN),
 };

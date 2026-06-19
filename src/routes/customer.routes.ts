@@ -7,6 +7,7 @@ import {
   getOrderById,
   uploadAsset,
   trimAsset,
+  upscaleAsset,
   updateAccount,
   logout,
   listAssets,
@@ -41,6 +42,7 @@ const router = express.Router();
 // users still get server-side DPI/trim metadata and the low-DPI warning fires.
 router.post("/assets", maybeAuthenticate, upload.single("file"), uploadAsset);
 router.post("/assets/trim", maybeAuthenticate, trimAsset);
+router.post("/assets/upscale", maybeAuthenticate, upscaleAsset);
 router.get("/assets", maybeAuthenticate, listAssets);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));

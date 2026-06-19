@@ -49,8 +49,12 @@ export type SelectionResult =
  */
 export const selectPrinterFromCandidates = (
   customerState: string | null | undefined,
-  candidates: PrinterCandidate[]
+  candidates: PrinterCandidate[],
+  excludePrinterIds: string[] = []
 ): SelectionResult => {
+  const eligible = excludePrinterIds.length
+    ? candidates.filter((c) => !excludePrinterIds.includes(c.printerId))
+    : candidates;
   const customerRegion: string | null = getRegionFromState(customerState);
 
   if (!customerRegion) {
@@ -64,11 +68,11 @@ export const selectPrinterFromCandidates = (
   }
 
   // Strict same-region filter — cross-region is always blocked.
-  const sameRegion = candidates.filter((c) => c.printerRegion === customerRegion);
+  const sameRegion = eligible.filter((c) => c.printerRegion === customerRegion);
 
   if (sameRegion.length === 0) {
     const reason =
-      candidates.length === 0
+      eligible.length === 0
         ? "No available printers"
         : `No available printers in region (${customerRegion}). Cross-region assignment is disabled.`;
     return {
@@ -121,7 +125,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   const startedAt = Date.now();
 
   const order = await Order.findById(orderId).select(
-    "assignedPrinter status priority shippingAddress statusTimeline assignmentHistory displayId"
+    "assignedPrinter status priority shippingAddress statusTimeline assignmentHistory displayId returnedAt cancelledByPrinterId cancelledByPrinterName"
   );
   if (!order) {
     return { assigned: false, orderId, reason: "Order not found", tookMs: Date.now() - startedAt };
@@ -250,11 +254,26 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     })
     .filter((c) => c.available);
 
+  // Never re-assign to the printer who just cancelled this job.
+  const cancelledByPrinterId = (order as any).cancelledByPrinterId
+    ? String((order as any).cancelledByPrinterId)
+    : null;
+  const eligibleCandidates = cancelledByPrinterId
+    ? candidates.filter((c) => c.printerId !== cancelledByPrinterId)
+    : candidates;
+
+  if (cancelledByPrinterId) {
+    const excluded = candidates.length - eligibleCandidates.length;
+    if (excluded > 0) {
+      console.log(`[AUTO_ASSIGN] EXCLUDED cancelling printer ${cancelledByPrinterId} from candidate pool`);
+    }
+  }
+
   console.log(
-    `[AUTO_ASSIGN] CANDIDATES total=${printers.length} available=${candidates.length} ` +
-    `regions=[${[...new Set(candidates.map((c) => c.printerRegion || "unknown"))].join(",")}]`
+    `[AUTO_ASSIGN] CANDIDATES total=${printers.length} available=${eligibleCandidates.length} ` +
+    `regions=[${[...new Set(eligibleCandidates.map((c) => c.printerRegion || "unknown"))].join(",")}]`
   );
-  for (const c of candidates) {
+  for (const c of eligibleCandidates) {
     console.log(
       `[AUTO_ASSIGN] CANDIDATE printer="${c.printerName}" state=${c.printerState || "?"} ` +
       `region=${c.printerRegion || "unknown"} matchesCustomer=${c.printerRegion === customerRegion}`
@@ -263,7 +282,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
   // Strict same-region only — cross-region assignment is never allowed.
   const candidatesSameRegion = customerRegion
-    ? candidates.filter((c) => c.printerRegion === customerRegion)
+    ? eligibleCandidates.filter((c) => c.printerRegion === customerRegion)
     : [];
 
   const pool = candidatesSameRegion;
@@ -278,13 +297,13 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   if (pool.length === 0) {
     const tookMs = Date.now() - startedAt;
     const noRegionReason =
-      candidates.length === 0
+      eligibleCandidates.length === 0
         ? "No available printers"
         : `No available printers in region (${customerRegion || "unknown"}). Cross-region assignment is disabled.`;
 
     console.log(
       `[AUTO_ASSIGN] UNASSIGNED orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
-      `totalAvailable=${candidates.length} sameRegion=0 reason="${noRegionReason}" tookMs=${tookMs}`
+      `totalAvailable=${eligibleCandidates.length} sameRegion=0 reason="${noRegionReason}" tookMs=${tookMs}`
     );
 
     order.assignmentHistory = order.assignmentHistory || [];
@@ -354,6 +373,13 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   } as any);
 
   await order.save();
+
+  // Atomically clear the returned-to-queue markers now that a printer has taken over.
+  // Done after save so the main document fields don't need to be in the select.
+  await Order.updateOne(
+    { _id: order._id },
+    { $unset: { returnedAt: "", cancelledByPrinterId: "", cancelledByPrinterName: "" } }
+  );
 
   const distStr = Number.isFinite(selected.distanceMiles)
     ? `${selected.distanceMiles.toFixed(1)}mi`
