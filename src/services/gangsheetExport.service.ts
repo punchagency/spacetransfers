@@ -339,7 +339,7 @@ const _doExport = async ({
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
   const itemsHash = computeItemsHash(normalizedItems.slice(0, capForKey));
   const cacheKey = computeCacheKey({
-    v: 7,
+    v: 8,
     jobId,
     printerId,
     dpi,
@@ -348,7 +348,7 @@ const _doExport = async ({
     crop,
     itemsHash,
     png: format === "webp"
-      ? { format: "webp", quality: 85, effort: 6 }
+      ? { format: "webp", lossless: true, effort: 6 }
       : { format: "png", compressionLevel: 9, adaptiveFiltering: true, effort: 10, normTransparent: true },
     gapIn,
     marginIn,
@@ -438,17 +438,32 @@ const _doExport = async ({
         const buf = await loadImageBuffer(srcUrl);
         if (!buf) return null;
         const meta = await sharp(buf, { limitInputPixels: false }).metadata();
-        if (
-          (typeof meta.width === "number" && meta.width > 0 && meta.width < wPx) ||
-          (typeof meta.height === "number" && meta.height > 0 && meta.height < hPx)
-        ) sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
+        const srcW = typeof meta.width  === "number" && meta.width  > 0 ? meta.width  : wPx;
+        const srcH = typeof meta.height === "number" && meta.height > 0 ? meta.height : hPx;
+
+        if (srcW < wPx || srcH < hPx) {
+          // Source has fewer pixels than the target slot — upscaling will occur.
+          // This normally means the export DPI exceeds the image's native DPI.
+          // The printer controller caps exportDpi to min(trimmedWidthPx/widthIn) so
+          // this should only fire for canvas-processed items (data URLs) where the
+          // DB-stored trimmedWidthPx differs from the actual canvas crop pixel count.
+          sourceResolutionErrors.push(`asset_${assetId}_insufficient_px`);
+        }
+
         // Apply transforms in the same order as the artboard CSS:
         //   transform: scaleX(-1) rotate(Xdeg)
         // CSS applies right-to-left: rotate first, then flip. Sharp mirrors this:
         //   resize → rotate → flop (horizontal flip).
-        let pipeline = sharp(buf, { limitInputPixels: false })
-          .resize(wPx, hPx, { fit: "fill" })
-          .rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+        //
+        // Skip resize entirely when the source already matches the target dimensions.
+        // Even a 1:1 resize through lanczos3 runs the resampling kernel and introduces
+        // sub-pixel rounding differences; skipping it preserves the original pixel data
+        // exactly and is the largest single factor in export sharpness.
+        let pipeline = sharp(buf, { limitInputPixels: false });
+        if (srcW !== wPx || srcH !== hPx) {
+          pipeline = pipeline.resize(wPx, hPx, { fit: "fill", kernel: "lanczos3" });
+        }
+        pipeline = pipeline.rotate(rot, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
         if (flipped) pipeline = pipeline.flop();
         const out = await pipeline
           .ensureAlpha()
@@ -612,8 +627,10 @@ const _doExport = async ({
   // compressionLevel 1 = fastest lossless encoding; level 9 can take 10+ minutes on large
   // sheets and provides only marginal size savings vs 1 for RGBA print files.
   // icc string is intentionally omitted — Sharp treats it as a file path and throws ENOENT.
+  // WebP uses lossless mode so the preview quality is identical to the PNG export —
+  // lossy WebP at quality 85 produced visible compression blur on fine print details.
   const out = await (format === "webp"
-    ? pipeline.webp({ quality: 85, lossless: false, effort: 6 }).withMetadata({ density: dpi })
+    ? pipeline.webp({ lossless: true, effort: 6 }).withMetadata({ density: dpi })
     : pipeline.png({ compressionLevel: 1, adaptiveFiltering: false, palette: false, effort: 2, force: true }).withMetadata({ density: dpi })
   ).toFile(filePath);
 

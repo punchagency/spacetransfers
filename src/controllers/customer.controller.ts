@@ -16,6 +16,7 @@ import { alphaTrimToFile, smartTrimToFile } from "../utils/aiCrop.js";
 import { isRembgEnabled, runRembg } from "../utils/rembg.js";
 import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
+import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { sendEmail } from "../services/email.service.js";
@@ -766,9 +767,47 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
+    // Fire-and-forget: generate a server-side gangsheet thumbnail from the full-resolution
+    // DB assets so the job list shows the same quality as the OrderDetails preview.
+    // Runs after save so it never blocks the checkout response.
+    const orderId = order.id;
+    const gangsheetOrderItem = orderItems.find((it: any) => it.type === "gangsheet");
+    if (gangsheetOrderItem && Array.isArray(gangsheetOrderItem.artboardItems) && gangsheetOrderItem.artboardItems.length > 0) {
+      (async () => {
+        try {
+          const thumbItems = (gangsheetOrderItem.artboardItems as any[]).map((it: any) => ({
+            assetId: String(it.assetId || ""),
+            widthIn: Number(it.widthIn),
+            heightIn: Number(it.heightIn),
+            posX: Number(it.posX),
+            posY: Number(it.posY),
+            rotation: typeof it.rotation === "number" ? it.rotation : 0,
+            flipped: Boolean(it.flipped),
+            copies: typeof it.copies === "number" ? it.copies : 1,
+          }));
+          const rendered = await exportGangsheetPng24({
+            jobId: String(orderId),
+            printerId: "order-preview",
+            sheetWidthIn: typeof gangsheetOrderItem.sheetWidthIn === "number" ? gangsheetOrderItem.sheetWidthIn : undefined,
+            sheetHeightIn: typeof gangsheetOrderItem.sheetHeightIn === "number" ? gangsheetOrderItem.sheetHeightIn : undefined,
+            artboardItems: thumbItems,
+            dpi: 600,
+            cropToContent: true,
+            format: "webp",
+          });
+          const previewUrl = `${env.appUrl}${rendered.relativePath}`;
+          await Order.updateOne(
+            { _id: orderId, "items.type": "gangsheet" },
+            { $set: { "items.$.previewImage": previewUrl } }
+          );
+        } catch (err: any) {
+          console.warn(`[ORDER_THUMB] orderId=${orderId} thumbnail generation failed (non-fatal): ${err?.message}`);
+        }
+      })();
+    }
+
     // Fire-and-forget: geocode to verify/correct state code and get precise coordinates.
     // The assignment service uses detectedRegion from the order — this updates it in the background.
-    const orderId = order.id;
     (async () => {
       try {
         const geo = await geocodeAddress({

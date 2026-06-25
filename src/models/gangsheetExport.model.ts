@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema } from "mongoose";
 
-export type GangsheetExportFormat = "png";
+export type GangsheetExportFormat = "png" | "zip";
 
 export interface IGangsheetExport extends Document {
   jobId: mongoose.Types.ObjectId;
@@ -31,7 +31,7 @@ const gangsheetExportSchema = new Schema<IGangsheetExport>(
   {
     jobId: { type: Schema.Types.ObjectId, ref: "Order", required: true, index: true },
     printerId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    format: { type: String, enum: ["png"], required: true },
+    format: { type: String, enum: ["png", "zip"], required: true },
     dpi: { type: Number, required: true },
     sheet: {
       widthIn: { type: Number, required: true },

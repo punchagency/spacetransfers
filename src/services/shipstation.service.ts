@@ -66,6 +66,21 @@ async function ssRequest<T>(method: string, path: string, body?: unknown): Promi
   return res.json() as Promise<T>;
 }
 
+// Fetches a full ShipStation URL (used by webhook handlers to retrieve resource payloads).
+export async function ssRequestByUrl<T>(fullUrl: string): Promise<T> {
+  if (!isShipStationConfigured()) throw new Error("ShipStation credentials not configured");
+  const creds = Buffer.from(`${env.shipStationApiKey}:${env.shipStationApiSecret}`).toString("base64");
+  const res = await fetch(fullUrl, {
+    method: "GET",
+    headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/json" },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`ShipStation GET ${fullUrl} → HTTP ${res.status}: ${text.slice(0, 400)}`);
+  }
+  return res.json() as Promise<T>;
+}
+
 // ── ShipStation API wrappers ──────────────────────────────────────────────────
 
 interface SSCreateOrderResponse {

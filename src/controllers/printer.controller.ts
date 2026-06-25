@@ -26,7 +26,12 @@ import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { triggerShipStationWorkflow } from "../services/shipstation.service.js";
+import {
+  triggerShipStationWorkflow,
+  isShipStationConfigured,
+  createShipStationOrder,
+  createShipStationLabel,
+} from "../services/shipstation.service.js";
 import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
 import sharp from "sharp";
 import PDFDocument from "pdfkit";
@@ -36,6 +41,8 @@ import PDFDocument from "pdfkit";
 type ExportJobStatus = "queued" | "processing" | "done" | "failed";
 interface InMemoryExportJob {
   status: ExportJobStatus;
+  progress?: number;
+  message?: string;
   result?: {
     exportId: string;
     dpi: number;
@@ -1178,15 +1185,105 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
     (async () => {
       exportJobStore.set(exportJobId, { ...exportJobStore.get(exportJobId)!, status: "processing" });
       try {
+        // Preserve croppedUrl — it holds the trimmedUrl (full-res, server-processed) or
+        // a data URL from canvas fallback / AI background removal. Stripping it causes the
+        // export to fall back to the ORIGINAL (untrimmed) Cloudinary URL and resize it into
+        // the trimmed bounding box via fit:"fill", which distorts the image.
+        const fullResItems = artboardItems.map((it: any) => ({
+          assetId: String(it.assetId || ""),
+          croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
+          // Pixel dimensions of the croppedUrl source — provided by the client for
+          // canvas-processed items (canvas crop, BG removal) so the DPI calculation
+          // uses the ACTUAL exported pixel count, not the DB's pre-crop original.
+          croppedWidthPx: typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0 ? it.croppedWidthPx : undefined,
+          widthIn: Number(it.widthIn),
+          heightIn: Number(it.heightIn),
+          posX: Number(it.posX),
+          posY: Number(it.posY),
+          rotation: typeof it.rotation === "number" ? it.rotation : 0,
+          flipped: Boolean(it.flipped),
+          copies: typeof it.copies === "number" ? it.copies : 1,
+        }));
+
+        // Determine export DPI from the native resolution of the ACTUAL source images.
+        //
+        // Priority order for pixel-count source:
+        //   1. croppedWidthPx (client-supplied for canvas-processed items):
+        //      The canvas output pixel count — always accurate regardless of DB state.
+        //      Canvas crop shrinks the image (cropWidth < widthPx), so using widthPx
+        //      would produce exportDpi = widthPx/widthIn >> actual, causing upscaling.
+        //   2. trimmedWidthPx from DB (for Cloudinary-trimmed items):
+        //      The server-trimmed image pixel count. widthIn = trimmedWidthIn so
+        //      effectiveDpi = trimmedWidthPx/widthIn is the exact native DPI.
+        //   3. widthPx from DB (fallback — original upload, pre-trim):
+        //      Only used when no trim was performed and no canvas processing occurred.
+        //
+        // We take the MIN across all items so no source is ever upscaled:
+        //   effectiveDpi = srcPx / it.widthIn
+        //   exportDpi    = min(effectiveDpis), clamped [72, 600]
+        const uniqueAssetIds = [
+          ...new Set(
+            fullResItems
+              .filter((it) => !it.croppedWidthPx && mongoose.Types.ObjectId.isValid(it.assetId))
+              .map((it) => it.assetId)
+          ),
+        ];
+        let exportDpi = 300;
+        {
+          const effectiveDpis: number[] = [];
+
+          // Items with client-supplied croppedWidthPx: use it directly — most accurate.
+          for (const it of fullResItems) {
+            if (!(it.widthIn > 0)) continue;
+            if (typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0) {
+              effectiveDpis.push(Math.round(it.croppedWidthPx / it.widthIn));
+            }
+          }
+
+          // Items without croppedWidthPx: look up DB dimensions.
+          if (uniqueAssetIds.length > 0) {
+            const sourceAssets = await Asset.find({
+              _id: { $in: uniqueAssetIds.map((id) => new mongoose.Types.ObjectId(id)) },
+            })
+              .select("dpi widthPx heightPx trimmedWidthPx trimmedHeightPx")
+              .lean();
+            const assetMap = new Map(
+              (sourceAssets as any[]).map((a) => [String(a._id), a])
+            );
+            for (const it of fullResItems) {
+              if (!(it.widthIn > 0) || it.croppedWidthPx) continue;
+              const asset = assetMap.get(it.assetId) as any;
+              if (!asset) continue;
+              const srcPx =
+                (typeof asset.trimmedWidthPx === "number" && asset.trimmedWidthPx > 0)
+                  ? asset.trimmedWidthPx
+                  : (typeof asset.widthPx === "number" && asset.widthPx > 0)
+                  ? asset.widthPx
+                  : null;
+              if (srcPx !== null) {
+                effectiveDpis.push(Math.round(srcPx / it.widthIn));
+              } else if (typeof asset.dpi === "number" && asset.dpi > 0) {
+                effectiveDpis.push(asset.dpi);
+              }
+            }
+          }
+
+          if (effectiveDpis.length > 0) {
+            // MIN so the sheet DPI is never higher than the weakest source can supply —
+            // every image is downscaled or rendered 1:1 (sharp); none are upscaled (blurry).
+            exportDpi = Math.max(72, Math.min(600, Math.min(...effectiveDpis)));
+          }
+        }
+
         const rendered = await exportGangsheetPng24({
           jobId: job.id,
           printerId: String(printerId),
           sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
           sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
-          artboardItems,
-          dpi: 300,
-          // Full sheet — matches the artboard layout 1:1. No crop offset so
-          // item positions are identical between the preview and the download.
+          artboardItems: fullResItems,
+          dpi: exportDpi,
+          // Full sheet — preserves the artboard layout 1:1 so item positions
+          // match exactly what the customer approved.
           cropToContent: false,
           itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
           sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
@@ -1307,7 +1404,7 @@ export const getExportJobStatus = async (req: Request, res: Response, next: Next
 export const getJobGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const requestedResolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 72));
+    const requestedResolution = Math.max(10, parseInt(req.query.resolution as string) || 150);
     const printerId = req.user?.id;
 
     if (!mongoose.Types.ObjectId.isValid(String(jobId))) {
@@ -1377,23 +1474,46 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
 
-    // Cap DPI so the canvas never exceeds ~15 Mpx: prevents a 1200"-sheet preview
-    // from allocating a 550+ MB RGBA buffer and exceeding browser image limits.
-    const MAX_PREVIEW_PIXELS = 15_000_000;
-    const pixelBudgetDPI = Math.floor(
-      Math.sqrt(MAX_PREVIEW_PIXELS / Math.max(0.01, sheetWidthIn * sheetHeightIn))
+    const resolution = requestedResolution;
+
+    // Preserve croppedUrl — it is the trimmedUrl (server-processed, full-res) for server-trimmed
+    // assets, or a lossless data URL for canvas-cropped / AI bg-removed items. Stripping it
+    // forces the export to use the original (untrimmed) Cloudinary URL and resize it into the
+    // trimmed bounding box via fit:"fill", which squishes the image and causes visible distortion.
+    const fullResItems = artboardItems.map((it: any) => ({
+      assetId: it.assetId,
+      croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
+      widthIn: it.widthIn,
+      heightIn: it.heightIn,
+      posX: it.posX,
+      posY: it.posY,
+      rotation: it.rotation,
+      flipped: it.flipped,
+      copies: it.copies,
+    }));
+
+    // WebP has a hard 16383 px per-dimension limit. For very tall sheets (e.g. a
+    // 1179" roll) this caps DPI to 13 — unacceptably low. PNG has no dimension
+    // limit; it is instead capped by the 2 GB RGBA buffer, giving ~146 DPI for
+    // the same sheet. Auto-switch to PNG when WebP would result in < 50 DPI.
+    const WEBP_DIM_LIMIT = 16383;
+    const MIN_WEBP_DPI = 50;
+    const webpMaxDpi = Math.min(
+      Math.floor(WEBP_DIM_LIMIT / Math.max(0.01, sheetWidthIn)),
+      Math.floor(WEBP_DIM_LIMIT / Math.max(0.01, sheetHeightIn))
     );
-    const resolution = Math.max(10, Math.min(requestedResolution, pixelBudgetDPI));
+    const previewFormat: "webp" | "png" = webpMaxDpi >= MIN_WEBP_DPI ? "webp" : "png";
 
     const rendered = await exportGangsheetPng24({
       jobId: String(jobId),
       printerId: String(printerId),
       sheetWidthIn,
       sheetHeightIn,
-      artboardItems,
+      artboardItems: fullResItems,
       dpi: resolution,
+      cropToContent: true,
       maxComposites: 10000,
-      format: "webp",
+      format: previewFormat,
       itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
       sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
     });
@@ -1410,8 +1530,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
     res.json({
       previewDataUrl,
       resolutionDPI: rendered.dpi,
-      sheetWidthIn,
-      sheetHeightIn,
+      sheetWidthIn: rendered.sheet.widthIn,
+      sheetHeightIn: rendered.sheet.heightIn,
       totalItems: artboardItems.length,
       cacheKey: rendered.cacheKey,
     });
@@ -1453,8 +1573,10 @@ export const downloadGangsheetExport = async (req: Request, res: Response, next:
     });
 
     const stats = await fs.promises.stat(String((exp as any).filePath));
+    const fmt = String((exp as any).format || "png");
+    const contentType = fmt === "zip" ? "application/zip" : "image/png";
     res.setHeader("Content-Length", String(stats.size));
-    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${String((exp as any).fileName)}"`);
     res.setHeader("Cache-Control", "no-store");
     fs.createReadStream(String((exp as any).filePath)).pipe(res);
@@ -1539,90 +1661,359 @@ export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, n
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
 
-    // Render the full gangsheet as PNG at 150 DPI (auto-capped to stay within memory limits).
-    // PNG format preserves exact colors for PDF embedding; the cache key differs from the
-    // webp preview so both can coexist on disk without conflict.
+    // Preserve croppedUrl — it is the trimmedUrl (full-res, server-processed) for normally
+    // uploaded assets, or a lossless PNG data URL for canvas-cropped / AI bg-removed items.
+    // Stripping it makes the export download the untrimmed original and squeeze it into the
+    // trimmed bounding box (fit:"fill"), producing a distorted / squished image.
+    const fullResItems = artboardItems.map((it: any) => ({
+      assetId: it.assetId,
+      croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
+      widthIn: it.widthIn,
+      heightIn: it.heightIn,
+      posX: it.posX,
+      posY: it.posY,
+      rotation: it.rotation,
+      flipped: it.flipped,
+      copies: it.copies,
+    }));
+
+    // Cap DPI so the rendered PNG stays within PDFKit's safe loading limit (~700 MB raw RGBA).
+    // 175 M pixels × 4 bytes = 700 MB — safely under Node's 4 GB Buffer limit and PDFKit's
+    // internal decompression cap. For a 22"×22" sheet this gives exactly 600 DPI (print grade).
+    // For a 22"×60" roll it gives ~364 DPI. For the 98-foot roll (22"×1179") it gives ~83 DPI.
+    const MAX_PDF_SAFE_PIXELS = 175_000_000;
+    const pdfDpi = Math.max(10, Math.min(600,
+      Math.floor(Math.sqrt(MAX_PDF_SAFE_PIXELS / Math.max(0.01, sheetWidthIn * sheetHeightIn)))
+    ));
+
     const rendered = await exportGangsheetPng24({
       jobId: String(jobId),
       printerId: String(printerId),
       sheetWidthIn,
       sheetHeightIn,
-      artboardItems,
-      dpi: 150,
-      cropToContent: false,
+      artboardItems: fullResItems,
+      dpi: pdfDpi,
+      cropToContent: true,
       format: "png",
       itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
       sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
     });
 
-    const actualDpi = rendered.dpi;
-    const filePath = rendered.filePath;
-
-    // Get actual pixel dimensions from the rendered file.
-    const meta = await sharp(filePath, { limitInputPixels: false }).metadata();
-    const imgWidthPx = meta.width ?? Math.round(sheetWidthIn * actualDpi);
-    const imgHeightPx = meta.height ?? Math.round(sheetHeightIn * actualDpi);
-
-    // Split into portrait pages, each covering PAGE_HEIGHT_IN inches of the sheet.
-    // Using the sheet width as page height keeps pages square and readable for standard sheets.
-    const PAGE_HEIGHT_IN = Math.min(sheetWidthIn, 23.5);
-    const PAGE_HEIGHT_PTS = PAGE_HEIGHT_IN * 72;          // 1 PDF point = 1/72 inch
-    const PAGE_WIDTH_PTS = sheetWidthIn * 72;
-    const FOOTER_H_PTS = 20;                               // thin footer strip for page numbers
-    const numPages = Math.ceil(sheetHeightIn / PAGE_HEIGHT_IN);
-
     const displayId = jobRaw.displayId
       ? String(jobRaw.displayId)
       : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
 
-    const doc = new PDFDocument({ autoFirstPage: false, margin: 0, compress: true });
+    const PAGE_WIDTH_PTS  = rendered.sheet.widthIn  * 72;
+    const PAGE_HEIGHT_PTS = rendered.sheet.heightIn * 72;
 
+    // Build the PDF entirely in memory before sending.
+    // Piping doc directly to res causes ERR_STREAM_WRITE_AFTER_END if doc.image()
+    // throws: Express's error handler writes a JSON response to an already-piped
+    // stream. Buffering means the try/catch above owns the response cleanly.
+    const doc = new PDFDocument({ autoFirstPage: false, margin: 0, compress: false });
+    const pdfChunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => pdfChunks.push(chunk));
+
+    doc.addPage({ size: [PAGE_WIDTH_PTS, PAGE_HEIGHT_PTS], margin: 0 });
+    doc.image(rendered.filePath, 0, 0, { width: PAGE_WIDTH_PTS, height: PAGE_HEIGHT_PTS });
+
+    await new Promise<void>((resolve, reject) => {
+      doc.on("end", resolve);
+      doc.on("error", reject);
+      doc.end();
+    });
+
+    const pdfBuffer = Buffer.concat(pdfChunks);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="gangsheet_${displayId}_preview.pdf"`);
     res.setHeader("Cache-Control", "no-store");
-    doc.pipe(res);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.send(pdfBuffer);
+  } catch (error) {
+    next(error);
+  }
+};
 
-    for (let pageIdx = 0; pageIdx < numPages; pageIdx++) {
-      const stripTopIn = pageIdx * PAGE_HEIGHT_IN;
-      const stripHeightIn = Math.min(PAGE_HEIGHT_IN, sheetHeightIn - stripTopIn);
+export const exportPngForDownload = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobId } = req.params;
+    const printerId = req.user?.id;
 
-      const stripTopPx = Math.round(stripTopIn * actualDpi);
-      const stripHeightPx = Math.min(
-        Math.round(stripHeightIn * actualDpi),
-        imgHeightPx - stripTopPx,
-      );
-
-      if (stripHeightPx <= 0) break;
-
-      const stripBuf = await sharp(filePath, { limitInputPixels: false })
-        .extract({ left: 0, top: stripTopPx, width: imgWidthPx, height: stripHeightPx })
-        .png({ compressionLevel: 6 })
-        .toBuffer();
-
-      // PDF page: image area + footer.
-      const imgHeightOnPage = (stripHeightIn / PAGE_HEIGHT_IN) * PAGE_HEIGHT_PTS;
-      doc.addPage({ size: [PAGE_WIDTH_PTS, imgHeightOnPage + FOOTER_H_PTS], margin: 0 });
-
-      // Full-bleed image at the top of the page.
-      doc.image(stripBuf, 0, 0, { width: PAGE_WIDTH_PTS, height: imgHeightOnPage });
-
-      // Footer: order ID left, page number center, sheet dimensions right.
-      const footerY = imgHeightOnPage + 4;
-      doc.fillColor("#888888").fontSize(7).font("Helvetica");
-      doc.text(displayId, 8, footerY, { lineBreak: false });
-      doc.text(
-        `Page ${pageIdx + 1} / ${numPages}`,
-        0, footerY,
-        { width: PAGE_WIDTH_PTS, align: "center", lineBreak: false },
-      );
-      doc.text(
-        `${sheetWidthIn.toFixed(2)}" × ${sheetHeightIn.toFixed(2)}"`,
-        0, footerY,
-        { width: PAGE_WIDTH_PTS - 8, align: "right", lineBreak: false },
-      );
+    if (!jobId || !mongoose.Types.ObjectId.isValid(String(jobId))) {
+      const error = new Error("Invalid job id") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    if (!printerId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
     }
 
-    doc.end();
+    const [jobRaw] = await (Order as any).aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(String(jobId)), assignedPrinter: new mongoose.Types.ObjectId(String(printerId)) } },
+      { $project: {
+        displayId: 1,
+        "customer.firstName": 1,
+        "customer.lastName": 1,
+        items: {
+          $map: {
+            input: { $ifNull: ["$items", []] },
+            as: "item",
+            in: {
+              type: "$$item.type",
+              widthIn: "$$item.widthIn",
+              heightIn: "$$item.heightIn",
+              sheetWidthIn: "$$item.sheetWidthIn",
+              sheetHeightIn: "$$item.sheetHeightIn",
+              itemSpacingIn: "$$item.itemSpacingIn",
+              sheetMarginIn: "$$item.sheetMarginIn",
+              artboardItems: {
+                $map: {
+                  input: { $ifNull: ["$$item.artboardItems", []] },
+                  as: "ai",
+                  in: {
+                    assetId: "$$ai.assetId",
+                    croppedUrl: "$$ai.croppedUrl",
+                    widthIn: "$$ai.widthIn",
+                    heightIn: "$$ai.heightIn",
+                    posX: "$$ai.posX",
+                    posY: "$$ai.posY",
+                    rotation: "$$ai.rotation",
+                    flipped: "$$ai.flipped",
+                    copies: "$$ai.copies",
+                  },
+                },
+              },
+            },
+          },
+        },
+      }},
+    ]);
+
+    if (!jobRaw) {
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
+    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
+    if (artboardItems.length === 0) {
+      const error = new Error("No artboard items found for this job") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    const exportJobId = crypto.randomUUID();
+    exportJobStore.set(exportJobId, { status: "queued", progress: 0, message: "Queued...", createdAt: Date.now() });
+
+    (async () => {
+      const setProgress = (progress: number, message: string) => {
+        exportJobStore.set(exportJobId, { ...exportJobStore.get(exportJobId)!, progress, message });
+      };
+
+      try {
+        exportJobStore.set(exportJobId, { ...exportJobStore.get(exportJobId)!, status: "processing" });
+        setProgress(5, "Preparing export...");
+
+        const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
+          ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
+          ? gangsheetItem.widthIn : 23.5;
+        const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
+          ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
+          ? gangsheetItem.heightIn : 23.5;
+
+        const fullResItems = artboardItems.map((it: any) => ({
+          assetId: String(it.assetId || ""),
+          croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
+          widthIn: Number(it.widthIn),
+          heightIn: Number(it.heightIn),
+          posX: Number(it.posX),
+          posY: Number(it.posY),
+          rotation: typeof it.rotation === "number" ? it.rotation : 0,
+          flipped: Boolean(it.flipped),
+          copies: typeof it.copies === "number" ? it.copies : 1,
+        }));
+
+        setProgress(10, "Generating PNG...");
+
+        // Compute the export DPI from the actual source image resolutions so we never
+        // upscale artwork. Upscaling runs lanczos3 on pixels that don't exist, which
+        // is the primary cause of blur. We take the minimum effective DPI across all
+        // items and cap at 300 — matching the "true 300 DPI" intent without exceeding
+        // what the source artwork can actually supply.
+        const uniqueAssetIdsForDpi: string[] = Array.from(
+          new Set<string>(
+            (fullResItems as any[])
+              .filter((it: any) => !String(it.croppedUrl || "").startsWith("data:") && isObjectIdString(String(it.assetId || "")))
+              .map((it: any) => String(it.assetId))
+          )
+        );
+        let exportDpi = 300;
+        if (uniqueAssetIdsForDpi.length > 0) {
+          const sourceAssets = await Asset.find({
+            _id: { $in: uniqueAssetIdsForDpi.map((id: string) => new mongoose.Types.ObjectId(id)) },
+          })
+            .select("dpi widthPx trimmedWidthPx")
+            .lean();
+          const assetMap = new Map((sourceAssets as any[]).map((a) => [String(a._id), a]));
+          const effectiveDpis: number[] = [];
+          for (const it of fullResItems as any[]) {
+            if (!(Number(it.widthIn) > 0) || String(it.croppedUrl || "").startsWith("data:")) continue;
+            const asset = assetMap.get(String(it.assetId)) as any;
+            if (!asset) continue;
+            const srcPx =
+              typeof asset.trimmedWidthPx === "number" && asset.trimmedWidthPx > 0
+                ? asset.trimmedWidthPx
+                : typeof asset.widthPx === "number" && asset.widthPx > 0
+                ? asset.widthPx
+                : null;
+            if (srcPx !== null) {
+              effectiveDpis.push(Math.round(srcPx / Number(it.widthIn)));
+            } else if (typeof asset.dpi === "number" && asset.dpi > 0) {
+              effectiveDpis.push(asset.dpi);
+            }
+          }
+          if (effectiveDpis.length > 0) {
+            exportDpi = Math.max(72, Math.min(300, Math.min(...effectiveDpis)));
+          }
+        }
+
+        const rendered = await exportGangsheetPng24({
+          jobId: String(jobId),
+          printerId: String(printerId),
+          sheetWidthIn,
+          sheetHeightIn,
+          artboardItems: fullResItems,
+          dpi: exportDpi,
+          cropToContent: false,
+          format: "png",
+          itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
+          sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
+        });
+
+        setProgress(60, "Processing export...");
+
+        const firstName = String(jobRaw.customer?.firstName || "").trim();
+        const lastName = String(jobRaw.customer?.lastName || "").trim();
+        const customerName = [firstName, lastName].filter(Boolean).join(" ") || "Customer";
+        const safeName = customerName.replace(/[^a-zA-Z0-9]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "Customer";
+        const dtfRaw = jobRaw.displayId ? String(jobRaw.displayId) : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
+        // Strip non-alphanumeric but preserve the numeric part. E.g. "DTF-0171" → "0171", "ORD-AB12" → "AB12"
+        const dtfNum = dtfRaw.replace(/^[A-Za-z]+-?/g, "").replace(/[^a-zA-Z0-9]/g, "") || dtfRaw.replace(/[^a-zA-Z0-9]/g, "");
+        const baseFilename = `${safeName}_DTF${dtfNum}`;
+
+        const exportDir = path.join(process.cwd(), "uploads", "exports", "printers", String(printerId), String(jobId));
+        await fs.promises.mkdir(exportDir, { recursive: true });
+
+        const SPLIT_THRESHOLD_IN = 120;
+        const needsSplit = rendered.sheet.heightIn > SPLIT_THRESHOLD_IN;
+
+        let finalFilePath: string;
+        let finalFileName: string;
+        let finalByteSize: number;
+        let finalFormat: "png" | "zip";
+
+        if (!needsSplit) {
+          setProgress(90, "Finalizing...");
+          finalFilePath = rendered.filePath;
+          finalFileName = `${baseFilename}.png`;
+          finalByteSize = rendered.byteSize;
+          finalFormat = "png";
+        } else {
+          const dpi = rendered.dpi;
+          const sheetWidthPx = Math.round(rendered.sheet.widthIn * dpi);
+          const totalHeightPx = Math.round(rendered.sheet.heightIn * dpi);
+          const partHeightPx = Math.round(SPLIT_THRESHOLD_IN * dpi);
+          const numParts = Math.ceil(totalHeightPx / partHeightPx);
+
+          setProgress(65, `Splitting into ${numParts} part${numParts > 1 ? "s" : ""}...`);
+
+          const zipFilename = `${baseFilename}.zip`;
+          const zipPath = path.join(exportDir, zipFilename);
+          const zipOutput = fs.createWriteStream(zipPath);
+          const zipArchive = archiver("zip", { zlib: { level: 6 } });
+          zipArchive.pipe(zipOutput);
+
+          for (let i = 0; i < numParts; i++) {
+            const topPx = i * partHeightPx;
+            const extractHeightPx = Math.min(partHeightPx, totalHeightPx - topPx);
+
+            const partBuf = await sharp(rendered.filePath, { limitInputPixels: false })
+              .extract({ left: 0, top: topPx, width: sheetWidthPx, height: extractHeightPx })
+              .png({ compressionLevel: 1 })
+              .withMetadata({ density: rendered.dpi })
+              .toBuffer();
+
+            zipArchive.append(partBuf, { name: `${baseFilename}_Part_${i + 1}.png` });
+            setProgress(65 + Math.round(((i + 1) / numParts) * 20), `Processing part ${i + 1} of ${numParts}...`);
+          }
+
+          setProgress(86, "Creating ZIP...");
+
+          await new Promise<void>((resolve, reject) => {
+            zipOutput.on("close", resolve);
+            zipOutput.on("error", reject);
+            zipArchive.on("error", reject);
+            zipArchive.finalize();
+          });
+
+          setProgress(94, "Saving...");
+          const zipStats = await fs.promises.stat(zipPath);
+          finalFilePath = zipPath;
+          finalFileName = zipFilename;
+          finalByteSize = zipStats.size;
+          finalFormat = "zip";
+        }
+
+        const exportDoc = await GangsheetExport.create({
+          jobId: new mongoose.Types.ObjectId(String(jobId)),
+          printerId: new mongoose.Types.ObjectId(String(printerId)),
+          format: finalFormat,
+          dpi: rendered.dpi,
+          sheet: rendered.sheet,
+          fileName: finalFileName,
+          filePath: finalFilePath,
+          byteSize: finalByteSize,
+          validation: rendered.validation,
+          drive: { status: "skipped" },
+        });
+
+        await GangsheetExportAudit.create({
+          exportId: exportDoc._id,
+          jobId: exportDoc.jobId,
+          printerId: exportDoc.printerId,
+          action: "export_created",
+          meta: { format: finalFormat, dpi: rendered.dpi },
+        });
+
+        exportJobStore.set(exportJobId, {
+          ...exportJobStore.get(exportJobId)!,
+          status: "done",
+          progress: 100,
+          message: "Complete",
+          result: {
+            exportId: String(exportDoc._id),
+            dpi: rendered.dpi,
+            sheet: rendered.sheet,
+            validation: rendered.validation,
+            drive: null,
+          },
+        });
+      } catch (err: any) {
+        console.error("[png-export] failed", { exportJobId, jobId, message: err?.message, stack: err?.stack });
+        exportJobStore.set(exportJobId, {
+          ...exportJobStore.get(exportJobId)!,
+          status: "failed",
+          error: err?.message || "Export failed",
+        });
+      }
+    })().catch((err) => {
+      console.error("[png-export] outer error", { exportJobId, err });
+    });
+
+    res.status(202).json({ exportJobId, status: "queued" });
   } catch (error) {
     next(error);
   }
@@ -1631,38 +2022,112 @@ export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, n
 export const createJobShippingLabel = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const { size, carrier } = req.body;
+    const { carrierId, serviceCode } = req.body;
     const printerId = req.user?.id;
 
-    const allowedSizes = ["4x6", "4x4", "2x4"];
-    if (!size || !allowedSizes.includes(size)) {
-      const error = new Error("Invalid size. Must be one of: 4x6 | 4x4 | 2x4") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
     const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
     if (!job) {
       const error = new Error("Job not found or not assigned to this printer") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
-    const mockTrackingNumber = `1Z${Math.random().toString(36).substring(2, 18).toUpperCase()}`;
-    const labelBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : `http://localhost:${env.port || 4000}`;
-    const labelUrl = `${labelBase}/uploads/label-${job.id}.pdf`;
+    if (!isShipStationConfigured()) {
+      const error = new Error("ShipStation is not configured on this server") as CustomError;
+      error.statusCode = 503;
+      throw error;
+    }
 
-    job.trackingNumber = mockTrackingNumber;
-    job.carrier = carrier || "UPS";
-    job.status = "SHIPPED" as any;
-    if (!job.statusTimeline) job.statusTimeline = [];
-    job.statusTimeline.push({ status: "SHIPPED" as any, time: new Date() });
-    await job.save();
+    const addr = (job as any).shippingAddress;
+    if (!addr?.street || !addr?.city || !addr?.state || !addr?.postalCode) {
+      const error = new Error("Incomplete shipping address — cannot generate label") as CustomError;
+      error.statusCode = 422;
+      throw error;
+    }
+
+    // Clear idempotency lock so this manual trigger works even if a previous attempt failed.
+    if ((job as any).shipStationTriggeredAt) {
+      await Order.updateOne({ _id: job._id }, { $set: { shipStationTriggeredAt: null } });
+    }
+
+    const displayId = String((job as any).displayId ?? String(job._id).slice(-6).toUpperCase());
+
+    const items = ((job as any).items ?? []).map((it: any) => ({
+      name: String(it.name ?? it.type ?? "Print Item"),
+      quantity: Number(it.quantity ?? 1),
+      unitPrice: Number(it.unitPrice ?? 0),
+    }));
+
+    const { shipStationOrderId } = await createShipStationOrder({
+      displayId,
+      customerFirstName: (job as any).customer.firstName,
+      customerLastName: (job as any).customer.lastName,
+      customerEmail: (job as any).customer.email,
+      phone: (job as any).customer.phone,
+      street: addr.street,
+      city: addr.city,
+      state: addr.state,
+      postalCode: addr.postalCode,
+      country: addr.country ?? "US",
+      items,
+      totalAmount: Number((job as any).pricing?.total ?? 0),
+    });
+
+    const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
+      await createShipStationLabel({ shipStationOrderId, carrierId, serviceCode });
+
+    const now = new Date();
+    const timelineEntry = {
+      status: "SHIPPED" as any,
+      time: now,
+      message: `Shipping label generated via ShipStation. Carrier: ${carrier}, Tracking: ${trackingNumber}`,
+      actorRole: "PRINTER",
+      actorId: String(printerId || ""),
+      actorName: null,
+    };
+
+    await Order.updateOne(
+      { _id: job._id },
+      {
+        $set: {
+          status: "SHIPPED",
+          trackingNumber,
+          carrier,
+          shipStationOrderId,
+          shipStationShipmentId,
+          shipStationLabelUrl: labelUrl,
+          shipStationTriggeredAt: now,
+          updatedAt: now,
+        },
+        $push: { statusTimeline: timelineEntry },
+      }
+    );
+
+    publishOrderEvent(String(job._id), "order.status.changed", {
+      orderId: String(job._id),
+      status: "SHIPPED",
+      from: (job as any).status,
+      to: "SHIPPED",
+      trackingNumber,
+      carrier,
+      updatedAt: now,
+      lastTimelineEntry: timelineEntry,
+    });
+
+    notifyAllAdmins({
+      category: "orders",
+      priority: "medium",
+      title: "Shipping label created",
+      message: `Order #${displayId} — label generated manually. Carrier: ${carrier}, Tracking: ${trackingNumber}.`,
+      meta: { orderId: String(job._id), displayId, trackingNumber, carrier },
+    }).catch(() => {});
 
     res.status(201).json({
+      trackingNumber,
       labelUrl,
-      trackingNumber: mockTrackingNumber
+      carrier,
+      shipStationOrderId,
+      shipStationShipmentId,
     });
   } catch (error) {
     next(error);
@@ -1923,7 +2388,16 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
     const storedPricing = (job as any).pricing || {};
     const currency = String(storedPricing.currency || "USD");
 
-    const earning = roundMoney(calcEarning(job));
+    // Use the same cost formula the admin sees: printer's configured rate applied to sheet dimensions.
+    const printerUser = await User.findById(printerId).select("settings.pricing").lean();
+    const partnerPricing = (printerUser as any)?.settings?.pricing || {};
+    const breakdown = computePartnerCostBreakdown({
+      items: Array.isArray((job as any).items) ? (job as any).items : [],
+      partnerPricing,
+      priority: (job as any).priority,
+      adjustments: (job as any)?.pricing?.adjustments || [],
+    });
+    const earning = breakdown.subtotal > 0 ? breakdown.subtotal : roundMoney(calcEarning(job));
 
     res.json({
       id: String((job as any)._id),
@@ -2087,17 +2561,24 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     const current = String((job as any).status || "").toUpperCase();
     const next = normalized;
 
+    // Status rank — higher number = further along. Transitions must never decrease rank.
+    const STATUS_RANK: Record<string, number> = {
+      PENDING: 0,
+      PROCESSING: 1,
+      PRINTING: 2,
+      QUALITY_CHECK: 3,
+      SHIPPED: 4,
+      COMPLETED: 5,
+    };
+    const currentRank = STATUS_RANK[current] ?? -1;
+    const nextRank    = STATUS_RANK[next]    ?? -1;
+
     const canTransition = (() => {
-      if (next === current) return true;
-      if (current === "COMPLETED") return false;
-      if (next === "CANCELLED") return true;
-      if (next === "PENDING") return ["PENDING", "PROCESSING", "PRINTING"].includes(current);
-      if (next === "PROCESSING") return ["PENDING", "PROCESSING"].includes(current);
-      if (next === "PRINTING") return ["PENDING", "PROCESSING", "PRINTING"].includes(current);
-      if (next === "QUALITY_CHECK") return ["PENDING", "PRINTING", "QUALITY_CHECK", "PROCESSING"].includes(current);
-      if (next === "SHIPPED") return ["QUALITY_CHECK", "SHIPPED"].includes(current);
-      if (next === "COMPLETED") return ["SHIPPED", "QUALITY_CHECK", "COMPLETED"].includes(current);
-      return false;
+      if (next === current) return true;          // no-op always fine
+      if (next === "CANCELLED") return true;      // cancel is a separate semantic action
+      if (current === "COMPLETED") return false;  // terminal state
+      if (nextRank < 0 || currentRank < 0) return false; // unknown status
+      return nextRank > currentRank;              // forward-only
     })();
 
     if (!canTransition) {

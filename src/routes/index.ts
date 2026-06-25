@@ -8,6 +8,7 @@ import orderRoutes from "./order.routes.js";
 import healthRoutes from "./health.routes.js";
 import payoutRoutes from "./payout.routes.js";
 import geocodingRoutes from "./geocoding.routes.js";
+import webhookRoutes from "./webhook.routes.js";
 
 const router = express.Router();
 
@@ -20,5 +21,6 @@ router.use("/printer", printerRoutes);
 router.use("/admin", adminRoutes);
 router.use("/orders", orderRoutes);
 router.use("/payouts", payoutRoutes);
+router.use("/webhooks", webhookRoutes);
 
 export default router;
