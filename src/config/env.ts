@@ -33,6 +33,7 @@ interface Env {
   shipStationApiSecret?: string;
   shipStationCarrierId?: string;   // e.g. "stamps_com" | "ups" | "fedex"
   shipStationServiceCode?: string; // e.g. "usps_priority_mail" | "ups_ground"
+  shipStationWebhookSecret?: string; // token appended as ?token= to the webhook URL
   shipStationPollIntervalMs: number;
   shipStationMaxPollingDays: number;
   // AI Upscaling — Replicate (best, ~$0.002/img) and/or HuggingFace (free tier)
@@ -86,6 +87,7 @@ export const env: Env = {
   shipStationApiSecret: cleanEnvString(process.env.SHIPSTATION_API_SECRET),
   shipStationCarrierId: cleanEnvString(process.env.SHIPSTATION_CARRIER_ID),
   shipStationServiceCode: cleanEnvString(process.env.SHIPSTATION_SERVICE_CODE),
+  shipStationWebhookSecret: cleanEnvString(process.env.SHIPSTATION_WEBHOOK_SECRET),
   shipStationPollIntervalMs: process.env.SHIPSTATION_POLL_INTERVAL_MS
     ? Number(process.env.SHIPSTATION_POLL_INTERVAL_MS)
     : 30 * 60 * 1000, // 30 minutes

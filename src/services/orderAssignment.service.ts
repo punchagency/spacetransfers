@@ -280,16 +280,44 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     );
   }
 
-  // Strict same-region only — cross-region assignment is never allowed.
+  // Preferred region is the customer's own region. When no printers are available
+  // there, fall back through adjacent regions in priority order, excluding West
+  // as a last resort so domestic assignments avoid cross-continental shipping.
+  const REGION_FALLBACKS: Record<string, string[]> = {
+    "West":      ["Midwest", "Northeast", "South"],
+    "Midwest":   ["Northeast", "South",    "West"],
+    "Northeast": ["Midwest",  "South",     "West"],
+    "South":     ["Midwest",  "Northeast", "West"],
+  };
+
   const candidatesSameRegion = customerRegion
     ? eligibleCandidates.filter((c) => c.printerRegion === customerRegion)
     : [];
 
-  const pool = candidatesSameRegion;
+  let pool = candidatesSameRegion;
+  let assignedRegion: string = customerRegion || "";
+  let isCrossRegion = false;
+
+  if (pool.length === 0) {
+    const fallbackChain = REGION_FALLBACKS[customerRegion || ""] || [];
+    for (const fallbackRegion of fallbackChain) {
+      const regionCandidates = eligibleCandidates.filter((c) => c.printerRegion === fallbackRegion);
+      if (regionCandidates.length > 0) {
+        pool = regionCandidates;
+        assignedRegion = fallbackRegion;
+        isCrossRegion = true;
+        console.log(
+          `[AUTO_ASSIGN] FALLBACK orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
+          `no same-region printers, using fallback region=${fallbackRegion} count=${regionCandidates.length}`
+        );
+        break;
+      }
+    }
+  }
 
   if (pool.length > 0) {
     console.log(
-      `[AUTO_ASSIGN] POOL same-region=${customerRegion} count=${pool.length} ` +
+      `[AUTO_ASSIGN] POOL region=${assignedRegion}${isCrossRegion ? " (cross-region fallback)" : ""} count=${pool.length} ` +
       `printers=[${pool.map((c) => `${c.printerName}(${c.printerState})`).join(",")}]`
     );
   }
@@ -299,7 +327,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     const noRegionReason =
       eligibleCandidates.length === 0
         ? "No available printers"
-        : `No available printers in region (${customerRegion || "unknown"}). Cross-region assignment is disabled.`;
+        : `No available printers in region (${customerRegion || "unknown"}) or any fallback region.`;
 
     console.log(
       `[AUTO_ASSIGN] UNASSIGNED orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
@@ -346,7 +374,9 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   }
   order.statusTimeline = order.statusTimeline || [];
 
-  const reason = `Auto-assigned (same region: ${customerRegion || "Unknown"})`;
+  const reason = isCrossRegion
+    ? `Auto-assigned (cross-region fallback: ${customerRegion || "?"} → ${assignedRegion})`
+    : `Auto-assigned (same region: ${customerRegion || "Unknown"})`;
 
   order.statusTimeline.push({
     status: String(order.status || "PENDING"),

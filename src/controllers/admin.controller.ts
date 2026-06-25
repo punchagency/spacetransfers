@@ -147,10 +147,9 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         return total + (5.00 * quantity);
       }, 0);
 
-      const fees = customerCharge > 0 ? (customerCharge * 0.029) + 0.30 : 0;
-      const profit = customerCharge - partnerPayout - fees;
-      
-      return { customerCharge, partnerPayout, fees, profit };
+      const profit = customerCharge - partnerPayout;
+
+      return { customerCharge, partnerPayout, profit };
     };
  
     const recentOrders = recentOrdersRaw.map(order => {
@@ -873,8 +872,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         }
         return total;
       }, 0);
-      const processingFees = customerCharge * 0.05;
-      const profits = customerCharge - partnerPayout - processingFees;
+      const profits = customerCharge - partnerPayout;
   
       return {
         id: order._id,
@@ -1406,8 +1404,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     const totalPartnerCost = breakdown.subtotal;
 
     const customerPaid = order.pricing?.total || 0;
-    const processingFees = customerPaid > 0 ? (customerPaid * 0.029) + 0.30 : 0;
-    const adminProfit = customerPaid - totalPartnerCost - processingFees;
+    const adminProfit = customerPaid - totalPartnerCost;
 
     const gangsheetOrderItem = (order.items || []).find((it: any) => it?.type === "gangsheet") as any | null;
     const designId = gangsheetOrderItem?.designId || order.items?.[0]?.designId || null;
@@ -1532,7 +1529,6 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       financials: {
         customerPaid: Number(customerPaid.toFixed(2)),
         partnerCost: Number(totalPartnerCost.toFixed(2)),
-        processingFees: Number(processingFees.toFixed(2)),
         adminProfit: Number(adminProfit.toFixed(2)),
         currency: order.pricing?.currency || "USD"
       },
@@ -2353,8 +2349,7 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
       adjustments: (order as any)?.pricing?.adjustments || []
     });
     const partnerPayout = breakdown.subtotal;
-    const fees = order.pricing.total > 0 ? (order.pricing.total * 0.029) + 0.30 : 0;
-    const margin = order.pricing.total - partnerPayout - fees;
+    const margin = order.pricing.total - partnerPayout;
 
     res.status(200).json({
       customerCharge: Number(order.pricing.total.toFixed(2)),
@@ -2398,13 +2393,11 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
     };
 
     const partnerPayout = (order.items || []).reduce((total, item) => total + calculateItemCost(item), 0);
-    const fees = customerCharge > 0 ? (customerCharge * 0.029) + 0.30 : 0;
-    const margin = customerCharge - partnerPayout - fees;
+    const margin = customerCharge - partnerPayout;
 
     res.status(200).json({
       customerCharge: Number(customerCharge.toFixed(2)),
       partnerPayout: Number(partnerPayout.toFixed(2)),
-      fees: Number(fees.toFixed(2)),
       margin: Number(margin.toFixed(2)),
       currency: order.pricing?.currency || "USD"
     });
@@ -2628,23 +2621,15 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
     const calculateTotals = (orderList: any[]) => {
       let revenue = 0;
       let payout = 0;
-      let fees = 0;
-      
+
       orderList.forEach(o => {
-        const orderRevenue = (o.pricing?.total || 0);
-        revenue += orderRevenue;
-        
+        revenue += (o.pricing?.total || 0);
         o.items.forEach((item: any) => {
           payout += calculateItemCost(item);
         });
-
-        if (orderRevenue > 0) {
-          fees += (orderRevenue * 0.029) + 0.30;
-        }
       });
 
-      const totalCost = payout + fees;
-      return { revenue, cost: totalCost, profit: revenue - totalCost };
+      return { revenue, cost: payout, profit: revenue - payout };
     };
 
     const currentTotals = calculateTotals(orders);

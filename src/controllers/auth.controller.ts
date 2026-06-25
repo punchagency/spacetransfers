@@ -140,7 +140,7 @@ export const confirmEmailVerification = async (req: Request, res: Response, next
       return res.json({ verified: true, message: "Email verified successfully" });
     }
 
-    // Token exists but the expiry has passed (not yet verified).
+    // Token exists but the expiry has passed (not yet verified). 
     if (!user.emailVerificationExpiresAt || user.emailVerificationExpiresAt < new Date()) {
       return res.status(400).json({ message: "Verification link has expired. Please request a new one." });
     }

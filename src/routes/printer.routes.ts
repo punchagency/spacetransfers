@@ -22,6 +22,7 @@ import {
   getJobGangsheetPreview,
   downloadGangsheetExport,
   downloadGangsheetPreviewPdf,
+  exportPngForDownload,
   getPrinterOrdersSummary,
   updatePrinterOrderStatus,
   cancelPrinterOrder,
@@ -68,6 +69,7 @@ router.post("/jobs/:jobId/assets/bundle", createJobAssetBundle);
 router.get("/jobs/:jobId/assets/bundle/download", downloadJobAssetBundle);
 router.post("/jobs/:jobId/gangsheet/export", exportJobGangsheet);
 router.get("/jobs/:jobId/gangsheet/preview-pdf", downloadGangsheetPreviewPdf);
+router.post("/jobs/:jobId/gangsheet/png-export", exportPngForDownload);
 router.get("/jobs/export-status/:exportJobId", getExportJobStatus);
 router.get("/exports/:exportId/file", downloadGangsheetExport);
 router.get("/orders/summary", getPrinterOrdersSummary);
