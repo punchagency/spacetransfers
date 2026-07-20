@@ -9,14 +9,23 @@ import { generatePDF } from "pdf-node";
 import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
+import { LoginActivity } from "../models/loginActivity.model.js";
 import { Design } from "../models/design.model.js";
 import { AdminNotification } from "../models/adminNotification.model.js";
 import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminNotificationClient } from "../services/adminNotificationsHub.js";
-import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { notifyAllAdmins, createAdminNotification } from "../services/adminNotifications.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
+import {
+  syncPartnerCapacitySafe,
+  getAssignmentSettings,
+  getEffectiveMaxConcurrent,
+  countActiveJobs,
+  isAtCapacity,
+} from "../services/partnerCapacity.service.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import { computeAssignmentDeadline, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -538,6 +547,52 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
    }
  };
 
+export const getAdminLoginActivity = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    if (!adminId) {
+      const error = new Error("Unauthorized") as CustomError;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    // Server-side pagination. pageSize is clamped to [1, 50]; the UI offers
+    // 10 / 25 / 50. `limit` is still accepted as an alias for backwards compat.
+    const pageSize = Math.max(1, Math.min(50, parseInt(String(req.query.pageSize ?? req.query.limit ?? "10"), 10) || 10));
+    const requestedPage = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+
+    const filter = { userId: new mongoose.Types.ObjectId(adminId) };
+    const total = await LoginActivity.countDocuments(filter);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    // Clamp the page to the valid range so an out-of-bounds request (e.g. after
+    // the record count shrinks) still returns the last available page.
+    const page = Math.min(requestedPage, totalPages);
+
+    const activity = await LoginActivity.find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    res.status(200).json({
+      activity: activity.map((a: any) => ({
+        id: String(a._id),
+        device: a.device || "Unknown device",
+        ip: a.ip || "Unknown",
+        location: a.location || "Unknown",
+        status: a.status === "failed" ? "Failed" : "Success",
+        time: a.createdAt
+      })),
+      total,
+      page,
+      pageSize,
+      totalPages
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
@@ -692,8 +747,21 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
     }
     const ok = await bcrypt.compare(currentPassword, admin.passwordHash);
     if (!ok) {
+      // A wrong *submitted* current password is a credential re-check failure on
+      // an already-authenticated request — NOT a bad session token. It must not
+      // be 401, or the client treats it as an expired token and logs the user
+      // out. 403 keeps the session alive and surfaces a descriptive message.
       const error = new Error("Current password is incorrect") as CustomError;
-      error.statusCode = 401;
+      error.statusCode = 403;
+      throw error;
+    }
+
+    // The new password must actually be a change. currentPassword was just
+    // verified against the stored hash, so a plain equality check is sufficient
+    // to detect reuse.
+    if (newPassword === currentPassword) {
+      const error = new Error("New password must be different from your current password") as CustomError;
+      error.statusCode = 400;
       throw error;
     }
 
@@ -708,6 +776,16 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
     admin.settings.security.lastPasswordChange = new Date();
     admin.markModified("settings.security");
     await admin.save();
+
+    // Send a notification that the password was changed.
+    createAdminNotification({
+      adminId: String(adminId),
+      category: "system",
+      priority: "medium",
+      title: "Password changed",
+      message: "Your admin password was successfully updated.",
+      meta: { type: "password_changed", changedAt: new Date() }
+    }).catch(() => {});
 
     res.status(200).json({ updated: true });
   } catch (error) {
@@ -1191,6 +1269,9 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
 
     await order.save();
 
+    // A terminal status frees a capacity slot; reconcile the partner's availability.
+    if (order.assignedPrinter) syncPartnerCapacitySafe(String(order.assignedPrinter));
+
     notifyAllAdmins({
       category: "orders",
       priority: "medium",
@@ -1287,8 +1368,43 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     const previousPartnerId = order.assignedPrinter;
     const isReassignment = previousPartnerId && previousPartnerId.toString() !== partnerId;
 
+    // Capacity guard — a printer at its maximum active job limit cannot receive
+    // additional work, whether the assignment is automatic or manual. Enforced
+    // here on the backend so it can't be bypassed via direct API calls. Skipped
+    // only for a no-op re-assign to the printer who already holds this order
+    // (that adds no new load).
+    const alreadyHoldsThisOrder = previousPartnerId && String(previousPartnerId) === String(partnerId);
+    if (!alreadyHoldsThisOrder) {
+      const assignmentSettings = await getAssignmentSettings();
+      const effectiveMax = getEffectiveMaxConcurrent(partner as any, assignmentSettings);
+      if (effectiveMax != null) {
+        const activeCount = await countActiveJobs(String(partnerId));
+        if (isAtCapacity(activeCount, effectiveMax)) {
+          // Make sure the partner's availability reflects the capacity state.
+          syncPartnerCapacitySafe(String(partnerId));
+          return res.status(409).json({
+            code: "AT_MAX_CAPACITY",
+            message:
+              "This printer has reached its maximum active job limit and cannot accept additional jobs until one or more active jobs are completed or reassigned.",
+            partnerId: String(partnerId),
+            activeJobs: activeCount,
+            maxJobs: effectiveMax,
+          });
+        }
+      }
+    }
+
     order.assignedPrinter = partnerId;
     order.priority = priority.toUpperCase() as any;
+    // (Re)start the 24h fulfilment clock from this assignment moment. A no-op
+    // re-assign to the printer who already holds the order keeps its existing
+    // deadline (nothing changed); a first assignment or a hand-off to a different
+    // printer resets it — the new printer gets a fresh 24 hours.
+    if (!alreadyHoldsThisOrder || !order.assignmentDeadline) {
+      const assignedAt = new Date();
+      order.assignedAt = assignedAt;
+      order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
+    }
     if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
       order.status = "PENDING";
     }
@@ -1325,6 +1441,12 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     } as any);
 
     await order.save();
+
+    // Reconcile capacity: the newly-assigned partner may now be at their max
+    // (auto-pause), and on a reassignment the previous partner frees a slot
+    // (possible auto-reopen).
+    syncPartnerCapacitySafe(String(partnerId));
+    if (isReassignment && previousPartnerId) syncPartnerCapacitySafe(String(previousPartnerId));
 
     notifyAllAdmins({
       category: "orders",
@@ -1583,7 +1705,7 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       throw error;
     }
 
-    const requestedResolution = Math.max(72, Math.min(300, parseInt(req.query.resolution as string) || 72));
+    const requestedResolution = Math.max(72, Math.min(100, parseInt(req.query.resolution as string) || 72));
 
     // Project only the 8 rendering fields from artboard items — all items, minimal payload.
     const [orderRaw] = await (Order as any).aggregate([
@@ -1660,8 +1782,9 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       sheetHeightIn,
       artboardItems,
       dpi: resolution,
-      maxComposites: 10000,
+      maxComposites: 500, // Cap admin previews to first 500 composites for instant response
       format: "webp",
+      useLossyPreview: true, // Use fast lossy WebP for admin preview
     });
 
     const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
@@ -1677,6 +1800,7 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       sheetHeightIn,
       totalItems: artboardItems.length,
       cacheKey: rendered.cacheKey,
+      previewNote: artboardItems.length > 500 ? "Preview shows first 500 items" : undefined,
     });
   } catch (error) {
     next(error);
@@ -2608,28 +2732,60 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
       status: { $nin: ["CANCELLED", "REJECTED"] }
     });
 
+    // Cost = what we pay the partner. Use the SAME canonical breakdown as the
+    // order-financials view and the payout system so every screen agrees. Look
+    // up each assigned partner's pricing once.
+    const partnerIds = Array.from(
+      new Set(
+        [...orders, ...priorOrders]
+          .map((o: any) => (o.assignedPrinter?._id ? String(o.assignedPrinter._id) : o.assignedPrinter ? String(o.assignedPrinter) : null))
+          .filter(Boolean) as string[]
+      )
+    );
+    const partnerDocs = partnerIds.length
+      ? await User.find({ _id: { $in: partnerIds } }).select("settings.pricing").lean()
+      : [];
+    const partnerPricingMap = new Map<string, any>(
+      partnerDocs.map((p: any) => [String(p._id), p.settings?.pricing || {}])
+    );
+
+    const calcOrderPartnerCost = (o: any): number => {
+      const pid = o.assignedPrinter?._id
+        ? String(o.assignedPrinter._id)
+        : o.assignedPrinter
+          ? String(o.assignedPrinter)
+          : null;
+      const pricing = pid ? partnerPricingMap.get(pid) || {} : {};
+      return computePartnerCostBreakdown({
+        items: Array.isArray(o.items) ? o.items : [],
+        partnerPricing: pricing,
+        priority: o.priority,
+        adjustments: o.pricing?.adjustments || [],
+      }).subtotal;
+    };
+
+    // Per-item cost approximation for the product-level table (kept aligned to the
+    // canonical default rate so it stays in the same ballpark as the KPI costs).
+    const DEFAULT_RATE_PER_SQFT = 2.5;
     const calculateItemCost = (item: any) => {
       const { widthIn, heightIn, quantity = 1 } = item;
       if (widthIn && heightIn) {
         const areaSqFt = (widthIn * heightIn) / 144;
-        const costPerSqFt = 3.50; 
-        return areaSqFt * costPerSqFt * quantity;
+        return areaSqFt * DEFAULT_RATE_PER_SQFT * quantity;
       }
-      return 5.00 * quantity;
+      return DEFAULT_RATE_PER_SQFT * quantity;
     };
 
     const calculateTotals = (orderList: any[]) => {
       let revenue = 0;
-      let payout = 0;
+      let cost = 0;
 
       orderList.forEach(o => {
         revenue += (o.pricing?.total || 0);
-        o.items.forEach((item: any) => {
-          payout += calculateItemCost(item);
-        });
+        cost += calcOrderPartnerCost(o);
       });
 
-      return { revenue, cost: payout, profit: revenue - payout };
+      return { revenue, cost, profit: revenue - cost };
     };
 
     const currentTotals = calculateTotals(orders);
@@ -2759,6 +2915,57 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
       },
       revenueByRegion,
       products
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPartnerAssignmentSettings = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const settings = await Settings.findOne({ key: "partnerAssignment" }).lean();
+    const value = (settings as any)?.value || {};
+
+    res.json({
+      assignmentRule: value.rule || "nearest-region",
+      maxJobsEnabled: value.maxJobsEnabled !== false,
+      maxJobsValue: value.maxJobsValue || 10,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updatePartnerAssignmentSettings = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { assignmentRule, maxJobsEnabled, maxJobsValue } = req.body;
+
+    if (!assignmentRule || !["nearest-region", "manual"].includes(assignmentRule)) {
+      return res.status(400).json({ error: "Invalid assignment rule" });
+    }
+
+    const settingValue = {
+      rule: assignmentRule,
+      maxJobsEnabled: maxJobsEnabled !== false,
+      maxJobsValue: maxJobsEnabled ? Math.max(1, parseInt(maxJobsValue, 10)) : null,
+    };
+
+    let settings = await Settings.findOne({ key: "partnerAssignment" });
+    if (!settings) {
+      settings = new Settings({
+        key: "partnerAssignment",
+        value: settingValue,
+      });
+    } else {
+      settings.value = settingValue;
+    }
+
+    await settings.save();
+
+    res.json({
+      assignmentRule: settingValue.rule,
+      maxJobsEnabled: settingValue.maxJobsEnabled,
+      maxJobsValue: settingValue.maxJobsValue,
     });
   } catch (error) {
     next(error);

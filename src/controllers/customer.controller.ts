@@ -174,6 +174,26 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
  * the pure-sharp fallback gets a stronger pass because interpolation
  * introduces softness that must be compensated.
  */
+// Replicate/HuggingFace scale purely off the requested factor, with no idea
+// of the MAX_OUTPUT_PX ceiling the sharp tier already respects — a large
+// `scale` against a sizeable source (e.g. the user enlarging the item a lot
+// before requesting DPI enhancement) can return a multi-hundred-megapixel
+// image that blows well past what fitUnderCloudinaryLimit's bounded resize
+// loop can shrink under Cloudinary's 10MB cap. Clamp every AI tier's output
+// to the same ceiling so all three tiers produce comparably-sized results.
+async function capOutputPixels(buffer: Buffer, maxPx: number): Promise<Buffer> {
+  const meta = await sharp(buffer, { limitInputPixels: false }).metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  if (Math.max(w, h) <= maxPx) return buffer;
+  const scale = maxPx / Math.max(w, h);
+  return sharp(buffer, { limitInputPixels: false })
+    .resize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), {
+      kernel: sharp.kernel.lanczos3,
+    })
+    .toBuffer();
+}
+
 async function applySharpening(
   buffer: Buffer,
   strength: "light" | "strong",
@@ -350,6 +370,7 @@ export const upscaleAsset = async (req: Request, res: Response, next: NextFuncti
           publicUrl = tempUrl;
         }
         upscaledBuffer = await upscaleWithReplicate(publicUrl, scale, env.replicateApiToken);
+        upscaledBuffer = await capOutputPixels(upscaledBuffer, MAX_OUTPUT_PX);
         upscaledBuffer = await applySharpening(upscaledBuffer, "light");
         tier = "replicate";
       } catch (replicateErr: any) {
@@ -364,6 +385,7 @@ export const upscaleAsset = async (req: Request, res: Response, next: NextFuncti
     if (!upscaledBuffer! && env.hfApiToken) {
       try {
         upscaledBuffer = await upscaleWithHuggingFace(sourceBuffer, env.hfApiToken);
+        upscaledBuffer = await capOutputPixels(upscaledBuffer, MAX_OUTPUT_PX);
         upscaledBuffer = await applySharpening(upscaledBuffer, "light");
         tier = "huggingface";
       } catch (hfErr: any) {
@@ -1288,31 +1310,50 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
 
     // Deduplication: if this user already uploaded the exact same file, reuse it.
     const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
-    const existingAsset = req.user?.id ? await Asset.findOne({
+    const foundAsset = req.user?.id ? await Asset.findOne({
       user: new mongoose.Types.ObjectId(String(req.user.id)),
       contentHash,
     }).lean() as any : null;
-    if (existingAsset) {
-      const thumbUrl = computeThumbUrl(existingAsset.trimmedUrl || existingAsset.url);
-      const normDpi = existingAsset.dpi || 300;
-      return res.json({
-        id: String(existingAsset._id),
-        url: existingAsset.url,
-        trimmedUrl: existingAsset.trimmedUrl || null,
-        thumbnailUrl: thumbUrl,
-        originalFilename: existingAsset.originalFilename,
-        sizeBytes: existingAsset.sizeBytes,
-        widthPx: existingAsset.widthPx,
-        heightPx: existingAsset.heightPx,
-        dpi: normDpi,
-        widthIn: existingAsset.widthPx ? +(existingAsset.widthPx / normDpi).toFixed(4) : undefined,
-        heightIn: existingAsset.heightPx ? +(existingAsset.heightPx / normDpi).toFixed(4) : undefined,
-        trimmedWidthPx: existingAsset.trimmedWidthPx || null,
-        trimmedHeightPx: existingAsset.trimmedHeightPx || null,
-        trimmedWidthIn: existingAsset.trimmedWidthPx ? +(existingAsset.trimmedWidthPx / normDpi).toFixed(4) : null,
-        trimmedHeightIn: existingAsset.trimmedHeightPx ? +(existingAsset.trimmedHeightPx / normDpi).toFixed(4) : null,
-        deduplicated: true,
-      });
+
+    // Returns false if a URL is a local /uploads/ path that no longer exists on disk.
+    const localUrlAccessible = (url: string | null | undefined): boolean => {
+      if (!url || !url.includes("/uploads/")) return true;
+      const marker = "/uploads/";
+      const idx = url.indexOf(marker);
+      if (idx === -1) return true;
+      const filename = url.substring(idx + marker.length).split("?")[0];
+      if (!filename || filename.includes("..")) return false;
+      return fs.existsSync(path.join(process.cwd(), "uploads", filename));
+    };
+
+    // Track stale asset ID so we update rather than insert a duplicate when re-processing.
+    let staleAssetId: string | null = null;
+
+    if (foundAsset) {
+      if (localUrlAccessible(foundAsset.url) && localUrlAccessible(foundAsset.trimmedUrl)) {
+        const thumbUrl = computeThumbUrl(foundAsset.trimmedUrl || foundAsset.url);
+        const normDpi = foundAsset.dpi || 300;
+        return res.json({
+          id: String(foundAsset._id),
+          url: foundAsset.url,
+          trimmedUrl: foundAsset.trimmedUrl || null,
+          thumbnailUrl: thumbUrl,
+          originalFilename: foundAsset.originalFilename,
+          sizeBytes: foundAsset.sizeBytes,
+          widthPx: foundAsset.widthPx,
+          heightPx: foundAsset.heightPx,
+          dpi: normDpi,
+          widthIn: foundAsset.widthPx ? +(foundAsset.widthPx / normDpi).toFixed(4) : undefined,
+          heightIn: foundAsset.heightPx ? +(foundAsset.heightPx / normDpi).toFixed(4) : undefined,
+          trimmedWidthPx: foundAsset.trimmedWidthPx || null,
+          trimmedHeightPx: foundAsset.trimmedHeightPx || null,
+          trimmedWidthIn: foundAsset.trimmedWidthPx ? +(foundAsset.trimmedWidthPx / normDpi).toFixed(4) : null,
+          trimmedHeightIn: foundAsset.trimmedHeightPx ? +(foundAsset.trimmedHeightPx / normDpi).toFixed(4) : null,
+          deduplicated: true,
+        });
+      }
+      // Stored URLs are stale local paths — re-process and update the existing record.
+      staleAssetId = String(foundAsset._id);
     }
 
     // Upload original to Cloudinary.
@@ -1378,37 +1419,53 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       });
     }
 
-    const asset = new Asset({
-      user: req.user.id,
+    let savedAssetId: string;
+    if (staleAssetId) {
+      await Asset.findByIdAndUpdate(staleAssetId, {
+        url: fileUrl,
+        trimmedUrl,
+        widthPx,
+        heightPx,
+        trimmedWidthPx,
+        trimmedHeightPx,
+        dpi: normalizedDpi,
+        mimeType: req.file.mimetype,
+        sizeBytes: req.file.size,
+      });
+      savedAssetId = staleAssetId;
+    } else {
+      const asset = new Asset({
+        user: req.user.id,
+        url: fileUrl,
+        trimmedUrl,
+        originalFilename: req.file.originalname,
+        mimeType: req.file.mimetype,
+        sizeBytes: req.file.size,
+        widthPx,
+        heightPx,
+        trimmedWidthPx,
+        trimmedHeightPx,
+        dpi: normalizedDpi,
+        contentHash,
+      });
+      await asset.save();
+      savedAssetId = asset.id;
+    }
+
+    res.status(201).json({
+      id: savedAssetId,
       url: fileUrl,
-      trimmedUrl,
+      trimmedUrl: trimmedUrl || null,
+      thumbnailUrl,
       originalFilename: req.file.originalname,
-      mimeType: req.file.mimetype,
       sizeBytes: req.file.size,
       widthPx,
       heightPx,
-      trimmedWidthPx,
-      trimmedHeightPx,
       dpi: normalizedDpi,
-      contentHash,
-    });
-
-    await asset.save();
-
-    res.status(201).json({
-      id: asset.id,
-      url: asset.url,
-      trimmedUrl: asset.trimmedUrl || null,
-      thumbnailUrl,
-      originalFilename: asset.originalFilename,
-      sizeBytes: asset.sizeBytes,
-      widthPx: asset.widthPx,
-      heightPx: asset.heightPx,
-      dpi: asset.dpi,
       widthIn,
       heightIn,
-      trimmedWidthPx: asset.trimmedWidthPx || null,
-      trimmedHeightPx: asset.trimmedHeightPx || null,
+      trimmedWidthPx: trimmedWidthPx || null,
+      trimmedHeightPx: trimmedHeightPx || null,
       trimmedWidthIn: trimmedWidthIn || null,
       trimmedHeightIn: trimmedHeightIn || null
     });

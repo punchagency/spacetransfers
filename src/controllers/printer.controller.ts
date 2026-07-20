@@ -11,6 +11,7 @@ import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
+import { resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import archiver from "archiver";
@@ -26,6 +27,13 @@ import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
+import {
+  syncPartnerCapacity,
+  syncPartnerCapacitySafe,
+  getAssignmentSettings,
+  getEffectiveMaxConcurrent,
+  countActiveJobs,
+} from "../services/partnerCapacity.service.js";
 import {
   triggerShipStationWorkflow,
   isShipStationConfigured,
@@ -282,13 +290,13 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
 
     const mapStatus = (s: string) => {
       const v = String(s || "").toUpperCase();
-      if (v === "PENDING") return "Pending";
-      if (v === "PROCESSING") return "Processing";
-      if (v === "PRINTING") return "Printing";
-      if (v === "QUALITY_CHECK") return "Quality Check";
+      if (v === "PENDING") return "Pending Review";
+      if (v === "PROCESSING" || v === "PRINTING") return "In Progress - Printing";
+      if (v === "QUALITY_CHECK") return "Print Shipping Label";
+      if (v === "SHIPPED") return "Order Shipped";
       if (v === "COMPLETED") return "Completed";
       if (v === "CANCELLED") return "Cancelled";
-      return "Pending";
+      return "Pending Review";
     };
 
     const assignedJobs = activeAssignedJobs.map((job: any) => ({
@@ -296,9 +304,9 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       displayId: job?.displayId ? String(job.displayId) : null,
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
       order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
-      deadline: job.createdAt
-        ? new Date(job.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", 2:00 PM"
-        : "—",
+      // ISO deadline (assignment + 24h); the frontend renders a live countdown.
+      deadline: resolveOrderDeadlineIso(job),
+      assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: mapStatus(String(job.status || "")),
       isUrgent: String(job.priority || "").toUpperCase() === "URGENT",
       createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null
@@ -308,14 +316,15 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       assignedPrinter: printerId,
       priority: "URGENT",
       status: { $in: ["PENDING", "PROCESSING"] }
-    }).select("displayId customer items createdAt priority status").sort({ createdAt: 1 }).limit(5);
+    }).select("displayId customer items createdAt assignedAt assignmentDeadline priority status").sort({ createdAt: 1 }).limit(5);
 
     const formattedUrgentJobs = urgentJobs.map(job => ({
       id: job.id,
       displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       customerName: `${job.customer.firstName} ${job.customer.lastName}`,
       order: `${job.items.length} Items`,
-      deadline: job.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", 2:00 PM",
+      deadline: resolveOrderDeadlineIso(job),
+      assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
       status: "Urgent",
       isUrgent: true,
       createdAt: job.createdAt.toISOString()
@@ -403,7 +412,9 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
         sheetSize,
         orderDescription: firstItem.name || "N/A",
         status: job.status,
-        deadline: job.createdAt.toISOString(),
+        deadline: resolveOrderDeadlineIso(job),
+        assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
+        createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
         priority: job.priority
       };
     });
@@ -439,6 +450,9 @@ export const updateJobStatus = async (req: Request, res: Response, next: NextFun
     if (!job.statusTimeline) job.statusTimeline = [];
     job.statusTimeline.push({ status: status as any, time: new Date() });
     await job.save();
+
+    // Completing (or otherwise moving out of an active state) frees capacity.
+    syncPartnerCapacitySafe(String(printerId));
 
     const pqLabelMap: Record<string, string> = {
       PENDING: "Pending",
@@ -744,6 +758,9 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
       ...(action === "REJECT" ? { message: reason } : {}),
     });
     await job.save();
+
+    // REJECT moves the job to a terminal state and frees a capacity slot.
+    if (nextStatus === "REJECTED") syncPartnerCapacitySafe(String(printerId));
 
     const displayId = (job as any).displayId || String(job._id).slice(-6).toUpperCase();
     const rejectedAt = new Date().toISOString();
@@ -1404,7 +1421,7 @@ export const getExportJobStatus = async (req: Request, res: Response, next: Next
 export const getJobGangsheetPreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const requestedResolution = Math.max(10, parseInt(req.query.resolution as string) || 150);
+    const requestedResolution = Math.max(72, Math.min(100, parseInt(req.query.resolution as string) || 72));
     const printerId = req.user?.id;
 
     if (!mongoose.Types.ObjectId.isValid(String(jobId))) {
@@ -1512,8 +1529,9 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       artboardItems: fullResItems,
       dpi: resolution,
       cropToContent: true,
-      maxComposites: 10000,
+      maxComposites: 500, // Cap previews to first 500 composites for instant response
       format: previewFormat,
+      useLossyPreview: true, // Use fast lossy WebP for preview
       itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
       sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
     });
@@ -1534,6 +1552,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       sheetHeightIn: rendered.sheet.heightIn,
       totalItems: artboardItems.length,
       cacheKey: rendered.cacheKey,
+      previewNote: artboardItems.length > 500 ? "Preview shows first 500 items" : undefined,
     });
   } catch (error) {
     next(error);
@@ -1572,14 +1591,22 @@ export const downloadGangsheetExport = async (req: Request, res: Response, next:
       meta: { userAgent: String(req.headers["user-agent"] || ""), ip: String(req.ip || "") }
     });
 
-    const stats = await fs.promises.stat(String((exp as any).filePath));
-    const fmt = String((exp as any).format || "png");
-    const contentType = fmt === "zip" ? "application/zip" : "image/png";
-    res.setHeader("Content-Length", String(stats.size));
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Disposition", `attachment; filename="${String((exp as any).fileName)}"`);
+    const filePath = String((exp as any).filePath);
+    const fileName = String((exp as any).fileName);
+
+    // res.download() streams the file with a correct Content-Length, Content-Type
+    // (from the extension — .zip → application/zip, .png → image/png), an
+    // attachment Content-Disposition, and — critically — Accept-Ranges support so
+    // the browser can resume a partial transfer. This replaces the previous
+    // manual createReadStream().pipe(res), which buffered the whole file in page
+    // memory on the client and corrupted large (hundreds-of-MB) split-gangsheet
+    // zips.
     res.setHeader("Cache-Control", "no-store");
-    fs.createReadStream(String((exp as any).filePath)).pipe(res);
+    res.download(filePath, fileName, (err) => {
+      // A dropped connection mid-stream is expected and not actionable; only
+      // surface a real error if we haven't started sending the body yet.
+      if (err && !res.headersSent) next(err);
+    });
   } catch (error) {
     next(error);
   }
@@ -2058,6 +2085,21 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
       unitPrice: Number(it.unitPrice ?? 0),
     }));
 
+    // Use the printer's business address as the ship-from address.
+    const printer = await User.findById(printerId).select("name companyName phone businessAddress").lean();
+    const bAddr = (printer as any)?.businessAddress;
+    const shipFrom = bAddr?.street
+      ? {
+          name: String((printer as any).companyName || (printer as any).name || "Print Partner"),
+          street1: String(bAddr.street),
+          city: String(bAddr.city || ""),
+          state: String(bAddr.state || ""),
+          postalCode: String(bAddr.postalCode || ""),
+          country: String(bAddr.country || "US"),
+          phone: String((printer as any).phone || ""),
+        }
+      : undefined;
+
     const { shipStationOrderId } = await createShipStationOrder({
       displayId,
       customerFirstName: (job as any).customer.firstName,
@@ -2074,13 +2116,13 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
     });
 
     const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
-      await createShipStationLabel({ shipStationOrderId, carrierId, serviceCode });
+      await createShipStationLabel({ shipStationOrderId, carrierCode: carrierId, serviceCode, shipFrom });
 
     const now = new Date();
     const timelineEntry = {
-      status: "SHIPPED" as any,
+      status: "QUALITY_CHECK" as any,
       time: now,
-      message: `Shipping label generated via ShipStation. Carrier: ${carrier}, Tracking: ${trackingNumber}`,
+      message: `Shipping label generated. Carrier: ${carrier}, Tracking: ${trackingNumber}. Awaiting printer confirmation.`,
       actorRole: "PRINTER",
       actorId: String(printerId || ""),
       actorName: null,
@@ -2090,7 +2132,6 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
       { _id: job._id },
       {
         $set: {
-          status: "SHIPPED",
           trackingNumber,
           carrier,
           shipStationOrderId,
@@ -2103,32 +2144,41 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
       }
     );
 
-    publishOrderEvent(String(job._id), "order.status.changed", {
-      orderId: String(job._id),
-      status: "SHIPPED",
-      from: (job as any).status,
-      to: "SHIPPED",
-      trackingNumber,
-      carrier,
-      updatedAt: now,
-      lastTimelineEntry: timelineEntry,
-    });
-
-    notifyAllAdmins({
-      category: "orders",
-      priority: "medium",
-      title: "Shipping label created",
-      message: `Order #${displayId} — label generated manually. Carrier: ${carrier}, Tracking: ${trackingNumber}.`,
-      meta: { orderId: String(job._id), displayId, trackingNumber, carrier },
-    }).catch(() => {});
-
     res.status(201).json({
       trackingNumber,
       labelUrl,
       carrier,
       shipStationOrderId,
       shipStationShipmentId,
+      message: "Label generated — open the order to review and confirm shipment",
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const reprintShippingLabel = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobId } = req.params;
+    const printerId = req.user?.id;
+
+    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId })
+      .select("shipStationLabelUrl shipStationShipmentId status")
+      .lean();
+    if (!job) {
+      const error = new Error("Job not found or not assigned to this printer") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const labelUrl = String((job as any).shipStationLabelUrl || "");
+    if (labelUrl) {
+      return res.json({ labelUrl });
+    }
+
+    const error = new Error("No shipping label on file for this order") as CustomError;
+    error.statusCode = 404;
+    throw error;
   } catch (error) {
     next(error);
   }
@@ -2157,13 +2207,18 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
     job.carrier = carrier;
     job.trackingNumber = trackingNumber;
     
+    let shippedNow = false;
     if (!["SHIPPED", "COMPLETED"].includes(job.status)) {
       job.status = "SHIPPED" as any;
+      shippedNow = true;
       if (!job.statusTimeline) job.statusTimeline = [];
       job.statusTimeline.push({ status: "SHIPPED" as any, time: new Date() });
     }
 
     await job.save();
+
+    // Shipping moves the job out of the active set, freeing a capacity slot.
+    if (shippedNow) syncPartnerCapacitySafe(String(printerId));
 
     res.json({
       orderId: job.id,
@@ -2184,9 +2239,10 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
 
     const statusMap: { [key: string]: any } = {
       "Pending Review": "PENDING",
-      "In Progress": ["PROCESSING", "PRINTING"],
-      "Ready": ["QUALITY_CHECK"],
-      "Completed": ["SHIPPED", "COMPLETED"],
+      "In Progress - Printing": ["PROCESSING", "PRINTING"],
+      "Print Shipping Label": ["QUALITY_CHECK"],
+      "Order Shipped": ["SHIPPED"],
+      "Completed": ["COMPLETED"],
       "Cancelled": ["CANCELLED"]
     };
 
@@ -2256,8 +2312,8 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
 
     const statusDescription = (label: string) => {
       if (label === "Pending Review") return "Review artwork and accept this job";
-      if (label === "In Progress") return "Currently being processed";
-      if (label === "Ready") return "Ready for packaging and shipment";
+      if (label === "In Progress - Printing") return "Currently printing";
+      if (label === "Print Shipping Label") return "Label being generated via ShipStation";
       if (label === "Completed") return "Job completed successfully";
       if (label === "Cancelled") return "This job has been cancelled";
       return "";
@@ -2289,6 +2345,9 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         : null;
 
       const orderId = String((order as any)._id);
+      // Due date follows the fulfilment deadline (assignment + 24h), not the
+      // order's creation time.
+      const deadlineIso = resolveOrderDeadlineIso(order as any);
       return {
         id: orderId,
         actualId: orderId,
@@ -2298,7 +2357,10 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
         location,
         status: displayStatus,
-        dueDate: formatDueDate(order.createdAt),
+        dueDate: formatDueDate(deadlineIso ? new Date(deadlineIso) : order.createdAt),
+        deadline: deadlineIso,
+        assignedAt: (order as any).assignedAt ? new Date((order as any).assignedAt).toISOString() : null,
+        createdAt: order.createdAt ? new Date(order.createdAt).toISOString() : null,
         isUrgent: order.priority === "URGENT",
         hasWarning: false,
         statusDescription: statusDescription(displayStatus),
@@ -2407,6 +2469,9 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       priority: String((job as any).priority || "NORMAL"),
       createdAt: (job as any).createdAt,
       updatedAt: (job as any).updatedAt,
+      assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
+      // ISO fulfilment deadline (assignment + 24h); frontend renders a countdown.
+      deadline: resolveOrderDeadlineIso(job as any),
       faceThumbnail,
       customer: {
         name: `${(job as any).customer?.firstName || ""} ${(job as any).customer?.lastName || ""}`.trim(),
@@ -2458,6 +2523,7 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         ? new Date((job as any).shipStationTriggeredAt).toISOString()
         : null,
       shipStationLabelUrl: (job as any).shipStationLabelUrl || null,
+      shipStationError: (job as any).shipStationError || null,
       recentExports: exports.map((e: any) => ({
         id: String(e._id),
         fileName: e.fileName,
@@ -2497,7 +2563,8 @@ export const getPrinterOrdersSummary = async (req: Request, res: Response, next:
     const pendingReview = (byStatus.get("PENDING") || 0);
     const inProgress = (byStatus.get("PROCESSING") || 0) + (byStatus.get("PRINTING") || 0);
     const ready = (byStatus.get("QUALITY_CHECK") || 0);
-    const completed = (byStatus.get("SHIPPED") || 0) + (byStatus.get("COMPLETED") || 0);
+    const shipped = (byStatus.get("SHIPPED") || 0);
+    const completed = (byStatus.get("COMPLETED") || 0);
     const cancelled = (byStatus.get("CANCELLED") || 0);
 
     res.json({
@@ -2506,6 +2573,7 @@ export const getPrinterOrdersSummary = async (req: Request, res: Response, next:
         pending: pendingReview,
         inProgress,
         ready,
+        shipped,
         completed,
         cancelled,
         urgent: urgentCount
@@ -2538,7 +2606,10 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     const allowedLabels: Record<string, string> = {
       "Pending Review": "PENDING",
       "In Progress": "PRINTING",
+      "In Progress - Printing": "PRINTING",
+      "Print Shipping Label": "QUALITY_CHECK",
       "Ready": "QUALITY_CHECK",
+      "Order Shipped": "SHIPPED",
       "Completed": "COMPLETED",
       "Cancelled": "CANCELLED"
     };
@@ -2608,6 +2679,9 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     pushStatus(next);
     await job.save();
 
+    // Reconcile capacity — a move to SHIPPED/COMPLETED/CANCELLED frees a slot.
+    syncPartnerCapacitySafe(String(printerId));
+
     // When the printer marks a job "Ready for Packaging" (QUALITY_CHECK), fire the
     // ShipStation workflow async: create a shipping order, generate a label, retrieve
     // the tracking number, and auto-advance the job to SHIPPED.
@@ -2621,9 +2695,9 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
 
     const statusLabelMap: Record<string, string> = {
       PENDING: "Pending Review",
-      PRINTING: "In Progress",
-      QUALITY_CHECK: "Ready for Packaging",
-      SHIPPED: "Shipped",
+      PRINTING: "In Progress - Printing",
+      QUALITY_CHECK: "Print Shipping Label",
+      SHIPPED: "Confirmed for Pickup",
       COMPLETED: "Completed",
       CANCELLED: "Cancelled",
     };
@@ -2631,12 +2705,36 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     notifyPrinter({
       printerId: String(printerId),
       category: "jobs",
-      priority: next === "COMPLETED" ? "medium" : "low",
+      priority: next === "COMPLETED" || next === "SHIPPED" ? "medium" : "low",
       title: `Job moved to ${statusLabel}`,
       message: `Order ${(job as any).displayId || job.id} status updated to ${statusLabel}.`,
       meta: { orderId: job.id, status: next },
       settingsKey: "orderUpdates",
     }).catch(() => {});
+
+    // When printer confirms shipment (QUALITY_CHECK → SHIPPED), notify customer + admins.
+    if (next === "SHIPPED") {
+      const trackingNumber = String((job as any).trackingNumber || "");
+      const carrier = String((job as any).carrier || "");
+      const displayId = String((job as any).displayId || job.id);
+      publishOrderEvent(String(job._id), "order.status.changed", {
+        orderId: String(job._id),
+        status: "SHIPPED",
+        from: current,
+        to: "SHIPPED",
+        trackingNumber,
+        carrier,
+        updatedAt: now,
+        lastTimelineEntry: (job.statusTimeline as any)[(job.statusTimeline as any).length - 1],
+      });
+      notifyAllAdmins({
+        category: "orders",
+        priority: "medium",
+        title: "Order confirmed for pickup",
+        message: `Order #${displayId} label printed — printer confirmed package is ready. Carrier: ${carrier}, Tracking: ${trackingNumber}.`,
+        meta: { orderId: String(job._id), displayId, trackingNumber, carrier },
+      }).catch(() => {});
+    }
 
     res.json({ updated: true, id: job.id, status: normalized, updatedAt: job.updatedAt.toISOString() });
   } catch (error) {
@@ -2744,6 +2842,10 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
         (cancelReason ? ` — reason: ${cancelReason}` : "")
     );
 
+    // Releasing the job frees one of the cancelling printer's slots — auto-reopen
+    // them if they were paused because they were at capacity.
+    syncPartnerCapacitySafe(String(printerId));
+
     // Fire the customer-facing SSE event so their order page updates immediately
     publishOrderEvent(id, "order.status.changed", {
       orderId: id,
@@ -2826,13 +2928,14 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
 
     const statusMap: { [key: string]: any } = {
       "Pending Review": "PENDING",
-      "In Progress": ["PROCESSING", "PRINTING"],
-      "Ready": ["QUALITY_CHECK"],
-      "Completed": ["SHIPPED", "COMPLETED"],
+      "In Progress - Printing": ["PROCESSING", "PRINTING"],
+      "Print Shipping Label": ["QUALITY_CHECK"],
+      "Order Shipped": ["SHIPPED"],
+      "Completed": ["COMPLETED"],
       "Cancelled": ["CANCELLED"]
     };
 
-        let displayStatus: any = order.status;
+    let displayStatus: any = order.status;
     for (const [label, val] of Object.entries(statusMap)) {
       if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
         displayStatus = label;
@@ -3575,9 +3678,31 @@ export const getAvailabilityStatus = async (req: Request, res: Response, next: N
   try {
     const printerId = req.user?.id;
     if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
+
+    // Self-heal on read: reconcile the partner's availability with their current
+    // load. This guarantees a capacity-paused partner whose active job count has
+    // dropped below the limit (or to zero) is auto-reopened when the dashboard
+    // loads — even if a status-transition hook was somehow missed. It never
+    // reopens a manually-paused/stopped partner.
+    const sync = await syncPartnerCapacity(String(printerId));
+    if (sync) {
+      return res.json({
+        availabilityStatus: sync.availabilityStatus,
+        capacityLocked: sync.capacityLocked,
+        activeJobs: sync.activeJobs,
+        maxJobs: sync.maxJobs,
+      });
+    }
+
+    // Fallback (e.g. the user isn't a printer): report the raw stored status.
     const user = await User.findById(printerId).select("availabilityStatus").lean();
     if (!user) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
-    res.json({ availabilityStatus: (user as any).availabilityStatus ?? "open" });
+    res.json({
+      availabilityStatus: (user as any).availabilityStatus ?? "open",
+      capacityLocked: false,
+      activeJobs: 0,
+      maxJobs: null,
+    });
   } catch (error) { next(error); }
 };
 
@@ -3594,11 +3719,45 @@ export const updateAvailabilityStatus = async (req: Request, res: Response, next
       throw e;
     }
 
+    const user = await User.findById(printerId).select("settings.jobCapacity capacityPaused").lean();
+    if (!user) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
+
+    const settings = await getAssignmentSettings();
+    const maxJobs = getEffectiveMaxConcurrent(user as any, settings);
+    const activeJobs = await countActiveJobs(String(printerId));
+    const atCapacity = maxJobs != null && activeJobs >= maxJobs;
+
+    // Block manually switching back to Open while at maximum capacity. A 409 keeps
+    // the session alive and surfaces a clear reason to the printer.
+    if (status === "open" && atCapacity) {
+      return res.status(409).json({
+        code: "AT_MAX_CAPACITY",
+        message:
+          `You're at your maximum of ${maxJobs} active ${maxJobs === 1 ? "job" : "jobs"}. ` +
+          `You'll be set back to Open automatically once your active job count drops below ${maxJobs}.`,
+        availabilityStatus: "paused",
+        capacityLocked: true,
+        activeJobs,
+        maxJobs,
+      });
+    }
+
+    // A manual status change is an explicit override, so clear the capacity-pause
+    // flag — the system won't later auto-reopen a partner who paused themselves.
     await User.updateOne(
       { _id: new mongoose.Types.ObjectId(printerId) },
-      { $set: { availabilityStatus: status } }
+      { $set: { availabilityStatus: status, capacityPaused: false } }
     );
 
-    res.json({ availabilityStatus: status });
+    // Keep the admin dashboard's partner list in sync in real time.
+    broadcastToAllAdmins("partner.availability_changed", {
+      partnerId: String(printerId),
+      availabilityStatus: status,
+      capacityLocked: false,
+      activeJobs,
+      maxJobs,
+    });
+
+    res.json({ availabilityStatus: status, capacityLocked: false, activeJobs, maxJobs });
   } catch (error) { next(error); }
 };

@@ -9,8 +9,14 @@ import {
 } from "../utils/region.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
-
-const ACTIVE_ORDER_STATUSES = ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] as const;
+import { computeAssignmentDeadline } from "../utils/assignmentDeadline.js";
+import {
+  ACTIVE_ORDER_STATUSES,
+  getAssignmentSettings,
+  getEffectiveMaxConcurrent,
+  isAtCapacity,
+  syncPartnerCapacitySafe,
+} from "./partnerCapacity.service.js";
 
 // ── Pure, DB-free selection logic ─────────────────────────────────────────────
 // Exported so it can be unit-tested without a MongoDB connection.
@@ -140,6 +146,31 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     };
   }
 
+  // Respect the global assignment mode. Auto-assignment only runs in
+  // "nearest-region" mode; under "manual" the order stays unassigned until an
+  // admin assigns it by hand.
+  const assignmentSettings = await getAssignmentSettings();
+  if (assignmentSettings.rule === "manual") {
+    const tookMs = Date.now() - startedAt;
+    const reason = "Manual assignment mode — order left unassigned for admin to assign.";
+    console.log(`[AUTO_ASSIGN] SKIPPED orderId=${order._id} reason="${reason}" tookMs=${tookMs}`);
+    order.assignmentHistory = order.assignmentHistory || [];
+    order.assignmentHistory.push({
+      time: new Date(),
+      mode: "AUTO",
+      selectedPrinterId: null,
+      selectedPrinterName: null,
+      customerRegion: null,
+      customerState: order.shippingAddress?.state || null,
+      candidatesConsidered: 0,
+      candidatesSameRegion: 0,
+      reason,
+      tookMs,
+    } as any);
+    await order.save();
+    return { assigned: false, orderId: String(order._id), reason, tookMs };
+  }
+
   const customerState = order.shippingAddress?.state;
 
   // Always compute the region live from the state code — never trust the stored
@@ -225,13 +256,15 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
           ? haversineMiles(customerCoord, printerCoord)
           : Number.POSITIVE_INFINITY;
 
-      const maxConcurrent = Number(p.settings?.jobCapacity?.maxConcurrent ?? 0) || null;
+      // Effective concurrent cap = most restrictive of the global
+      // "Maximum Jobs per Partner" limit and any per-partner override.
+      const maxConcurrent = getEffectiveMaxConcurrent(p, assignmentSettings);
       const dailyMax = Number(p.settings?.jobCapacity?.dailyMax ?? 0) || null;
       const autoAccept: boolean = p.settings?.jobCapacity?.autoAccept !== false;
       const activeCount = activeCountByPrinter.get(printerId) ?? 0;
       const dailyCount = dailyCountByPrinter.get(printerId) ?? 0;
 
-      const hasConcurrentCapacity = !maxConcurrent || activeCount < maxConcurrent;
+      const hasConcurrentCapacity = !isAtCapacity(activeCount, maxConcurrent);
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
       const withinBusinessHours = isPrinterAvailableAt(p, now);
       const acceptingOrders = !p.availabilityStatus || p.availabilityStatus === "open";
@@ -369,6 +402,10 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   const selectedId = selected.printerId;
 
   order.assignedPrinter = new mongoose.Types.ObjectId(selectedId);
+  // Start the 24h fulfilment clock from the exact assignment moment.
+  const assignedAt = new Date();
+  order.assignedAt = assignedAt;
+  order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
   if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
     order.status = "PENDING";
   }
@@ -439,6 +476,10 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       `[AUTO_ASSIGN] Notification failed for printer ${selected.printerId}: ${err?.message}`
     );
   });
+
+  // This assignment may have pushed the printer to their maximum active load —
+  // reconcile their availability (auto-pause + notify) if so.
+  syncPartnerCapacitySafe(selected.printerId);
 
   return {
     assigned: true,

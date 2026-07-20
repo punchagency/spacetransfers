@@ -36,6 +36,9 @@ export interface IUser extends Document {
   emailVerificationTokenHash?: string | null;
   emailVerificationExpiresAt?: Date | null;
   emailVerificationSentAt?: Date | null;
+  otpCode?: string | null;
+  otpExpiresAt?: Date | null;
+  otpAttempts?: number;
   stripeConnectAccountId?: string | null;
   stripeConnectOnboarded?: boolean;
   payoutsEnabled?: boolean;
@@ -103,11 +106,14 @@ export interface IUser extends Document {
     };
     notifications?: {
       email?: {
+        // Shared / printer keys
         newJobs?: boolean;
         orderUpdates?: boolean;
         payoutAlerts?: boolean;
         accountUpdates?: boolean;
         systemAlerts?: boolean;
+        // Admin-specific key (maps to the "partners" notification category)
+        partnerActivity?: boolean;
       };
     };
     paymentMethod?: {
@@ -157,6 +163,11 @@ export interface IUser extends Document {
   // recomputing it live on every request.
   detectedRegion?: "West" | "Midwest" | "South" | "Northeast" | null;
   availabilityStatus?: "open" | "paused" | "stopped";
+  // True when the partner was automatically paused because they reached their
+  // maximum active job limit. Distinguishes a capacity auto-pause from a manual
+  // pause so auto-recovery only re-opens partners the system paused itself, and
+  // the Open/Paused toggle stays disabled while this is set.
+  capacityPaused?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -247,6 +258,18 @@ const userSchema = new Schema<IUser>(
       type: Date,
       default: null
     },
+    otpCode: {
+      type: String,
+      default: null
+    },
+    otpExpiresAt: {
+      type: Date,
+      default: null
+    },
+    otpAttempts: {
+      type: Number,
+      default: 0
+    },
     stripeConnectAccountId: { type: String, default: null },
     stripeConnectOnboarded: { type: Boolean, default: false },
     payoutsEnabled: { type: Boolean, default: true },
@@ -323,11 +346,14 @@ const userSchema = new Schema<IUser>(
       },
       notifications: {
         email: {
-          newJobs:        { type: Boolean, default: true },
-          orderUpdates:   { type: Boolean, default: true },
-          payoutAlerts:   { type: Boolean, default: true },
-          accountUpdates: { type: Boolean, default: true },
-          systemAlerts:   { type: Boolean, default: true },
+          // Shared / printer keys
+          newJobs:         { type: Boolean, default: true },
+          orderUpdates:    { type: Boolean, default: true },
+          payoutAlerts:    { type: Boolean, default: true },
+          accountUpdates:  { type: Boolean, default: true },
+          systemAlerts:    { type: Boolean, default: true },
+          // Admin-specific key (maps to the "partners" notification category)
+          partnerActivity: { type: Boolean, default: true },
         },
       },
       paymentMethod: {
@@ -395,6 +421,10 @@ const userSchema = new Schema<IUser>(
       type: String,
       enum: ["open", "paused", "stopped"],
       default: "open",
+    },
+    capacityPaused: {
+      type: Boolean,
+      default: false,
     }
   },
   {

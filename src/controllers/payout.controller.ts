@@ -13,10 +13,33 @@ import {
 } from "../services/stripe.service.js";
 import { env } from "../config/env.js";
 import mongoose from "mongoose";
+import {
+  getEligibleJobsForPrinter,
+  RESERVING_PAYOUT_STATUSES,
+} from "../services/partnerEarnings.service.js";
+import { notifyPrinter } from "../services/printerNotifications.service.js";
+import type { IPayout, PayoutStatus } from "../models/payout.model.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
+
+/** Append an audit entry to a payout's status history (mutates, does not save). */
+const recordStatusChange = (
+  payout: IPayout,
+  status: PayoutStatus,
+  req: Request,
+  note?: string | null,
+) => {
+  if (!Array.isArray(payout.statusHistory)) payout.statusHistory = [];
+  payout.statusHistory.push({
+    status,
+    at: new Date(),
+    changedBy: req.user?.id ? new mongoose.Types.ObjectId(String(req.user.id)) : null,
+    changedByName: (req.user as any)?.name || (req.user as any)?.email || "Admin",
+    note: note ?? null,
+  });
+};
 
 // ─── PRINTER: Stripe Connect onboarding ───────────────────────────────────────
 
@@ -322,10 +345,13 @@ export const adminGetPayoutStats = async (
   next: NextFunction
 ) => {
   try {
-    const [pending, processing, paid, failed] = await Promise.all([
-      Payout.countDocuments({ status: "pending" }),
+    const [pendingReview, approved, processing, paid, rejected, failed] = await Promise.all([
+      // Treat the legacy "pending" as pending_review for the count.
+      Payout.countDocuments({ status: { $in: ["pending_review", "pending"] } }),
+      Payout.countDocuments({ status: "approved" }),
       Payout.countDocuments({ status: "processing" }),
       Payout.countDocuments({ status: "paid" }),
+      Payout.countDocuments({ status: "rejected" }),
       Payout.countDocuments({ status: "failed" }),
     ]);
 
@@ -334,13 +360,14 @@ export const adminGetPayoutStats = async (
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
 
+    // "Awaiting payment" value = everything approved/processing but not yet paid.
     const [pendingAgg] = await Payout.aggregate([
-      { $match: { status: { $in: ["pending", "processing"] } } },
+      { $match: { status: { $in: ["pending_review", "pending", "approved", "processing"] } } },
       { $group: { _id: null, total: { $sum: "$amount" } } },
     ]);
 
     res.json({
-      counts: { pending, processing, paid, failed },
+      counts: { pendingReview, approved, processing, paid, rejected, failed },
       amounts: {
         totalPaid: totalPaidAgg?.total || 0,
         totalPending: pendingAgg?.total || 0,
@@ -348,6 +375,65 @@ export const adminGetPayoutStats = async (
     });
   } catch (err) {
     next(err);
+  }
+};
+
+/**
+ * Initiate the actual Stripe transfer for an already-approved (or retrying)
+ * payout and record the outcome + audit trail. Mutates & saves the payout.
+ * This is the ONLY place a real payment is initiated, and it is only ever
+ * reached from an explicit admin action — never automatically.
+ */
+const runPayoutTransfer = async (payout: IPayout, req: Request): Promise<void> => {
+  const printer = await User.findById(payout.printerId).select(
+    "stripeConnectAccountId stripeConnectOnboarded payoutsEnabled email name companyName"
+  );
+  if (!printer || !printer.stripeConnectAccountId) {
+    const e = new Error("Printer has no Stripe Connect account") as CustomError;
+    e.statusCode = 400;
+    throw e;
+  }
+  if (printer.payoutsEnabled === false) {
+    const e = new Error("Payouts are disabled for this printer") as CustomError;
+    e.statusCode = 400;
+    throw e;
+  }
+
+  payout.status = "processing";
+  payout.failureReason = null;
+  recordStatusChange(payout, "processing", req, "Payment initiated");
+  await payout.save();
+
+  try {
+    const amountCents = Math.round(payout.amount * 100);
+    const { transfer, payout: stripePayout } = await processPayoutTransfer(
+      printer.stripeConnectAccountId,
+      amountCents,
+      payout._id.toString(),
+      payout.printerId.toString()
+    );
+
+    payout.stripeTransferId = transfer.id;
+    payout.stripePayoutId = stripePayout.id;
+    payout.status = "paid";
+    payout.processedAt = new Date();
+    recordStatusChange(payout, "paid", req, `Stripe transfer ${transfer.id}`);
+    await payout.save();
+
+    notifyPrinter({
+      printerId: payout.printerId.toString(),
+      category: "system",
+      priority: "medium",
+      title: "Payout sent",
+      message: `A payout of $${payout.amount.toFixed(2)} has been sent to your account.`,
+      meta: { type: "payout_paid", payoutId: payout._id.toString(), amount: payout.amount },
+      settingsKey: "payoutAlerts",
+    }).catch(() => {});
+  } catch (stripeErr: any) {
+    payout.status = "failed";
+    payout.failureReason = stripeErr?.message || "Stripe transfer failed";
+    recordStatusChange(payout, "failed", req, payout.failureReason);
+    await payout.save();
   }
 };
 
@@ -370,44 +456,261 @@ export const adminRetryPayout = async (
       throw e;
     }
 
-    const printer = await User.findById(payout.printerId).select(
-      "stripeConnectAccountId stripeConnectOnboarded payoutsEnabled email"
-    );
-    if (!printer || !printer.stripeConnectAccountId) {
-      const e = new Error("Printer has no Stripe Connect account") as CustomError;
-      e.statusCode = 400;
-      throw e;
-    }
-    if (!printer.payoutsEnabled) {
-      const e = new Error("Payouts are disabled for this printer") as CustomError;
-      e.statusCode = 400;
-      throw e;
-    }
-
-    payout.status = "processing";
     payout.retryCount += 1;
-    payout.failureReason = null;
-    await payout.save();
+    await runPayoutTransfer(payout, req);
+    res.json({ payout });
+  } catch (err) {
+    next(err);
+  }
+};
 
-    try {
-      const amountCents = Math.round(payout.amount * 100);
-      const { transfer, payout: stripePayout } = await processPayoutTransfer(
-        printer.stripeConnectAccountId,
-        amountCents,
-        payout._id.toString(),
-        payout.printerId.toString()
-      );
+// ─── ADMIN: Manual approval workflow ──────────────────────────────────────────
 
-      payout.stripeTransferId = transfer.id;
-      payout.stripePayoutId = stripePayout.id;
-      payout.status = "paid";
-      payout.processedAt = new Date();
-    } catch (stripeErr: any) {
-      payout.status = "failed";
-      payout.failureReason = stripeErr?.message || "Stripe transfer failed";
+/**
+ * The eligible (unpaid, shipped/completed) job breakdown for a printer, shown
+ * before an admin creates/approves a payout. Uses the canonical earnings service
+ * so amounts match everywhere and already-paid jobs never reappear.
+ */
+export const adminGetPrinterEligibleJobs = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { printerId } = req.params;
+    const printer = await User.findById(printerId).select("name email companyName payoutsEnabled").lean();
+    if (!printer) {
+      const e = new Error("Printer not found") as CustomError;
+      e.statusCode = 404;
+      throw e;
+    }
+    const { jobs, total, count } = await getEligibleJobsForPrinter(String(printerId));
+    res.json({
+      printer: {
+        id: printer._id,
+        name: (printer as any).companyName || printer.name,
+        email: printer.email,
+        payoutsEnabled: (printer as any).payoutsEnabled !== false,
+      },
+      jobs,
+      total,
+      count,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Create a payout request (status: pending_review) from a printer's currently
+ * eligible jobs. Snapshots the job breakdown for auditing and reserves those
+ * jobs so they cannot be included in another payout. Never initiates payment.
+ */
+export const adminCreatePayout = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { printerId } = req.body as { printerId?: string };
+    if (!printerId) {
+      const e = new Error("printerId is required") as CustomError;
+      e.statusCode = 400;
+      throw e;
     }
 
+    const printer = await User.findById(printerId).select("name email companyName");
+    if (!printer) {
+      const e = new Error("Printer not found") as CustomError;
+      e.statusCode = 404;
+      throw e;
+    }
+
+    const { jobs, total } = await getEligibleJobsForPrinter(String(printerId));
+    if (jobs.length === 0 || total <= 0) {
+      const e = new Error("This printer has no eligible jobs to pay out") as CustomError;
+      e.statusCode = 400;
+      throw e;
+    }
+
+    const payout = new Payout({
+      printerId: new mongoose.Types.ObjectId(String(printerId)),
+      amount: total,
+      currency: "usd",
+      status: "pending_review",
+      scheduledDate: getNextFridayDate(),
+      orderIds: jobs.map((j) => new mongoose.Types.ObjectId(j.orderId)),
+      lineItems: jobs.map((j) => ({
+        orderId: new mongoose.Types.ObjectId(j.orderId),
+        displayId: j.displayId,
+        orderNumber: j.orderNumber,
+        customerName: j.customerName,
+        jobStatus: j.jobStatus,
+        completedAt: j.completedAt ? new Date(j.completedAt) : null,
+        amount: j.amount,
+      })),
+      createdByName: (req.user as any)?.name || (req.user as any)?.email || "Admin",
+      metadata: { createdVia: "manual_admin_request" },
+    });
+    recordStatusChange(payout, "pending_review", req, `Created from ${jobs.length} eligible job(s)`);
     await payout.save();
+
+    res.status(201).json({ payout });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Job breakdown for an existing payout — from its snapshot taken at creation. */
+export const adminGetPayoutJobs = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { payoutId } = req.params;
+    const payout = await Payout.findById(payoutId)
+      .populate("printerId", "name email companyName")
+      .lean();
+    if (!payout) {
+      const e = new Error("Payout not found") as CustomError;
+      e.statusCode = 404;
+      throw e;
+    }
+
+    const jobs = (payout.lineItems || []).map((li: any) => ({
+      orderId: String(li.orderId),
+      jobId: String(li.orderId),
+      displayId: li.displayId,
+      orderNumber: li.orderNumber,
+      customerName: li.customerName,
+      jobStatus: li.jobStatus,
+      completedAt: li.completedAt ? new Date(li.completedAt).toISOString() : null,
+      amount: li.amount,
+    }));
+
+    res.json({
+      payout: {
+        id: payout._id,
+        status: payout.status,
+        amount: payout.amount,
+        currency: payout.currency,
+        printer: payout.printerId
+          ? {
+              id: (payout.printerId as any)._id,
+              name: (payout.printerId as any).companyName || (payout.printerId as any).name,
+              email: (payout.printerId as any).email,
+            }
+          : null,
+        createdByName: payout.createdByName,
+        approvedByName: payout.approvedByName,
+        approvedAt: payout.approvedAt,
+        rejectedByName: payout.rejectedByName,
+        rejectedAt: payout.rejectedAt,
+        rejectionReason: payout.rejectionReason,
+        statusHistory: payout.statusHistory || [],
+      },
+      jobs,
+      total: payout.amount,
+      count: jobs.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Approve a pending-review payout. Does NOT initiate payment. */
+export const adminApprovePayout = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { payoutId } = req.params;
+    const payout = await Payout.findById(payoutId);
+    if (!payout) {
+      const e = new Error("Payout not found") as CustomError;
+      e.statusCode = 404;
+      throw e;
+    }
+    if (!["pending_review", "pending"].includes(payout.status)) {
+      const e = new Error(`Only payouts pending review can be approved (current: ${payout.status})`) as CustomError;
+      e.statusCode = 400;
+      throw e;
+    }
+
+    payout.status = "approved";
+    payout.approvedBy = req.user?.id ? new mongoose.Types.ObjectId(String(req.user.id)) : null;
+    payout.approvedByName = (req.user as any)?.name || (req.user as any)?.email || "Admin";
+    payout.approvedAt = new Date();
+    recordStatusChange(payout, "approved", req, req.body?.note || null);
+    await payout.save();
+
+    res.json({ payout });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Reject a payout (before it is paid). Frees its jobs back into the eligible pool. */
+export const adminRejectPayout = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { payoutId } = req.params;
+    const { reason } = req.body as { reason?: string };
+    const payout = await Payout.findById(payoutId);
+    if (!payout) {
+      const e = new Error("Payout not found") as CustomError;
+      e.statusCode = 404;
+      throw e;
+    }
+    if (!["pending_review", "pending", "approved", "failed"].includes(payout.status)) {
+      const e = new Error(`A ${payout.status} payout cannot be rejected`) as CustomError;
+      e.statusCode = 400;
+      throw e;
+    }
+
+    payout.status = "rejected";
+    payout.rejectedBy = req.user?.id ? new mongoose.Types.ObjectId(String(req.user.id)) : null;
+    payout.rejectedByName = (req.user as any)?.name || (req.user as any)?.email || "Admin";
+    payout.rejectedAt = new Date();
+    payout.rejectionReason = reason || null;
+    recordStatusChange(payout, "rejected", req, reason || null);
+    await payout.save();
+
+    res.json({ payout });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Initiate payment for an APPROVED payout. This is the explicit, manual step
+ * that actually moves money — only reachable after approval.
+ */
+export const adminProcessPayout = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { payoutId } = req.params;
+    const payout = await Payout.findById(payoutId);
+    if (!payout) {
+      const e = new Error("Payout not found") as CustomError;
+      e.statusCode = 404;
+      throw e;
+    }
+    if (payout.status !== "approved") {
+      const e = new Error(`Only approved payouts can be processed (current: ${payout.status})`) as CustomError;
+      e.statusCode = 400;
+      throw e;
+    }
+
+    await runPayoutTransfer(payout, req);
     res.json({ payout });
   } catch (err) {
     next(err);
@@ -470,7 +773,13 @@ export const adminListPrinterPayoutStatus = async (
             $sum: { $cond: [{ $eq: ["$status", "paid"] }, "$amount", 0] },
           },
           pendingCount: {
-            $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
+            $sum: {
+              $cond: [
+                { $in: ["$status", ["pending_review", "pending", "approved", "processing"]] },
+                1,
+                0,
+              ],
+            },
           },
           failedCount: {
             $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] },
@@ -481,8 +790,19 @@ export const adminListPrinterPayoutStatus = async (
 
     const agg = Object.fromEntries(payoutAgg.map((a) => [a._id.toString(), a]));
 
+    // Compute each printer's currently-eligible (unpaid) balance & job count so the
+    // admin can see who has jobs ready for a payout without opening each one.
+    const eligibleByPrinter = await Promise.all(
+      printers.map(async (p) => {
+        const { total, count } = await getEligibleJobsForPrinter(p._id.toString());
+        return [p._id.toString(), { total, count }] as const;
+      }),
+    );
+    const eligibleMap = Object.fromEntries(eligibleByPrinter);
+
     const result = printers.map((p) => {
       const stats = agg[p._id.toString()] || {};
+      const eligible = eligibleMap[p._id.toString()] || { total: 0, count: 0 };
       return {
         printerId: p._id,
         name: p.name,
@@ -496,6 +816,8 @@ export const adminListPrinterPayoutStatus = async (
         totalPaid: stats.totalPaid || 0,
         pendingPayouts: stats.pendingCount || 0,
         failedPayouts: stats.failedCount || 0,
+        eligibleAmount: eligible.total,
+        eligibleJobs: eligible.count,
       };
     });
 

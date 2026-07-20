@@ -1,18 +1,22 @@
 /**
- * Friday Payout Scheduler (TEST MODE ONLY)
- * Runs every Friday at 09:00 UTC to process automated Stripe Connect payouts.
- * Uses a simple setInterval-based cron — replace with node-cron or a job queue in production.
+ * Weekly Payout Draft Scheduler
+ *
+ * Runs every Friday at 09:00 UTC. It NEVER pays anyone automatically — it only
+ * gathers each printer's eligible (unpaid) jobs into a `pending_review` payout
+ * draft for an admin to review, approve, and manually process. This keeps the
+ * "no automatic payments — explicit approval required" guarantee intact while
+ * still saving the admin from assembling drafts by hand each week.
+ *
+ * Uses a simple setInterval-based cron — replace with node-cron or a job queue
+ * in production.
  */
 
 import { User } from "../models/user.model.js";
-import { Order } from "../models/order.model.js";
 import { Payout } from "../models/payout.model.js";
-import {
-  processPayoutTransfer,
-  getNextFridayDate,
-  MINIMUM_PAYOUT_AMOUNT_CENTS,
-} from "./stripe.service.js";
+import { getNextFridayDate, MINIMUM_PAYOUT_AMOUNT_CENTS } from "./stripe.service.js";
+import { getEligibleJobsForPrinter } from "./partnerEarnings.service.js";
 import { env } from "../config/env.js";
+import mongoose from "mongoose";
 
 const MINIMUM_PAYOUT_DOLLARS =
   (env.minimumPayoutAmountCents || MINIMUM_PAYOUT_AMOUNT_CENTS) / 100;
@@ -20,108 +24,74 @@ const MINIMUM_PAYOUT_DOLLARS =
 const log = (msg: string) =>
   console.log(`[PayoutScheduler ${new Date().toISOString()}] ${msg}`);
 
-const calcOrderEarning = (order: any): number => {
-  const items: any[] = Array.isArray(order.items) ? order.items : [];
-  return items.reduce((s: number, item: any) => {
-    const unitCost = item.partnerCost || item.unitCost || 0;
-    return s + unitCost * (item.quantity || 1);
-  }, 0);
-};
-
 export async function runWeeklyPayouts(): Promise<void> {
-  log("Starting weekly Friday payout run (TEST MODE)");
+  log("Starting weekly draft-generation run (no automatic payments)");
 
   const printers = await User.find({
     role: "PRINTER",
-    stripeConnectAccountId: { $ne: null },
-    stripeConnectOnboarded: true,
-    payoutsEnabled: true,
+    payoutsEnabled: { $ne: false },
   }).lean();
 
-  log(`Found ${printers.length} eligible printers`);
+  log(`Found ${printers.length} printers with payouts enabled`);
 
   for (const printer of printers) {
     try {
-      await processPrinterPayout(printer);
+      await createPrinterPayoutDraft(printer);
     } catch (err: any) {
-      log(`ERROR processing printer ${printer._id}: ${err.message}`);
+      log(`ERROR drafting payout for printer ${printer._id}: ${err.message}`);
     }
   }
 
-  log("Weekly payout run complete");
+  log("Weekly draft-generation run complete");
 }
 
-async function processPrinterPayout(printer: any): Promise<void> {
+async function createPrinterPayoutDraft(printer: any): Promise<void> {
   const printerId = printer._id;
 
-  // Find completed orders not yet covered by a paid/processing payout
-  const existingPaidPayouts = await Payout.find({
-    printerId,
-    status: { $in: ["processing", "paid"] },
-  }).lean();
-  const coveredOrderIds = new Set(
-    existingPaidPayouts.flatMap((p) => p.orderIds.map((id) => id.toString()))
-  );
+  // getEligibleJobsForPrinter already excludes jobs reserved by an existing
+  // (non-rejected/non-cancelled) payout, so re-running is safe and never
+  // double-drafts the same jobs.
+  const { jobs, total } = await getEligibleJobsForPrinter(printerId.toString());
 
-  const eligibleOrders = await Order.find({
-    assignedPrinter: printerId,
-    status: { $in: ["SHIPPED", "COMPLETED"] },
-  }).lean();
-
-  const unpaidOrders = eligibleOrders.filter(
-    (o) => !coveredOrderIds.has(o._id.toString())
-  );
-
-  const totalAmount = unpaidOrders.reduce(
-    (s, o) => s + calcOrderEarning(o),
-    0
-  );
-
-  if (totalAmount < MINIMUM_PAYOUT_DOLLARS) {
+  if (jobs.length === 0 || total < MINIMUM_PAYOUT_DOLLARS) {
     log(
-      `Skipping printer ${printerId} — balance $${totalAmount.toFixed(2)} below minimum $${MINIMUM_PAYOUT_DOLLARS}`
+      `Skipping printer ${printerId} — eligible balance $${total.toFixed(2)} below minimum $${MINIMUM_PAYOUT_DOLLARS} (or no jobs)`
     );
     return;
   }
 
-  const scheduledDate = getNextFridayDate();
   const payout = await Payout.create({
     printerId,
-    amount: Number(totalAmount.toFixed(2)),
+    amount: total,
     currency: "usd",
-    status: "processing",
-    scheduledDate,
-    orderIds: unpaidOrders.map((o) => o._id),
-    metadata: { mode: "test", trigger: "weekly_cron" },
+    status: "pending_review",
+    scheduledDate: getNextFridayDate(),
+    orderIds: jobs.map((j) => new mongoose.Types.ObjectId(j.orderId)),
+    lineItems: jobs.map((j) => ({
+      orderId: new mongoose.Types.ObjectId(j.orderId),
+      displayId: j.displayId,
+      orderNumber: j.orderNumber,
+      customerName: j.customerName,
+      jobStatus: j.jobStatus,
+      completedAt: j.completedAt ? new Date(j.completedAt) : null,
+      amount: j.amount,
+    })),
+    createdByName: "System (weekly draft)",
+    statusHistory: [
+      {
+        status: "pending_review",
+        at: new Date(),
+        changedBy: null,
+        changedByName: "System (weekly draft)",
+        note: `Auto-drafted from ${jobs.length} eligible job(s)`,
+      },
+    ],
+    metadata: { trigger: "weekly_cron" },
   });
 
   log(
-    `Processing payout ${payout._id} for printer ${printerId} — $${totalAmount.toFixed(2)}`
+    `Drafted payout ${payout._id} for printer ${printerId} — $${total.toFixed(2)} (${jobs.length} jobs), awaiting admin review`
   );
-
-  try {
-    const amountCents = Math.round(totalAmount * 100);
-    const { transfer, payout: stripePayout } = await processPayoutTransfer(
-      printer.stripeConnectAccountId,
-      amountCents,
-      payout._id.toString(),
-      printerId.toString()
-    );
-
-    payout.stripeTransferId = transfer.id;
-    payout.stripePayoutId = stripePayout.id;
-    payout.status = "paid";
-    payout.processedAt = new Date();
-    await payout.save();
-
-    log(`Payout ${payout._id} succeeded — Stripe transfer ${transfer.id}`);
-  } catch (stripeErr: any) {
-    payout.status = "failed";
-    payout.failureReason = stripeErr?.message || "Stripe transfer failed";
-    await payout.save();
-
-    log(`Payout ${payout._id} FAILED — ${payout.failureReason}`);
-  }
 }
 
 /**

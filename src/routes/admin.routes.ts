@@ -30,9 +30,10 @@ import {
   updateGlobalPricing, 
   getAdminNotificationSettings, 
   updateAdminNotificationSettings, 
-  getAdminSecuritySettings, 
-  updateAdminSecuritySettings, 
-  getAdminProfile, 
+  getAdminSecuritySettings,
+  updateAdminSecuritySettings,
+  getAdminLoginActivity,
+  getAdminProfile,
   updateAdminProfile,
   updateAdminPassword,
   listAdminNotifications,
@@ -41,7 +42,9 @@ import {
   streamAdminNotifications,
   listPendingPrinters,
   approvePrinter,
-  rejectPrinter 
+  rejectPrinter,
+  getPartnerAssignmentSettings,
+  updatePartnerAssignmentSettings
 } from "../controllers/admin.controller.js";
 
 const router = express.Router();
@@ -57,6 +60,9 @@ router.get("/settings/notifications", getAdminNotificationSettings);
 router.patch("/settings/notifications", updateAdminNotificationSettings);
 router.get("/settings/security", getAdminSecuritySettings);
 router.patch("/settings/security", updateAdminSecuritySettings);
+router.get("/security/login-activity", getAdminLoginActivity);
+router.get("/settings/partner-assignment", getPartnerAssignmentSettings);
+router.patch("/settings/partner-assignment", updatePartnerAssignmentSettings);
 router.get("/profile", getAdminProfile);
 router.patch("/profile", updateAdminProfile);
 router.get("/profile/preferences", getAdminNotificationSettings);

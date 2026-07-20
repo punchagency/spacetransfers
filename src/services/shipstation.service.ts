@@ -1,10 +1,41 @@
 import mongoose from "mongoose";
 import { Order } from "../models/order.model.js";
+import { User } from "../models/user.model.js";
 import { env } from "../config/env.js";
 import { publishOrderEvent } from "./orderSyncHub.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
+import { notifyPrinter } from "./printerNotifications.service.js";
 
 const SS_BASE = "https://ssapi.shipstation.com";
+
+// ── Country helpers ───────────────────────────────────────────────────────────
+
+/** Map common full country names → ISO-3166-1 alpha-2 codes. */
+const COUNTRY_NAME_TO_CODE: Record<string, string> = {
+  "united states": "US", "usa": "US", "us": "US",
+  "canada": "CA",
+  "united kingdom": "GB", "uk": "GB",
+  "australia": "AU",
+  "germany": "DE",
+  "france": "FR",
+  "nigeria": "NG",
+  "ghana": "GH",
+  "kenya": "KE",
+  "south africa": "ZA",
+  "india": "IN",
+  "china": "CN",
+  "japan": "JP",
+  "brazil": "BR",
+  "mexico": "MX",
+};
+
+/** Normalise a country value to a 2-char ISO code. Returns the value uppercased if already 2 chars. */
+function normaliseCountry(raw: string | undefined | null): string {
+  if (!raw) return "US";
+  const trimmed = raw.trim();
+  if (trimmed.length === 2) return trimmed.toUpperCase();
+  return COUNTRY_NAME_TO_CODE[trimmed.toLowerCase()] ?? trimmed.toUpperCase().slice(0, 2);
+}
 
 // ── Retry utility — exported so tests can exercise it directly ────────────────
 
@@ -83,6 +114,29 @@ export async function ssRequestByUrl<T>(fullUrl: string): Promise<T> {
 
 // ── ShipStation API wrappers ──────────────────────────────────────────────────
 
+// Cached warehouse ID — fetched once per process, avoids repeated lookups.
+let _cachedWarehouseId: number | null = null;
+
+async function getDefaultWarehouseId(): Promise<number | null> {
+  if (_cachedWarehouseId !== null) return _cachedWarehouseId;
+  // Explicit env override takes priority — avoids an extra API call on every order.
+  if (env.shipStationWarehouseId) {
+    _cachedWarehouseId = env.shipStationWarehouseId;
+    return _cachedWarehouseId;
+  }
+  try {
+    const warehouses = await ssRequest<Array<{ warehouseId: number; isDefault?: boolean }>>(
+      "GET", "/warehouses"
+    );
+    if (!Array.isArray(warehouses) || warehouses.length === 0) return null;
+    const def = warehouses.find((w) => w.isDefault) ?? warehouses[0];
+    _cachedWarehouseId = def.warehouseId;
+    return _cachedWarehouseId;
+  } catch {
+    return null; // non-fatal — will surface as "No warehouse" error from ShipStation
+  }
+}
+
 interface SSCreateOrderResponse {
   orderId: number;
   orderNumber: string;
@@ -112,9 +166,10 @@ export const createShipStationOrder = (params: {
         city: params.city,
         state: params.state,
         postalCode: params.postalCode,
-        country: params.country || "US",
+        country: normaliseCountry(params.country),
         phone: params.phone || "",
       };
+      const warehouseId = await getDefaultWarehouseId();
       const result = await ssRequest<SSCreateOrderResponse>("POST", "/orders/createorder", {
         orderNumber: params.displayId,
         orderDate: new Date().toISOString(),
@@ -132,6 +187,7 @@ export const createShipStationOrder = (params: {
         amountPaid: params.totalAmount,
         weight: { value: 1, units: "pounds" },
         dimensions: { units: "inches", length: 12, width: 10, height: 2 },
+        ...(warehouseId !== null && { advancedOptions: { warehouseId } }),
       });
       return {
         shipStationOrderId: String(result.orderId),
@@ -146,14 +202,26 @@ export const createShipStationOrder = (params: {
 interface SSCreateLabelResponse {
   shipmentId: number;
   trackingNumber: string;
-  labelDownload?: { pdf?: string; png?: string };
+  /** Base64-encoded PDF — present in ShipStation REST v2 (ssapi.shipstation.com) */
+  labelData?: string;
+  /** URL-based download links — present in ShipStation REST v3 */
+  labelDownload?: { pdf?: string; png?: string; href?: string; zpl?: string };
   carrierCode: string;
 }
 
 export const createShipStationLabel = (params: {
   shipStationOrderId: string;
-  carrierId?: string;
+  carrierCode?: string;
   serviceCode?: string;
+  shipFrom?: {
+    name: string;
+    street1: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+    phone?: string;
+  };
 }): Promise<{
   shipStationShipmentId: string;
   trackingNumber: string;
@@ -162,12 +230,26 @@ export const createShipStationLabel = (params: {
 }> =>
   withRetry(
     async () => {
+      // Prefer the caller-supplied shipFrom (printer's business address).
+      // Fall back to env-var address if caller didn't provide one.
+      const shipFrom = params.shipFrom ?? (env.shipStationFromStreet
+        ? {
+            name: env.shipStationFromName || "Space Transfers",
+            street1: env.shipStationFromStreet,
+            city: env.shipStationFromCity || "",
+            state: env.shipStationFromState || "",
+            postalCode: env.shipStationFromPostalCode || "",
+            country: env.shipStationFromCountry || "US",
+          }
+        : undefined);
+
       const result = await ssRequest<SSCreateLabelResponse>(
         "POST",
         "/orders/createlabelfororder",
         {
           orderId: Number(params.shipStationOrderId),
-          carrierId: params.carrierId ?? env.shipStationCarrierId ?? "stamps_com",
+          // ShipStation uses "carrierCode" (string like "stamps_com"), not "carrierId"
+          carrierCode: params.carrierCode ?? env.shipStationCarrierId ?? "stamps_com",
           serviceCode:
             params.serviceCode ?? env.shipStationServiceCode ?? "usps_priority_mail",
           packageCode: "package",
@@ -175,15 +257,25 @@ export const createShipStationLabel = (params: {
           shipDate: new Date().toISOString().slice(0, 10),
           weight: { value: 1, units: "pounds" },
           dimensions: { units: "inches", length: 12, width: 10, height: 2 },
+          ...(shipFrom && { shipFrom }),
           // Use test labels outside production to avoid consuming real postage.
           testLabel: env.nodeEnv !== "production",
         }
       );
+      // ShipStation v2 (ssapi.shipstation.com) returns labelData as a base64-encoded PDF.
+      // ShipStation v3 returns labelDownload.{pdf,href,png} as URLs.
+      // We normalise both into a single labelUrl for storage.
+      const labelUrl =
+        result.labelDownload?.pdf ??
+        result.labelDownload?.href ??
+        result.labelDownload?.png ??
+        (result.labelData ? `data:application/pdf;base64,${result.labelData}` : "");
+
       return {
         shipStationShipmentId: String(result.shipmentId),
         trackingNumber: String(result.trackingNumber ?? ""),
-        labelUrl: String(result.labelDownload?.pdf ?? result.labelDownload?.png ?? ""),
-        carrier: String(result.carrierCode ?? params.carrierId ?? ""),
+        labelUrl,
+        carrier: String(result.carrierCode ?? params.carrierCode ?? ""),
       };
     },
     3,
@@ -289,6 +381,16 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
       throw new Error(`Incomplete shipping address on order ${orderId}`);
     }
 
+    // USPS/domestic carriers only support US addresses. Catch this early so the
+    // printer sees a clear message rather than a raw ShipStation 400 error.
+    const countryCode = normaliseCountry((addr as any).country);
+    if (countryCode !== "US") {
+      throw new Error(
+        `Cannot generate a USPS domestic label for a ${(addr as any).country || countryCode} address. ` +
+        `This order requires international shipping — please contact support to arrange a shipping method.`
+      );
+    }
+
     // ── Step 1: Create ShipStation order ──────────────────────────────────
     const items = (claimed.items ?? []).map((it: any) => ({
       name: String(it.name ?? it.type ?? "Print Item"),
@@ -306,7 +408,7 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
       city: addr.city,
       state: addr.state,
       postalCode: addr.postalCode,
-      country: addr.country ?? "US",
+      country: countryCode,
       items,
       totalAmount: Number((claimed as any).pricing?.total ?? 0),
     });
@@ -315,80 +417,101 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
       `[SS] Created ShipStation order ${shipStationOrderId} for order ${orderId}`
     );
 
-    // ── Step 2: Generate shipping label ───────────────────────────────────
+    // ── Step 2: Resolve printer's business address for ship-from ─────────
+    let shipFrom: Parameters<typeof createShipStationLabel>[0]["shipFrom"] | undefined;
+    if (claimed.assignedPrinter) {
+      const printer = await User.findById(claimed.assignedPrinter)
+        .select("name companyName phone businessAddress")
+        .lean();
+      const bAddr = (printer as any)?.businessAddress;
+      if (bAddr?.street) {
+        shipFrom = {
+          name: String((printer as any).companyName || (printer as any).name || "Print Partner"),
+          street1: String(bAddr.street),
+          city: String(bAddr.city || ""),
+          state: String(bAddr.state || ""),
+          postalCode: String(bAddr.postalCode || ""),
+          country: String(bAddr.country || "US"),
+          phone: String((printer as any).phone || ""),
+        };
+      }
+    }
+
+    // ── Step 3: Generate shipping label ───────────────────────────────────
     const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
-      await createShipStationLabel({ shipStationOrderId });
+      await createShipStationLabel({ shipStationOrderId, shipFrom });
 
     console.log(
       `[SS] Label generated — tracking: ${trackingNumber} carrier: ${carrier} for order ${orderId}`
     );
 
-    // ── Step 3: Mark order SHIPPED atomically ─────────────────────────────
+    // ── Step 4: Store label fields — keep status QUALITY_CHECK ────────────
+    // The printer must review and physically print the label, then click
+    // "Confirm Shipment" to advance to SHIPPED. Status is NOT auto-advanced here.
     const now = new Date();
     const timelineEntry = {
-      status: "SHIPPED",
+      status: "QUALITY_CHECK",
       time: now,
-      message:
-        `Auto-shipped via ShipStation. Carrier: ${carrier}, Tracking: ${trackingNumber}`,
+      message: `Shipping label ready. Carrier: ${carrier}, Tracking: ${trackingNumber}. Awaiting printer confirmation.`,
       actorRole: "SYSTEM",
       actorId: "SHIPSTATION",
       actorName: "ShipStation",
     };
 
+    // If ShipStation returned no PDF URL (e.g. test labels), use a sentinel so the
+    // printer app knows generation completed and stops polling.
+    const finalLabelUrl = labelUrl || "generated";
+
     await Order.updateOne(
       { _id: new mongoose.Types.ObjectId(orderId) },
       {
         $set: {
-          status: "SHIPPED",
           trackingNumber,
           carrier,
           shipStationOrderId,
           shipStationShipmentId,
-          shipStationLabelUrl: labelUrl,
+          shipStationLabelUrl: finalLabelUrl,
+          shipStationError: null,
           updatedAt: now,
         },
         $push: { statusTimeline: timelineEntry },
       }
     );
 
-    // Customer-facing SSE (bypasses Mongoose save hook since we used updateOne).
-    publishOrderEvent(orderId, "order.status.changed", {
-      orderId,
-      status: "SHIPPED",
-      from: "QUALITY_CHECK",
-      to: "SHIPPED",
-      trackingNumber,
-      carrier,
-      updatedAt: now,
-      lastTimelineEntry: timelineEntry,
-    });
-
-    notifyAllAdmins({
-      category: "orders",
-      priority: "medium",
-      title: "Order shipped",
-      message:
-        `Order #${displayId} shipped via ShipStation. ` +
-        `Carrier: ${carrier}, Tracking: ${trackingNumber}.`,
-      meta: { orderId, displayId, trackingNumber, carrier, shipStationOrderId },
-    }).catch(() => {});
+    // Notify the printer so they know the label is ready to print.
+    if (claimed.assignedPrinter) {
+      notifyPrinter({
+        printerId: String(claimed.assignedPrinter),
+        category: "jobs",
+        priority: "medium",
+        title: "Shipping label ready",
+        message: `Label for order #${displayId} is ready — open the order to print and confirm shipment.`,
+        meta: { orderId, displayId, trackingNumber, carrier },
+        settingsKey: "orderUpdates",
+      }).catch(() => {});
+    }
 
     console.log(
-      `[SS] Workflow complete for order ${orderId} → SHIPPED, tracking: ${trackingNumber}`
+      `[SS] Label ready for order ${orderId} — tracking: ${trackingNumber}, awaiting printer confirmation`
     );
   } catch (err: any) {
     console.error(`[SS] Workflow FAILED for order ${orderId}: ${err?.message}`);
 
-    // Clear the trigger lock so the printer can re-trigger by re-setting the status.
+    const errMsg = String(err?.message ?? "Unknown ShipStation error").slice(0, 500);
+
+    // Clear the trigger lock so the printer can retry, and surface the error message.
     await Order.updateOne(
       { _id: new mongoose.Types.ObjectId(orderId) },
       {
-        $set: { shipStationTriggeredAt: null },
+        $set: {
+          shipStationTriggeredAt: null,
+          shipStationError: errMsg,
+        },
         $push: {
           statusTimeline: {
             status: "QUALITY_CHECK",
             time: new Date(),
-            message: `ShipStation workflow failed: ${String(err?.message ?? "unknown error").slice(0, 300)}`,
+            message: `ShipStation workflow failed: ${errMsg}`,
             actorRole: "SYSTEM",
             actorId: "SHIPSTATION",
             actorName: "ShipStation",
