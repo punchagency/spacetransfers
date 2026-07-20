@@ -210,6 +210,7 @@ export const exportGangsheetPng24 = async ({
   cropToContent = false,
   maxComposites,
   format = "png",
+  useLossyPreview = false,
   itemSpacingIn,
   sheetMarginIn,
 }: {
@@ -234,6 +235,8 @@ export const exportGangsheetPng24 = async ({
   maxComposites?: number;
   /** Output format. 'webp' for browser previews (5-10x smaller); 'png' (default) for DTF print export. */
   format?: "png" | "webp";
+  /** Use lossy WebP for faster encoding and smaller file size (for previews only) */
+  useLossyPreview?: boolean;
   /** Inter-copy gap in inches — must match the artboard spacing setting. Defaults to GROUP_GAP_IN if omitted. */
   itemSpacingIn?: number | null;
   /** Left/right margin in inches — must match the artboard margin setting. Defaults to 0 if omitted. */
@@ -252,7 +255,7 @@ export const exportGangsheetPng24 = async ({
 }> => {
   await acquireRenderSlot();
   try {
-  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, itemSpacingIn, sheetMarginIn });
+  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, useLossyPreview, itemSpacingIn, sheetMarginIn });
   } finally {
     releaseRenderSlot();
   }
@@ -260,12 +263,14 @@ export const exportGangsheetPng24 = async ({
 
 const _doExport = async ({
   jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput,
-  cropToContent = false, maxComposites, format = "png", itemSpacingIn, sheetMarginIn,
+  cropToContent = false, maxComposites, format = "png", useLossyPreview = false,
+  itemSpacingIn, sheetMarginIn,
 }: {
   jobId: string; printerId: string; sheetWidthIn?: number | null; sheetHeightIn?: number | null;
   artboardItems: Array<{ assetId: string; croppedUrl?: string; widthIn: number; heightIn: number;
     posX: number; posY: number; rotation?: number; flipped?: boolean; copies?: number }>;
   dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
+  useLossyPreview?: boolean;
   itemSpacingIn?: number | null; sheetMarginIn?: number | null;
 }) => {
   const rawDpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
@@ -339,7 +344,7 @@ const _doExport = async ({
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
   const itemsHash = computeItemsHash(normalizedItems.slice(0, capForKey));
   const cacheKey = computeCacheKey({
-    v: 8,
+    v: 9,
     jobId,
     printerId,
     dpi,
@@ -348,7 +353,7 @@ const _doExport = async ({
     crop,
     itemsHash,
     png: format === "webp"
-      ? { format: "webp", lossless: true, effort: 6 }
+      ? { format: "webp", lossless: !useLossyPreview }
       : { format: "png", compressionLevel: 9, adaptiveFiltering: true, effort: 10, normTransparent: true },
     gapIn,
     marginIn,
@@ -627,10 +632,12 @@ const _doExport = async ({
   // compressionLevel 1 = fastest lossless encoding; level 9 can take 10+ minutes on large
   // sheets and provides only marginal size savings vs 1 for RGBA print files.
   // icc string is intentionally omitted — Sharp treats it as a file path and throws ENOENT.
-  // WebP uses lossless mode so the preview quality is identical to the PNG export —
-  // lossy WebP at quality 85 produced visible compression blur on fine print details.
+  // WebP uses lossless mode for exports, lossy mode for previews
   const out = await (format === "webp"
-    ? pipeline.webp({ lossless: true, effort: 6 }).withMetadata({ density: dpi })
+    ? (useLossyPreview 
+      ? pipeline.webp({ quality: 85, effort: 4 }).withMetadata({ density: dpi }) // Fast lossy for previews
+      : pipeline.webp({ lossless: true, effort: 6 }).withMetadata({ density: dpi }) // Lossless for exports
+    )
     : pipeline.png({ compressionLevel: 1, adaptiveFiltering: false, palette: false, effort: 2, force: true }).withMetadata({ density: dpi })
   ).toFile(filePath);
 

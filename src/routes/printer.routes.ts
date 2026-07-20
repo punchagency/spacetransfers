@@ -27,6 +27,7 @@ import {
   updatePrinterOrderStatus,
   cancelPrinterOrder,
   createJobShippingLabel,
+  reprintShippingLabel,
   updateJobTracking,
   getOrderSummary,
   getEarningsSummary,
@@ -76,6 +77,7 @@ router.get("/orders/summary", getPrinterOrdersSummary);
 router.patch("/orders/:orderId/status", updatePrinterOrderStatus);
 router.post("/orders/:orderId/cancel", cancelPrinterOrder);
 router.post("/jobs/:jobId/label", createJobShippingLabel);
+router.get("/jobs/:jobId/label", reprintShippingLabel);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.patch("/jobs/:jobId/specs", updateJobSpecs);
 router.patch("/jobs/:jobId/tracking", updateJobTracking);

@@ -10,14 +10,31 @@ declare global {
   }
 }
 
+/**
+ * Extract the bearer token from the Authorization header, falling back to a
+ * `?token=` query parameter. The query fallback exists so that native browser
+ * downloads (an <a download> / window.location navigation, which cannot set an
+ * Authorization header) can still authenticate — this is what lets large file
+ * exports stream straight to disk instead of being buffered in page memory.
+ */
+const extractToken = (req: Request): string | null => {
+  const header = req.headers.authorization;
+  if (header && header.startsWith("Bearer ")) {
+    return header.substring("Bearer ".length);
+  }
+  const q = req.query?.token;
+  if (typeof q === "string" && q.length > 0) return q;
+  if (Array.isArray(q) && typeof q[0] === "string" && q[0].length > 0) return q[0];
+  return null;
+};
+
 export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const header = req.headers.authorization;
-    if (!header || !header.startsWith("Bearer ")) {
+    const token = extractToken(req);
+    if (!token) {
       return res.status(401).json({ message: "Authentication required" });
     }
 
-    const token = header.substring("Bearer ".length);
     const payload = verifyJwt(token);
 
     if (!payload || !payload.sub) {
@@ -38,12 +55,11 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
 
 export const maybeAuthenticate = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const header = req.headers.authorization;
-    if (!header || !header.startsWith("Bearer ")) {
+    const token = extractToken(req);
+    if (!token) {
       return next();
     }
 
-    const token = header.substring("Bearer ".length);
     const payload = verifyJwt(token);
 
     if (payload && payload.sub) {

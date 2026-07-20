@@ -14,6 +14,9 @@ import {
 } from "../services/auth.service.js";
 import { User } from "../models/user.model.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
+import { sendEmail } from "../services/email.service.js";
+import { recordLoginActivity, extractClientIp, resolveGeo } from "../services/loginActivity.service.js";
+import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 
 export const me = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -76,8 +79,61 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
   try {
     const { email, password } = req.body;
     const result = await loginUser({ email, password });
+    const userId = String(result.user.id);
+
+    // Log the successful sign-in for the Security → Login Activity view.
+    recordLoginActivity({ req, userId, status: "success" }).catch(() => {});
+
+    // Send a system alert notification for successful login (especially if from a new location).
+    try {
+      const ip = extractClientIp(req);
+      const { location } = await resolveGeo(ip);
+      if (result.user.role === "ADMIN") {
+        notifyAllAdmins({
+          category: "system",
+          priority: "low",
+          title: "Sign-in detected",
+          message: `Your admin account was signed into from ${location}`,
+          meta: { userId, ip, location, type: "login_success" }
+        }).catch(() => {});
+      }
+    } catch {
+      /* notification is best-effort */
+    }
+
     res.json(result);
   } catch (error) {
+    // Record a failed attempt too, but only when the email maps to a real user
+    // so the entry can be attributed (and we never leak whether an email exists).
+    try {
+      const email = req.body?.email;
+      if (email) {
+        const existing = await User.findOne({ email: String(email).toLowerCase().trim() }).select("_id role");
+        if (existing) {
+          const userId = String(existing._id);
+          recordLoginActivity({ req, userId, status: "failed" }).catch(() => {});
+
+          // Notify admin on failed login attempt.
+          if (existing.role === "ADMIN") {
+            try {
+              const ip = extractClientIp(req);
+              const { location } = await resolveGeo(ip);
+              notifyAllAdmins({
+                category: "system",
+                priority: "medium",
+                title: "Failed sign-in attempt",
+                message: `A failed sign-in attempt was made from ${location}`,
+                meta: { userId, ip, location, type: "login_failed" }
+              }).catch(() => {});
+            } catch {
+              /* notification is best-effort */
+            }
+          }
+        }
+      }
+    } catch {
+      /* attribution lookup is best-effort */
+    }
     next(error);
   }
 };
@@ -167,6 +223,90 @@ export const confirmEmailVerification = async (req: Request, res: Response, next
     }).catch(() => {});
 
     return res.json({ verified: true, message: "Email verified successfully" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Generate a 6-digit OTP
+const generateOtp = (): string => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+export const sendOtp = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) {
+      // For security, don't reveal whether the email exists
+      return res.json({ message: "If an account exists for that email, an OTP has been sent." });
+    }
+
+    // Generate OTP and save to DB
+    const otp = generateOtp();
+    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    user.otpCode = otp;
+    user.otpExpiresAt = otpExpiresAt;
+    user.otpAttempts = 0;
+    await user.save();
+
+    // Send OTP via email
+    await sendEmail({
+      to: email,
+      subject: "Your Verification Code",
+      html: `
+        <p>Hi ${user.name},</p>
+        <p>Your verification code is:</p>
+        <h2 style="font-size: 32px; font-weight: bold; color: #1f2937; letter-spacing: 4px;">${otp}</h2>
+        <p>This code will expire in 10 minutes.</p>
+      `
+    });
+
+    res.json({ message: "If an account exists for that email, an OTP has been sent." });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const verifyOtp = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and OTP are required" });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) {
+      return res.status(400).json({ message: "Invalid OTP or email" });
+    }
+
+    // Check attempts
+    if (user.otpAttempts && user.otpAttempts >= 5) {
+      return res.status(429).json({ message: "Too many attempts. Please request a new OTP." });
+    }
+
+    // Check if OTP matches and not expired
+    if (!user.otpCode || user.otpCode !== otp) {
+      user.otpAttempts = (user.otpAttempts || 0) + 1;
+      await user.save();
+      return res.status(400).json({ message: "Invalid OTP or email" });
+    }
+
+    if (!user.otpExpiresAt || user.otpExpiresAt < new Date()) {
+      return res.status(400).json({ message: "OTP has expired. Please request a new one." });
+    }
+
+    // OTP is valid
+    user.otpCode = null;
+    user.otpExpiresAt = null;
+    user.otpAttempts = 0;
+    await user.save();
+
+    res.json({ message: "OTP verified successfully" });
   } catch (error) {
     next(error);
   }

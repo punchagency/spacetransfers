@@ -22,6 +22,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   });
 });
 
+// Redact a `token` query param so auth tokens used for native file downloads
+// never end up in the request logs.
+const redactUrl = (url: string) => url.replace(/([?&]token=)[^&]+/gi, "$1REDACTED");
+
 // Request Logger (Professional logging for debugging)
 app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
@@ -47,7 +51,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     const logColor = status >= 400 ? '\x1b[31m' : '\x1b[32m'; // Red for error, Green for success
     const resetColor = '\x1b[0m';
     
-    console.log(`${logColor}[${new Date().toISOString()}] ${req.method} ${req.url} ${status} ${duration}ms${resetColor}`);
+    console.log(`${logColor}[${new Date().toISOString()}] ${req.method} ${redactUrl(req.url)} ${status} ${duration}ms${resetColor}`);
     
     // Log response body for BOTH success and error (limited to 500 chars for success to avoid clutter)
     const bodyToLog = res.locals.responseBody;
@@ -69,8 +73,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     }
   });
 
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  
+  console.log(`[${new Date().toISOString()}] ${req.method} ${redactUrl(req.url)}`);
+
   // Fix: Trim trailing spaces from URL if present (often happens with copy-paste)
   if (req.url.endsWith('%20') || req.url.endsWith(' ')) {
     req.url = req.url.trim().replace(/%20$/, '');

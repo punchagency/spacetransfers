@@ -96,6 +96,8 @@ export interface IOrder extends Document {
   trackingUrl?: string;
   trackingEvents?: ITrackingEvent[];
   assignedPrinter?: mongoose.Types.ObjectId;
+  assignedAt?: Date | null;
+  assignmentDeadline?: Date | null;
   returnedAt?: Date;
   cancelledByPrinterId?: mongoose.Types.ObjectId;
   cancelledByPrinterName?: string;
@@ -104,6 +106,7 @@ export interface IOrder extends Document {
   shipStationShipmentId?: string;
   shipStationLabelUrl?: string;
   shipStationTriggeredAt?: Date | null;
+  shipStationError?: string | null;
   priority: "NORMAL" | "URGENT";
   notes?: string;
   specs?: {
@@ -284,6 +287,12 @@ const orderSchema = new Schema<IOrder>(
       type: Schema.Types.ObjectId,
       ref: "User"
     },
+    // The moment the order was assigned to its current printer, and the resulting
+    // fulfilment deadline (assignedAt + 24h). Both are set together at every
+    // assignment (auto or manual) so the printer's countdown starts from the exact
+    // assignment time rather than the order's creation time.
+    assignedAt: { type: Date, default: null },
+    assignmentDeadline: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
     cancelledByPrinterId: { type: Schema.Types.ObjectId, ref: "User", default: null },
     cancelledByPrinterName: { type: String, default: null },
@@ -291,6 +300,7 @@ const orderSchema = new Schema<IOrder>(
     shipStationShipmentId: { type: String, default: null },
     shipStationLabelUrl: { type: String, default: null },
     shipStationTriggeredAt: { type: Date, default: null },
+    shipStationError: { type: String, default: null },
     priority: {
       type: String,
       enum: ["NORMAL", "URGENT"],

@@ -1,5 +1,11 @@
 import nodemailer from "nodemailer";
+import sgMail from "@sendgrid/mail";
 import { env } from "../config/env.js";
+
+// Initialize SendGrid if API key is available
+if (env.sendgridApiKey) {
+  sgMail.setApiKey(env.sendgridApiKey);
+}
 
 export const sendEmail = async ({
   to,
@@ -15,6 +21,22 @@ export const sendEmail = async ({
     return { sent: false, messageId: null, error: null };
   }
 
+  // Try SendGrid first if configured
+  if (env.sendgridApiKey && env.sendgridFromEmail) {
+    try {
+      const [response] = await sgMail.send({
+        to,
+        from: env.sendgridFromEmail,
+        subject,
+        html
+      });
+      return { sent: true, messageId: String(response.headers["x-message-id"] || ""), error: null };
+    } catch (e: any) {
+      console.error(`[SENDGRID ERROR] to=${to} subject=${subject} error=${e?.message || "unknown"}`);
+      // Fall through to SMTP if SendGrid fails and SMTP is available
+    }
+  }
+
   const hasSmtp =
     Boolean(env.smtpHost) &&
     Boolean(env.smtpPort) &&
@@ -24,7 +46,7 @@ export const sendEmail = async ({
 
   if (!hasSmtp) {
     console.log(`[EMAIL MOCK] to=${to} subject=${subject}`);
-    return { sent: false, messageId: null, error: "smtp_not_configured" };
+    return { sent: false, messageId: null, error: "email_not_configured" };
   }
 
   try {

@@ -13,6 +13,12 @@ import {
   adminTogglePrinterPayouts,
   adminListPrinterPayoutStatus,
   adminExportPayouts,
+  adminGetPrinterEligibleJobs,
+  adminCreatePayout,
+  adminGetPayoutJobs,
+  adminApprovePayout,
+  adminRejectPayout,
+  adminProcessPayout,
   handleStripeWebhook,
 } from "../controllers/payout.controller.js";
 
@@ -75,6 +81,42 @@ router.get(
   authenticate,
   requireRoles(UserRoles.ADMIN),
   adminListPrinterPayoutStatus
+);
+router.get(
+  "/admin/printers/:printerId/eligible",
+  authenticate,
+  requireRoles(UserRoles.ADMIN),
+  adminGetPrinterEligibleJobs
+);
+router.post(
+  "/admin/create",
+  authenticate,
+  requireRoles(UserRoles.ADMIN),
+  adminCreatePayout
+);
+router.get(
+  "/admin/:payoutId/jobs",
+  authenticate,
+  requireRoles(UserRoles.ADMIN),
+  adminGetPayoutJobs
+);
+router.post(
+  "/admin/:payoutId/approve",
+  authenticate,
+  requireRoles(UserRoles.ADMIN),
+  adminApprovePayout
+);
+router.post(
+  "/admin/:payoutId/reject",
+  authenticate,
+  requireRoles(UserRoles.ADMIN),
+  adminRejectPayout
+);
+router.post(
+  "/admin/:payoutId/process",
+  authenticate,
+  requireRoles(UserRoles.ADMIN),
+  adminProcessPayout
 );
 router.post(
   "/admin/retry/:payoutId",

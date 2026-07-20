@@ -16,6 +16,8 @@ interface Env {
   smtpPass?: string;
   smtpFrom?: string;
   smtpSecure?: boolean;
+  sendgridApiKey?: string;
+  sendgridFromEmail?: string;
   googleDriveClientEmail?: string;
   googleDrivePrivateKey?: string;
   googleDriveFolderId?: string;
@@ -36,6 +38,15 @@ interface Env {
   shipStationWebhookSecret?: string; // token appended as ?token= to the webhook URL
   shipStationPollIntervalMs: number;
   shipStationMaxPollingDays: number;
+  // Warehouse ID from ShipStation → Settings → Warehouses (numeric ID in the page URL).
+  shipStationWarehouseId?: number;
+  // Ship-from address (the print shop). If omitted, ShipStation uses the default warehouse.
+  shipStationFromName?: string;
+  shipStationFromStreet?: string;
+  shipStationFromCity?: string;
+  shipStationFromState?: string;
+  shipStationFromPostalCode?: string;
+  shipStationFromCountry?: string;
   // AI Upscaling — Replicate (best, ~$0.002/img) and/or HuggingFace (free tier)
   replicateApiToken?: string;
   hfApiToken?: string;
@@ -68,6 +79,8 @@ export const env: Env = {
   smtpPass: cleanEnvString(process.env.SMTP_PASS),
   smtpFrom: cleanEnvString(process.env.SMTP_FROM),
   smtpSecure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === "true" : undefined,
+  sendgridApiKey: cleanEnvString(process.env.SENDGRID_API_KEY),
+  sendgridFromEmail: cleanEnvString(process.env.SENDGRID_FROM_EMAIL),
 
   googleDriveClientEmail: cleanEnvString(process.env.GOOGLE_DRIVE_CLIENT_EMAIL),
   googleDrivePrivateKey: cleanEnvString(process.env.GOOGLE_DRIVE_PRIVATE_KEY),
@@ -96,4 +109,13 @@ export const env: Env = {
     : 30,
   replicateApiToken: cleanEnvString(process.env.REPLICATE_API_TOKEN),
   hfApiToken: cleanEnvString(process.env.HF_API_TOKEN),
+  shipStationWarehouseId: process.env.SHIPSTATION_WAREHOUSE_ID
+    ? Number(process.env.SHIPSTATION_WAREHOUSE_ID)
+    : undefined,
+  shipStationFromName: cleanEnvString(process.env.SHIPSTATION_FROM_NAME),
+  shipStationFromStreet: cleanEnvString(process.env.SHIPSTATION_FROM_STREET),
+  shipStationFromCity: cleanEnvString(process.env.SHIPSTATION_FROM_CITY),
+  shipStationFromState: cleanEnvString(process.env.SHIPSTATION_FROM_STATE),
+  shipStationFromPostalCode: cleanEnvString(process.env.SHIPSTATION_FROM_POSTAL_CODE),
+  shipStationFromCountry: cleanEnvString(process.env.SHIPSTATION_FROM_COUNTRY),
 };
