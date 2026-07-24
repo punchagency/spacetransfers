@@ -8,6 +8,8 @@ import {
   uploadAsset,
   trimAsset,
   upscaleAsset,
+  aiEditAsset,
+  aiEditCapabilities,
   updateAccount,
   logout,
   listAssets,
@@ -43,6 +45,8 @@ const router = express.Router();
 router.post("/assets", maybeAuthenticate, upload.single("file"), uploadAsset);
 router.post("/assets/trim", maybeAuthenticate, trimAsset);
 router.post("/assets/upscale", maybeAuthenticate, upscaleAsset);
+router.get("/assets/ai-edit/capabilities", maybeAuthenticate, aiEditCapabilities);
+router.post("/assets/ai-edit", maybeAuthenticate, aiEditAsset);
 router.get("/assets", maybeAuthenticate, listAssets);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));

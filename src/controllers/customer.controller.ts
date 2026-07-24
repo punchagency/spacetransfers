@@ -419,6 +419,165 @@ export const upscaleAsset = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
+// ── Generative AI editing ─────────────────────────────────────────────────────
+
+/**
+ * Instruction-based image editing model. Swapping vendors is a change to this
+ * function alone — the client speaks only in {url, prompt, intent} and never
+ * learns which model answered.
+ */
+const AI_EDIT_MODEL = process.env.AI_EDIT_MODEL || "black-forest-labs/flux-kontext-pro";
+const AI_EDIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Expands a canonical intent into an instruction the editing model follows
+ * reliably. The user's own words are always appended, so a chip press and a
+ * typed sentence converge on the same request shape.
+ */
+const buildEditInstruction = (intent: string, prompt: string): string => {
+  const guards: Record<string, string> = {
+    "replace-bg":
+      "Replace only the background. Keep the main subject completely unchanged, with clean edges.",
+    "change-color":
+      "Change only the colour described. Preserve the shape, texture, lighting and all other detail.",
+    "remove-object":
+      "Remove the described object and realistically fill the area behind it. Leave everything else untouched.",
+    "add-shadow":
+      "Add a realistic, physically plausible drop shadow beneath the subject. Do not alter the subject itself.",
+    "to-sticker":
+      "Convert into a die-cut sticker: isolate the subject and add a clean white contour border.",
+    cartoon:
+      "Restyle the artwork as described while preserving the composition and subject identity.",
+  };
+  const guard = guards[intent];
+  return guard ? `${prompt.trim()}. ${guard}` : prompt.trim();
+};
+
+async function editWithReplicate(
+  publicUrl: string,
+  instruction: string,
+  apiToken: string,
+): Promise<Buffer> {
+  const createRes = await fetch(
+    `https://api.replicate.com/v1/models/${AI_EDIT_MODEL}/predictions`,
+    {
+      method: "POST",
+      headers: { Authorization: `Token ${apiToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: {
+          input_image: publicUrl,
+          prompt: instruction,
+          output_format: "png",
+          safety_tolerance: 2,
+        },
+      }),
+    },
+  );
+  if (!createRes.ok) {
+    const body = await createRes.text().catch(() => "");
+    throw new Error(`Replicate ${createRes.status}: ${body.slice(0, 200)}`);
+  }
+
+  let prediction: { id: string; status: string; output?: string | string[]; error?: string } =
+    await createRes.json();
+
+  const deadline = Date.now() + AI_EDIT_TIMEOUT_MS;
+  while (
+    prediction.status !== "succeeded" &&
+    prediction.status !== "failed" &&
+    prediction.status !== "canceled"
+  ) {
+    if (Date.now() > deadline) throw new Error("The AI edit timed out. Try a simpler prompt.");
+    await new Promise((r) => setTimeout(r, REPLICATE_POLL_INTERVAL_MS));
+    const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+      headers: { Authorization: `Token ${apiToken}` },
+    });
+    if (!pollRes.ok) throw new Error(`Replicate poll failed (${pollRes.status})`);
+    prediction = await pollRes.json();
+  }
+
+  if (prediction.status !== "succeeded" || !prediction.output) {
+    throw new Error(`The model could not complete this edit: ${prediction.error ?? "unknown error"}`);
+  }
+
+  // Some models return a bare URL, others a one-element array.
+  const outputUrl = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
+  const imgRes = await fetch(outputUrl);
+  if (!imgRes.ok) throw new Error("Could not download the edited image");
+  return Buffer.from(await imgRes.arrayBuffer());
+}
+
+/**
+ * Readiness probe. The client caches this for the session and uses it to decide
+ * whether generative chips are live, so a user never fires a request that is
+ * guaranteed to 503.
+ */
+export const aiEditCapabilities = async (_req: Request, res: Response) => {
+  res.json({
+    enabled: Boolean(env.replicateApiToken),
+    model: env.replicateApiToken ? AI_EDIT_MODEL : undefined,
+  });
+};
+
+export const aiEditAsset = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { url, prompt, intent } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return next(Object.assign(new Error("url is required"), { statusCode: 400 }));
+    }
+    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      return next(Object.assign(new Error("prompt is required"), { statusCode: 400 }));
+    }
+    if (!env.replicateApiToken) {
+      return next(
+        Object.assign(
+          new Error("AI editing isn't configured on this server yet."),
+          { statusCode: 503 },
+        ),
+      );
+    }
+
+    const sourceBuffer = await fetchImageBuffer(url);
+    const originalMeta = await sharp(sourceBuffer, { limitInputPixels: false }).metadata();
+
+    // The model needs a publicly reachable URL — data URLs and local /uploads
+    // paths have to be staged to Cloudinary first.
+    let publicUrl = url;
+    if (url.startsWith("data:") || url.includes("/uploads/")) {
+      const { url: tempUrl } = await uploadBufferToCloudinary(
+        sourceBuffer,
+        "space-transfers/ai-edit-input",
+      );
+      publicUrl = tempUrl;
+    }
+
+    const instruction = buildEditInstruction(String(intent || "custom"), prompt);
+    const editedBuffer = await editWithReplicate(publicUrl, instruction, env.replicateApiToken);
+
+    const { url: editedUrl } = await uploadBufferToCloudinary(
+      editedBuffer,
+      "space-transfers/ai-edited",
+    );
+    const editedMeta = await sharp(editedBuffer, { limitInputPixels: false }).metadata();
+
+    console.log(`[AI-EDIT] ${intent} — "${prompt.slice(0, 60)}"`);
+
+    res.json({
+      url: editedUrl,
+      widthPx: editedMeta.width ?? 0,
+      heightPx: editedMeta.height ?? 0,
+      originalWidthPx: originalMeta.width ?? 0,
+      originalHeightPx: originalMeta.height ?? 0,
+      // Generative edits repaint the full frame, so the item's print box on the
+      // artboard must be preserved exactly as-is.
+      reframed: false,
+      provider: "replicate",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const updateAccount = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, defaultShippingAddress, companyName, phone } = req.body;
