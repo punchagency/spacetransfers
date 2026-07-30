@@ -11,6 +11,7 @@
     "test": "NODE_ENV=test node --test --import tsx \"src/tests/**/*.test.ts\""
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@sendgrid/mail": "^8.1.6",
     "@types/pdfkit": "^0.17.6",
     "archiver": "^7.0.1",

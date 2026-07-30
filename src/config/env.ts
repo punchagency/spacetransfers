@@ -49,7 +49,27 @@ interface Env {
   shipStationFromCountry?: string;
   // AI Upscaling — Replicate (best, ~$0.002/img) and/or HuggingFace (free tier)
   replicateApiToken?: string;
+  anthropicApiKey?: string;
+  /** Effort level for the copyright vision pass. Higher = more accurate, slower, costlier. */
+  copyrightScanEffort?: string;
   hfApiToken?: string;
+  /**
+   * Cloudflare Workers AI — the free tier of the generative edit path
+   * (10k neurons/day, no card). Both values are required together; one without
+   * the other is treated as unconfigured.
+   */
+  cloudflareAccountId?: string;
+  cloudflareApiToken?: string;
+  /**
+   * Google Gemini — the primary (and free) generative editing tier. An AI
+   * Studio key needs no card and covers ~500 image edits/day, so it is tried
+   * before the paid providers rather than as a fallback behind them.
+   */
+  geminiApiKey?: string;
+  /** Overridable so a paid key can point at a stronger image model. */
+  geminiImageModel?: string;
+  /** Text model used for prompt understanding / multi-step planning. */
+  geminiTextModel?: string;
 }
 
 const cleanEnvString = (value?: string): string | undefined => {
@@ -108,7 +128,18 @@ export const env: Env = {
     ? Number(process.env.SHIPSTATION_MAX_POLLING_DAYS)
     : 30,
   replicateApiToken: cleanEnvString(process.env.REPLICATE_API_TOKEN),
+  anthropicApiKey: cleanEnvString(process.env.ANTHROPIC_API_KEY),
+  copyrightScanEffort: cleanEnvString(process.env.COPYRIGHT_SCAN_EFFORT),
   hfApiToken: cleanEnvString(process.env.HF_API_TOKEN),
+  cloudflareAccountId: cleanEnvString(process.env.CLOUDFLARE_ACCOUNT_ID),
+  cloudflareApiToken: cleanEnvString(process.env.CLOUDFLARE_API_TOKEN),
+  // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
+  // shows on the key page, and copying it verbatim should just work.
+  geminiApiKey:
+    cleanEnvString(process.env.GEMINI_API_KEY) ||
+    cleanEnvString(process.env.GOOGLE_AI_API_KEY),
+  geminiImageModel: cleanEnvString(process.env.GEMINI_IMAGE_MODEL),
+  geminiTextModel: cleanEnvString(process.env.GEMINI_TEXT_MODEL),
   shipStationWarehouseId: process.env.SHIPSTATION_WAREHOUSE_ID
     ? Number(process.env.SHIPSTATION_WAREHOUSE_ID)
     : undefined,

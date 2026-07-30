@@ -168,6 +168,21 @@ export interface IUser extends Document {
   // pause so auto-recovery only re-opens partners the system paused itself, and
   // the Open/Paused toggle stays disabled while this is set.
   capacityPaused?: boolean;
+  /**
+   * Immutable audit record of the legal terms this user accepted at sign-up.
+   * Absent on accounts created before the acceptance step shipped, and on
+   * sub-accounts (which inherit the parent account holder's acceptance).
+   */
+  legalAcceptance?: {
+    termsAccepted: boolean;
+    contentResponsibilityAccepted: boolean;
+    termsVersion: string;
+    privacyVersion: string;
+    contentPolicyVersion: string;
+    acceptedAt: Date;
+    ip?: string;
+    userAgent?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -425,6 +440,25 @@ const userSchema = new Schema<IUser>(
     capacityPaused: {
       type: Boolean,
       default: false,
+    },
+    // Compliance audit trail. `_id: false` because this is a value object, not
+    // a document collection — it is only ever read as a whole.
+    legalAcceptance: {
+      type: new Schema(
+        {
+          termsAccepted: { type: Boolean, required: true },
+          contentResponsibilityAccepted: { type: Boolean, required: true },
+          termsVersion: { type: String, required: true },
+          privacyVersion: { type: String, required: true },
+          contentPolicyVersion: { type: String, required: true },
+          acceptedAt: { type: Date, required: true },
+          ip: { type: String },
+          userAgent: { type: String },
+        },
+        { _id: false },
+      ),
+      required: false,
+      default: undefined,
     }
   },
   {
