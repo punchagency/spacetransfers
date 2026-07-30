@@ -10,6 +10,7 @@ import {
   upscaleAsset,
   aiEditAsset,
   aiEditCapabilities,
+  aiEditPlan,
   updateAccount,
   logout,
   listAssets,
@@ -47,6 +48,9 @@ router.post("/assets/trim", maybeAuthenticate, trimAsset);
 router.post("/assets/upscale", maybeAuthenticate, upscaleAsset);
 router.get("/assets/ai-edit/capabilities", maybeAuthenticate, aiEditCapabilities);
 router.post("/assets/ai-edit", maybeAuthenticate, aiEditAsset);
+// Prompt understanding — text only, no image work, so it is cheap enough to
+// call on every submit to decompose multi-step requests before editing starts.
+router.post("/assets/ai-edit/plan", maybeAuthenticate, aiEditPlan);
 router.get("/assets", maybeAuthenticate, listAssets);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));

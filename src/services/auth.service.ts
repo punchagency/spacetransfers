@@ -1,4 +1,5 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
+import { buildLegalAcceptance, type LegalAcceptanceInput, type LegalAcceptanceRecord } from "../config/legal.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress, isUSCountry } from "../utils/geocoding.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
@@ -27,6 +28,10 @@ interface RegisterParams {
     postalCode?: string;
     country?: string;
   };
+  /** Required. Registration is refused without both acknowledgements. */
+  legalAcceptance?: LegalAcceptanceInput;
+  /** Audit context, supplied by the controller from the request. */
+  legalContext?: { ip?: string; userAgent?: string };
 }
 
 interface UserResponse {
@@ -86,8 +91,15 @@ export const registerUser = async ({
   phone,
   region,
   website,
-  address
+  address,
+  legalAcceptance,
+  legalContext
 }: RegisterParams): Promise<AuthResponse> => {
+  // Validated before anything else: an account must never come into existence
+  // without its acceptance record, so this runs ahead of the duplicate-email
+  // check and every other validation.
+  const acceptanceRecord = buildLegalAcceptance(legalAcceptance, legalContext || {});
+
   const existing = await User.findOne({ email });
   if (existing) {
     const error = new Error("Email already in use") as any;
@@ -135,7 +147,8 @@ export const registerUser = async ({
     email,
     passwordHash,
     role: resolvedRole,
-    status: resolvedRole === UserRoles.PRINTER ? "Pending" : "Active"
+    status: resolvedRole === UserRoles.PRINTER ? "Pending" : "Active",
+    legalAcceptance: acceptanceRecord
   };
 
   if (companyName) userPayload.companyName = companyName;
@@ -623,7 +636,13 @@ export const requestPasswordReset = async (email: string): Promise<{ resetToken?
   return {};
 };
 
-export const loginWithGoogle = async (credential: string): Promise<AuthResponse & { isNew: boolean }> => {
+export const loginWithGoogle = async (
+  credential: string,
+  // Only consulted when this sign-in creates a new account; existing users
+  // accepted at their own registration.
+  legalAcceptance?: LegalAcceptanceInput,
+  legalContext?: { ip?: string; userAgent?: string },
+): Promise<AuthResponse & { isNew: boolean }> => {
   dotenv.config({ override: true });
   const clientId = (process.env.GOOGLE_CLIENT_ID || "").trim() || env.googleClientId;
   if (!clientId) {
@@ -675,6 +694,11 @@ export const loginWithGoogle = async (credential: string): Promise<AuthResponse 
     if (avatarUrl && user.avatarUrl !== avatarUrl) { user.avatarUrl = avatarUrl; changed = true; }
     if (changed) await user.save();
   } else {
+    // A Google sign-in that creates an account IS a registration, so it needs
+    // the same acknowledgements as the email form. Existing users skip this —
+    // they accepted at their own sign-up and this is just a login.
+    const googleAcceptance = buildLegalAcceptance(legalAcceptance, legalContext || {});
+
     isNew = true;
     user = await User.create({
       email: normalizedEmail,
@@ -685,6 +709,7 @@ export const loginWithGoogle = async (credential: string): Promise<AuthResponse 
       role: UserRoles.CUSTOMER,
       status: "Active",
       regions: ["West"],
+      legalAcceptance: googleAcceptance,
     });
 
     // Send welcome email (non-blocking)

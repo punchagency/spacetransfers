@@ -67,8 +67,14 @@ export const switchAccount = async (req: Request, res: Response, next: NextFunct
 
 export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, email, password, role, companyName, phone, region, website, address } = req.body;
-    const result = await registerUser({ name, email, password, role, companyName, phone, region, website, address });
+    const { name, email, password, role, companyName, phone, region, website, address, legalAcceptance } = req.body;
+    const result = await registerUser({
+      name, email, password, role, companyName, phone, region, website, address,
+      legalAcceptance,
+      // Captured server-side so the audit record reflects the actual request,
+      // not a client-supplied claim about it.
+      legalContext: { ip: extractClientIp(req), userAgent: req.get("user-agent") || undefined },
+    });
     res.status(201).json(result);
   } catch (error) {
     next(error);
@@ -163,11 +169,14 @@ export const resetPasswordController = async (req: Request, res: Response, next:
 
 export const googleAuthController = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { credential } = req.body;
+    const { credential, legalAcceptance } = req.body;
     if (!credential || typeof credential !== "string") {
       return res.status(400).json({ message: "Google credential is required" });
     }
-    const result = await loginWithGoogle(credential);
+    const result = await loginWithGoogle(credential, legalAcceptance, {
+      ip: extractClientIp(req),
+      userAgent: req.get("user-agent") || undefined,
+    });
     res.json(result);
   } catch (error) {
     next(error);
