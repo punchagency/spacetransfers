@@ -52,12 +52,12 @@ export default function CheckoutStep({
 
   return (
     <>
-      <div className="bg-white rounded-lg border mb-5 border-gray-200 p-6">
+      <div className="bg-white rounded-lg border mb-5 border-gray-200 p-4 sm:p-6">
         <div className="flex items-center gap-2 mb-4">
           <BsPerson className="w-5 h-5 text-blue-600" />
           <h3 className="text-base font-semibold">Customer Information</h3>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium mb-1">
               First Name <span className="text-red-500">*</span>
@@ -94,7 +94,7 @@ export default function CheckoutStep({
               <div className="mt-1 text-xs text-red-600">{errors.lastName}</div>
             ) : null}
           </div>
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <label className="block text-sm font-medium mb-1">
               Email Address <span className="text-red-500">*</span>
             </label>
@@ -112,7 +112,7 @@ export default function CheckoutStep({
               <div className="mt-1 text-xs text-red-600">{errors.email}</div>
             ) : null}
           </div>
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <label className="block text-sm font-medium mb-1">
               Phone Number <span className="text-red-500">*</span>
             </label>
@@ -133,7 +133,7 @@ export default function CheckoutStep({
         </div>
       </div>
 
-      <div className="bg-white rounded-lg border mb-5 border-gray-200 p-6">
+      <div className="bg-white rounded-lg border mb-5 border-gray-200 p-4 sm:p-6">
         <div className="flex items-center gap-2 mb-4">
           <IoLocationOutline className="w-5 h-5 text-blue-600" />
           <h3 className="text-base font-semibold">Shipping Address</h3>
@@ -157,7 +157,7 @@ export default function CheckoutStep({
               <div className="mt-1 text-xs text-red-600">{errors.street}</div>
             ) : null}
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">
                 City <span className="text-red-500">*</span>
@@ -184,9 +184,15 @@ export default function CheckoutStep({
                 type="text"
                 value={formData.state}
                 onChange={(e) =>
-                  setFormData({ ...formData, state: e.target.value })
+                  setFormData({
+                    ...formData,
+                    // Two-letter US state code only — mirrors printer signup.
+                    state: e.target.value.replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 2),
+                  })
                 }
-                className={`w-full px-3 py-2 border rounded-lg ${
+                placeholder="CA"
+                maxLength={2}
+                className={`w-full px-3 py-2 border rounded-lg uppercase ${
                   errors?.state ? "border-red-500" : "border-gray-300"
                 } ${formData.state ? "bg-[#F3F3F5]" : "bg-white"}`}
               />
@@ -195,7 +201,7 @@ export default function CheckoutStep({
               ) : null}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1">
                 Postal Code <span className="text-red-500">*</span>
@@ -237,13 +243,13 @@ export default function CheckoutStep({
       </div>
 
       {detectedRegion && (
-        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-xs font-medium ${REGION_COLORS[detectedRegion] ?? "bg-slate-50 text-slate-600 border-slate-200"}`}>
+        <div className={`flex mb-4.5 items-center gap-2 px-4 py-2.5 rounded-lg border text-xs font-medium ${REGION_COLORS[detectedRegion] ?? "bg-slate-50 text-slate-600 border-slate-200"}`}>
           <IoLocationOutline className="w-4 h-4 flex-shrink-0" />
-          <span>Service Region: <strong>{detectedRegion}</strong> — your order will be matched with a printer in this region.</span>
+          <span>Service Region: <strong>{detectedRegion}</strong> </span>
         </div>
       )}
 
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
+      <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-normal text-[11px]">Design Validation</h3>
           <span className="text-[11px] bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
@@ -258,7 +264,7 @@ export default function CheckoutStep({
               <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
               <span>Minimum resolution: 150 DPI (300 DPI recommended)</span>
             </div>
-            <div className="flex items-center text-[10px] gap-2">
+            <div className="flex items-center text-[10px] gap-2">                                                                                                             
               <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
               <span>Maximum print area: 12" x 16" for standard transfers</span>
             </div>

@@ -62,10 +62,6 @@ function trimTransparentCanvas(
   return { dataUrl: out.toDataURL("image/png"), cw, ch };
 }
 
-function clamp(v: number): number {
-  return Math.max(0, Math.min(255, v));
-}
-
 type BgType = "white" | "black";
 
 /**
@@ -115,9 +111,17 @@ function detectSolidBackground(
  * 1. Flood-fill from all four image edges to find the connected background
  *    region (using a colour tolerance).  This means isolated white/black
  *    pixels that belong to the object are never touched.
- * 2. For every background pixel compute a smooth alpha via the standard
- *    compositing un-premultiply formula so that anti-aliased edges and
- *    semi-transparent fringe are correctly recovered rather than hard-cut.
+ * 2. Apply the result as a BINARY mask: flood-filled background pixels become
+ *    fully transparent; every foreground pixel is left byte-for-byte as it was.
+ *
+ * Foreground pixels are never rewritten. The previous implementation derived a
+ * soft alpha from each pixel's brightness and then "un-premultiplied" its RGB
+ * (dividing by that alpha). On a dark background that maths is destructive: a
+ * near-black pixel gets a tiny alpha, so it turns semi-transparent AND its
+ * colour is divided by a small number and blown out — bleaching dark/black
+ * regions of the subject (the washed-out maroon border). A binary mask cannot
+ * desaturate, lighten, or partially erase the subject: what wasn't background
+ * keeps its exact original colour and opacity.
  */
 function removeColorBackground(
   data: Uint8ClampedArray,
@@ -125,10 +129,27 @@ function removeColorBackground(
   h: number,
   bgType: BgType,
 ): void {
-  // How close a pixel must be to the bg colour to be flood-filled.
-  const FLOOD_TOL = 30;
-  // Range over which the alpha blends from 0 → 1 at edges.
-  const EDGE_SOFT = 55;
+  // How close a pixel must be to a WHITE bg to be flood-filled.
+  const WHITE_TOL = 30;
+
+  // Dark backgrounds need far stricter rules. A black backdrop and a dark
+  // SUBJECT (a near-black bevel, a deep maroon extruded face, black linework)
+  // sit at almost the same brightness, so a loose "is it dark?" threshold
+  // floods straight out of the background and eats the artwork — that is what
+  // deleted the dark bottom face of the tile. Two guards keep the subject safe:
+  //
+  //  • BLACK_TOL — a much tighter brightness ceiling, so only near-pure black
+  //    counts as background rather than everything merely "a bit dark".
+  //  • BLACK_CHROMA_TOL — a neutrality test. A real black backdrop is
+  //    achromatic (r ≈ g ≈ b). The artwork's dark regions carry colour: a
+  //    maroon bevel has a clear red cast, so max-channel minus min-channel is
+  //    well above zero. Any pixel with meaningful chroma is treated as SUBJECT
+  //    and is never flood-filled, no matter how dark it is.
+  // A genuine black backdrop is essentially colourless (chroma ~0-3, allowing a
+  // little for compression noise), so this stays deliberately tight — even a
+  // very deep maroon still carries clearly more chroma than that and survives.
+  const BLACK_TOL = 18;
+  const BLACK_CHROMA_TOL = 8;
 
   // ── Step 1: flood-fill from edges ──────────────────────────────────────
   const visited = new Uint8Array(w * h);
@@ -137,9 +158,12 @@ function removeColorBackground(
   const isBg = (flat: number): boolean => {
     const i = flat * 4;
     const r = data[i], g = data[i + 1], b = data[i + 2];
-    return bgType === "white"
-      ? r >= 255 - FLOOD_TOL && g >= 255 - FLOOD_TOL && b >= 255 - FLOOD_TOL
-      : r <= FLOOD_TOL && g <= FLOOD_TOL && b <= FLOOD_TOL;
+    if (bgType === "white") {
+      return r >= 255 - WHITE_TOL && g >= 255 - WHITE_TOL && b >= 255 - WHITE_TOL;
+    }
+    const maxCh = Math.max(r, g, b);
+    const minCh = Math.min(r, g, b);
+    return maxCh <= BLACK_TOL && maxCh - minCh <= BLACK_CHROMA_TOL;
   };
 
   const push = (flat: number) => {
@@ -167,40 +191,121 @@ function removeColorBackground(
     if (py < h - 1) push(flat + w);
   }
 
-  // ── Step 2: apply alpha only to flood-filled (background) pixels ───────
-  // Object pixels (visited === 0) are left completely untouched, preserving
-  // every particle even if it happens to be white or black.
+  // ── Step 2: binary mask — background out, foreground untouched ─────────
+  // ONLY flood-filled background pixels are modified (alpha → 0). Object
+  // pixels (visited === 0) keep their exact original RGB *and* original alpha:
+  // no soft ramp, no un-premultiply, nothing that could lighten or fade them.
+  // This is what guarantees a dark/black subject region stays fully opaque and
+  // true to colour instead of being bleached.
   for (let i = 0; i < w * h; i++) {
     if (!visited[i]) continue;
+    data[i * 4 + 3] = 0;
+  }
 
-    const idx = i * 4;
-    const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+  // ── Step 3: defringe the cut edge ──────────────────────────────────────
+  // Anti-aliased pixels just inside the silhouette are a blend of subject and
+  // old background. They stay opaque (we never fade the subject), so repaint
+  // that thin rim with colour sampled from the clean interior — removing the
+  // background-coloured halo without touching a single alpha value.
+  decontaminateEdges(data, w, h, bgType);
+}
 
-    let alpha: number;
+/**
+ * Edge colour decontamination ("defringe").
+ *
+ * Repaints the 1-px opaque rim of the cutout using colour drawn from the clean
+ * interior of the subject, so no leftover background tint (a light halo on a
+ * white bg, a dark one on black) rings the artwork. Strength scales with how
+ * contaminated each rim pixel actually is, so uncontaminated edges are left
+ * alone.
+ *
+ * Crucially it NEVER modifies alpha and never touches interior pixels — it
+ * cannot erode the subject, punch holes, or make anything transparent. It is
+ * purely cosmetic colour repair on the boundary.
+ */
+function decontaminateEdges(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  bgType: BgType | null,
+): void {
+  const n = w * h;
+  const opaque = new Uint8Array(n);
+  for (let i = 0; i < n; i++) opaque[i] = data[i * 4 + 3] > 0 ? 1 : 0;
 
-    if (bgType === "white") {
-      // Pixels closer to pure white get lower alpha.
-      // min-channel = how non-white the pixel is (0 = pure white, 255 = no white).
-      alpha = Math.min(1, (255 - Math.min(r, g, b)) / EDGE_SOFT);
-      // Un-premultiply from white to recover the true foreground colour.
-      if (alpha > 0.02) {
-        data[idx]     = clamp(Math.round((r - (1 - alpha) * 255) / alpha));
-        data[idx + 1] = clamp(Math.round((g - (1 - alpha) * 255) / alpha));
-        data[idx + 2] = clamp(Math.round((b - (1 - alpha) * 255) / alpha));
-      }
-    } else {
-      // Pixels closer to pure black get lower alpha.
-      // max-channel = how non-black the pixel is (0 = pure black, 255 = no black).
-      alpha = Math.min(1, Math.max(r, g, b) / EDGE_SOFT);
-      // Un-premultiply from black (divide by alpha).
-      if (alpha > 0.02) {
-        data[idx]     = clamp(Math.round(r / alpha));
-        data[idx + 1] = clamp(Math.round(g / alpha));
-        data[idx + 2] = clamp(Math.round(b / alpha));
+  const isRim = (x: number, y: number): boolean => {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) return true;
+        if (!opaque[ny * w + nx]) return true;
       }
     }
+    return false;
+  };
 
-    data[idx + 3] = Math.round(alpha * 255);
+  // Sample only ORIGINAL neighbour colours, never partially-repainted ones.
+  const out = new Uint8ClampedArray(data);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const flat = y * w + x;
+      if (!opaque[flat] || !isRim(x, y)) continue;
+
+      // Average colour of fully-interior opaque neighbours = the true subject
+      // colour just inside this rim pixel.
+      let cnt = 0, sr = 0, sg = 0, sb = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const nf = ny * w + nx;
+          if (opaque[nf] && !isRim(nx, ny)) {
+            const ni = nf * 4;
+            sr += data[ni]; sg += data[ni + 1]; sb += data[ni + 2];
+            cnt++;
+          }
+        }
+      }
+      if (cnt === 0) continue; // thin sliver with no clean interior — leave it
+
+      const ar = sr / cnt, ag = sg / cnt, ab = sb / cnt;
+      const i = flat * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+
+      // How contaminated is this rim pixel by the old background colour?
+      let strength: number;
+      if (bgType === "white") {
+        strength = Math.min(1, Math.max(0, (Math.min(r, g, b) - 150) / 105));
+      } else if (bgType === "black") {
+        strength = Math.min(1, Math.max(0, (110 - Math.max(r, g, b)) / 110));
+      } else {
+        strength = 0.5; // unknown background: gentle uniform clean-up
+      }
+
+      out[i]     = Math.round(r + (ar - r) * strength);
+      out[i + 1] = Math.round(g + (ag - g) * strength);
+      out[i + 2] = Math.round(b + (ab - b) * strength);
+      // Alpha deliberately untouched.
+    }
+  }
+
+  data.set(out);
+}
+
+/**
+ * Hard-binarizes an alpha matte so no foreground pixel is left semi-transparent.
+ *
+ * The AI model returns a soft matte; DTF printing has no translucency, and a
+ * partially-transparent subject pixel composites against whatever is behind it
+ * and reads as faded/bleached. Anything at or above the threshold becomes fully
+ * opaque, everything below is dropped. RGB is never rewritten.
+ */
+function binarizeAlpha(data: Uint8ClampedArray, threshold = 128): void {
+  for (let i = 3; i < data.length; i += 4) {
+    data[i] = data[i] >= threshold ? 255 : 0;
   }
 }
 
@@ -279,6 +384,14 @@ export async function removeBackgroundAI(
   canvas.height = h;
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(resultImg, 0, 0);
+
+  // Same guarantee as the colour-key path: the subject must come out fully
+  // opaque and true to colour. The model's soft matte would otherwise leave the
+  // silhouette's edge semi-transparent, which reads as a faded/bleached border.
+  const aiData = ctx.getImageData(0, 0, w, h);
+  binarizeAlpha(aiData.data);
+  decontaminateEdges(aiData.data, w, h, null);
+  ctx.putImageData(aiData, 0, 0);
 
   const trimmed = trimTransparentCanvas(canvas, ctx, w, h);
   if (!trimmed) {

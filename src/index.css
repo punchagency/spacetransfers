@@ -164,6 +164,52 @@ body {
   animation: bgGlow 1.4s ease-in-out infinite;
 }
 
+/* ── AI toolbar button ────────────────────────────────────────────────────
+   The one "special" action in the item toolbar: a living gradient pill that
+   quietly draws the eye without shouting. The gradient drifts (reusing the
+   shared `shimmer` keyframe against a 200%-wide background) while a halo
+   breathes underneath, so it reads as distinct among the flat monochrome
+   siblings. Both animations pause on hover, where the diagonal shine sweep and
+   lift take over instead.
+
+   Both the ramp and the halo are slate — the app's primary — rather than the
+   violet/magenta this used to be. Motion, not hue, is what marks it out. */
+@keyframes aiHalo {
+  0%, 100% {
+    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.3), 0 0 0 rgba(15, 23, 42, 0);
+  }
+  50% {
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.42), 0 0 14px rgba(15, 23, 42, 0.22);
+  }
+}
+
+/* Slate ramp rather than violet→magenta. The shimmer is kept — it is what
+   marks this as the one special control in the toolbar — but it now travels
+   across the app's own neutrals instead of announcing itself in purple. */
+.ai-tool-btn {
+  background-image: linear-gradient(
+    115deg,
+    #0f172a 0%,
+    #334155 22%,
+    #64748b 50%,
+    #334155 78%,
+    #0f172a 100%
+  );
+  background-size: 220% 100%;
+  animation: shimmer 7s linear infinite, aiHalo 3.4s ease-in-out infinite;
+}
+
+.ai-tool-btn:hover {
+  animation-play-state: paused, paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-tool-btn {
+    animation: none;
+    background-position: 50% 0;
+  }
+}
+
 button,
 [role="button"] {
   cursor: pointer;

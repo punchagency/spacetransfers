@@ -19,8 +19,8 @@ interface ReviewStepProps {
 export default function ReviewStep({ formData, shipping, payment }: ReviewStepProps) {
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+      <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
+        <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <MdOutlineLocationOn className="text-blue-600" />
           Shipping Address
         </h3>
@@ -35,8 +35,8 @@ export default function ReviewStep({ formData, shipping, payment }: ReviewStepPr
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+        <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
+          <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <MdOutlineLocalShipping className="text-blue-600" />
             Shipping Method
           </h3>
@@ -50,8 +50,8 @@ export default function ReviewStep({ formData, shipping, payment }: ReviewStepPr
           </div>
         </div>
 
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+        <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
+          <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <MdOutlinePayment className="text-blue-600" />
             Payment Method
           </h3>

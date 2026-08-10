@@ -79,21 +79,21 @@ export const animateItemPosition = (
 ) => {
     const PPI = CANVAS.PIXELS_PER_INCH;
     if (gravityActive && fromX !== undefined && fromY !== undefined) {
-        // Pushed item motion - smooth floaty shove with subtle overshoot
+        // FLIP: React has already rendered the element at its final left/top,
+        // so animate a transform offset from the OLD position back to zero.
+        // Transforms are never written by React on this element, which means a
+        // mid-animation re-render can't snap it to the destination or fight
+        // the tween — the exact failure mode of the old left/top tween (and
+        // the source of the random-tilt drift, which is gone on purpose).
+        gsap.set(element, { left: `${posX * PPI}px`, top: `${posY * PPI}px` });
         gsap.fromTo(element,
+            { x: (fromX - posX) * PPI, y: (fromY - posY) * PPI },
             {
-                left: `${fromX * PPI}px`,
-                top: `${fromY * PPI}px`
-            },
-            {
-                left: `${posX * PPI}px`,
-                top: `${posY * PPI}px`,
-                rotation: gsap.utils.random(-1.2, 1.2),
-                duration: 2.5, // Faster, more responsive 'space' motion
-                ease: "back.out(0.4)", // Subtler overshoot for a smoother feel
-                onComplete: () => {
-                    gsap.to(element, { rotation: 0, duration: 3.5, ease: "power1.inOut" });
-                }
+                x: 0,
+                y: 0,
+                duration: 0.5,
+                ease: "back.out(1.2)",
+                overwrite: "auto",
             });
     } else {
         gsap.to(element, {

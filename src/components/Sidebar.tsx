@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useIsMobile } from '../lib/useIsMobile';
+import { CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
 import {
     MdSettings,
     MdClose,
@@ -62,6 +64,44 @@ const IconRow = ({
     </div>
 );
 
+function checkerStyle(c1: string, c2: string): React.CSSProperties {
+    return {
+        backgroundImage: [
+            `linear-gradient(45deg,  ${c1} 25%, transparent 25%)`,
+            `linear-gradient(-45deg, ${c1} 25%, transparent 25%)`,
+            `linear-gradient(45deg,  transparent 75%, ${c1} 75%)`,
+            `linear-gradient(-45deg, transparent 75%, ${c1} 75%)`,
+        ].join(', '),
+        backgroundSize: '8px 8px, 8px 8px, 8px 8px, 8px 8px',
+        backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0',
+        backgroundColor: c2,
+    };
+}
+
+const BG_STYLES: Record<string, React.CSSProperties> = {
+    'transparent': checkerStyle('#E9F2F1', '#ffffff'),
+    '#ffffff':     checkerStyle('#e0e0e0', '#ffffff'),
+    '#f3f4f6':     checkerStyle('#d1d5db', '#f3f4f6'),
+    '#9ca3af':     checkerStyle('#6b7280', '#9ca3af'),
+    '#4b5563':     checkerStyle('#374151', '#4b5563'),
+    '#111827':     checkerStyle('#000000', '#374151'),
+    '#ef4444':     checkerStyle('#b91c1c', '#ef4444'),
+    '#f59e0b':     checkerStyle('#b45309', '#f59e0b'),
+    '#22c55e':     checkerStyle('#15803d', '#22c55e'),
+    '#6366f1':     checkerStyle('#3730a3', '#6366f1'),
+    '#a855f7':     checkerStyle('#7e22ce', '#a855f7'),
+    '#ec4899':     checkerStyle('#be185d', '#ec4899'),
+    'rainbow':     { backgroundImage: 'linear-gradient(135deg,#f857a6 0%,#ff5858 16%,#ffae58 33%,#fffe58 50%,#58ff89 66%,#58c6ff 83%,#b558ff 100%)' },
+};
+
+// Ids and labels come from the shared palette so this sidebar and the AI
+// command parser can never disagree about which swatches exist; only the
+// visual treatment lives here.
+const BG_SWATCHES = CANVAS_BACKGROUNDS.map((swatch) => ({
+    ...swatch,
+    style: BG_STYLES[swatch.id],
+}));
+
 type SidebarProps = {
     isOpen: boolean;
     onClose: () => void;
@@ -73,6 +113,7 @@ type SidebarProps = {
         autoNestStickers: boolean;
         spacing: number;
         marginSize: number;
+        canvasBg: string;
     };
     onUpdateSetting: (key: keyof SidebarProps['settings'], value: any) => void;
     onOpenSaveModal: () => void;
@@ -169,6 +210,11 @@ export default function Sidebar({
         setSections(prev => ({ ...prev, [key]: !prev[key] }));
     };
 
+    // On phones, hide the precision controls that can't be operated there:
+    // rulers (which are force-hidden on mobile anyway), snap-to-grid, the
+    // margin-size selector, and the numeric item-spacing input.
+    const isMobile = useIsMobile();
+
     if (!isOpen) return null;
 
     return (
@@ -177,7 +223,7 @@ export default function Sidebar({
             <div className="fixed inset-0 z-40 bg-black/20" onClick={onClose} />
 
             {/* Sidebar Container */}
-            <div className="fixed top-12 right-4 w-[320px] max-h-[calc(100vh-64px)] bg-white rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col animate-slide-in-right border border-gray-100">
+            <div className="fixed top-12 right-4 w-[320px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-64px)] bg-white rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col animate-slide-in-right border border-gray-100">
 
                 {/* Header */}
                 <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
@@ -209,26 +255,54 @@ export default function Sidebar({
                                     label="Show Grid"
                                     action={<Toggle checked={settings.showGrid} onChange={() => onUpdateSetting('showGrid', !settings.showGrid)} />}
                                 /> */} 
+                                {!isMobile && (
                                 <IconRow
                                     icon={MdStraighten}
                                     label="Show Rulers"
                                     onClick={() => onUpdateSetting('showRulers', !settings.showRulers)}
                                     action={<Toggle checked={settings.showRulers} onChange={() => onUpdateSetting('showRulers', !settings.showRulers)} />}
                                 />
+                                )}
                                 <IconRow
                                     icon={MdVisibility}
                                     label="Show Margins"
                                     onClick={() => onUpdateSetting('showMargins', !settings.showMargins)}
                                     action={<Toggle checked={settings.showMargins} onChange={() => onUpdateSetting('showMargins', !settings.showMargins)} />}
                                 />
+                                {!isMobile && (
                                 <IconRow
                                     icon={MdGridView}
                                     label="Snap to Grid"
                                     onClick={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)}
                                     action={<Toggle checked={settings.snapToGrid} onChange={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)} />}
                                 />
+                                )}
+
+                                {/* Preview Background */}
+                                <div className="pt-2 pb-1">
+                                    <p className="text-[11px] font-semibold text-gray-500 mb-2 tracking-wide uppercase">Preview Background</p>
+                                    <div className="flex gap-[3px]">
+                                        {BG_SWATCHES.map((swatch) => {
+                                            const selected = settings.canvasBg === swatch.id;
+                                            return (
+                                                <button
+                                                    key={swatch.id}
+                                                    title={swatch.label}
+                                                    onClick={() => onUpdateSetting('canvasBg', swatch.id)}
+                                                    className={`h-5 flex-1 min-w-0 rounded-[3px] cursor-pointer transition-all duration-100 focus:outline-none ${
+                                                        selected
+                                                            ? 'ring-2 ring-blue-500 ring-offset-[2px] brightness-110'
+                                                            : 'hover:ring-1 hover:ring-gray-400 hover:ring-offset-[1px] hover:brightness-105'
+                                                    }`}
+                                                    style={swatch.style}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                </div>
 
                                 {/* Margin Size Dropdown */}
+                                {!isMobile && (
                                 <div className="flex items-center justify-between py-2 mt-2 px-2 -mx-2 rounded-lg hover:bg-gray-50 transition-colors">
                                     <div className="flex items-center gap-3 text-gray-600">
                                         <MdStraighten size={20} className="rotate-45" />
@@ -240,15 +314,18 @@ export default function Sidebar({
                                             onChange={(e) => onUpdateSetting('marginSize', parseFloat(e.target.value))}
                                             className="bg-gray-100 text-[12px] py-1.5 pl-3 pr-8 rounded-md border-none focus:outline-none focus:ring-1 focus:ring-black cursor-pointer appearance-none text-gray-700 font-medium w-40"
                                         >
-                                            <option value={0.25}>0.25" (Default)</option>
-                                            <option value={0.5}>0.5"</option>
-                                            <option value={1.0}>1.0"</option>
+                                            {MARGIN_OPTIONS.map((option) => (
+                                                <option key={option} value={option}>
+                                                    {option}"{option === 0.25 ? ' (Default)' : ''}
+                                                </option>
+                                            ))}
                                         </select>
                                         <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
                                             <MdKeyboardArrowDown size={16} />
                                         </div>
                                     </div>
                                 </div>
+                                )}
                             </div>
                         )}
                     </div>
@@ -268,9 +345,10 @@ export default function Sidebar({
                                         <span className="text-[12px] font-semibold text-slate-800">Auto-Nest </span>
                                         <Toggle checked={settings.autoNestStickers} onChange={() => onUpdateSetting('autoNestStickers', !settings.autoNestStickers)} />
                                     </div>
-                                    <p className="text-[12px] text-gray-500">Automatically arrange efficiently</p>
+                                    <p className="text-[12px] text-gray-500">Arrange efficiently and fill leftover gaps</p>
                                 </div>
 
+                                {!isMobile && (
                                 <div className="mt-4">
                                     <label className="text-[12px] font-semibold text-slate-700 block mb-2">Item Spacing Inches</label>
                                     <div className="relative">
@@ -282,6 +360,7 @@ export default function Sidebar({
                                     </div>
                                     <p className="text-[12px] text-gray-500 mt-2">Space between items</p>
                                 </div>
+                                )}
                             </div>
                         )}
                     </div>

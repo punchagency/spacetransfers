@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import toast from "react-hot-toast";
 import Header from "./Header";
 import Artboard from "./Artboard";
@@ -12,14 +12,34 @@ import OrderDetailsModal from "./modals/OrderDetailsModal";
 import CheckoutModal from "./modals/CheckoutModal";
 import UnsavedChangesModal from "./modals/UnsavedChangesModal";
 import ConfirmModal from "./modals/ConfirmModal";
+import MobileNoticeModal from "./modals/MobileNoticeModal";
+import { useIsMobile } from "../lib/useIsMobile";
 import UnderUtilizedSheetModal from "./modals/UnderUtilizedSheetModal";
 import { captureArtboard } from "./artboard/lib/utils";
 import { apiFetch } from "../lib/utils/api";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
+import { stripEmbeddedData } from "../lib/utils/assetIdentity";
+import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
 import { computeRenderCopies } from "./artboard/lib/utils/layoutHelpers";
 
 export default function Editor() {
+  // Phone detection drives both the one-time notice and the hiding of tools
+  // that can't be operated smoothly on a small touch screen (see below).
+  const isMobile = useIsMobile();
+
+  // Mobile-only notice: show once per device on phones, unless the user opted
+  // out with "Don't show this again". Tablets and desktops never see it.
+  const [showMobileNotice, setShowMobileNotice] = useState(false);
+  useEffect(() => {
+    if (!isMobile) return;
+    let dismissedForever = false;
+    try {
+      dismissedForever = localStorage.getItem("hideMobileNotice") === "1";
+    } catch {}
+    if (!dismissedForever) setShowMobileNotice(true);
+  }, [isMobile]);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
@@ -107,51 +127,56 @@ export default function Editor() {
   });
 
   useEffect(() => {
-    // Persist cart, stripping only the heavy base64 data: URLs that blow the
-    // ~5MB localStorage quota (captured artboard thumbnails, embedded image
-    // blobs). Structural data (items, artboardData, pricing, size) is kept so
-    // the cart still restores on reload for guests.
-    const stripDataUrls = (val: any): any => {
-      if (val == null) return val;
-      if (typeof val === "string") return val.startsWith("data:") ? null : val;
-      if (Array.isArray(val)) return val.map(stripDataUrls);
-      if (typeof val === "object") {
-        const out: any = {};
-        for (const k of Object.keys(val)) out[k] = stripDataUrls(val[k]);
-        return out;
-      }
-      return val;
-    };
-
+    /**
+     * Persist the cart without its artwork.
+     *
+     * Stripping happens *before* the write, not as a retry after one fails.
+     * The old order assumed the failure mode was a `QuotaExceededError` from
+     * localStorage — but `JSON.stringify` runs first, and on a cart holding
+     * several base64 images it throws `RangeError: Invalid string length`
+     * (V8 caps a string near 512 MB) before localStorage is ever consulted.
+     * The fallback that was supposed to save the situation could not run,
+     * because the code that would have triggered it never returned.
+     *
+     * Nothing is lost by stripping unconditionally: a `data:` URL is a local
+     * render of an asset the server already holds, and the structural data
+     * kept here (items, artboardData, pricing, size) is what the cart needs to
+     * restore.
+     */
     const writeCart = (payload: any[]) => {
       localStorage.setItem("cart", JSON.stringify(payload));
     };
 
     try {
-      writeCart(cartItems);
+      writeCart(stripEmbeddedData(cartItems));
     } catch {
-      // Quota likely exceeded — retry without data: URLs.
+      // Still too large for the quota even without artwork — an unusually large
+      // number of rows. Clear it so a stale half-write doesn't break next load.
       try {
-        writeCart(cartItems.map(stripDataUrls));
-      } catch {
-        // Still failed — clear so a stale half-write doesn't break next load.
-        try {
-          localStorage.removeItem("cart");
-        } catch {}
-      }
+        localStorage.removeItem("cart");
+      } catch {}
     }
 
     // Sync to server only for actual customer accounts. Other roles hit a
     // guaranteed 403 from the /customer/* role middleware, which would spam
     // the console on every cart mutation.
     if (isLoggedIn && user?.id && user?.role === "CUSTOMER") {
-      apiFetch("/customer/cart", {
-        method: "PUT",
-        body: JSON.stringify({ cart: cartItems }),
-      }).catch(() => {
-        // Silent — the local cart state is the source of truth for the UI;
-        // the server sync is best-effort persistence across devices.
-      });
+      // Materialize before sending. Unlike the localStorage copy — where
+      // artwork can simply be dropped and re-fetched — the server cart has to
+      // keep working references, so embedded images are uploaded once and
+      // replaced by their hosted URLs. Sending them inline instead put the
+      // whole board in the request body and returned 413.
+      stripEmbeddedImages({ cart: cartItems })
+        .then((payload) =>
+          apiFetch("/customer/cart", {
+            method: "PUT",
+            body: JSON.stringify(payload),
+          }),
+        )
+        .catch(() => {
+          // Silent — the local cart state is the source of truth for the UI;
+          // the server sync is best-effort persistence across devices.
+        });
     }
   }, [cartItems, isLoggedIn, user?.id, user?.role]);
 
@@ -259,7 +284,13 @@ export default function Editor() {
     return loadedItems;
   };
 
-  const currentSnapshot = getGangsheetSnapshot(getCurrentItems());
+  // Memoized on the item lists themselves. This ran on *every* render before —
+  // including renders caused by typing in an unrelated field — so the board was
+  // re-serialized continuously rather than when it actually changed.
+  const currentSnapshot = useMemo(
+    () => getGangsheetSnapshot(getCurrentItems()),
+    [artboardData?.items, loadedDesignData?.items],
+  );
   const hasUnsavedChanges = currentSnapshot !== baselineSnapshot;
 
   const [isGangsheetBusy, setIsGangsheetBusy] = useState(false);
@@ -286,19 +317,28 @@ export default function Editor() {
     setLastAction(null);
     setDeletedItems({});
     setBaselineSnapshot(getGangsheetSnapshot([]));
+    // A brand-new gangsheet always starts at the default 0.5 item spacing.
+    setSettings((prev) => (prev.spacing === 0.5 ? prev : { ...prev, spacing: 0.5 }));
   };
 
   const mapItemsForSave = (items: any[]) => {
     const normalizedItems = ensureUniqueItemIds(items);
     const mappedItems = normalizedItems.map((it: any) => ({
       id: it.id,
-      assetId: it.originalUrl || it.assetId || it.url,
+      assetId: it.assetId || it.originalUrl || it.url,
       croppedUrl:
-        it.autoCrop !== false &&
-        typeof it.url === "string" &&
-        !it.url.startsWith("data:")
-          ? it.url
+        it.autoCrop !== false
+          ? (typeof it.croppedUrl === "string" && it.croppedUrl
+              ? it.croppedUrl
+              : typeof it.url === "string" && !it.url.startsWith("data:")
+              ? it.url
+              : undefined)
           : undefined,
+      // Pixel dimensions of the croppedUrl source. Required for canvas-processed items
+      // (canvas crop, BG removal) so the server calculates DPI from the actual source
+      // pixel count instead of the DB's original widthPx, preventing upscaling.
+      croppedWidthPx: it.croppedWidthPx || undefined,
+      croppedHeightPx: it.croppedHeightPx || undefined,
       widthIn: it.widthIn,
       heightIn: it.heightIn,
       posX: it.posX,
@@ -399,6 +439,14 @@ export default function Editor() {
             return {
               id: it.id,
               url,
+              // Restore croppedUrl so subsequent saves don't lose the export source.
+              // Without this, re-saving a loaded design loses the data URL for
+              // canvas-processed items, causing the server to fall back to the wrong source.
+              croppedUrl: savedCroppedUrl || undefined,
+              // Restore pixel dimensions of the canvas export source so the server DPI
+              // calculator uses the correct pixel count on re-save or checkout.
+              croppedWidthPx: typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0 ? it.croppedWidthPx : undefined,
+              croppedHeightPx: typeof it.croppedHeightPx === "number" && it.croppedHeightPx > 0 ? it.croppedHeightPx : undefined,
               rotation: it.rotation || 0,
               locked: false,
               expanded: false,
@@ -565,18 +613,28 @@ export default function Editor() {
   };
 
   // Settings State lifted from Sidebar
-  const [settings, setSettings] = useState({
-    showGrid: true,
-    showRulers: true,
-    showMargins: false,
-    snapToGrid: false,
-    autoNestStickers: true,
-    spacing: 0.1,
-    marginSize: 0.15,
+  const [settings, setSettings] = useState(() => {
+    let canvasBg = '#f3f4f6';
+    try { canvasBg = localStorage.getItem('canvasBg') || '#f3f4f6'; } catch {}
+    return {
+      showGrid: true,
+      showRulers: true,
+      showMargins: false,
+      snapToGrid: false,
+      autoNestStickers: true,
+      // Default item spacing for every new gangsheet. Users can still adjust
+      // it manually at any time via the settings control.
+      spacing: 0.5,
+      marginSize: 0.15,
+      canvasBg,
+    };
   });
 
   const updateSetting = (key: keyof typeof settings, value: any) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+    if (key === 'canvasBg') {
+      try { localStorage.setItem('canvasBg', value); } catch {}
+    }
   };
 
   const addGangSheetToCartNow = async (forceFullSheetPrice: boolean = false) => {
@@ -645,6 +703,8 @@ export default function Editor() {
         color: "N/A",
         design: "Custom Gang Sheet",
         print: "DTF Transfer",
+        itemSpacingIn: settings.spacing,
+        sheetMarginIn: settings.marginSize,
       };
 
       console.log("gangSheetItem being added:", gangSheetItem);
@@ -903,6 +963,17 @@ export default function Editor() {
         }}
         onSaveLoaded={currentLoadedDesignId ? saveLoadedGangsheet : undefined}
       />
+      <MobileNoticeModal
+        isOpen={showMobileNotice}
+        onDismiss={(dontShowAgain) => {
+          if (dontShowAgain) {
+            try {
+              localStorage.setItem("hideMobileNotice", "1");
+            } catch {}
+          }
+          setShowMobileNotice(false);
+        }}
+      />
       <UnsavedChangesModal
         isOpen={Boolean(unsavedPrompt)}
         title={unsavedPrompt?.title}
@@ -977,14 +1048,16 @@ export default function Editor() {
             }
           }, 0);
         }}
-        showRulers={settings.showRulers}
+        showRulers={settings.showRulers && !isMobile}
         showGrid={settings.showGrid}
         snapToGrid={settings.snapToGrid}
         showMargins={settings.showMargins}
         marginSize={settings.marginSize}
         autoNestStickers={settings.autoNestStickers}
         spacing={settings.spacing}
+        canvasBg={settings.canvasBg}
         onRequestAutoNest={(enabled) => updateSetting("autoNestStickers", enabled)}
+        onUpdateSetting={(key, value) => updateSetting(key as keyof typeof settings, value)}
         onDataChange={setArtboardData}
         initialData={loadedDesignData}
         onHistoryChange={setHistoryState}
@@ -1065,13 +1138,17 @@ export default function Editor() {
           const normalizedItems = ensureUniqueItemIds(items);
           const mappedItems = normalizedItems.map((it: any) => ({
             id: it.id,
-            assetId: it.originalUrl || it.assetId || it.url,
+            assetId: it.assetId || it.originalUrl || it.url,
             croppedUrl:
-              it.autoCrop !== false &&
-              typeof it.url === "string" &&
-              !it.url.startsWith("data:")
-                ? it.url
+              it.autoCrop !== false
+                ? (typeof it.croppedUrl === "string" && it.croppedUrl
+                    ? it.croppedUrl                                  // explicit export URL (Cloudinary or full-res data URL)
+                    : typeof it.url === "string" && !it.url.startsWith("data:")
+                    ? it.url                                         // Cloudinary display URL fallback
+                    : undefined)
                 : undefined,
+            croppedWidthPx: it.croppedWidthPx || undefined,
+            croppedHeightPx: it.croppedHeightPx || undefined,
             widthIn: it.widthIn,
             heightIn: it.heightIn,
             posX: it.posX,

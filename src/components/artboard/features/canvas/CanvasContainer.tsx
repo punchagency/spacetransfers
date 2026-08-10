@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MdAdd, MdOutlineFileUpload, MdArrowUpward } from "react-icons/md";
-import { getGridStyle } from "../../lib/utils";
+import { getGridStyle, CHECKER_PAIRS, isDarkBg } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
 import EmptyState from "./EmptyState";
 import ArtboardItem from "../items/ArtboardItem";
 import { ArtboardItem as ArtboardItemType } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
+import { getItemVerticalExtent } from "../../lib/utils/layoutHelpers";
+import type { DropIndicator, PreviewOffset } from "../../lib/hooks/useMouseInteractions";
+import type { AiPanelBridge } from "../ai";
 
 interface CanvasContainerProps {
   zoom: number;
@@ -15,7 +18,9 @@ interface CanvasContainerProps {
   marginSize: number;
   spacing: number;
   autoNestStickers: boolean;
+  canvasBg?: string;
   isDragging: boolean;
+  isResizing: boolean;
   items: ArtboardItemType[];
   selectedId: number | null;
   selectedIds: Set<number>;
@@ -38,12 +43,31 @@ interface CanvasContainerProps {
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
+  liftedIds?: Set<number>;
+  previewOffsets?: Map<number, PreviewOffset>;
+  dropIndicator?: DropIndicator | null;
   canvasWidth: number;
   onBrowseFiles: () => void;
   isUploading: boolean;
   uploadProgress: number;
   uploadFileName: string | null;
   onCancelUpload: () => void;
+  /** Something else (the AI button) occupies the bottom-right — lift the scroll-to-top control clear of it. */
+  avoidBottomRight?: boolean;
+  /** Shared AI panel state + actions, threaded down to each item's toolbar/panel. */
+  aiPanel?: AiPanelBridge;
+}
+
+function canvasBgStyle(bg: string | undefined, zoom: number): React.CSSProperties {
+  const id = bg || 'transparent';
+  if (id === 'rainbow') {
+    return {
+      backgroundImage:
+        'linear-gradient(135deg,#f857a6 0%,#ff5858 16%,#ffae58 33%,#fffe58 50%,#58ff89 66%,#58c6ff 83%,#b558ff 100%)',
+    };
+  }
+  const [c1, c2] = CHECKER_PAIRS[id] ?? CHECKER_PAIRS['transparent'];
+  return getGridStyle(zoom, c1, c2);
 }
 
 export default function CanvasContainer({
@@ -53,7 +77,9 @@ export default function CanvasContainer({
   marginSize,
   spacing,
   autoNestStickers,
+  canvasBg,
   isDragging,
+  isResizing,
   items,
   selectedId,
   selectedIds,
@@ -76,12 +102,17 @@ export default function CanvasContainer({
   onDragStart,
   onResizeStart,
   isDraggingItem,
+  liftedIds,
+  previewOffsets,
+  dropIndicator,
   canvasWidth,
   onBrowseFiles,
   isUploading,
   uploadProgress,
   uploadFileName,
   onCancelUpload,
+  avoidBottomRight = false,
+  aiPanel,
 }: CanvasContainerProps) {
   const [menu, setMenu] = useState<null | { x: number; y: number }>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -90,12 +121,40 @@ export default function CanvasContainer({
   const [toolbarHidden, setToolbarHidden] = useState(false);
   const prevScrollTopRef = useRef(0);
   const scrollStopTimerRef = useRef<number | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
 
   useEffect(() => () => {
     if (scrollStopTimerRef.current !== null) {
       window.clearTimeout(scrollStopTimerRef.current);
       scrollStopTimerRef.current = null;
     }
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Publishes scrollTop at most once per frame.
+   *
+   * `scrollTop` is threaded down to every mounted item (they use it to decide
+   * which of their own copy-rows to draw), so a `setState` per scroll event
+   * meant a full pass over the item tree 100+ times a second — the browser
+   * fires scroll far faster than it paints. Coalescing to one update per frame
+   * makes the work proportional to frames rather than to events, with no
+   * visible difference: nothing can be seen between two paints anyway.
+   */
+  const pendingScrollTopRef = useRef(0);
+  const publishScrollTop = React.useCallback((value: number) => {
+    // Latest value wins: the ref is overwritten by every event in the frame and
+    // read when the frame runs. Capturing `value` in the callback instead would
+    // publish the *first* position of the frame and render a stale viewport.
+    pendingScrollTopRef.current = value;
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      setScrollTop(pendingScrollTopRef.current);
+    });
   }, []);
 
   const handleScrollToTop = () => {
@@ -163,6 +222,80 @@ export default function CanvasContainer({
     return () => ro.disconnect();
   }, [items.length]);
 
+  /**
+   * Item count below which culling is skipped entirely.
+   *
+   * Virtualizing a handful of items costs more than it saves and adds a way for
+   * a small board — the overwhelmingly common case — to behave differently from
+   * before. Above this, the cost of mounting every item starts to dominate.
+   */
+  const VIRTUALIZE_THRESHOLD = 60;
+
+  /**
+   * Extra band rendered beyond the viewport, in scroll-container pixels.
+   *
+   * Covers fast scrolling (roughly one screenful at a typical viewport) and any
+   * small discrepancy between the culling extent and an item's real drawn
+   * height, so nothing pops in at the edges.
+   */
+  const OVERSCAN_PX = 900;
+
+  /**
+   * The items actually mounted this frame.
+   *
+   * Without this, `items.map` mounts one `ArtboardItem` per placement — each
+   * with its own effects, refs, image element and portal targets. At a thousand
+   * placements that is thousands of live components, which is what made large
+   * sheets freeze and eventually crash the tab. Culling to the visible band
+   * makes render cost track the viewport instead of the design.
+   *
+   * Four categories are never culled, because removing them would break
+   * behaviour rather than merely skip drawing:
+   *  - the selection, whose toolbar is portaled out of the item and would
+   *    vanish along with it,
+   *  - anything with its properties panel open, for the same reason,
+   *  - items being dragged or displaced, whose live offsets are not reflected
+   *    in their stored position,
+   *  - everything, while the viewport height is still unmeasured (first paint),
+   *    since a zero-height viewport would cull the entire sheet.
+   */
+  const visibleItems = useMemo(() => {
+    if (items.length < VIRTUALIZE_THRESHOLD) return items;
+    if (viewportHeight <= 0) return items;
+
+    const bandTop = scrollTop - OVERSCAN_PX;
+    const bandBottom = scrollTop + viewportHeight + OVERSCAN_PX;
+    const pxPerInch = ppi * zoom;
+
+    return items.filter((it) => {
+      if (it.id === selectedId || selectedIds.has(it.id)) return true;
+      if (showProperties[it.id]) return true;
+      if (liftedIds?.has(it.id) || previewOffsets?.has(it.id)) return true;
+
+      const { topIn, bottomIn } = getItemVerticalExtent(
+        it,
+        canvasWidth,
+        marginSize,
+        spacing,
+      );
+      return bottomIn * pxPerInch >= bandTop && topIn * pxPerInch <= bandBottom;
+    });
+  }, [
+    items,
+    viewportHeight,
+    scrollTop,
+    ppi,
+    zoom,
+    selectedId,
+    selectedIds,
+    showProperties,
+    liftedIds,
+    previewOffsets,
+    canvasWidth,
+    marginSize,
+    spacing,
+  ]);
+
   return (
     <div
       className="flex-1 relative flex items-center justify-center bg-white overflow-hidden"
@@ -177,8 +310,8 @@ export default function CanvasContainer({
       }}
     >
       <div
-        className="absolute inset-0 z-0 opacity-100"
-        style={getGridStyle(zoom)}
+        className="absolute inset-0 z-0 opacity-100 transition-[background-color,background-image] duration-200"
+        style={canvasBgStyle(canvasBg, zoom)}
       />
       <CanvasRulers
         showRulers={showRulers}
@@ -186,6 +319,7 @@ export default function CanvasContainer({
         sheetHeightPx={sheetHeightPx}
         scrollTopPx={scrollTop}
         viewportHeightPx={viewportHeight}
+        canvasBg={canvasBg}
       />
       {/* Toolbar portal slot — ArtboardItem portals into this when selected.
           Slides up + fades out while the user scrolls down, returns when they
@@ -209,6 +343,7 @@ export default function CanvasContainer({
         <>
           <div
             ref={scrollRef}
+            id="artboard-scroll-container"
             className="absolute z-10"
             style={{
               left: `${offset}px`,
@@ -218,11 +353,12 @@ export default function CanvasContainer({
               overflowY: "auto",
               overflowX: "hidden",
               paddingBottom: `${ppi * zoom}px`,
+              userSelect: isResizing ? "none" : "auto",
             }}
             onScroll={(e) => {
               const target = e.target as HTMLDivElement;
               const curr = target.scrollTop;
-              setScrollTop(curr);
+              publishScrollTop(curr);
 
               // Direction-aware toolbar visibility.
               // Small delta threshold prevents flicker from sub-pixel scroll jitter on trackpads.
@@ -249,6 +385,7 @@ export default function CanvasContainer({
             onDoubleClick={(e) => { if (e.target === e.currentTarget && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles(); }}
           >
             <div
+              id="artboard-canvas-inner"
               className="relative"
               style={{
                 width: `${canvasWidth * ppi * zoom}px`,
@@ -262,8 +399,25 @@ export default function CanvasContainer({
                 showMargins={showMargins}
                 marginSize={marginSize}
                 heightIn={sheetHeightPx / (ppi * zoom)}
+                isDarkBg={isDarkBg(canvasBg ?? 'transparent')}
               />
-              {items.map((it) => (
+              {/* Live placement preview — outlines exactly where the dragged
+                  footprint will land when released. */}
+              {dropIndicator ? (
+                <div
+                  className="absolute rounded-lg pointer-events-none"
+                  style={{
+                    left: `${dropIndicator.xIn * ppi}px`,
+                    top: `${dropIndicator.yIn * ppi}px`,
+                    width: `${dropIndicator.wIn * ppi}px`,
+                    height: `${dropIndicator.hIn * ppi}px`,
+                    border: `2px dashed ${dropIndicator.valid ? "rgba(59,130,246,0.8)" : "rgba(245,158,11,0.8)"}`,
+                    background: dropIndicator.valid ? "rgba(59,130,246,0.07)" : "rgba(245,158,11,0.08)",
+                    zIndex: 5,
+                  }}
+                />
+              ) : null}
+              {visibleItems.map((it) => (
                 <ArtboardItem
                   key={it.id}
                   item={it}
@@ -293,6 +447,11 @@ export default function CanvasContainer({
                   onDragStart={(e) => onDragStart(e, it.id)}
                   onResizeStart={(e) => onResizeStart(e, it.id)}
                   isDragging={isDraggingItem}
+                  isLifted={liftedIds?.has(it.id) ?? false}
+                  previewOffset={previewOffsets?.get(it.id)}
+                  displacementActive={isDraggingItem}
+                  aiPanel={aiPanel}
+                  scrollContainerRef={scrollRef}
                   canvasWidth={canvasWidth}
                   marginSize={marginSize}
                   spacing={spacing}
@@ -317,7 +476,7 @@ export default function CanvasContainer({
             </span>
             <span className="flex flex-col items-start">
               <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
-              <span className="text-[11px] text-slate-400 mt-0.5">PNG · JPG · SVG</span>
+              <span className="text-[11px] text-slate-400 mt-0.5">PNG · JPG · PDF</span>
             </span>
           </button>
         </div>
@@ -336,8 +495,11 @@ export default function CanvasContainer({
             : "opacity-0 translate-y-3 pointer-events-none"
         }`}
         style={{
-          // Respect iOS home indicator + Android nav bar / notch.
-          bottom: "max(1.25rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))",
+          // Respect iOS home indicator + Android nav bar / notch, and step above
+          // the AI button when it's docked in this same corner.
+          bottom: avoidBottomRight
+            ? "calc(max(1.25rem, env(safe-area-inset-bottom, 0px) + 0.75rem) + 4.75rem)"
+            : "max(1.25rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))",
           right: "max(1rem, env(safe-area-inset-right, 0px))",
         }}
       >
@@ -352,7 +514,7 @@ export default function CanvasContainer({
               <MdOutlineFileUpload size={28} />
             </div>
             <div className="text-[15px] font-semibold text-blue-700">Drop to add to artboard</div>
-            <div className="text-[12px] text-blue-500">PNG • JPG • SVG</div>
+            <div className="text-[12px] text-blue-500">PNG • JPG • PDF</div>
           </div>
         </div>
       )} */}

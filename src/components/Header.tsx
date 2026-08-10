@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { CANVAS, PRICING } from "../config/artboard.config";
 type HeaderInfo = {
@@ -11,6 +11,7 @@ type HeaderInfo = {
   price?: number;
   imageNames?: string[];
   lowDpiCount?: number;
+  unknownDpiCount?: number;
 };
 
 function ItemCountBadge({ count }: { count: number }) {
@@ -116,15 +117,15 @@ export default function Header({
   };
 
   return (
-    <header className="flex items-center justify-between px-6 h-10 bg-white border-b border-gray-200">
-      <div className="flex items-center ">
-        <span className="text-xl font-bold tracking-tight text-slate-900">
+    <header className="flex items-center justify-between px-3 md:px-6 h-10 bg-white border-b border-gray-200">
+      <div className="flex items-center min-w-0">
+        <span className="text-base md:text-xl font-bold tracking-tight text-slate-900 truncate">
           spacetransfers
         </span>
-        <img src="/space.svg" alt="space" className="w-12 h-12 -scale-x-100" />
+        <img src="/space.svg" alt="space" className="w-9 h-9 md:w-12 md:h-12 -scale-x-100 flex-shrink-0" />
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
         <div className="hidden md:flex items-center gap-3 text-xs text-gray-800">
           {(info?.hasItem || onSaveLoaded) && (
             <>
@@ -236,6 +237,27 @@ export default function Header({
               </span>
             </span>
           )}
+          {(info?.unknownDpiCount ?? 0) > 0 && (
+            <span className="relative group" tabIndex={0}>
+              <span className="relative flex items-center justify-center w-5 h-5 rounded-full bg-[#EDAE00] cursor-default">
+                <span className="text-white text-[11px] font-bold leading-none">?</span>
+                {(info?.unknownDpiCount ?? 0) > 1 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[14px] h-[14px] px-[3px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center leading-none tabular-nums">
+                    {info!.unknownDpiCount! > 100 ? "100+" : info!.unknownDpiCount}
+                  </span>
+                )}
+              </span>
+              <span className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-[9999] hidden group-hover:flex group-focus:flex flex-col gap-1 w-64 rounded-xl border border-[#EDAE00]/40 bg-[#FFFBEB] shadow-lg px-3 py-2.5 text-left pointer-events-none">
+                <span className="text-[12px] font-semibold text-[#92600A]">Unknown DPI Detected</span>
+                <span className="text-[11px] leading-[1.5] text-[#92600A]">
+                  {info!.unknownDpiCount} {info!.unknownDpiCount === 1 ? "image's" : "images'"} resolution could not be determined.
+                </span>
+                <span className="text-[11px] leading-[1.5] text-[#92600A]">
+                  Print quality can't be confirmed — open the image on the artboard and use Enhance to be safe.
+                </span>
+              </span>
+            </span>
+          )}
           <span className="text-gray-300">|</span>
           <span
             className="relative cursor-default group"
@@ -275,13 +297,14 @@ export default function Header({
               ? "Add items to the artboard before adding to cart"
               : "Add current gangsheet to cart"
           }
-          className={`px-3 text-xs font-medium rounded-2xl border transition-colors ${
+          className={`inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
             canAddGangSheetToCart === false
               ? "text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed"
               : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
           }`}
         >
-          Add to Cart
+          <MdAddShoppingCart className="w-4 h-4 sm:hidden" />
+          <span className="hidden sm:inline">Add to Cart</span>
         </button>
 
         {isLoggedIn ? (
@@ -300,7 +323,7 @@ export default function Header({
         {isLoggedIn ? (
           <button
             onClick={onProfileClick}
-            className="flex items-center gap-2 px-1 py-1 rounded-xl text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer"
+            className="hidden md:flex items-center gap-2 px-1 py-1 rounded-xl text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer"
             aria-label="Account"
             title={profileName || "Account"}
           >

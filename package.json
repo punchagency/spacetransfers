@@ -45,6 +45,7 @@
     "html2canvas": "^1.4.1",
     "lucide-react": "^0.556.0",
     "maxrects-packer": "^2.7.3",
+    "pdfjs-dist": "^4.10.38",
     "react-hot-toast": "^2.6.0",
     "react-icons": "4.10.1",
     "three": "^0.182.0"

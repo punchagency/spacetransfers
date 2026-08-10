@@ -60,23 +60,23 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
   if (!isOpen) return null;
 
   return (
-    <div onClick={onClose} className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs">
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl mx-4">
+    <div onClick={onClose} className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto py-4 sm:py-6 bg-black/20 backdrop-blur-xs">
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl mx-3 sm:mx-4 my-auto">
         {/* Header */}
-        <div className="flex items-center gap-4   px-6 py-5">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 shadow-md">
-            <FaRegFolderOpen className="h-6 w-6 text-white" />
+        <div className="flex items-center gap-3 sm:gap-4 px-4 py-4 sm:px-6 sm:py-5">
+          <div className="flex h-10 w-10 sm:h-12 sm:w-12 flex-shrink-0 items-center justify-center rounded-xl bg-blue-600 shadow-md">
+            <FaRegFolderOpen className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
           </div>
-          <div>
-            <h2 className="text-[24px] text-gray-900">Gang Sheet Gallery</h2>
-            <p className="text-[14px] text-gray-500">
+          <div className="min-w-0">
+            <h2 className="text-[18px] sm:text-[24px] text-gray-900 truncate">Gang Sheet Gallery</h2>
+            <p className="text-[12px] sm:text-[14px] text-gray-500">
               Browse and manage your saved gang sheets
             </p>
           </div>
         </div>
 
         {/* Search */}
-        <div className="border-b border-[#E2E8F0] px-6 py-4">
+        <div className="border-b border-[#E2E8F0] px-4 py-3 sm:px-6 sm:py-4">
           <div className="relative">
             <FiSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
             <input
@@ -90,7 +90,7 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
         </div>
 
         {/* Gang Sheet Cards */}
-        <div className="p-6 pb-8 flex gap-4 overflow-x-auto min-h-[320px]">
+        <div className="p-4 sm:p-6 pb-8 flex gap-4 overflow-x-auto min-h-[280px] sm:min-h-[320px]">
           {designs.length === 0 ? (
             <div className="w-full flex flex-col items-center justify-center text-gray-500">
               <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4">
@@ -105,7 +105,7 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
             designs.map((design) => (
               <div
                 key={design.id}
-                className="w-[260px] flex-shrink-0 overflow-hidden rounded-2xl border-2 border-[#E2E8F0] hover:border-[#155DFC] bg-white shadow-sm cursor-pointer hover:shadow-md transition-all group relative"
+                className="w-[220px] sm:w-[260px] flex-shrink-0 overflow-hidden rounded-2xl border-2 border-[#E2E8F0] hover:border-[#155DFC] bg-white shadow-sm cursor-pointer hover:shadow-md transition-all group relative"
                 onClick={() => {
                   if (onLoad) {
                     onLoad(design.id);
@@ -140,7 +140,7 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
                     <span>{design.size}</span>
                   </div>
                 </div>
-                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                   <button
                     className="flex items-center gap-1 text-gray-700 hover:text-gray-900"
                     onClick={(e) => { 
@@ -177,8 +177,8 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
         </div>
 
         {/* Footer */}
-        <div className="flex bg-[#F8FAFC]  items-center justify-between border-t border-[#E2E8F0] px-6 py-4">
-          <p className="text-sm text-gray-500">
+        <div className="flex bg-[#F8FAFC] items-center justify-between gap-3 border-t border-[#E2E8F0] px-4 py-3 sm:px-6 sm:py-4">
+          <p className="text-xs sm:text-sm text-gray-500">
             Click on any design to load it
           </p>
           <button

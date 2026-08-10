@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
+import LegalAcceptance from "./LegalAcceptance";
+import LegalDocumentModal from "./LegalDocumentModal";
+import { buildLegalAcceptancePayload } from "../../lib/legal/documents";
+import type { LegalContent } from "../../lib/legal/content";
 import toast from "react-hot-toast";
 
 interface AuthModalProps {
@@ -41,6 +45,18 @@ export default function AuthModal({
     password: "",
   });
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
+
+  // Legal acknowledgements. Never pre-selected, and reset whenever the user
+  // leaves the register view so a stale tick can't carry across.
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [contentResponsibilityAccepted, setContentResponsibilityAccepted] = useState(false);
+  // Errors appear only after a submit attempt, so an untouched form isn't
+  // pre-emptively shouting at the user.
+  const [showLegalErrors, setShowLegalErrors] = useState(false);
+  // Legal documents replace the sign-up dialog while they are being read.
+  // Keeping this state here (rather than inside LegalAcceptance) prevents two
+  // modal backdrops from being visible at once.
+  const [activeLegalDocument, setActiveLegalDocument] = useState<LegalContent | null>(null);
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
   // Stable ref so GIS callback always calls the latest handler
   const credentialHandlerRef = useRef<((r: { credential: string }) => void) | null>(null);
@@ -68,6 +84,11 @@ export default function AuthModal({
       setMode("auth");
       setActiveResetToken(null);
     }
+    // Consent must be given afresh each time the sign-up form is presented.
+    setTermsAccepted(false);
+    setContentResponsibilityAccepted(false);
+    setShowLegalErrors(false);
+    setActiveLegalDocument(null);
     setLoading(false);
     setGoogleLoading(false);
     setShowPassword(false);
@@ -85,13 +106,37 @@ export default function AuthModal({
     try {
       const result = await apiFetch("/auth/google", {
         method: "POST",
-        body: JSON.stringify({ credential: response.credential }),
+        body: JSON.stringify({
+          credential: response.credential,
+          // Only sent from the sign-up view. The server ignores it for an
+          // existing account and requires it when the sign-in creates one.
+          ...(requiresLegalAcceptance
+            ? {
+                legalAcceptance: buildLegalAcceptancePayload(
+                  termsAccepted,
+                  contentResponsibilityAccepted,
+                ),
+              }
+            : {}),
+        }),
       });
       if (result.token) localStorage.setItem("token", result.token);
       toast.success(result.isNew ? "Account created with Google!" : "Welcome back!");
       onAuthSuccess(result.user);
       onClose();
     } catch (err: any) {
+      // Google is one button for both sign-in and sign-up, so we can't know the
+      // account is new until the server tells us. When it does, move the user to
+      // the sign-up view where the acknowledgements are shown, rather than
+      // leaving them stuck on an error they have no control to resolve.
+      if (err?.data?.code === "LEGAL_ACCEPTANCE_REQUIRED") {
+        setView("register");
+        setShowLegalErrors(true);
+        setError(
+          "Almost there — please accept the agreements below, then continue with Google again.",
+        );
+        return;
+      }
       setError(err.message || "Google sign-in failed. Please try again.");
     } finally {
       setGoogleLoading(false);
@@ -141,8 +186,25 @@ export default function AuthModal({
     return () => clearTimeout(timerId);
   }, [isOpen, mode, isSubAccountCreation, view]);
 
+  // Gate applies to genuine self-registration only. Sub-accounts are created by
+  // an account holder who already accepted these terms at their own sign-up,
+  // and the server records no separate acceptance for them.
+  const requiresLegalAcceptance = mode === "auth" && view === "register" && !isSubAccountCreation;
+  const legalComplete = termsAccepted && contentResponsibilityAccepted;
+  const legalBlocked = requiresLegalAcceptance && !legalComplete;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Re-checked here rather than relying on the disabled button alone: form
+    // submission can still be triggered by Enter in some browser/AT
+    // combinations, and this is the last client-side line before the request.
+    if (legalBlocked) {
+      setShowLegalErrors(true);
+      setError("Please accept both required agreements to create your account.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -184,7 +246,20 @@ export default function AuthModal({
 
       const payload = view === "login"
         ? { email: formData.email, password: formData.password }
-        : { ...formData, role: "customer" };
+        : {
+            ...formData,
+            role: "customer",
+            // Sub-account creation goes to a different endpoint that neither
+            // expects nor records this.
+            ...(requiresLegalAcceptance
+              ? {
+                  legalAcceptance: buildLegalAcceptancePayload(
+                    termsAccepted,
+                    contentResponsibilityAccepted,
+                  ),
+                }
+              : {}),
+          };
 
       const response = await apiFetch(endpoint, {
         method: "POST",
@@ -220,6 +295,18 @@ export default function AuthModal({
 
   if (!isOpen) return null;
 
+  // Do not leave the sign-up modal mounted behind the legal reader. Closing
+  // the reader only clears this selection, which restores the same form and
+  // preserves everything the customer has already entered.
+  if (activeLegalDocument) {
+    return (
+      <LegalDocumentModal
+        doc={activeLegalDocument}
+        onClose={() => setActiveLegalDocument(null)}
+      />
+    );
+  }
+
   const showGoogleOption = mode === "auth" && !isSubAccountCreation;
 
   return (
@@ -229,10 +316,14 @@ export default function AuthModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-6"
+        // max-h + scroll: the register view is the tallest form (name, email,
+        // password, two agreements) and previously ran off the bottom of a short
+        // viewport, taking the submit button with it. dvh rather than vh so
+        // mobile browser chrome is accounted for.
+        className="w-full max-w-sm max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl bg-white shadow-2xl p-5"
       >
         {/* Header */}
-        <div className="relative mb-6">
+        <div className="relative mb-4">
           <h2 className="text-xl font-bold text-gray-900">
             {mode === "reset"
               ? "Reset Password"
@@ -265,13 +356,21 @@ export default function AuthModal({
 
         {/* Google Sign-In */}
         {showGoogleOption && (
-          <div className="mb-4">
+          <div className="mb-3">
             {/* Google renders its official button into this container */}
             <div
-              className={`w-full flex items-center justify-center min-h-[44px] transition-opacity duration-150 ${googleLoading ? "opacity-40 pointer-events-none" : ""}`}
+              className={`w-full flex items-center justify-center min-h-[44px] transition-opacity duration-150 ${
+                googleLoading || legalBlocked ? "opacity-40 pointer-events-none" : ""
+              }`}
+              aria-disabled={legalBlocked}
             >
               <div ref={googleBtnContainerRef} className="w-full" />
             </div>
+            {legalBlocked && (
+              <p className="mt-1.5 text-center text-[11px] text-gray-500">
+                Accept the required agreements below to continue with Google.
+              </p>
+            )}
             {googleLoading && (
               <div className="w-full flex items-center justify-center gap-2 py-2 text-xs text-gray-500">
                 <svg className="animate-spin h-4 w-4 text-gray-400 flex-shrink-0" viewBox="0 0 24 24" fill="none">
@@ -281,7 +380,7 @@ export default function AuthModal({
                 Signing in with Google...
               </div>
             )}
-            <div className="relative mt-4 mb-1">
+            <div className="relative mt-3 mb-0.5">
               <div className="absolute inset-0 flex items-center">
                 <div className="w-full border-t border-gray-200" />
               </div>
@@ -293,7 +392,7 @@ export default function AuthModal({
         )}
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-3">
           {error && (
             <div className="p-3 text-xs text-red-500 bg-red-50 border border-red-100 rounded-xl">
               {error}
@@ -316,7 +415,7 @@ export default function AuthModal({
                     value={formData.password}
                     onChange={handleChange}
                     placeholder="••••••••"
-                    className="w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                    className="w-full pl-10 pr-10 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                   />
                   <button
                     type="button"
@@ -349,7 +448,7 @@ export default function AuthModal({
                   value={formData.name}
                   onChange={handleChange}
                   placeholder="John Doe"
-                  className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                  className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                 />
               </div>
             </div>
@@ -370,7 +469,7 @@ export default function AuthModal({
                 value={formData.email}
                 onChange={handleChange}
                 placeholder="name@example.com"
-                className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
               />
             </div>
           </div>
@@ -391,7 +490,7 @@ export default function AuthModal({
                 value={formData.password}
                 onChange={handleChange}
                 placeholder="••••••••"
-                className="w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                className="w-full pl-10 pr-10 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
               />
               <button
                 type="button"
@@ -420,11 +519,33 @@ export default function AuthModal({
             </div>
           )}
 
+          {requiresLegalAcceptance && (
+            <LegalAcceptance
+              termsAccepted={termsAccepted}
+              contentResponsibilityAccepted={contentResponsibilityAccepted}
+              onTermsChange={(v) => {
+                setTermsAccepted(v);
+                if (v) setError(null);
+              }}
+              onContentResponsibilityChange={(v) => {
+                setContentResponsibilityAccepted(v);
+                if (v) setError(null);
+              }}
+              showErrors={showLegalErrors}
+              disabled={loading || googleLoading}
+              onOpenDocument={setActiveLegalDocument}
+            />
+          )}
+
           <button
             type="submit"
-            disabled={loading}
-            className={`w-full py-3 bg-slate-900 text-white rounded-xl font-semibold text-sm transform active:scale-[0.98] transition-all shadow-lg shadow-slate-900/10 mt-2 ${
-              loading ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
+            disabled={loading || legalBlocked}
+            // Kept focusable and announced rather than hidden: a disabled
+            // control the user cannot reach gives no clue why they are stuck.
+            aria-disabled={loading || legalBlocked}
+            aria-describedby={legalBlocked ? "submit-blocked-reason" : undefined}
+            className={`w-full py-2.5 bg-slate-900 text-white rounded-xl font-semibold text-sm transform active:scale-[0.98] transition-all shadow-lg shadow-slate-900/10 mt-1 ${
+              loading || legalBlocked ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
             }`}
           >
             {loading
@@ -437,11 +558,16 @@ export default function AuthModal({
                     ? "Sign In"
                     : "Create Account"}
           </button>
+          {legalBlocked && (
+            <p id="submit-blocked-reason" className="text-center text-[11px] text-gray-500">
+              Accept both agreements above to create your account.
+            </p>
+          )}
         </form>
 
         {/* Footer */}
         {mode !== "auth" ? (
-          <div className="mt-8 pt-6 border-t border-gray-100 text-center">
+          <div className="mt-5 pt-4 border-t border-gray-100 text-center">
             <button
               type="button"
               onClick={() => {
@@ -456,13 +582,20 @@ export default function AuthModal({
             </button>
           </div>
         ) : !isSubAccountCreation && (
-          <div className="mt-8 pt-6 border-t border-gray-100 text-center">
+          <div className="mt-5 pt-4 border-t border-gray-100 text-center">
             <p className="text-sm text-gray-600">
               {view === "login"
                 ? "Don't have an account?"
                 : "Already have an account?"}{" "}
               <button
-                onClick={() => setView(view === "login" ? "register" : "login")}
+                onClick={() => {
+                  // Clear validation state on the way across; the ticks
+                  // themselves persist so a user who already read the terms
+                  // isn't made to re-tick after glancing at the sign-in form.
+                  setShowLegalErrors(false);
+                  setError(null);
+                  setView(view === "login" ? "register" : "login");
+                }}
                 className="font-bold text-blue-600 hover:text-blue-700"
               >
                 {view === "login" ? "Sign Up" : "Log In"}

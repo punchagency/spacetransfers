@@ -21,6 +21,40 @@ export const CANVAS = {
   MAX_ITEMS: 1200,
 } as const;
 
+/**
+ * Margin values the sidebar dropdown offers.
+ *
+ * Shared with the AI command executor so a spoken margin ("set the margin to
+ * 0.75") snaps to a value the `<select>` can actually display — otherwise the
+ * control renders blank and the sidebar stops reflecting the real state.
+ */
+export const MARGIN_OPTIONS = [0.25, 0.5, 1.0] as const;
+
+/**
+ * Canvas background swatches, mirroring the sidebar palette. `aliases` are the
+ * words a user might speak for each; they exist so "dark", "charcoal" and
+ * "dark gray" all resolve to the same swatch the sidebar will highlight.
+ */
+export const CANVAS_BACKGROUNDS: Array<{
+  id: string;
+  label: string;
+  aliases: string[];
+}> = [
+  { id: "transparent", label: "Transparent", aliases: ["transparent", "checkerboard", "checkered", "none"] },
+  { id: "#ffffff", label: "White", aliases: ["white"] },
+  { id: "#f3f4f6", label: "Light Gray", aliases: ["light gray", "light grey", "light"] },
+  { id: "#9ca3af", label: "Gray", aliases: ["gray", "grey"] },
+  { id: "#4b5563", label: "Dark Gray", aliases: ["dark gray", "dark grey", "dark", "charcoal"] },
+  { id: "#111827", label: "Black", aliases: ["black"] },
+  { id: "#ef4444", label: "Red", aliases: ["red"] },
+  { id: "#f59e0b", label: "Amber", aliases: ["amber", "orange", "yellow"] },
+  { id: "#22c55e", label: "Green", aliases: ["green"] },
+  { id: "#6366f1", label: "Indigo", aliases: ["indigo", "blue"] },
+  { id: "#a855f7", label: "Purple", aliases: ["purple", "violet"] },
+  { id: "#ec4899", label: "Pink", aliases: ["pink", "magenta"] },
+  { id: "rainbow", label: "Rainbow", aliases: ["rainbow", "gradient"] },
+];
+
 // Unit configuration
 export const UNIT = {
   INCH: {

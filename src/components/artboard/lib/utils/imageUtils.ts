@@ -93,21 +93,122 @@ export const readDPI = async (file: File): Promise<{ dpiX?: number; dpiY?: numbe
   return {};
 };
 
+/**
+ * Ceiling on a single image decode.
+ *
+ * `onerror` is not guaranteed. A malformed file can leave the decoder waiting on
+ * data that never arrives, firing neither callback — and because this runs
+ * inside the upload loop, that silently wedges the whole upload dialog with no
+ * error and no way out but Cancel. The timeout converts "hangs forever" into
+ * "fails with a message", which is the only outcome the caller can act on.
+ */
+const DECODE_TIMEOUT_MS = 15_000;
+
+/**
+ * Encodes a canvas to a URL without blocking the main thread.
+ *
+ * `toDataURL` encodes synchronously, so on a full-resolution crop it freezes
+ * the UI for the entire encode. `toBlob` hands the same work to the browser's
+ * encoder off-thread and calls back when it is done, which is the part that
+ * actually caused the stall.
+ *
+ * The result is deliberately a `data:` URL rather than an object URL. Every
+ * stage of the upload pipeline — `useMaterializeImages`, `toHostedUrl`,
+ * `stripEmbeddedImages` — recognises artwork by the `data:` prefix, so a
+ * `blob:` URL would slip past all of them: it is short enough that no payload
+ * limit complains, but it is local to the tab, so the order would reach the
+ * print pipeline holding a reference that resolves to nothing. Producing a
+ * `data:` URL keeps the crop on the existing path, where it is uploaded to
+ * Cloudinary within moments and replaced by a short hosted URL.
+ */
+export const canvasToLocalUrl = (
+  canvas: HTMLCanvasElement,
+  type: string = "image/png",
+): Promise<string> =>
+  new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("The image could not be encoded. Please try again."));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () =>
+        reject(new Error("The image could not be read after encoding. Please try again."));
+      reader.readAsDataURL(blob);
+    }, type);
+  });
+
+/** Thrown when a file's contents can't be decoded as an image. */
+export class ImageDecodeError extends Error {
+  constructor(fileName: string, reason: "failed" | "timeout" = "failed") {
+    super(
+      reason === "timeout"
+        ? `“${fileName}” took too long to open and may be damaged. Please re-export it and try again.`
+        : `“${fileName}” could not be read — the file may be damaged or only partly downloaded. Please re-export it and try again.`,
+    );
+    this.name = "ImageDecodeError";
+  }
+}
+
 export const loadImageSize = (file: File): Promise<{ widthPx: number; heightPx: number; url: string }> => {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
+    // For PDFs, return a placeholder size and let the server handle conversion
+    if (file.type === "application/pdf") {
+      const url = URL.createObjectURL(file);
       resolve({
-        widthPx: img.naturalWidth,
-        heightPx: img.naturalHeight,
+        widthPx: 2550,
+        heightPx: 3300,
         url,
       });
+      return;
+    }
+
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      fn();
     };
-    img.onerror = (err) => {
-      URL.revokeObjectURL(url);
-      reject(err);
+
+    const timer = window.setTimeout(() => {
+      finish(() => {
+        // Detaching the handlers lets the half-decoded image be collected
+        // instead of holding the file's bytes for the life of the page.
+        img.onload = null;
+        img.onerror = null;
+        img.src = "";
+        URL.revokeObjectURL(url);
+        reject(new ImageDecodeError(file.name, "timeout"));
+      });
+    }, DECODE_TIMEOUT_MS);
+
+    img.onload = () => {
+      // A decode that "succeeds" with no dimensions produced nothing usable, and
+      // would otherwise flow on as an item of zero physical size.
+      if (!img.naturalWidth || !img.naturalHeight) {
+        finish(() => {
+          URL.revokeObjectURL(url);
+          reject(new ImageDecodeError(file.name));
+        });
+        return;
+      }
+      finish(() => resolve({ widthPx: img.naturalWidth, heightPx: img.naturalHeight, url }));
     };
+
+    img.onerror = () => {
+      finish(() => {
+        URL.revokeObjectURL(url);
+        // A typed error carrying a customer-ready sentence, rather than the raw
+        // DOM ErrorEvent — which has no message worth showing anyone.
+        reject(new ImageDecodeError(file.name));
+      });
+    };
+
     img.src = url;
   });
 };

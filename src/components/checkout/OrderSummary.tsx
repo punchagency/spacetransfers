@@ -1,4 +1,5 @@
 import { MdShoppingCart } from "react-icons/md";
+import GangsheetPreview from "./GangsheetPreview";
 
 interface CartItem {
   id: number;
@@ -19,52 +20,54 @@ interface OrderSummaryProps {
   step: number;
   subtotal: number;
   shippingCost: number;
-  tax: number;
-  taxRate?: number;
   total: number;
   onNext: () => void;
   isSubmitting?: boolean;
   disableNext?: boolean;
   nextLabel?: string;
-}     
+  /** Overrides the button's label while `isSubmitting` is true — e.g. "Finalizing artwork…" during the rare case Place Order still has an upload to wait on. Falls back to "Processing...". */
+  submittingLabel?: string;
+}
 
 export default function OrderSummary({
   cartItems,
   step,
   subtotal,
   shippingCost,
-  tax,
-  taxRate = 0.094,
   total,
   onNext,
   isSubmitting = false,
   disableNext = false,
   nextLabel,
+  submittingLabel,
 }: OrderSummaryProps) {
   if (!cartItems || cartItems.length === 0) return null;
 
   const renderItemPreview = (item: CartItem) => {
     if (item.type === 'gangsheet') {
+      const hasSnapshot =
+        item.image && item.image !== '/placeholder-gangsheet.png';
       return (
-        <div className="w-20 h-20 bg-gray-100 rounded border border-gray-200 flex-shrink-0 overflow-hidden">
-          {item.image && item.image !== '/placeholder-gangsheet.png' ? (
-            <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+        <div className="bg-[#E9F2F1] rounded border border-gray-200 flex-shrink-0 flex items-center justify-center overflow-hidden">
+          {hasSnapshot ? (
+            <img
+              src={item.image}
+              alt={item.name}
+              className="object-contain"
+              style={{ maxWidth: 88, maxHeight: 120 }}
+            />
           ) : item.items && item.items.length > 0 ? (
-            <div className="w-full h-full bg-[#E9F2F1] flex items-center justify-center p-0.5">
-              <div className="w-full h-full bg-white rounded shadow-sm flex items-center justify-center overflow-hidden">
-                <div className="grid gap-0.5 p-0.5" style={{
-                  gridTemplateColumns: `repeat(${Math.min(3, Math.ceil(Math.sqrt(item.items.length)))}, 1fr)`,
-                }}>
-                  {item.items.slice(0, 9).map((subItem: any, idx: number) => (
-                    <div key={idx} className="relative aspect-square">
-                      <img src={subItem.url} alt="" className="w-full h-full object-contain" />
-                    </div>
-                  ))} 
-                </div>
-              </div>
-            </div>
+            <GangsheetPreview
+              items={item.items}
+              sheetWidthIn={item.widthIn}
+              sheetHeightIn={item.heightIn}
+              marginIn={(item as any).sheetMarginIn}
+              spacingIn={(item as any).itemSpacingIn}
+              maxWidth={88}
+              maxHeight={120}
+            />
           ) : (
-            <div className="text-3xl flex items-center justify-center">📋</div>
+            <div className="w-20 h-20 text-3xl flex items-center justify-center">📋</div>
           )}
         </div>
       );
@@ -77,7 +80,7 @@ export default function OrderSummary({
   };
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6 sticky  ">
+    <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6 sticky  ">
       <div className="flex items-center gap-2 mb-4">
         <MdShoppingCart className="w-5 h-5 text-blue-600" />
         <h3 className="text-base font-semibold">Order Summary</h3>
@@ -116,10 +119,6 @@ export default function OrderSummary({
           <span className="text-gray-600">Shipping</span>
           <span className="font-medium">${shippingCost.toFixed(2)}</span>
         </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Tax ({(taxRate * 100).toFixed(1)}%)</span>
-          <span className="font-medium">${tax.toFixed(2)}</span>
-        </div>
         <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
           <span>Total</span>
           <span>${total.toFixed(2)}</span>
@@ -135,7 +134,7 @@ export default function OrderSummary({
           }`}
         >
           {isSubmitting
-            ? "Processing..."
+            ? submittingLabel || "Processing..."
             : nextLabel || (step === 0 ? 'Proceed to Checkout' : step === 1 ? 'Continue to Payment' : step === 2 ? 'Continue to Review' : 'Place Order')}
         </button>
       )}

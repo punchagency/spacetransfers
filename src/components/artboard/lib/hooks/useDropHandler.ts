@@ -1,12 +1,39 @@
 import { useRef, useState } from "react";
-import { readDPI, loadImageSize } from "../utils";
-import { animateBounce, animateShake, animateItemPosition } from "../utils";
-import { calculateGridLayout } from "../utils";
+import { readDPI, loadImageSize, validateImageFile, checkFade, shouldWarn } from "../utils";
+import type { FadeVerdict } from "../utils";
+import { placeNewItems, arrangeInitialLayout } from "../utils";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
 import { CANVAS } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
+import { showLargeImageWarning } from "../../../common/LargeImageWarning";
 import type { CommitHistory } from "./useHistory";
+
+/**
+ * Hard ceiling on a single file's upload.
+ *
+ * Generous because it has to cover a genuinely large print file on a slow
+ * connection — it exists to bound a hang, not to police slow uploads.
+ */
+const UPLOAD_TIMEOUT_MS = 90_000;
+
+/**
+ * How many files are processed at once.
+ *
+ * Four saturates a typical connection without exceeding the browser's own
+ * per-host request cap (usually six), and keeps enough headroom that the
+ * artboard stays responsive while a large drop is in flight.
+ */
+/**
+ * Files uploaded in parallel.
+ *
+ * Six rather than four: each file spends nearly all its time waiting on a
+ * network round trip, and six is the per-host connection limit browsers apply
+ * to HTTP/1.1 — so this saturates the connection without queueing requests the
+ * browser will not issue anyway. Higher only helps over HTTP/2 and costs
+ * progress-bar smoothness and server headroom on large drops.
+ */
+const UPLOAD_CONCURRENCY = 6;
 
 export const useDropHandler = (
   items: ArtboardItem[],
@@ -36,36 +63,19 @@ export const useDropHandler = (
   const warnedMaxHeightRef = useRef(false);
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-  const detectFade = (url: string): Promise<boolean> =>
-    new Promise<boolean>((resolve) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        try {
-          const MAX = 300;
-          const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight, 1));
-          const w = Math.max(1, Math.round(img.naturalWidth * scale));
-          const h = Math.max(1, Math.round(img.naturalHeight * scale));
-          const canvas = document.createElement("canvas");
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { resolve(false); return; }
-          ctx.drawImage(img, 0, 0, w, h);
-          const data = ctx.getImageData(0, 0, w, h).data;
-          let visible = 0;
-          let semi = 0;
-          for (let i = 3; i < data.length; i += 4) {
-            const a = data[i];
-            if (a > 5) visible++;
-            if (a > 5 && a < 250) semi++;
-          }
-          resolve(visible > 0 && semi / visible > 0.05);
-        } catch { resolve(false); }
-      };
-      img.onerror = () => resolve(false);
-      img.src = url;
-    });
+  /**
+   * Fade check.
+   *
+   * Replaces the old `semiTransparent / visible > 0.05` rule, which could not
+   * tell a genuine fade from the three printable things that look identical to
+   * a pixel count — anti-aliased edges, drop shadows and soft glows — and so
+   * flagged ordinary cutouts as unprintable.
+   *
+   * `checkFade` prefers the AI verdict the upload response already carried, so
+   * on the normal path this costs no request at all.
+   */
+  const detectFade = async (url: string, serverVerdict?: unknown): Promise<FadeVerdict> =>
+    checkFade(url, serverVerdict);
 
   const cancelUploads = () => {
     canceledRef.current = true;
@@ -82,17 +92,50 @@ export const useDropHandler = (
   };
 
   const uploadAssetWithProgress = (file: File, onProgress: (pct: number) => void) => {
-    const API_BASE_URL = "http://localhost:4000/api";
+    // Was hardcoded to http://localhost:4000/api, which meant every upload in
+    // any deployed build pointed at a server on the customer's own machine.
+    // Read from the environment the same way `apiFetch` does, so there is one
+    // definition of where the API lives.
+    const API_BASE_URL =
+      import.meta.env.VITE_API_URL || "https://space-transfers-475154718031.herokuapp.com/api";
     const token = localStorage.getItem("token");
 
     return new Promise<any>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       activeUploadsRef.current.push(xhr);
 
+      const release = () => {
+        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
+      };
+
       xhr.open("POST", `${API_BASE_URL}/customer/assets`);
       if (token) {
         xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       }
+
+      /**
+       * Without this an upload could wait forever.
+       *
+       * `xhr.onerror` only fires on a transport failure — a server that accepts
+       * the body and then never answers (which is what a file it cannot decode
+       * can produce) fires nothing at all, and the dialog sits at whatever
+       * percentage it reached with no error, no timeout and no way out but
+       * Cancel. That was the reported bug.
+       *
+       * The window is generous because it has to cover a genuinely large
+       * artwork on a slow connection; it exists to bound a hang, not to police
+       * slow uploads. `xhr.timeout` measures the whole request, and is reset by
+       * neither upload progress nor a partial response.
+       */
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
+      xhr.ontimeout = () => {
+        release();
+        reject(
+          new Error(
+            `“${file.name}” timed out after ${Math.round(UPLOAD_TIMEOUT_MS / 1000)}s. Check your connection and try again.`,
+          ),
+        );
+      };
 
       xhr.upload.onprogress = (evt) => {
         if (evt.lengthComputable) {
@@ -101,23 +144,27 @@ export const useDropHandler = (
       };
 
       xhr.onload = () => {
-        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
+        release();
+        let json: any = {};
         try {
-          const json = JSON.parse(xhr.responseText || "{}");
-          if (xhr.status >= 200 && xhr.status < 300) resolve(json);
-          else reject(new Error(json.message || "Upload failed"));
+          json = JSON.parse(xhr.responseText || "{}");
         } catch {
-          reject(new Error("Upload failed"));
+          // A non-JSON body is normal for a proxy error page; fall through and
+          // report on the status code, which is the part that is meaningful.
         }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(json);
+        // The server's own message when it sent one — it knows why the file was
+        // rejected and this is the only place that reason reaches the customer.
+        else reject(new Error(json?.message || `Upload failed (${xhr.status})`));
       };
 
       xhr.onerror = () => {
-        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
-        reject(new Error("Upload failed"));
+        release();
+        reject(new Error(`“${file.name}” couldn't be uploaded. Check your connection and try again.`));
       };
 
       xhr.onabort = () => {
-        activeUploadsRef.current = activeUploadsRef.current.filter((x) => x !== xhr);
+        release();
         reject(new Error("Upload canceled"));
       };
 
@@ -125,6 +172,43 @@ export const useDropHandler = (
       formData.append("file", file);
       xhr.send(formData);
     });
+  };
+
+  /**
+   * The only way `processDrop` is ever called.
+   *
+   * `processDrop` is long and touches decoding, the network, canvas work and
+   * layout — any of which can throw. It was previously awaited directly from
+   * the drop handlers with nothing catching it, so a single rejection (a
+   * corrupt file made `loadImageSize` reject) escaped as an unhandled promise
+   * rejection and the function simply stopped. `setIsUploading(false)` never
+   * ran, so the dialog stayed on screen at whatever percentage it had reached,
+   * forever, with no error — the reported bug.
+   *
+   * This wrapper makes that structurally impossible: the dialog is torn down in
+   * a `finally`, so no future edit to `processDrop` can reintroduce a path that
+   * leaves it stuck.
+   */
+  const runDrop = async (args: {
+    droppedFiles: File[];
+    droppedUrl: string;
+    dropX: number;
+    dropY: number;
+  }) => {
+    try {
+      await processDrop(args);
+    } catch (err: any) {
+      if (err?.message === "Upload canceled") return;
+      console.error("[UPLOAD] drop failed", err);
+      toast.error(
+        err?.message || "Those files could not be added. Please re-export them and try again.",
+        { duration: 6000 },
+      );
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+      setUploadFileName(null);
+    }
   };
 
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -148,7 +232,8 @@ export const useDropHandler = (
     dropY: number;
   }) => {
     setIsDragging(false);
-    const dropped = droppedFiles;
+    // Reassigned when the drop exceeds the remaining item capacity.
+    let dropped = droppedFiles;
     if (dropped.length === 0 && !droppedUrl) return;
 
     if (items.length >= CANVAS.MAX_ITEMS) {
@@ -171,8 +256,12 @@ export const useDropHandler = (
           const ctx = canvas.getContext("2d");
           if (!ctx) { resolve(null); return; }
 
-          canvas.width = img.width;
+          // Use natural (native) pixel dimensions — img.width on a non-DOM Image
+          // equals img.naturalWidth, so we capture the full original resolution.
+          canvas.width  = img.width;
           canvas.height = img.height;
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
           ctx.drawImage(img, 0, 0);
 
           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -255,8 +344,11 @@ export const useDropHandler = (
           const croppedCtx = croppedCanvas.getContext("2d");
           if (!croppedCtx) { resolve(null); return; }
 
-          croppedCanvas.width = cropWidth;
+          croppedCanvas.width  = cropWidth;
           croppedCanvas.height = cropHeight;
+          croppedCtx.imageSmoothingEnabled = true;
+          croppedCtx.imageSmoothingQuality = "high";
+          // 1:1 pixel crop at native source resolution — no upscaling or downscaling
           croppedCtx.drawImage(img, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
           resolve({
@@ -275,6 +367,9 @@ export const useDropHandler = (
     const start = counter + 1;
     let lowDpiImages = 0;
     let fadeImages = 0;
+    // Artwork wider than the printable area. Tallied across the drop so the
+    // notice appears once, however many files were added.
+    let oversizeImages = 0;
 
     const createItemFromUrl = async (
       url: string,
@@ -298,6 +393,7 @@ export const useDropHandler = (
       const baseItem: ArtboardItem = {
         id: start + idx,
         url,
+        croppedUrl: url,
         rotation: 0,
         locked: false,
         expanded: false,
@@ -314,6 +410,7 @@ export const useDropHandler = (
         gravityActive: false,
         isDropping: true,
         dpi,
+        nativeWidthPx: loaded.widthPx,
         originalUrl: originalUrlOverride || url,
         originalWidthIn: widthIn,
         originalHeightIn: heightIn,
@@ -324,21 +421,28 @@ export const useDropHandler = (
         const deltaX = (widthIn - cropped.widthIn) / 2;
         const deltaY = (heightIn - cropped.heightIn) / 2;
         baseItem.url = cropped.url;
+        baseItem.croppedUrl = cropped.url;
+        baseItem.croppedWidthPx = cropped.widthPx;
+        baseItem.croppedHeightPx = cropped.heightPx;
+        baseItem.nativeWidthPx = cropped.widthPx;
         baseItem.widthIn = cropped.widthIn;
         baseItem.heightIn = cropped.heightIn;
         baseItem.posX = baseItem.posX + deltaX;
         baseItem.posY = baseItem.posY + deltaY;
       }
 
-      const maxPrintableWidthUrl = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
-      if (baseItem.widthIn > maxPrintableWidthUrl) {
-        const scale = maxPrintableWidthUrl / baseItem.widthIn;
-        baseItem.heightIn = baseItem.heightIn * scale;
-        baseItem.widthIn = maxPrintableWidthUrl;
-        toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
+      // Oversized artwork is kept at the size it arrived and flagged, not
+      // silently shrunk — the notice tells the customer they may want to resize
+      // it, which would be untrue if it had already been resized for them.
+      if (baseItem.widthIn > (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize) {
+        oversizeImages++;
       }
 
-      baseItem.hasFade = await detectFade(baseItem.url);
+      // No upload response on this path (the item came from a URL or a saved
+      // design), so the checker resolves it against the server itself.
+      const verdict = await detectFade(baseItem.url);
+      baseItem.fade = verdict;
+      baseItem.hasFade = shouldWarn(verdict);
       if (baseItem.hasFade) fadeImages++;
 
       return baseItem;
@@ -351,8 +455,14 @@ export const useDropHandler = (
       const uploadUiStart = Date.now();
       setIsUploading(true);
       setUploadProgress(0);
-      setUploadFileName(dropped[0]?.name || null);
-      await sleep(200);
+      setUploadFileName(
+        dropped.length > 1 ? `${dropped.length} files` : dropped[0]?.name || null,
+      );
+      // Uploads start immediately. There used to be a 200ms sleep here purely
+      // so the progress dialog had time to appear, which delayed every drop by
+      // a fifth of a second before a single byte moved. Dialog flicker on fast
+      // uploads is handled at the other end instead (see the minimum-visible
+      // window below), where it costs nothing.
       if (canceledRef.current) {
         setIsUploading(false);
         setUploadProgress(0);
@@ -360,23 +470,49 @@ export const useDropHandler = (
         return;
       }
 
-      created = [];
-      for (let idx = 0; idx < dropped.length; idx++) {
-        if (canceledRef.current) {
-          setIsUploading(false);
-          setUploadProgress(0);
-          setUploadFileName(null);
-          return;
-        }
+      // Capacity is resolved once, up front, instead of being re-checked inside
+      // the loop. With files now processed concurrently there is no meaningful
+      // "how many have I made so far" to test against mid-flight, and the
+      // customer is better told immediately how many files won't fit.
+      const capacity = Math.max(0, CANVAS.MAX_ITEMS - items.length);
+      if (dropped.length > capacity) {
+        const skipped = dropped.length - capacity;
+        toast.error(
+          `Item limit of ${CANVAS.MAX_ITEMS} reached. ${skipped} file${skipped !== 1 ? "s" : ""} skipped.`,
+        );
+        dropped = dropped.slice(0, capacity);
+      }
 
-        if (items.length + created.length >= CANVAS.MAX_ITEMS) {
-          const skipped = dropped.length - idx;
-          toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. ${skipped} file${skipped !== 1 ? "s" : ""} skipped.`);
-          break;
-        }
+      /**
+       * Per-file progress, summed for the dialog.
+       *
+       * Files no longer finish in order, so progress cannot be derived from an
+       * index. Each file owns a 0–1 slot and the bar shows their mean, which
+       * stays monotonic and truthful however the individual uploads interleave.
+       */
+      const fileProgress = new Array(dropped.length).fill(0);
+      const publishProgress = () => {
+        const total = fileProgress.reduce((sum, p) => sum + p, 0);
+        setUploadProgress(Math.max(0, Math.min(100, (total / dropped.length) * 100)));
+      };
 
-        const file = dropped[idx];
-        setUploadFileName(file.name);
+      /**
+       * Builds one artboard item, or returns null if the file can't be used.
+       *
+       * Every failure path inside here reports and returns null rather than
+       * throwing. A single unreadable file must not take down the whole drop —
+       * previously one rejection escaped `processDrop` entirely, leaving
+       * `isUploading` true forever with no message, which is exactly the hang
+       * being fixed.
+       */
+      const buildItem = async (file: File, idx: number): Promise<ArtboardItem | null> => {
+        // Content check first: it reads 16 bytes, needs no network, and catches
+        // the "text file named .png" case before a byte is uploaded.
+        const validation = await validateImageFile(file);
+        if (!validation.ok) {
+          toast.error(validation.message!, { duration: 6000 });
+          return null;
+        }
 
         const [dpiInfo, localInfo] = await Promise.all([
           readDPI(file),
@@ -386,24 +522,26 @@ export const useDropHandler = (
         let assetResponse: any = null;
         try {
           assetResponse = await uploadAssetWithProgress(file, (pct) => {
-            const overall =
-              ((idx + pct / 100) / dropped.length) * 100;
-            setUploadProgress(Math.max(0, Math.min(100, overall)));
+            fileProgress[idx] = pct / 100;
+            publishProgress();
           });
         } catch (err: any) {
-          if (canceledRef.current || err?.message === "Upload canceled") {
-            setIsUploading(false);
-            setUploadProgress(0);
-            setUploadFileName(null);
-            return;
-          }
+          if (canceledRef.current || err?.message === "Upload canceled") throw err;
+          // The server rejected or was unreachable. The local decode already
+          // succeeded, so the artwork can still be placed from the object URL —
+          // but say so, because it will not survive a reload.
+          console.warn(`[UPLOAD] ${file.name} — ${err?.message}`);
+          toast.error(err?.message || `“${file.name}” couldn't be uploaded.`, { duration: 6000 });
           assetResponse = null;
         }
+        fileProgress[idx] = 1;
+        publishProgress();
 
+        const isPdf = file.type === "application/pdf";
         const rawDpi = Math.max(1, Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300));
         // Mirror server normalization: values < 150 (e.g. 72 dpi JFIF defaults) are treated as unknown
         const dpi = rawDpi < 150 ? 300 : rawDpi;
-        if (dpi < 300) lowDpiImages++;
+        if (dpi < 300 && !isPdf) lowDpiImages++;
 
         const serverUrl = assetResponse?.url || localInfo.url;
         const trimmedUrl = assetResponse?.trimmedUrl || null;
@@ -436,17 +574,32 @@ export const useDropHandler = (
           gravityActive: false,
           isDropping: true,
           dpi,
+          assetId: assetResponse?.id,
+          // croppedUrl is the authoritative full-resolution export URL — always a server
+          // URL (Cloudinary) or a native-resolution canvas data URL. Separate from `url`
+          // (the display URL) so the export path never depends on CSS-scaled previews.
+          croppedUrl: trimmedUrl || serverUrl,
+          nativeWidthPx: (trimmedUrl ? assetResponse?.trimmedWidthPx : null) || widthPx,
           originalUrl: serverUrl,
           originalWidthIn,
           originalHeightIn,
         };
 
-        if (!trimmedUrl) {
+        if (!trimmedUrl && !isPdf) {
           const cropped = await cropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;
             const deltaY = (heightIn - cropped.heightIn) / 2;
             baseItem.url = cropped.url;
+            // Canvas crop produces full-resolution pixel data (naturalWidth × naturalHeight).
+            // Store as croppedUrl so the export uses this tight crop, not the larger original.
+            baseItem.croppedUrl = cropped.url;
+            // Store pixel dimensions of the canvas-cropped output. The server DPI calculator
+            // uses these instead of the DB's widthPx (the original, larger pre-crop value)
+            // so it never upscales the canvas data URL during composition.
+            baseItem.croppedWidthPx = cropped.widthPx;
+            baseItem.croppedHeightPx = cropped.heightPx;
+            baseItem.nativeWidthPx = cropped.widthPx;
             baseItem.widthIn = cropped.widthIn;
             baseItem.heightIn = cropped.heightIn;
             baseItem.posX = baseItem.posX + deltaX;
@@ -454,23 +607,134 @@ export const useDropHandler = (
           }
         }
 
-        const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
-        if (baseItem.widthIn > maxPrintableWidth) {
-          const scale = maxPrintableWidth / baseItem.widthIn;
-          baseItem.heightIn = baseItem.heightIn * scale;
-          baseItem.widthIn = maxPrintableWidth;
-          toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
+        // Counted, not clamped. The upload succeeded and the item is usable;
+        // whether to resize it is the customer's call, and the notice below
+        // says so once for the whole drop rather than once per file.
+        if (baseItem.widthIn > (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize) {
+          oversizeImages++;
         }
 
-        baseItem.hasFade = await detectFade(baseItem.url);
-        if (baseItem.hasFade) fadeImages++;
+        if (!isPdf) {
+          /**
+           * The upload already ran the AI check on the buffer it held, so its
+           * verdict is passed straight through — no second analysis, and no
+           * request. Only an image the server never saw falls back to a call.
+           *
+           * Checked against `baseItem.url` rather than the original, because a
+           * canvas auto-crop can remove the very region that faded.
+           */
+          const verdict = await detectFade(
+            baseItem.url,
+            baseItem.url === (trimmedUrl || serverUrl) ? assetResponse?.fade : undefined,
+          );
+          baseItem.fade = verdict;
+          // `hasFade` drives the border colour and the warning banner, so it is
+          // only set once the verdict clears the confidence threshold — a
+          // low-confidence guess must not turn an image orange.
+          baseItem.hasFade = shouldWarn(verdict);
+          if (baseItem.hasFade) fadeImages++;
+        }
 
-        created.push(baseItem);
+        return baseItem;
+      };
+
+      /**
+       * Runs the files through a fixed-size pool.
+       *
+       * Each file spends most of its time waiting — on a network round trip, or
+       * on the browser decoding an image off the main thread — so processing
+       * them strictly one after another left the connection idle for most of a
+       * multi-file drop. With a pool, twenty images take roughly as long as the
+       * slowest few rather than the sum of all twenty.
+       *
+       * Bounded rather than unbounded: `Promise.all` over the whole set would
+       * open one request per file, which on a large drop buries the server, is
+       * throttled by the browser's own per-host connection cap anyway, and
+       * makes the progress bar meaningless. Four is comfortably above the point
+       * where the connection stays saturated.
+       *
+       * Results are written by index, so the artboard receives them in the
+       * order they were dropped no matter what order they complete in —
+       * otherwise identical drops would lay out differently run to run.
+       */
+      const results: (ArtboardItem | null)[] = new Array(dropped.length).fill(null);
+      let cursor = 0;
+
+      const worker = async () => {
+        while (cursor < dropped.length) {
+          if (canceledRef.current) return;
+          const idx = cursor++;
+          const file = dropped[idx];
+          // Only meaningful for a single file. With a pool running, four names
+          // would race each other in the dialog several times a second, which
+          // reads as a glitch; the count set before the pool started is both
+          // stable and more useful.
+          if (dropped.length === 1) setUploadFileName(file.name);
+          try {
+            results[idx] = await buildItem(file, idx);
+          } catch (err: any) {
+            // Cancel unwinds every worker; anything else is this file's problem
+            // alone and must not stop the rest of the drop.
+            if (canceledRef.current || err?.message === "Upload canceled") throw err;
+            console.warn(`[UPLOAD] ${file.name} failed`, err);
+            toast.error(
+              err?.message || `“${file.name}” could not be read — please re-export it and try again.`,
+              { duration: 6000 },
+            );
+            results[idx] = null;
+            // Count the failed slot so the bar still reaches 100%.
+            fileProgress[idx] = 1;
+            publishProgress();
+          }
+        }
+      };
+
+      try {
+        await Promise.all(
+          Array.from({ length: Math.min(UPLOAD_CONCURRENCY, dropped.length) }, worker),
+        );
+      } catch (err: any) {
+        if (canceledRef.current || err?.message === "Upload canceled") {
+          setIsUploading(false);
+          setUploadProgress(0);
+          setUploadFileName(null);
+          return;
+        }
+        throw err;
+      }
+
+      if (canceledRef.current) {
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadFileName(null);
+        return;
+      }
+
+      created = results.filter((item): item is ArtboardItem => item !== null);
+
+      // Every file failed validation or upload. Nothing to place, and the
+      // per-file toasts have already explained why — so close the dialog
+      // rather than animating an empty success.
+      if (created.length === 0) {
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadFileName(null);
+        return;
       }
 
       setUploadProgress(100);
+      /**
+       * Anti-flicker floor, reduced from 700ms.
+       *
+       * The old floor held the dialog open for at least 700ms after the work
+       * finished, so a drop that completed in 80ms still took the better part
+       * of a second before artwork appeared. 260ms is long enough that the
+       * dialog does not read as a flash, and short enough that a fast upload
+       * feels immediate.
+       */
+      const MIN_DIALOG_VISIBLE_MS = 260;
       const elapsed = Date.now() - uploadUiStart;
-      if (elapsed < 700) await sleep(700 - elapsed);
+      if (elapsed < MIN_DIALOG_VISIBLE_MS) await sleep(MIN_DIALOG_VISIBLE_MS - elapsed);
       setIsUploading(false);
       setUploadFileName(null);
     } else {
@@ -493,6 +757,12 @@ export const useDropHandler = (
       ];
     }
 
+    // Informational, and deliberately last: the upload has completed and the
+    // items are on the sheet by this point, so nothing about it is blocking.
+    if (oversizeImages > 0) {
+      showLargeImageWarning(oversizeImages);
+    }
+
     if (lowDpiImages > 0) {
       if (lowDpiTimerRef.current) clearTimeout(lowDpiTimerRef.current);
       setLowDpiCount(lowDpiImages);
@@ -504,26 +774,33 @@ export const useDropHandler = (
       fadeTimerRef.current = setTimeout(() => setFadeCount(0), 7000);
     }
 
-    const autoNestForDrop = autoNestStickers || dropped.length >= 2;
-
-    // 1. Calculate the final intended layout for ALL items immediately
+    // 1. Place ONLY the new items — they flow into whatever gaps the current
+    // layout already has (or extend the sheet downward). Existing artwork is
+    // never repositioned by an upload, so adding files can't scramble a
+    // layout the user has already arranged.
     setTimeout(() => {
       // Always use the real sheet width (inches), not viewport width,
       // otherwise items can be laid out beyond the top ruler break (23.5").
       const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
 
-      // Keep existing layout order first so newly uploaded items
-      // flow into the next available (typically lower) slots.
       const allItems = [...items, ...created];
       const effectiveMargin = marginSize;
 
-      const finalUpdatesRaw = calculateGridLayout(
-        allItems,
-        currentCanvasWidth,
-        spacing,
-        autoNestForDrop,
-        effectiveMargin
-      );
+      // First upload of a multi-image batch onto an empty board: shelf-pack
+      // the whole batch so every row fills the sheet's full printable width
+      // (the gap packer would stack items that don't share a row height,
+      // wasting most of the horizontal space). With existing content, new
+      // items flow into the current layout's gaps instead.
+      const isFirstMultiUpload = items.length === 0 && created.length > 1;
+      const finalUpdatesRaw = isFirstMultiUpload
+        ? arrangeInitialLayout(created, currentCanvasWidth, spacing, effectiveMargin)
+        : placeNewItems(
+            allItems,
+            new Set(created.map((c) => c.id)),
+            currentCanvasWidth,
+            spacing,
+            effectiveMargin
+          );
 
       // Enforce max sheet height (100 feet = 1200 inches).
       // Copies can wrap vertically, so clamp using a conservative
@@ -537,7 +814,10 @@ export const useDropHandler = (
         const groupHeightIn = copies <= 1 ? itemH : copies * itemH + (copies - 1) * gap;
         const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupHeightIn);
         const nextPosY = Math.max(0, Math.min(u.posY, maxPosY));
-        if (nextPosY !== u.posY) didClamp = true;
+        // Only warn when the item actually overflowed the BOTTOM limit. Raising
+        // a negative posY up to the top (nextPosY > u.posY) is a normal top-edge
+        // snap, not a sheet-height overflow, and must not trigger the toast.
+        if (u.posY > maxPosY + 1e-6) didClamp = true;
         return { ...u, posY: nextPosY };
       });
 
@@ -548,103 +828,72 @@ export const useDropHandler = (
 
       // 2. Preserve NEW items at their drop position initially (avoid instant jump).
       commitHistory?.();
+      // Membership via a Set rather than `created.some(...)` inside the map:
+      // that was a linear scan per item, so a 1000-file drop cost a million
+      // comparisons on the main thread before a single pixel changed.
+      const createdIds = new Set(created.map((c) => c.id));
       setItems((prev) => {
         // Keep existing items first so newly dropped singles are arranged after them
         // (below grouped/copies items in the packed layout).
         const withCreated = [...prev, ...created];
-        return withCreated.map((it) => {
-          const isNew = created.some((c) => c.id === it.id);
-          if (isNew) {
-            return { ...it, gravityActive: false };
-          }
-          return it;
-        });
+        return withCreated.map((it) =>
+          createdIds.has(it.id) ? { ...it, gravityActive: false } : it,
+        );
       });
 
-      // 3. Perform the physical interaction sequence
+      // 3. Animate each new item from where it was dropped to its slot with a
+      // quick spring — existing items are untouched by design, so there's no
+      // longer any shove/shake choreography to run against them.
       setTimeout(() => {
         const PPI = CANVAS.PIXELS_PER_INCH;
 
-        // Calculate items that need to be pushed
-        const itemsToPush = finalUpdates.filter((u) => {
-          const existing = items.find((ex) => ex.id === u.id);
-          return (
-            existing &&
-            (Math.abs(u.posX - existing.posX) > 0.01 ||
-              Math.abs(u.posY - existing.posY) > 0.01)
-          );
-        });
+        /**
+         * Largest drop that still gets the fly-in animation.
+         *
+         * The stagger was `index * 0.06`, which is fine for the handful of
+         * files this was written for and absurd beyond that: a 1000-file drop
+         * put the last item's animation 60 seconds after the first, so artwork
+         * trickled onto the board long after it had finished uploading. That
+         * is the "items load one by one" symptom — the data was already there.
+         *
+         * Past this count the animation is skipped entirely rather than
+         * compressed. A thousand simultaneous tweens is itself a frame-rate
+         * problem, and at that scale the useful feedback is "the sheet filled
+         * up", not each piece's flight path.
+         */
+        const MAX_ANIMATED_ITEMS = 120;
+        /** Total time the whole stagger is allowed to span, in seconds. */
+        const STAGGER_WINDOW_S = 0.9;
 
-        const pushedIds = new Set(itemsToPush.map((p) => p.id));
-        const newIds = new Set(created.map((c) => c.id));
-
-        // A. CONTACT POINT: Trigger 'Physical Shove' quickly after contact
-        gsap.delayedCall(0.2, () => {
-          // 1. Update React state for ALL affected items at once
-          setItems((prev) =>
-            prev.map((it) => {
-              const update = finalUpdates.find((u) => u.id === it.id);
-              const isNew = newIds.has(it.id);
-              if (isNew) return it; // keep isDropping:true — cleared in onComplete or on drag start
-              if (update && pushedIds.has(it.id)) {
-                return {
-                  ...it,
-                  posX: update.posX,
-                  posY: update.posY,
-                  flowCols: update.flowCols,
-                  flowStartCol: update.flowStartCol,
-                  flowEndCol: update.flowEndCol,
-                  gravityActive: true,
-                };
-              }
-              return it;
-            })
-          );
-
-          // 2. Trigger staggered physical animations
-          const sortedToPush = [...itemsToPush].sort((a, b) => {
-            const indexA = finalUpdates.findIndex((u) => u.id === a.id);
-            const indexB = finalUpdates.findIndex((u) => u.id === b.id);
-            return indexA - indexB;
+        if (created.length > MAX_ANIMATED_ITEMS) {
+          // Land everything at its packed position in one state update.
+          setItems((prev) => {
+            const byId = new Map(finalUpdates.map((u) => [u.id, u]));
+            return prev.map((it) => {
+              const update = byId.get(it.id);
+              if (!update || !it.isDropping) return it;
+              return {
+                ...it,
+                posX: update.posX,
+                posY: update.posY,
+                flowCols: update.flowCols,
+                flowStartCol: update.flowStartCol,
+                flowEndCol: update.flowEndCol,
+                nestRotation: (update.nestRotation ?? 0) as 0 | 90,
+                isDropping: false,
+              };
+            });
           });
+          return;
+        }
 
-          sortedToPush.forEach((u, index) => {
-            const existing = items.find((ex) => ex.id === u.id);
-            if (!existing) return;
-            const el = document.querySelector(
-              `[data-item-id="${u.id}"]`
-            ) as HTMLElement;
-            if (el) {
-              gsap.delayedCall(index * 0.08, () => {
-                animateItemPosition(
-                  el,
-                  u.posX,
-                  u.posY,
-                  true,
-                  existing.posX,
-                  existing.posY
-                );
-              });
-            }
-          });
-        });
+        // Indexed once instead of `finalUpdates.find(...)` per item, which was
+        // another linear scan inside a loop over every dropped file.
+        const updateById = new Map(finalUpdates.map((u) => [u.id, u]));
+        const stagger = Math.min(0.06, STAGGER_WINDOW_S / Math.max(1, created.length));
 
-        // B. SETTLE POINT: Shake nearby items that WERE NOT pushed
-        // Adjusted from 2.7 to 2.1 to match earlier push timing
-        gsap.delayedCall(2.1, () => {
-          finalUpdates.forEach((u) => {
-            if (!pushedIds.has(u.id) && !newIds.has(u.id)) {
-              const el = document.querySelector(
-                `[data-item-id="${u.id}"]`
-              ) as HTMLElement;
-              if (el) animateShake(el);
-            }
-          });
-        });
-
-        // C. INDIVIDUAL ANIMATIONS FOR NEW ITEMS (smooth transition to top layout)
-        created.forEach((item) => {
-          const update = finalUpdates.find((u) => u.id === item.id);
+        created.forEach((item, index) => {
+          const update = updateById.get(item.id);
           if (!update) return;
 
           const element = document.querySelector(
@@ -657,7 +906,7 @@ export const useDropHandler = (
             {
               left: `${(dropX - item.widthIn / 2) * PPI}px`,
               top: `${(dropY - item.heightIn / 2) * PPI}px`,
-              scale: 1.08,
+              scale: 1.06,
               opacity: 0,
             },
             {
@@ -665,8 +914,9 @@ export const useDropHandler = (
               top: `${update.posY * PPI}px`,
               scale: 1,
               opacity: 1,
-              duration: 1.6,
-              ease: "power2.out",
+              duration: 0.65,
+              delay: index * stagger,
+              ease: "back.out(1.2)",
               immediateRender: true,
               onComplete: () => {
                 setItems((prev) =>
@@ -681,11 +931,11 @@ export const useDropHandler = (
                       flowCols: update.flowCols,
                       flowStartCol: update.flowStartCol,
                       flowEndCol: update.flowEndCol,
+                      nestRotation: (update.nestRotation ?? 0) as 0 | 90,
                       isDropping: false,
                     };
                   })
                 );
-                animateBounce(element, update.posY);
               },
             }
           );
@@ -697,17 +947,13 @@ export const useDropHandler = (
     setSelectedId(null);
   };
 
-  const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/svg+xml"];
+  const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/svg+xml", "application/pdf"];
 
   const filterFiles = (files: File[]) => {
     const accepted = files.filter((f) => ACCEPTED_IMAGE_TYPES.includes(f.type));
-    const pdfs = files.filter((f) => f.type === "application/pdf");
-    const other = files.filter((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type) && f.type !== "application/pdf");
-    if (pdfs.length > 0) {
-      toast.error(`PDF files are not supported. Please convert to PNG or JPG first.`);
-    }
+    const other = files.filter((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type));
     if (other.length > 0) {
-      toast.error(`${other.length} unsupported file${other.length > 1 ? "s" : ""} skipped. Accepted: PNG, JPG, SVG.`);
+      toast.error(`${other.length} unsupported file${other.length > 1 ? "s" : ""} skipped. Accepted: PNG, JPG, SVG, PDF.`);
     }
     return accepted;
   };
@@ -721,9 +967,10 @@ export const useDropHandler = (
       e.dataTransfer.getData("text/plain");
     const droppedUrl = droppedFiles.length === 0 ? jsonData : "";
     if (droppedFiles.length === 0 && !droppedUrl) return;
-    if (droppedFiles.length >= 2 && !autoNestStickers) {
-      onRequestAutoNest?.(true);
-    }
+    // Multi-file drops no longer force the Auto-Nest toggle on: enabling it
+    // now triggers a deliberate full-sheet optimization (see
+    // useArtboardEffects), which must stay an explicit user choice — new
+    // files already pack into existing gaps on their own via placeNewItems.
 
     const rect = e.currentTarget.getBoundingClientRect();
     const zoomVal = zoom || 1;
@@ -733,21 +980,18 @@ export const useDropHandler = (
     const dropX = (e.clientX - rect.left - offset) / (ppi * zoomVal);
     const dropY = (e.clientY - rect.top - offset) / (ppi * zoomVal);
 
-    await processDrop({ droppedFiles, droppedUrl, dropX, dropY });
+    await runDrop({ droppedFiles, droppedUrl, dropX, dropY });
   };
 
   const dropFilesAtCenter = async (files: FileList | File[]) => {
     const arr = Array.isArray(files) ? files : Array.from(files);
     const droppedFiles = filterFiles(arr);
     if (droppedFiles.length === 0) return;
-    if (droppedFiles.length >= 2 && !autoNestStickers) {
-      onRequestAutoNest?.(true);
-    }
 
     const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
     const dropX = currentCanvasWidth / 2;
     const dropY = 6;
-    await processDrop({ droppedFiles, droppedUrl: "", dropX, dropY });
+    await runDrop({ droppedFiles, droppedUrl: "", dropX, dropY });
   };
 
   return {

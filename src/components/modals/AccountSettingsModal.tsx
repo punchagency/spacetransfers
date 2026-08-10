@@ -120,10 +120,10 @@ export default function AccountSettingsModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-2xl bg-white shadow-2xl"
+        className="w-full max-w-sm mx-4 max-h-[90dvh] overflow-y-auto rounded-2xl bg-white shadow-2xl"
       >
-        {/* Header */}
-        <div className="relative px-5 pt-5">
+        {/* Header — sticks so the close button stays reachable while scrolling */}
+        <div className="sticky top-0 z-10 bg-white px-5 pt-5 pb-2">
           <h2 className="text-lg font-semibold text-gray-900">
             Account Settings
           </h2>

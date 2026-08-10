@@ -2,6 +2,7 @@ import { ArtboardItem } from "../../types";
 import { apiFetch } from "../../../../lib/utils/api";
 import { CANVAS } from "../../../../config/artboard.config";
 import { computeRenderCopies } from "../utils/layoutHelpers";
+import { canvasToLocalUrl } from "../utils/imageUtils";
 import type { CommitHistory } from "./useHistory";
 import toast from "react-hot-toast";
 
@@ -35,11 +36,21 @@ export const useItemActions = (
     if (selectedId == null) return;
     commit();
     setItems((prev) =>
-      prev.map((it) =>
-        it.id === selectedId
-          ? { ...it, rotation: (it.rotation + 90) % 360 }
-          : it
-      )
+      prev.map((it) => {
+        if (it.id !== selectedId) return it;
+        // Each 90° step swaps the visual footprint so the bounding box always
+        // matches the rotated orientation. originalWidth/Height are swapped too
+        // so autoCrop restore remains consistent after rotation.
+        return {
+          ...it,
+          rotation: (it.rotation + 90) % 360,
+          widthIn: it.heightIn,
+          heightIn: it.widthIn,
+          originalWidthIn: it.originalHeightIn,
+          originalHeightIn: it.originalWidthIn,
+          gravityActive: !it.pinned,
+        };
+      })
     );
     emit({
       type: "rotate",
@@ -118,16 +129,20 @@ export const useItemActions = (
         }
       }
 
-      // Canvas fallback: works for both transparent PNGs and solid-background images
+      // Canvas fallback: works for both transparent PNGs and solid-background images.
+      // Operates at the image's native pixel dimensions (img.width = img.naturalWidth
+      // for a non-DOM Image) so the crop is always at original upload resolution.
       const img = new Image();
       img.crossOrigin = "anonymous";
-      img.onload = () => {
+      img.onload = async () => {
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        canvas.width = img.width;
+        canvas.width  = img.width;
         canvas.height = img.height;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, 0, 0);
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -213,11 +228,30 @@ export const useItemActions = (
         const croppedCtx = croppedCanvas.getContext("2d");
         if (!croppedCtx) return;
 
-        croppedCanvas.width = cropWidth;
+        croppedCanvas.width  = cropWidth;
         croppedCanvas.height = cropHeight;
+        croppedCtx.imageSmoothingEnabled = true;
+        croppedCtx.imageSmoothingQuality = "high";
+        // 1:1 native-pixel crop — no resampling, lossless source fidelity
         croppedCtx.drawImage(img, minX, minY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
-        const croppedImageUrl = croppedCanvas.toDataURL("image/png");
+        /**
+         * Lossless PNG at native resolution, held as bytes rather than as text.
+         *
+         * `toDataURL` encodes synchronously on the main thread and returns a
+         * base64 string 4/3 the size of the pixels, which then sits in the
+         * JavaScript heap until every reference to it goes — and references to
+         * an item's `url` reach React state, undo history and the cart. On a
+         * full-resolution crop that froze the UI for the whole encode and cost
+         * megabytes that were slow to come back.
+         *
+         * `canvasToLocalUrl` moves the encode off the main thread via
+         * `toBlob`, so the UI no longer stalls for the duration. The result is
+         * still a `data:` URL, which is what keeps it on the upload path:
+         * `useMaterializeImages` uploads it to Cloudinary moments later and
+         * swaps in a short hosted URL, so nothing large survives to the cart.
+         */
+        const croppedImageUrl = await canvasToLocalUrl(croppedCanvas, "image/png");
 
         const originalWidthIn = item.originalWidthIn || item.widthIn;
         const dpi = Math.max(1, Math.round(img.width && originalWidthIn ? img.width / originalWidthIn : 300));
@@ -233,6 +267,15 @@ export const useItemActions = (
                   widthIn: newWidthIn,
                   heightIn: newHeightIn,
                   url: croppedImageUrl,
+                  // croppedUrl is the dedicated export URL — full-res canvas PNG at
+                  // native pixel dimensions, separate from `url` (display URL).
+                  croppedUrl: croppedImageUrl,
+                  // Store the canvas output pixel dimensions so the server DPI calculator
+                  // uses the ACTUAL cropped pixel count (cropWidth) instead of the DB's
+                  // widthPx (the larger pre-crop original), preventing upscaling.
+                  croppedWidthPx: cropWidth,
+                  croppedHeightPx: cropHeight,
+                  nativeWidthPx: cropWidth,
                   originalUrl: it.originalUrl || it.url,
                   originalWidthIn: it.originalWidthIn || it.widthIn,
                   originalHeightIn: it.originalHeightIn || it.heightIn,
@@ -341,13 +384,18 @@ export const useItemActions = (
     });
   };
 
+  /**
+   * No printable-width guard.
+   *
+   * This used to refuse any value wider than the printable area and show an
+   * error. Both halves were wrong: the customer had typed a deliberate number,
+   * and rejecting it outright left the field showing one value while the item
+   * kept another. Oversized artwork is now allowed everywhere — it is reported
+   * by the artboard banner on upload, and sizing beyond the sheet is a choice
+   * the customer is entitled to make while laying out.
+   */
   const setWidthIn = (n: number) => {
     if (selectedId == null) return;
-    const maxPrintableWidth = canvasWidth - 2 * marginSize;
-    if (n > maxPrintableWidth) {
-      toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
-      return;
-    }
     commit(`setWidthIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
@@ -368,18 +416,10 @@ export const useItemActions = (
     });
   };
 
+  // Same reasoning as setWidthIn: a linked height that implies an oversized
+  // width is permitted rather than rejected.
   const setHeightIn = (n: number) => {
     if (selectedId == null) return;
-    const current = items.find((it) => it.id === selectedId);
-    if (current?.linked && current.heightIn > 0) {
-      const ratio = current.widthIn / current.heightIn;
-      const resultingWidth = n * ratio;
-      const maxPrintableWidth = canvasWidth - 2 * marginSize;
-      if (resultingWidth > maxPrintableWidth) {
-        toast.error("Image width cannot exceed the printable area of the film after margins are applied.");
-        return;
-      }
-    }
     commit(`setHeightIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
@@ -405,7 +445,11 @@ export const useItemActions = (
     commit(`setPosX-${selectedId}`);
     const finalX = snapToGrid ? snapToGridPoint(n) : n;
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, posX: finalX } : it))
+      prev.map((it) =>
+        it.id === selectedId
+          ? { ...it, posX: finalX, pinned: true, flowCols: undefined, flowStartCol: undefined, flowEndCol: undefined }
+          : it
+      )
     );
     emit({
       type: "setPosX",
@@ -419,7 +463,11 @@ export const useItemActions = (
     commit(`setPosY-${selectedId}`);
     const finalY = snapToGrid ? snapToGridPoint(n) : n;
     setItems((prev) =>
-      prev.map((it) => (it.id === selectedId ? { ...it, posY: finalY } : it))
+      prev.map((it) =>
+        it.id === selectedId
+          ? { ...it, posY: finalY, pinned: true, flowCols: undefined, flowStartCol: undefined, flowEndCol: undefined }
+          : it
+      )
     );
     emit({
       type: "setPosY",
@@ -448,31 +496,47 @@ export const useItemActions = (
     const { removeBackgroundAI } = await import("../utils/bgRemover");
     const result = await removeBackgroundAI(item.url, onProgress);
 
-    // Preserve physical size: derive DPI from original pixel width vs inch width
-    const dpi =
-      result.originalWidthPx > 0 && item.widthIn > 0
-        ? result.originalWidthPx / item.widthIn
-        : 300;
-    const newWidthIn = result.widthPx / dpi;
-    const newHeightIn = result.heightPx / dpi;
-
     setItems((prev) =>
-      prev.map((it) =>
-        it.id === selectedId
-          ? {
-              ...it,
-              url: result.dataUrl,
-              widthIn: newWidthIn,
-              heightIn: newHeightIn,
-              // Make the BG-removed result the new baseline so that toggling
-              // Auto Crop off doesn't restore the original white-background image.
-              originalUrl: result.dataUrl,
-              originalWidthIn: newWidthIn,
-              originalHeightIn: newHeightIn,
-              autoCrop: true,
-            }
-          : it
-      )
+      prev.map((it) => {
+        if (it.id !== selectedId) return it;
+        // The cutout is trimmed to the subject's bounding box, so the box
+        // shrinks by the trim ratio while the SUBJECT keeps its exact
+        // physical print size and stays centered where it was — nothing
+        // visually jumps or rescales. At odd rotations widthIn/heightIn are
+        // swapped relative to the image's own axes (see rotateSelected), so
+        // the trim ratios are applied along the correct axis.
+        const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
+        const scaleW = result.originalWidthPx > 0 ? result.widthPx / result.originalWidthPx : 1;
+        const scaleH = result.originalHeightPx > 0 ? result.heightPx / result.originalHeightPx : 1;
+        const newWidthIn = it.widthIn * (rotOdd ? scaleH : scaleW);
+        const newHeightIn = it.heightIn * (rotOdd ? scaleW : scaleH);
+        return {
+          ...it,
+          url: result.dataUrl,
+          // croppedUrl = full-resolution BG-removed PNG (bgRemover runs at
+          // img.naturalWidth × img.naturalHeight — the original upload resolution).
+          // Stored separately from `url` so the export pipeline never reads from
+          // a CSS-scaled or compressed intermediate; it gets the raw canvas output.
+          croppedUrl: result.dataUrl,
+          // Actual pixel dimensions of the cutout, measured by bgRemover —
+          // not approximated from a possibly-stale dpi × widthIn product —
+          // so DPI calculations (client warnings and the server compositor)
+          // stay truthful after removal.
+          croppedWidthPx: result.widthPx,
+          croppedHeightPx: result.heightPx,
+          nativeWidthPx: result.widthPx,
+          widthIn: newWidthIn,
+          heightIn: newHeightIn,
+          posX: it.posX + (it.widthIn - newWidthIn) / 2,
+          posY: it.posY + (it.heightIn - newHeightIn) / 2,
+          // originalUrl must stay as the pre-removal Cloudinary URL so the
+          // checkout assetId resolves to the original DB record, not a data URL.
+          originalUrl: it.originalUrl || it.url,
+          originalWidthIn: it.widthIn,
+          originalHeightIn: it.heightIn,
+          autoCrop: true,
+        };
+      })
     );
     emit({ type: "removeBg", id: selectedId });
   };
@@ -496,38 +560,42 @@ export const useItemActions = (
     });
   };
 
-  const increaseDpi = () => {
+  const increaseDpi = async (scale = 2) => {
     if (selectedId == null) return;
     const item = items.find((it) => it.id === selectedId);
     if (!item) return;
 
-    const currentDpi = Math.max(1, Math.round(item.dpi || 300));
-    // Below print-ready threshold: jump straight to 300 in a single click.
-    // At or above 300: incremental +50 boosts for fine-tuning.
-    const newDpi =
-      currentDpi < 300
-        ? 300
-        : Math.min(currentDpi + DPI_STEP, DPI_MAX);
-    if (newDpi <= currentDpi) {
-      toast("Already at maximum DPI.", { icon: "ℹ️" });
-      return;
-    }
+    const { upscaleImageAI } = await import("../utils/upscaler");
+    const result = await upscaleImageAI(item.url, Math.max(2, Math.round(scale)));
 
     commit(`increaseDpi-${selectedId}`);
-
-    // DPI is purely a metadata/quality field — the item's widthIn, heightIn,
-    // posX, and posY are deliberately untouched so the canvas layout stays put.
     setItems((prev) =>
-      prev.map((it) =>
-        it.id === selectedId ? { ...it, dpi: newDpi } : it,
-      ),
+      prev.map((it) => {
+        if (it.id !== selectedId) return it;
+        // Physical placement is unchanged — only the image source and DPI
+        // metadata are updated so the item stays in place on the artboard.
+        // At odd rotations the image's width axis is displayed along heightIn
+        // (rotateSelected swaps the dims), so measure against that axis.
+        const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
+        const widthAxisIn = rotOdd ? it.heightIn : it.widthIn;
+        const newDpi = widthAxisIn > 0 ? Math.round(result.widthPx / widthAxisIn) : 300;
+        return {
+          ...it,
+          url: result.upscaledUrl,
+          dpi: newDpi,
+          nativeWidthPx: result.widthPx,
+          // croppedUrl/croppedWidthPx are what checkout actually sends to the
+          // print pipeline for server-side DPI — without updating these too,
+          // the upscale would only affect the on-canvas preview and the final
+          // printed file would still use the old, lower-resolution source.
+          croppedUrl: result.upscaledUrl,
+          croppedWidthPx: result.widthPx,
+          croppedHeightPx: result.heightPx,
+          originalUrl: it.originalUrl || it.url,
+        };
+      }),
     );
-
-    emit({
-      type: "increaseDpi",
-      id: selectedId,
-      payload: { from: currentDpi, to: newDpi },
-    });
+    emit({ type: "increaseDpi", id: selectedId, payload: { scale: result.scale, widthPx: result.widthPx } });
   };
 
   return {

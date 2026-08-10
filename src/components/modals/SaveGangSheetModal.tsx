@@ -30,29 +30,35 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
       ".flex-1.relative.flex.items-center",
     ) as HTMLElement;
     if (artboard) {
-      const scale = 0.25;
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
+      // Cap at 2× so thumbnails stay manageable on 3× mobile screens while still
+      // being Retina-sharp on all desktop displays.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const rect = artboard.getBoundingClientRect();
-      canvas.width = rect.width * scale;
-      canvas.height = rect.height * scale;
+      const canvas = document.createElement("canvas");
+      canvas.width  = Math.round(rect.width  * dpr);
+      canvas.height = Math.round(rect.height * dpr);
 
+      const ctx = canvas.getContext("2d");
       if (ctx) {
-        const gridBg = artboard.querySelector(
-          ".absolute.inset-0.z-0",
-        ) as HTMLElement;
-        if (gridBg) {
-          const bgStyle = window.getComputedStyle(gridBg);
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Scale so draw calls use CSS pixel coordinates; the canvas is already
+        // sized in physical (dpr-scaled) pixels.
+        ctx.scale(dpr, dpr);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
 
+        // White background base
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, rect.width, rect.height);
+
+        const gridBg = artboard.querySelector(".absolute.inset-0.z-0") as HTMLElement;
+        if (gridBg) {
           const pattern = ctx.createPattern(
-            await createPatternCanvas(bgStyle),
+            await createPatternCanvas(window.getComputedStyle(gridBg)),
             "repeat",
           );
           if (pattern) {
             ctx.fillStyle = pattern;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillRect(0, 0, rect.width, rect.height);
           }
         }
 
@@ -60,14 +66,13 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
         for (const img of Array.from(images)) {
           const htmlImg = img as HTMLImageElement;
           const imgRect = htmlImg.getBoundingClientRect();
-          const x = (imgRect.left - rect.left) * scale;
-          const y = (imgRect.top - rect.top) * scale;
-          const w = imgRect.width * scale;
-          const h = imgRect.height * scale;
-          ctx.drawImage(htmlImg, x, y, w, h);
+          const x = imgRect.left - rect.left;
+          const y = imgRect.top  - rect.top;
+          ctx.drawImage(htmlImg, x, y, imgRect.width, imgRect.height);
         }
 
-        const thumbnail = canvas.toDataURL("image/jpeg", 0.85);
+        // Lossless PNG thumbnail — no JPEG compression artifacts
+        const thumbnail = canvas.toDataURL("image/png");
         onSave(designName, thumbnail, artboardData);
         setDesignName("Untitled Design");
       }
