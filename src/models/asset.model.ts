@@ -13,6 +13,22 @@ export interface IAsset extends Document {
   trimmedHeightPx?: number;
   dpi?: number;
   contentHash?: string;
+  /**
+   * Cached fade verdict.
+   *
+   * Stored because it is a property of the bytes, not of the upload: assets are
+   * de-duplicated by `contentHash`, so the same file uploaded again returns the
+   * existing record without re-reading it. Without this the verdict would be
+   * lost on every duplicate — and re-deriving it would mean an AI call for a
+   * result that cannot have changed.
+   */
+  fade?: {
+    hasFade: boolean;
+    confidence: number;
+    kind: string;
+    reason: string;
+    source: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -58,6 +74,21 @@ const assetSchema = new Schema<IAsset>(
     },
     contentHash: {
       type: String
+    },
+    // `_id: false` — this is a value object, not a sub-document; without it
+    // Mongoose mints an ObjectId for every verdict for no purpose.
+    fade: {
+      type: new Schema(
+        {
+          hasFade: { type: Boolean, required: true },
+          confidence: { type: Number, required: true },
+          kind: { type: String, required: true },
+          reason: { type: String },
+          source: { type: String }
+        },
+        { _id: false }
+      ),
+      required: false
     }
   },
   {

@@ -34,7 +34,7 @@ export const getRecentOrders = async (req: Request, res: Response, next: NextFun
       if (status) query.status = status;
     } else {
       // Customer: Only own orders
-      query.user = req.user.id;
+      query.user = req.user.id;                 
       if (status) query.status = status;
     }
 

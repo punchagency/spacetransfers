@@ -48,6 +48,8 @@ const TEXT_MODELS = env.geminiTextModel
 
 const IMAGE_TIMEOUT_MS = 120_000;
 const TEXT_TIMEOUT_MS = 20_000;
+/** Vision requests carry image bytes, so they need more room than a prompt. */
+const VISION_TIMEOUT_MS = 45_000;
 
 /**
  * Why a model is currently unusable.
@@ -374,6 +376,94 @@ const editWithModel = async (
         ? `The model declined this edit (${blockReason}).`
         : "The model returned no image."),
   );
+};
+
+/* ------------------------------------------------------------------ *
+ * Structured generation
+ * ------------------------------------------------------------------ */
+
+/** A content part: text, or an inline image for the vision models. */
+export type GeminiPartInput =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } };
+
+/**
+ * Runs a JSON-schema-constrained request against the text/vision models.
+ *
+ * Shared because the planner and the fade checker want exactly the same thing —
+ * a schema-validated object out of a flash model — and differ only in their
+ * prompt and parts. Notably the *vision* work rides here too: these models take
+ * images as input and bill them as input tokens, which is a different quota
+ * from the image-*generation* models, so image analysis stays on the free tier
+ * even while generative editing is unavailable.
+ *
+ * Walks the model list so a retired or capped model falls through to the next.
+ * Returns null rather than throwing: every caller treats structured generation
+ * as an enhancement with a deterministic fallback behind it.
+ */
+export const generateJsonWithGemini = async (options: {
+  system: string;
+  schema: unknown;
+  parts: GeminiPartInput[];
+  signal?: AbortSignal;
+  /** Defaults to the text budget; raise it when parts include images. */
+  timeoutMs?: number;
+}): Promise<any | null> => {
+  if (!geminiPlanningReady()) return null;
+
+  // Images take materially longer to upload and encode than a prompt, so a
+  // request carrying them gets a wider window by default — timing one out at
+  // the text budget would report a healthy model as unavailable.
+  const hasImages = options.parts.some((part) => "inlineData" in part);
+  const timeoutMs = options.timeoutMs ?? (hasImages ? VISION_TIMEOUT_MS : TEXT_TIMEOUT_MS);
+
+  for (const model of availableModels(TEXT_MODELS)) {
+    try {
+      const payload = await callGemini(
+        model,
+        {
+          systemInstruction: { parts: [{ text: options.system }] },
+          contents: [
+            {
+              role: "user",
+              parts: options.parts.map((part) =>
+                "text" in part
+                  ? { text: part.text }
+                  : {
+                      inline_data: {
+                        mime_type: part.inlineData.mimeType,
+                        data: part.inlineData.data,
+                      },
+                    },
+              ),
+            },
+          ],
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: options.schema,
+            // A classification task, not a creative one — the same image should
+            // get the same verdict every time it is checked.
+            temperature: 0,
+          },
+        },
+        timeoutMs,
+        options.signal,
+      );
+
+      const raw = partsOf(payload)
+        .map((p) => p.text)
+        .filter((t): t is string => typeof t === "string")
+        .join("");
+      if (!raw.trim()) continue;
+
+      return JSON.parse(raw);
+    } catch (error: any) {
+      if (error?.name === "AbortError" || options.signal?.aborted) throw error;
+      console.warn(`[GEMINI] ${model} JSON generation failed (${error?.message?.slice(0, 120)})`);
+    }
+  }
+
+  return null;
 };
 
 /* ------------------------------------------------------------------ *

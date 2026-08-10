@@ -15,4 +15,18 @@ const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFil
   }
 };
 
-export const upload = multer({ storage: multer.memoryStorage(), fileFilter });
+/**
+ * Per-file ceiling on direct uploads.
+ *
+ * `memoryStorage` buffers the whole file in the Node heap, and no limit was
+ * configured — so a single request could allocate as much as the client chose
+ * to send, and concurrent ones could exhaust the process. 64 MB comfortably
+ * covers a print-resolution PNG while bounding that exposure.
+ */
+const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+export const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter,
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+});
