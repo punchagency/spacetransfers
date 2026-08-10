@@ -5,6 +5,7 @@ import { Modal } from "../components/common/Modal";
 import { SearchInput } from "../components/common/SearchInput";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { JobCard } from "../components/orders/JobCard";
+import { ShippingLabelModal } from "../components/orders/ShippingLabelModal";
 import type { OrdersTab, OrdersTabLabel, Order } from "../types/orders";
 import { apiFetch, getApiBaseUrl } from "../utils/api";
 import toast from "react-hot-toast";
@@ -14,7 +15,7 @@ const Orders = () => {
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<OrdersTabLabel>(() => {
     const tab = searchParams.get("tab") as OrdersTabLabel | null;
-    const valid: OrdersTabLabel[] = ["All Jobs", "Pending", "In Progress", "Ready", "Completed", "Cancelled"];
+    const valid: OrdersTabLabel[] = ["All Jobs", "Pending", "In Progress - Printing", "Print Shipping Label", "Order Shipped", "Completed", "Cancelled"];
     return tab && valid.includes(tab) ? tab : "All Jobs";
   });
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
@@ -26,6 +27,7 @@ const Orders = () => {
   const [bulkExporting, setBulkExporting] = useState(false);
   const [bulkExportProgress, setBulkExportProgress] = useState<{ current: number; total: number } | null>(null);
   const [showBulkExportProgress, setShowBulkExportProgress] = useState(false);
+  const [labelModal, setLabelModal] = useState<{ jobId: string; displayId: string; triggerUpdate: boolean } | null>(null);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelLoading, setCancelLoading] = useState(false);
@@ -33,8 +35,9 @@ const Orders = () => {
   const [tabs, setTabs] = useState<OrdersTab[]>([
     { label: "All Jobs", count: 0 },
     { label: "Pending", count: 0 },
-    { label: "In Progress", count: 0 },
-    { label: "Ready", count: 0 },
+    { label: "In Progress - Printing", count: 0 },
+    { label: "Print Shipping Label", count: 0 },
+    { label: "Order Shipped", count: 0 },
     { label: "Completed", count: 0 },
     { label: "Cancelled", count: 0 },
   ]);
@@ -74,8 +77,9 @@ const Orders = () => {
     setTabs([
       { label: "All Jobs", count: Number(c.all || 0) },
       { label: "Pending", count: Number(c.pending || 0) },
-      { label: "In Progress", count: Number(c.inProgress || 0) },
-      { label: "Ready", count: Number(c.ready || 0) },
+      { label: "In Progress - Printing", count: Number(c.inProgress || 0) },
+      { label: "Print Shipping Label", count: Number(c.ready || 0) },
+      { label: "Order Shipped", count: Number(c.shipped || 0) },
       { label: "Completed", count: Number(c.completed || 0) },
       { label: "Cancelled", count: Number(c.cancelled || 0) },
     ]);
@@ -141,18 +145,18 @@ const Orders = () => {
   const handlePrimaryAction = async (id: string, current: Order["status"]) => {
     try {
       if (current === "Pending Review") {
-        await updateStatus(id, "In Progress");
-        toast.success("Job started");
+        await updateStatus(id, "In Progress - Printing");
+        navigate(`/orders/${encodeURIComponent(id)}`);
         return;
       }
-      if (current === "In Progress") {
-        await updateStatus(id, "Pending Review");
-        toast.success("Moved to pending review");
+      if (current === "In Progress - Printing") {
+        const found = jobs.find((j) => j.id === id);
+        setLabelModal({ jobId: id, displayId: found?.displayId || id, triggerUpdate: true });
         return;
       }
-      if (current === "Ready") {
-        await updateStatus(id, "SHIPPED");
-        toast.success("Marked as shipped");
+      if (current === "Print Shipping Label") {
+        const found = jobs.find((j) => j.id === id);
+        setLabelModal({ jobId: id, displayId: found?.displayId || id, triggerUpdate: false });
         return;
       }
     } catch (e: any) {
@@ -215,9 +219,23 @@ const Orders = () => {
           method: "POST",
           body: JSON.stringify({ format: "PNG", toDrive: false }),
         });
-        const exportId = String(r?.exportId || "");
+        const exportJobId = String(r?.exportJobId || "");
+        if (!exportJobId) throw new Error("Export failed");
+
+        let exportId = "";
+        while (true) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
+          if (statusRes.status === "done") {
+            exportId = String(statusRes.result?.exportId || "");
+            break;
+          } else if (statusRes.status === "failed") {
+            throw new Error(statusRes.error || "Export failed");
+          }
+        }
+
         if (exportId) {
-          await downloadExport(exportId, `gangsheet_${getDisplayIdFor(id)}_600dpi.png`);
+          await downloadExport(exportId, `gangsheet_${getDisplayIdFor(id)}_300dpi.png`);
         }
       }
       toast.success("Export started");
@@ -475,6 +493,20 @@ const Orders = () => {
             Load more
           </button>
         </div>
+      )}
+
+      {/* Shipping Label Modal */}
+      {labelModal && (
+        <ShippingLabelModal
+          jobId={labelModal.jobId}
+          displayId={labelModal.displayId}
+          triggerUpdate={labelModal.triggerUpdate}
+          onClose={() => setLabelModal(null)}
+          onShipped={() => {
+            setLabelModal(null);
+            void Promise.all([fetchOrders({ append: false }), refreshSummary()]);
+          }}
+        />
       )}
 
       {/* Cancel Confirmation Modal */}

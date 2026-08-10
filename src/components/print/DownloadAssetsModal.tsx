@@ -6,7 +6,7 @@ import { AssetStatsBar } from "./download-assets/AssetStatsBar";
 import { AssetList } from "./download-assets/AssetList";
 import { DownloadFormatSelector } from "./download-assets/DownloadFormatSelector";
 import { DownloadAssetsFooter } from "./download-assets/DownloadAssetsFooter";
-import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, saveBlobToDisk } from "../../utils/api";
+import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, saveBlobToDisk, triggerAuthedDownload } from "../../utils/api";
 import toast from "react-hot-toast";
 import { DriveSaveModal } from "../drive/DriveSaveModal";
 import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResumable } from "../../utils/drive";
@@ -230,6 +230,9 @@ export const DownloadAssetsModal = ({
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
+  // Fetches the bundle zip into memory. Used ONLY by the Google-Drive save path,
+  // which must have the bytes in hand to re-upload them. The direct save-to-disk
+  // path uses a native streaming download instead (see handleDownload).
   const downloadZipBlob = async () => {
     const include = Array.from(selectedAssets);
     const includeParam = include.length ? include.join(",") : "ALL";
@@ -283,10 +286,14 @@ export const DownloadAssetsModal = ({
         return;
       }
 
-      setTransfer({ phase: "download", loaded: 0, total: null });
-      const out = await downloadZipBlob();
-      saveBlobToDisk(out.blob, out.filename || `original_assets_${job.orderId}.zip`);
-      toast.success("Bundle downloaded");
+      // Native browser download — streams the zip straight to disk instead of
+      // buffering it in page memory, which corrupted large bundles.
+      const include = Array.from(selectedAssets);
+      const includeParam = include.length ? include.join(",") : "ALL";
+      triggerAuthedDownload(
+        `${getApiBaseUrl()}/printer/jobs/${encodeURIComponent(job.id)}/assets/bundle/download?include=${encodeURIComponent(includeParam)}`,
+      );
+      toast.success("Download started — check your browser downloads.");
       onClose();
     } catch (e: any) {
       toast.error(e?.message || "Download failed");

@@ -3,6 +3,7 @@ import { AiOutlineSearch } from "react-icons/ai";
 import { GoBell } from "react-icons/go";
 import { UserMenu } from "../common/UserMenu";
 import { PortalSearch } from "../common/PortalSearch";
+import { AvailabilityStatusBadge } from "../common/AvailabilityStatusBadge";
 import {
   useNotificationsStore,
   type PrinterNotificationCategory,
@@ -109,7 +110,8 @@ export const Topbar = () => {
           </kbd>
         </button>
 
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-3">
+        <AvailabilityStatusBadge />
         <div className="relative" ref={wrapperRef}>
           <button
             onClick={() => setOpen((v) => !v)}

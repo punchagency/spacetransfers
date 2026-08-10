@@ -2,9 +2,51 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>space-transfer-printer</title>
+
+    <title>Space Transfers — Printer</title>
+    <meta
+      name="description"
+      content="Print partner portal for Space Transfers. Claim jobs, download gang sheets, track fulfilment deadlines and ship orders."
+    />
+
+    <!-- A partner login portal has nothing to offer a search result, and
+         indexing it only exposes internal surface area. -->
+    <meta name="robots" content="noindex, nofollow" />
+
+    <!-- PNG rather than the source SVG: space.svg is a base64 PNG in an SVG
+         wrapper, so it costs ~70× the bytes of the 32px raster for no gain. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f172a" />
+
+    <!-- Kept despite `noindex`: these drive the preview when someone pastes this
+         link into Slack or a message to a print partner, which is the main way
+         the URL actually gets shared. `noindex` governs search engines, not
+         link-preview scrapers. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Space Transfers" />
+    <meta property="og:title" content="Space Transfers — Printer" />
+    <meta
+      property="og:description"
+      content="Print partner portal. Claim jobs, download gang sheets, track fulfilment deadlines and ship orders."
+    />
+    <meta property="og:image" content="%SITE%/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Space Transfers — an astronaut riding a rocket, beside the word Printer"
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Space Transfers — Printer" />
+    <meta
+      name="twitter:description"
+      content="Print partner portal. Claim jobs, download gang sheets, track fulfilment deadlines and ship orders."
+    />
+    <meta name="twitter:image" content="%SITE%/og-image.png" />
   </head>
   <body>
     <div id="root"></div>

@@ -24,7 +24,7 @@ export const ordersData: Order[] = [
     filmType: "Instant Hot Peel (Matte)",
     dueDate: "Due Tomorrow",
     location: "East Coast",
-    status: "In Progress",
+    status: "In Progress - Printing",
     statusDescription: "Currently being processed",
   },
   {
@@ -37,7 +37,7 @@ export const ordersData: Order[] = [
     filmType: "Instant Hot Peel (Matte)",
     dueDate: "Due Tomorrow",
     location: "Midwest",
-    status: "In Progress",
+    status: "In Progress - Printing",
     statusDescription: "Currently being processed",
   },
   {
@@ -50,7 +50,7 @@ export const ordersData: Order[] = [
     filmType: "Instant Hot Peel (Matte)",
     dueDate: "Dec 14",
     location: "South",
-    status: "Ready",
+    status: "Print Shipping Label",
     statusDescription: "Ready for packaging and shipment",
   },
   {
@@ -84,8 +84,8 @@ export const ordersData: Order[] = [
 export const tabs: OrdersTab[] = [
   { label: "All Jobs", count: 6 },
   { label: "Pending", count: 2 },
-  { label: "In Progress", count: 2 },
-  { label: "Ready", count: 1 },
+  { label: "In Progress - Printing", count: 2 },
+  { label: "Print Shipping Label", count: 1 },
   { label: "Completed", count: 1 },
   { label: "Cancelled", count: 0 },
 ];

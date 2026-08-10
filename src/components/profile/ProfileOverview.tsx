@@ -8,6 +8,7 @@ import {
 } from "react-icons/fi";
 import { PrinterProfile } from "../../types/profile";
 import { apiFetch } from "../../utils/api";
+import { formatDate } from "../../utils/datetime";
 import { toast } from "react-hot-toast";
 
 interface ProfileOverviewProps {
@@ -167,7 +168,7 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
                 <span className="text-lg">{badge.icon}</span>
                 <div>
                   <div className="text-sm font-bold">{badge.name}</div>
-                  <div className="text-[10px] opacity-75">Earned {new Date(badge.dateEarned).toLocaleDateString()}</div>
+                  <div className="text-[10px] opacity-75">Earned {formatDate(badge.dateEarned)}</div>
                 </div>
               </div>
             ))}

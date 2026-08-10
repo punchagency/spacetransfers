@@ -237,6 +237,11 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
         if (event === "notification.bulk_read" || event === "notification.email_failed") {
           refresh({ status: "unread" }).catch(() => {});
         }
+        // Capacity-driven availability change pushed by the server — re-broadcast
+        // as a window event so the AvailabilityStatusBadge updates without a refresh.
+        if (event === "availability.changed" && data) {
+          window.dispatchEvent(new CustomEvent("st:availability_changed", { detail: data }));
+        }
       },
     }).catch(() => {});
 

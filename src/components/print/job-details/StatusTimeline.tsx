@@ -1,4 +1,4 @@
-import { FiBox, FiCheck, FiDroplet, FiPrinter } from "react-icons/fi";
+import { FiBox, FiCheck, FiDroplet, FiMapPin, FiPrinter, FiTruck } from "react-icons/fi";
 import type { PrintJob } from "../../../types/printQueue";
 
 interface StatusTimelineProps {
@@ -7,7 +7,10 @@ interface StatusTimelineProps {
 }
 
 export const StatusTimeline = ({ job, timeline }: StatusTimelineProps) => {
-  const created = new Date(job.deadline);
+  // The first timeline entry ("Order Placed") is anchored to the order's created
+  // time. Prefer the explicit createdAt; fall back to deadline only for older
+  // callers that haven't been updated yet.
+  const created = new Date(job.createdAt || job.deadline);
   const createdAt = Number.isNaN(created.getTime()) ? null : created;
 
   const formatTime = (d: Date) =>
@@ -20,9 +23,10 @@ export const StatusTimeline = ({ job, timeline }: StatusTimelineProps) => {
 
     const label = String(job.status || "");
     if (label === "Pending Review") return "PENDING";
-    if (label === "In Progress") return "PROCESSING";
-    if (label === "Ready") return "QUALITY_CHECK";
-    if (label === "Completed") return "COMPLETED";
+    if (label === "In Progress" || label === "In Progress - Printing") return "PROCESSING";
+    if (label === "Print Shipping Label" || label === "Ready for Packaging" || label === "Ready") return "QUALITY_CHECK";
+    if (label === "Shipped") return "SHIPPED";
+    if (label === "Delivered" || label === "Completed") return "COMPLETED";
     if (label === "Cancelled") return "CANCELLED";
     return "PENDING";
   })();
@@ -31,7 +35,9 @@ export const StatusTimeline = ({ job, timeline }: StatusTimelineProps) => {
     { key: "CREATED", label: "Created", icon: FiCheck, match: new Set(["PENDING"]) },
     { key: "PRINTING", label: "Printing", icon: FiPrinter, match: new Set(["PROCESSING"]) },
     { key: "CURING", label: "Curing", icon: FiDroplet, match: new Set(["PRINTING"]) },
-    { key: "PACKED", label: "Packed", icon: FiBox, match: new Set(["QUALITY_CHECK", "SHIPPED", "COMPLETED"]) },
+    { key: "PACKED", label: "Label Printed", icon: FiBox, match: new Set(["QUALITY_CHECK"]) },
+    { key: "SHIPPED", label: "Shipped", icon: FiTruck, match: new Set(["SHIPPED"]) },
+    { key: "DELIVERED", label: "Delivered", icon: FiMapPin, match: new Set(["COMPLETED"]) },
   ] as const;
 
   const currentStepIndex = (() => {
@@ -57,7 +63,7 @@ export const StatusTimeline = ({ job, timeline }: StatusTimelineProps) => {
   const progressPct =
     steps.length <= 1 ? 0 : Math.round((currentStepIndex / (steps.length - 1)) * 100);
      
-  const isOverallComplete = new Set(["SHIPPED", "COMPLETED"]).has(currentBackendStatus);
+  const isOverallComplete = currentBackendStatus === "COMPLETED";
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">

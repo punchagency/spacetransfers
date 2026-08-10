@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { FaCheck } from "react-icons/fa";
+import { setAuth } from "../../utils/auth";
 import { HiOutlineLocationMarker } from "react-icons/hi";
 import {
   HiOutlineMail,
@@ -11,6 +12,7 @@ import {
 import { BsArrowRight } from "react-icons/bs";
 import type { AuthFormProps } from "../../types/auth";
 import { apiFetch, getApiBaseUrl } from "../../utils/api";
+import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload } from "../../utils/legal";
 import toast from "react-hot-toast";
 import { SpaceLoader } from "../common/SpaceLoader";
 
@@ -49,7 +51,7 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
+export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
   const [showPassword, setShowPassword]   = useState(false);
   const [email, setEmail]                 = useState("");
   const [password, setPassword]           = useState("");
@@ -63,6 +65,10 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
   const [postalCode, setPostalCode]       = useState("");
   const [country, setCountry]             = useState("United States");
   const [termsAccepted, setTermsAccepted] = useState(false);
+  // Second acknowledgement required by the server alongside the terms. Kept
+  // separate because they are distinct legal statements.
+  const [contentResponsibilityAccepted, setContentResponsibilityAccepted] =
+    useState(false);
   const [isLoading, setIsLoading]         = useState(false);
 
   // Region detection state
@@ -73,6 +79,12 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
   const geocodeAbortRef = useRef<AbortController | null>(null);
 
   const navigate = useNavigate();
+  const location = useLocation();
+  // Page the guard intercepted before sending us here, so login lands the user
+  // exactly where they were headed rather than always on the dashboard.
+  const redirectTo =
+    (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ||
+    "/dashboard";
 
   // Debounce address fields so we don't fire on every keystroke
   const debouncedState    = useDebounce(stateProv, 400);
@@ -158,11 +170,13 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
         if (response.user.role !== "PRINTER") {
           throw new Error("Access denied. Printer account required.");
         }
-        localStorage.setItem("printer_token", response.token);
-        localStorage.setItem("printer_user", JSON.stringify(response.user));
+        // setAuth persists the session AND notifies the route guard, so the
+        // protected area unlocks without any onLogin prop plumbing.
+        setAuth(response.token, response.user);
         toast.success("Welcome back!");
-        onLogin();
-        navigate("/dashboard");
+        // Return the user to the page they originally asked for (captured by
+        // ProtectedRoute), falling back to the dashboard on a direct login.
+        navigate(redirectTo, { replace: true });
       } else {
         if (!fullName || !companyName || !email || !password || !phone || !street || !city || !stateProv || !postalCode || !country) {
           toast.error("Please fill in all fields");
@@ -174,8 +188,10 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
           setIsLoading(false);
           return;
         }
-        if (!termsAccepted) {
-          toast.error("You must agree to the Terms of Service to continue");
+        if (!termsAccepted || !contentResponsibilityAccepted) {
+          toast.error(
+            "Please accept the Terms of Service, Privacy Policy, and content responsibility acknowledgement.",
+          );
           setIsLoading(false);
           return;
         }
@@ -192,6 +208,14 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
             website: website || undefined,
             address: { street, city, state: stateProv, postalCode, country },
             role: "PRINTER",
+            // Required by the server, which refuses to create any account
+            // without it. Omitting this block made printer signup fail with
+            // "You must accept the Terms of Service…" even when the box was
+            // ticked: the consent never left the browser.
+            legalAcceptance: buildLegalAcceptancePayload(
+              termsAccepted,
+              contentResponsibilityAccepted,
+            ),
           }),
         });
 
@@ -213,7 +237,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
           <div className="flex items-center">
             <span className="text-2xl font-bold text-slate-900 tracking-tight">spacetransfers</span>
             <div className="relative">
-              <img src="/space.svg" alt="space" className="w-[74px] h-[74px]" />
+              <img src="/space.svg" alt="space" className="w-[74px] h-[74px] -scale-x-100" />
             </div>
           </div>
         </div>
@@ -420,36 +444,58 @@ export const AuthForm = ({ isSignIn, setIsSignIn, onLogin }: AuthFormProps) => {
             </div>
           </div>
 
-          {/* Terms checkbox */}
+          {/* Legal acknowledgements. Both are required by the server. */}
           {!isSignIn && (
-            <div className="flex items-start gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setTermsAccepted((v) => !v)}
-                className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
-                  termsAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
-                }`}
-              >
-                {termsAccepted && <FaCheck className="text-white text-[9px]" />}
-              </button>
-              <label
-                onClick={() => setTermsAccepted((v) => !v)}
-                className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
-              >
-                I agree to the{" "}
-                <a href="#" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">Terms of Service</a>{" "}
-                and{" "}
-                <a href="#" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">Privacy Policy</a>
-              </label>
+            <div className="space-y-2.5 pt-1">
+              <div className="flex items-start gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTermsAccepted((v) => !v)}
+                  className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
+                    termsAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
+                  }`}
+                >
+                  {termsAccepted && <FaCheck className="text-white text-[9px]" />}
+                </button>
+                <label
+                  onClick={() => setTermsAccepted((v) => !v)}
+                  className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
+                >
+                  I have read and agree to the{" "}
+                  <a href={LEGAL_DOCUMENTS.terms.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.terms.title}</a>{" "}
+                  and{" "}
+                  <a href={LEGAL_DOCUMENTS.privacy.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.privacy.title}</a>
+                </label>
+              </div>
+
+              <div className="flex items-start gap-2">
+                <button
+                  type="button"
+                  onClick={() => setContentResponsibilityAccepted((v) => !v)}
+                  className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
+                    contentResponsibilityAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
+                  }`}
+                >
+                  {contentResponsibilityAccepted && <FaCheck className="text-white text-[9px]" />}
+                </button>
+                <label
+                  onClick={() => setContentResponsibilityAccepted((v) => !v)}
+                  className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
+                >
+                  I accept the{" "}
+                  <a href={LEGAL_DOCUMENTS.contentPolicy.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.contentPolicy.title}</a>{" "}
+                  and am solely responsible for the content uploaded through this account
+                </label>
+              </div>
             </div>
           )}
 
           {/* Submit */}
           <button
             type="submit"
-            disabled={isLoading || (!isSignIn && !termsAccepted)}
+            disabled={isLoading || (!isSignIn && !(termsAccepted && contentResponsibilityAccepted))}
             className={`w-full py-3 px-4 rounded-xl text-white font-semibold shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 transition-all transform active:scale-[0.98] ${
-              isLoading || (!isSignIn && !termsAccepted)
+              isLoading || (!isSignIn && !(termsAccepted && contentResponsibilityAccepted))
                 ? "bg-blue-400 cursor-not-allowed opacity-70"
                 : "bg-[#3B82F6] hover:bg-blue-600"
             }`}

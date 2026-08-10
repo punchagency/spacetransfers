@@ -2,7 +2,7 @@ export type PrintStatus =
   | "Pending"
   | "Processing"
   | "Printing"
-  | "Quality Check"
+  | "Print Shipping Label"
   | "Completed"
   | "Urgent";
 
@@ -15,7 +15,10 @@ export interface PrintJob {
   sheetSize: string;
   orderDescription: string;
   status: PrintStatus;
+  /** ISO fulfilment deadline (assignment time + 24h). */
   deadline: string;
+  /** ISO order-created timestamp. */
+  createdAt?: string;
   priority?: PrintPriority;
 }
 

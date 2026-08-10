@@ -22,10 +22,12 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
     switch (status) {
       case "Pending Review":
         return "bg-orange-50 text-orange-600 border border-orange-100";
-      case "In Progress":
+      case "In Progress - Printing":
         return "bg-blue-50 text-blue-600 border border-blue-100";
-      case "Ready":
+      case "Print Shipping Label":
         return "bg-purple-50 text-purple-600 border border-purple-100";
+      case "Order Shipped":
+        return "bg-green-50 text-green-600 border border-green-100";
       case "Completed":
         return "bg-green-50 text-green-600 border border-green-100";
       case "Cancelled":
@@ -44,33 +46,33 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
               e.stopPropagation();
               onPrimaryAction?.(job.id, job.status);
             }}
-            className="w-full sm:w-auto px-4 py-2 bg-[#3C83F6] text-white rounded-2xl text-sm font-medium hover:bg-[#2F74E6] transition-colors"
+            className="w-full sm:w-auto px-3.5 py-2 bg-[#3C83F6] text-white rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-[#2F74E6] transition-colors"
           >
             Accept & Start
           </button>
         );
-      case "In Progress":
+      case "In Progress - Printing":
         return (
           <button
             onClick={(e) => {
               e.stopPropagation();
               onPrimaryAction?.(job.id, job.status);
             }}
-            className="w-full sm:w-auto px-4 py-2 bg-[#BB4D00] text-white rounded-2xl text-sm font-medium hover:bg-[#A74400] transition-colors"
+            className="w-full sm:w-auto px-3.5 py-2 bg-purple-600 text-white rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-purple-700 transition-colors"
           >
-            Pending Review
+            Print Shipping Label
           </button>
         );
-      case "Ready":
+      case "Print Shipping Label":
         return (
           <button
             onClick={(e) => {
               e.stopPropagation();
               onPrimaryAction?.(job.id, job.status);
             }}
-            className="w-full sm:w-auto px-4 py-2 bg-blue-600 text-white rounded-2xl text-sm font-medium hover:bg-blue-700 transition-colors"
+            className="w-full sm:w-auto px-3.5 py-2 bg-purple-600 text-white rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-purple-700 transition-colors"
           >
-            Start Packaging
+            View Label
           </button>
         );
       case "Completed":
@@ -80,7 +82,7 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
               e.stopPropagation();
               onPrimaryAction?.(job.id, job.status);
             }}
-            className="w-full sm:w-auto px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="w-full sm:w-auto px-3.5 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-gray-50 transition-colors"
           >
             View Details
           </button>
@@ -92,7 +94,7 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
               e.stopPropagation();
               onSecondaryAction?.(job.id);
             }}
-            className="w-full sm:w-auto px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="w-full sm:w-auto px-3.5 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-gray-50 transition-colors"
           >
             View Details
           </button>
@@ -110,9 +112,15 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
       onClick={() => onSecondaryAction?.(job.id)}
       className={`bg-white rounded-xl p-4 sm:p-6 border transition-all cursor-pointer ${selected ? "border-blue-500 ring-1 ring-blue-500" : "border-gray-200 hover:border-gray-300"}`}
     >
-      <div className="flex flex-col lg:flex-row gap-6 items-start lg:items-center">
+      {/*
+        Switches to a single row at `xl` rather than `lg`: the row's content
+        (identity + specs + status badge + action buttons) needs more room
+        than the 1024–1279px range typically has, which was overflowing the
+        card. Below `xl` it stays in the already-correct stacked layout.
+      */}
+      <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 items-start xl:items-center">
         {/* Checkbox & Thumbnail */}
-        <div className="flex items-start gap-4 min-w-[280px]">
+        <div className="flex items-start gap-4 min-w-[260px] flex-shrink-0">
           <div className="pt-8">
             <input
               type="checkbox"
@@ -152,79 +160,82 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
         </div>
 
         {/* Specs */}
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
+        <div className="flex-1 min-w-[280px] grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 xl:gap-6 w-full">
           <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide">
+            <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide whitespace-nowrap">
               <FiLayers /> Sheet size
             </div>
-            <div className="font-medium text-gray-900">{job.sheetSize}</div>
+            <div className="font-medium text-gray-900 whitespace-nowrap">{job.sheetSize}</div>
           </div>
 
           <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide">
+            <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide whitespace-nowrap">
               <FiPrinter /> Film Type
             </div>
-            <div className="font-medium text-gray-900 max-w-[140px] leading-tight">
+            <div className="font-medium text-gray-900 leading-tight whitespace-nowrap">
               {job.filmType}
             </div>
           </div>
 
           <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide">
+            <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide whitespace-nowrap">
               <FiCalendar /> Due Date
             </div>
             <div
-              className={`font-medium ${isDueSoon ? "text-orange-600" : "text-gray-900"}`}
+              className={`font-medium whitespace-nowrap ${isDueSoon ? "text-orange-600" : "text-gray-900"}`}
             >
               {job.dueDate}
             </div>
-            <div className="flex items-center gap-1 text-xs text-gray-500">
-              <FiMapPin className="w-3 h-3" />
+            <div className="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap">
+              <FiMapPin className="w-3 h-3 flex-shrink-0" />
               {job.location}
             </div>
           </div>
         </div>
 
         {/* Status & Actions */}
-        <div className="flex items-start justify-end gap-6 min-w-[280px]">
-          {/* Status Column */}
-          <div className="flex flex-col items-center gap-2">
-            <span
-              className={`px-4 py-2 rounded-2xl text-sm font-medium whitespace-nowrap ${getStatusBadgeStyles(job.status)}`}
-            >
-              {job.status}
-            </span>
-            <span className="text-xs text-gray-500 text-center max-w-[150px] leading-tight">
-              {job.statusDescription}
-            </span>
+        {/*
+          Stacked into one column rather than status/action side-by-side:
+          the badge and buttons together are wide enough that a side-by-side
+          pair pushed the row's minimum width past what fits on a typical
+          desktop viewport, forcing horizontal overflow. Stacking keeps every
+          element full-size and readable while roughly halving this zone's
+          footprint.
+        */}
+        <div className="flex flex-col items-end gap-2 min-w-[220px] flex-shrink-0">
+          <span
+            className={`px-3 py-1.5 rounded-2xl text-sm font-medium whitespace-nowrap ${getStatusBadgeStyles(job.status)}`}
+          >
+            {job.status}
+          </span>
+          <span className="text-xs text-gray-500 text-right max-w-[220px] leading-tight">
+            {job.statusDescription}
+          </span>
+
+          <div className="flex items-center gap-2 flex-wrap justify-end mt-1">
+            {renderActionButton(job.status)}
+            {!["Print Shipping Label", "Order Shipped", "Completed", "Cancelled"].includes(job.status) && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancel?.(job.id);
+                }}
+                className="w-full sm:w-auto px-3.5 py-2 bg-red-600 text-white rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-red-700 active:bg-red-800 transition-colors"
+              >
+                Cancel Job
+              </button>
+            )}
           </div>
 
-          {/* Action Column */}
-          <div className="flex flex-col items-center gap-2">
-            <div className="flex items-center gap-2 flex-wrap justify-center">
-              {renderActionButton(job.status)}
-              {!["Completed", "Cancelled"].includes(job.status) && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onCancel?.(job.id);
-                  }}
-                  className="w-full sm:w-auto px-4 py-2 bg-red-600 text-white rounded-2xl text-sm font-medium hover:bg-red-700 active:bg-red-800 transition-colors"
-                >
-                  Cancel Job
-                </button>
-              )}
-            </div>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onSecondaryAction?.(job.id);
-              }}
-              className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 font-medium"
-            >
-              Details <FiExternalLink className="w-3 h-3" />
-            </button>
-          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSecondaryAction?.(job.id);
+            }}
+            className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 font-medium"
+          >
+            Details <FiExternalLink className="w-3 h-3" />
+          </button>
         </div>
       </div>
     </div>

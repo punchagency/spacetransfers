@@ -8,6 +8,7 @@ import { AlertBanner } from "../components/common/AlertBanner";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { GenericTable } from "../components/common/GenericTable";
 import { StatusBadge } from "../components/common/StatusBadge";
+import { DeadlineCountdown } from "../components/common/DeadlineCountdown";
 import type { DashboardJob } from "../types/dashboard";
 import { apiFetch } from "../utils/api";
 
@@ -105,7 +106,10 @@ const Dashboard = () => {
     },
     { header: "Customer Name", key: "customerName" as const, className: "text-gray-600" },
     { header: "Order",         key: "order"        as const, className: "text-gray-600" },
-    { header: "Deadline",      key: "deadline"     as const, className: "text-gray-600" },
+    {
+      header: "Deadline",
+      render: (job: DashboardJob) => <DeadlineCountdown iso={job.deadline} />,
+    },
     {
       header: "Status",
       render: (job: DashboardJob) => <StatusBadge status={job.isUrgent ? "Urgent" : job.status} />,
@@ -193,7 +197,7 @@ const Dashboard = () => {
             data={assignedJobs}
             columns={columns}
             itemsPerPage={10}
-            onRowClick={(row) => navigate(`/print-queue?jobId=${encodeURIComponent(row.id)}`)}
+            onRowClick={(row) => navigate(`/orders/${encodeURIComponent(row.id)}`)}
           />
         </>
       )}

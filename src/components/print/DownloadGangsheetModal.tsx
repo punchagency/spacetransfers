@@ -8,7 +8,7 @@ import type {
 } from "../../types/printQueue";
 import { GangsheetPreview } from "./download-gangsheet/GangsheetPreview";
 import { ExportSettings } from "./download-gangsheet/ExportSettings";
-import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, saveBlobToDisk } from "../../utils/api";
+import { apiFetch, getApiBaseUrl, triggerAuthedDownload } from "../../utils/api";
 import { SpaceLoader } from "../common/SpaceLoader";
 
 interface DownloadGangsheetModalProps {
@@ -86,23 +86,13 @@ export const DownloadGangsheetModal = ({
     };
   }, [isOpen, job.id]);
 
-  const downloadExport = async (exportId: string) => {
-    const token = localStorage.getItem("printer_token");
-    // Stream the export with progress so the printer sees byte-level progress instead of a frozen UI.
-    const out = await fetchBlobWithProgress(
+  const downloadExport = (exportId: string) => {
+    // Native browser download — streams straight to disk. Essential for large
+    // split-gangsheet zips (hundreds of MB); the old in-memory Blob approach
+    // truncated them and macOS reported "Unable to expand … Error 640".
+    triggerAuthedDownload(
       `${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`,
-      {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        onProgress: ({ loaded, total }) => {
-          if (total) {
-            setProgressLabel(`Downloading… ${Math.round((loaded / total) * 100)}%`);
-          } else {
-            setProgressLabel(`Downloading… ${(loaded / (1024 * 1024)).toFixed(1)} MB`);
-          }
-        },
-      },
     );
-    saveBlobToDisk(out.blob, out.filename || `gangsheet_${job.orderId}.png`);
   };
 
   const handleExport = async (toDrive: boolean) => {
@@ -138,8 +128,9 @@ export const DownloadGangsheetModal = ({
       const link = driveResult?.webViewLink ? String(driveResult.webViewLink) : null;
       setDriveLink(link);
       if (exportId) {
-        setProgressLabel("Downloading…");
-        await downloadExport(exportId);
+        setProgressLabel("Starting download…");
+        downloadExport(exportId);
+        toast.success("Download started — check your browser downloads.");
       }
     } catch (e: any) {
       toast.error(e?.message || "Export failed");

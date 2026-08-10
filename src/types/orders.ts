@@ -1,7 +1,8 @@
 export type OrderStatus =
   | "Pending Review"
-  | "In Progress"
-  | "Ready"
+  | "In Progress - Printing"
+  | "Print Shipping Label"
+  | "Order Shipped"
   | "Completed"
   | "Cancelled";
 
@@ -24,8 +25,9 @@ export interface Order {
 export type OrdersTabLabel =
   | "All Jobs"
   | "Pending"
-  | "In Progress"
-  | "Ready"
+  | "In Progress - Printing"
+  | "Print Shipping Label"
+  | "Order Shipped"
   | "Completed"
   | "Cancelled";
 

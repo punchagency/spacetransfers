@@ -4,17 +4,12 @@ import {
   AiOutlineUser,
   AiOutlineSetting,
 } from "react-icons/ai";
-import { LuPrinter } from "react-icons/lu";
 import { FiHome, FiUser } from "react-icons/fi";
 import { useProfileStore } from "../../state/ProfileStore";
 const nav = [
   { label: "Home", icon: FiHome, path: "/dashboard" },
   { label: "Jobs & Orders", iconSrc: "/menu.svg", path: "/orders" },
-  {
-    label: "Print Queue",
-    icon: LuPrinter,
-    path: "/print-queue",
-  },
+  // { label: "Print Queue", icon: LuPrinter, path: "/print-queue" },
   { label: "Earnings & Payouts", icon: AiOutlineDollar, path: "/earnings" },
 ];
 
@@ -32,7 +27,7 @@ export const Sidebar = () => {
     <aside className="w-65 bg-white border-r border-gray-200 h-full flex flex-col py-2">
       <div className="flex items-center justify-center gap-2 border-b border-gray-200 mb-6">
         <span className="font-semibold text-lg">spacetransfers</span>
-        <img src="/space.svg" alt="logo" className="w-15 h-15" />
+        <img src="/space.svg" alt="logo" className="w-15 h-15 -scale-x-100" />
       </div>
 
       <nav className="space-y-2 border-b mb-6 border-gray-200 px-3">

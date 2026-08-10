@@ -1,7 +1,8 @@
+import { clearAuth, getToken } from "./auth";
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
 export async function apiFetch(endpoint: string, options: RequestInit = {}) {
-  const token = localStorage.getItem("printer_token");
+  const token = getToken();
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
 
@@ -32,14 +33,12 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
   }
 
   if (!response.ok) {
+    // The server is the real authority on the session. A 401 means the token is
+    // gone/expired/revoked, so drop it — clearAuth notifies the route guard,
+    // which redirects to /auth on its own. No window.location reload needed
+    // (that threw away in-flight React state and flashed the whole app).
     if (response.status === 401) {
-      try {
-        localStorage.removeItem("printer_token");
-        localStorage.removeItem("printer_user");
-      } catch {}
-      if (window.location.pathname !== "/auth") {
-        window.location.href = "/auth";
-      }
+      clearAuth();
       throw new Error("Invalid or expired token");
     }
     throw new Error(data?.message || "Something went wrong");
@@ -118,4 +117,26 @@ export const saveBlobToDisk = (blob: Blob, fileName: string) => {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+};
+
+/**
+ * Trigger a native browser download for an authenticated endpoint. The response
+ * streams straight to disk via the browser's own download manager, so large
+ * files (multi-hundred-MB split-gangsheet zips, asset bundles) download reliably
+ * instead of being buffered into page memory and rebuilt as a Blob — which
+ * truncated big files and produced corrupt, un-expandable zips.
+ *
+ * The token rides in the query string because a native download cannot set an
+ * Authorization header; the server names the file via Content-Disposition.
+ */
+export const triggerAuthedDownload = (url: string) => {
+  const token = getToken();
+  const sep = url.includes("?") ? "&" : "?";
+  const fullUrl = token ? `${url}${sep}token=${encodeURIComponent(token)}` : url;
+  const a = document.createElement("a");
+  a.href = fullUrl;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 };

@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
@@ -12,63 +11,53 @@ import Settings from "./pages/Settings";
 import { DashboardLayout } from "./components/layout/DashboardLayout";
 import { NotificationsStoreProvider } from "./state/NotificationsStore";
 import { ProfileStoreProvider } from "./state/ProfileStore";
+import { ProtectedRoute, PublicOnlyRoute } from "./components/auth/ProtectedRoute";
 import { Toaster } from "react-hot-toast";
 import "./App.css";
 
+/**
+ * Providers + chrome for the signed-in area. Mounted inside ProtectedRoute so
+ * they only ever run with a valid session.
+ */
+function AuthenticatedShell() {
+  return (
+    <ProfileStoreProvider>
+      <NotificationsStoreProvider>
+        <DashboardLayout />
+      </NotificationsStoreProvider>
+    </ProfileStoreProvider>
+  );
+}
+
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem("printer_token"));
-
-  const handleLogin = () => {
-    setIsAuthenticated(true);
-  };
-
   return (
     <BrowserRouter>
       <Toaster position="top-right" />
       <Routes>
-        {/* Public email verification route — no auth required */}
+        {/* Public email verification — reachable without a session. */}
         <Route path="/verify-email" element={<VerifyEmailPage />} />
 
-        <Route
-          path="/auth"
-          element={
-            isAuthenticated ? (
-              <Navigate to="/dashboard" replace />
-            ) : (
-              <AuthPage onLogin={handleLogin} />
-            )
-          }
-        />
-
-        <Route
-          element={
-            isAuthenticated ? (
-              <ProfileStoreProvider>
-                <NotificationsStoreProvider>
-                  <DashboardLayout />
-                </NotificationsStoreProvider>
-              </ProfileStoreProvider>
-            ) : (
-              <Navigate to="/auth" replace />
-            )
-          }
-        >
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/orders" element={<Orders />} />
-          <Route path="/orders/:jobId" element={<OrderDetails />} />
-          <Route path="/print-queue" element={<PrintQueue />} />
-          <Route path="/earnings" element={<Earnings />} />
-          <Route path="/profile" element={<Profile />} />
-          <Route path="/settings" element={<Settings />} />
+        {/* Public — a signed-in printer is bounced to the dashboard. */}
+        <Route element={<PublicOnlyRoute />}>
+          <Route path="/auth" element={<AuthPage />} />
         </Route>
 
-        {/* Catch all - redirect based on auth status */}
-        <Route
-          path="*"
-          element={
-            <Navigate to={isAuthenticated ? "/dashboard" : "/auth"} replace />
-          }
-        />
+        {/* Everything below requires a valid, unexpired PRINTER session. */}
+        <Route element={<ProtectedRoute />}>
+          <Route element={<AuthenticatedShell />}>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/orders" element={<Orders />} />
+            <Route path="/orders/:jobId" element={<OrderDetails />} />
+            <Route path="/print-queue" element={<PrintQueue />} />
+            <Route path="/earnings" element={<Earnings />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/settings" element={<Settings />} />
+          </Route>
+        </Route>
+
+        {/* Unknown path: aim at the dashboard; the guard redirects on to /auth
+            when there's no session, so a stray URL can't log a user out. */}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>
   );

@@ -11,6 +11,7 @@ import { QuickActions } from "./job-details/QuickActions";
 import { CustomerInformation } from "./job-details/CustomerInformation";
 import { OrderDetails } from "./job-details/OrderDetails";
 import { apiFetch } from "../../utils/api";
+import { formatDateTime } from "../../utils/datetime";
 import toast from "react-hot-toast";
 import { SpaceLoader } from "../common/SpaceLoader";
 
@@ -183,8 +184,8 @@ export const JobDetailsModal = ({
             />
             <OrderDetails
               orderId={job.orderId}
-              createdAt={overview?.createdAt ? new Date(overview.createdAt).toLocaleString() : "N/A"}
-              dueDate={overview?.createdAt ? new Date(overview.createdAt).toLocaleDateString() : "N/A"}
+              createdAt={formatDateTime(overview?.createdAt)}
+              dueDate={formatDateTime(overview?.deadline)}
               itemsCount={typeof overview?.specs?.itemsCount === "number" ? overview.specs.itemsCount : 0}
             />
           </div>

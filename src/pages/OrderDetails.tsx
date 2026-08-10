@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
-import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, saveBlobToDisk } from "../utils/api";
+import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, triggerAuthedDownload } from "../utils/api";
+import { formatDateTime } from "../utils/datetime";
 import { CustomerInformation } from "../components/print/job-details/CustomerInformation";
 import { OrderDetails } from "../components/print/job-details/OrderDetails";
 import { PrintSpecifications } from "../components/print/job-details/PrintSpecifications";
@@ -20,6 +21,9 @@ type Overview = {
   status: string;
   priority: string;
   createdAt: string;
+  assignedAt?: string | null;
+  /** ISO fulfilment deadline (assignment + 24h). */
+  deadline?: string | null;
   customer: { name: string; email: string | null; phone: string | null; region: string | null };
   shippingAddress: any | null;
   specs: { sheetSize: string; filmType: string; itemsCount: number };
@@ -29,6 +33,11 @@ type Overview = {
   pricing?: { subtotal: number | null; partnerCost?: number | null; rushFee: number; shippingCost: number | null; tax: number | null; total: number; currency: string };
   earnings?: { gross: number; net: number; currency: string; commission?: number };
   payment?: { method: string | null; status: string };
+  trackingNumber?: string | null;
+  carrier?: string | null;
+  trackingUrl?: string | null;
+  shipStationTriggeredAt?: string | null;
+  shipStationLabelUrl?: string | null;
 };
 
 const formatMoney = (amount: number | null | undefined, currency: string) => {
@@ -41,27 +50,32 @@ const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 10
 const statusLabelFromBackend = (s: string) => {
   const v = String(s || "").toUpperCase();
   if (v === "PENDING") return "Pending Review";
-  if (v === "PROCESSING" || v === "PRINTING") return "In Progress";
-  if (v === "QUALITY_CHECK") return "Ready";
-  if (v === "SHIPPED" || v === "COMPLETED") return "Completed";
+  if (v === "PROCESSING" || v === "PRINTING") return "In Progress - Printing";
+  if (v === "QUALITY_CHECK") return "Print Shipping Label";
+  if (v === "SHIPPED") return "Order Shipped";
+  if (v === "COMPLETED") return "Delivered";
   if (v === "CANCELLED") return "Cancelled";
   return "Pending Review";
 };
 
 const statusForRadio = (label: string) => {
   if (label === "Pending Review") return "Pending Review";
-  if (label === "In Progress") return "In Progress";
-  if (label === "Ready") return "Ready";
-  if (label === "Completed") return "Completed";
+  if (label === "In Progress - Printing") return "In Progress - Printing";
+  if (label === "Print Shipping Label") return "Print Shipping Label";
   return "Pending Review";
 };
 
 const radioOptions = [
-  { key: "Pending Review", label: "Pending Review" },
-  { key: "In Progress", label: "In Progress - Printing" },
-  { key: "Ready", label: "Ready for Packaging" },
-  { key: "Completed", label: "Completed" },
+  { key: "Pending Review",       label: "Pending Review",       rank: 0 },
+  { key: "In Progress - Printing", label: "In Progress - Printing", rank: 1 },
+  { key: "Print Shipping Label", label: "Print Shipping Label", rank: 2 },
 ] as const;
+
+// Maps the raw backend status to the rank of the highest radio option already reached.
+// Any radio option at a lower rank than this is locked — status can only move forward.
+const BACKEND_STATUS_RANK: Record<string, number> = {
+  PENDING: 0, PROCESSING: 1, PRINTING: 1, QUALITY_CHECK: 2, SHIPPED: 3, COMPLETED: 4,
+};
 
 const getAuthHeader = (): Record<string, string> => {
   const token = localStorage.getItem("printer_token");
@@ -81,8 +95,7 @@ export default function OrderDetailsPage() {
   });
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
-  const [downloadingGangsheet, setDownloadingGangsheet] = useState(false);
-  const [gangsheetDownloadProgress, setGangsheetDownloadProgress] = useState<{ loaded: number; total: number | null } | null>(null);
+  const [pngExportProgress, setPngExportProgress] = useState<{ phase: string; pct: number } | null>(null);
   const [driveModalOpen, setDriveModalOpen] = useState(false);
   const [savingToDrive, setSavingToDrive] = useState(false);
   const [driveProgress, setDriveProgress] = useState<{ phase: "download" | "upload"; loaded: number; total: number } | null>(null);
@@ -97,10 +110,16 @@ export default function OrderDetailsPage() {
     return statusForRadio(statusLabelFromBackend(overview.status));
   }, [overview]);
 
+  // Rank of the current backend status — radio options below this rank are locked.
+  const currentStatusRank = useMemo(() => {
+    if (!overview) return 0;
+    return BACKEND_STATUS_RANK[overview.status.toUpperCase()] ?? 0;
+  }, [overview]);
+
   useEffect(() => {
     if (!jobId) return;
     setLoading(true);
-    const previewFetch = apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`)
+    const previewFetch = apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`)
       .catch(() => null);
     Promise.all([
       apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
@@ -121,6 +140,22 @@ export default function OrderDetailsPage() {
       .finally(() => setLoading(false));
   }, [jobId, navigate]);
 
+  // Poll every 3 s while ShipStation is generating the label (QUALITY_CHECK, no labelUrl yet).
+  useEffect(() => {
+    if (!jobId) return;
+    if (overview?.status !== "QUALITY_CHECK" || overview?.shipStationLabelUrl) return;
+    const id = setInterval(async () => {
+      try {
+        const refreshed = await apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`);
+        if (refreshed) setOverview(refreshed);
+        if (refreshed?.shipStationLabelUrl || refreshed?.status !== "QUALITY_CHECK") {
+          clearInterval(id);
+        }
+      } catch { /* ignore — will retry */ }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [jobId, overview?.status, overview?.shipStationLabelUrl]);
+
   useEffect(() => {
     if (!jobId) return;
     let alive = true;
@@ -128,7 +163,7 @@ export default function OrderDetailsPage() {
       try {
         const [ov, prev] = await Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`).catch(() => null),
+          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`).catch(() => null),
         ]);
         if (!alive) return;
         setOverview(ov || null);
@@ -163,7 +198,7 @@ export default function OrderDetailsPage() {
         pendingRefresh = null;
         Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=150`).catch(() => null),
+          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`).catch(() => null),
         ])
           .then(([ov, prev]) => {
             setOverview(ov || null);
@@ -215,7 +250,7 @@ export default function OrderDetailsPage() {
   const paymentSummary = useMemo(() => {
     const pricing = overview?.pricing;
     return {
-      base: roundMoney(Number(pricing?.partnerCost ?? pricing?.subtotal ?? 0)),
+      base: roundMoney(Number(pricing?.partnerCost ?? 0)),
     };
   }, [overview]);
 
@@ -237,29 +272,45 @@ export default function OrderDetailsPage() {
     }
   };
 
-  const downloadGangsheet = async () => {
+  const exportPng = async () => {
     if (!overview) return;
-    setDownloadingGangsheet(true);
-    setGangsheetDownloadProgress({ loaded: 0, total: null });
+    setPngExportProgress({ phase: "Preparing...", pct: 0 });
     try {
-      const r = await apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/gangsheet/export`, {
+      const startRes = await apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/gangsheet/png-export`, {
         method: "POST",
-        body: JSON.stringify({ format: "PNG", toDrive: false }),
       });
-      const exportId = String(r?.exportId || "");
-      if (!exportId) throw new Error("Export failed");
-      const url = `${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`;
-      const out = await fetchBlobWithProgress(url, {
-        headers: getAuthHeader(),
-        onProgress: (p) => setGangsheetDownloadProgress(p),
-      });
-      saveBlobToDisk(out.blob, out.filename || `gangsheet_${overview.orderId}_600dpi.png`);
-      toast.success("Gangsheet downloaded");
+      const exportJobId = String(startRes?.exportJobId || "");
+      if (!exportJobId) throw new Error("Export failed to start");
+
+      let exportId = "";
+      while (true) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
+        setPngExportProgress({
+          phase: String(statusRes?.message || "Processing..."),
+          pct: typeof statusRes?.progress === "number" ? statusRes.progress : 50,
+        });
+        if (statusRes?.status === "done") {
+          exportId = String(statusRes.result?.exportId || "");
+          break;
+        } else if (statusRes?.status === "failed") {
+          throw new Error(statusRes.error || "Export failed");
+        }
+      }
+
+      if (!exportId) throw new Error("Export ID missing");
+      setPngExportProgress({ phase: "Starting download...", pct: 100 });
+
+      // Native browser download — streams straight to disk. Required for large
+      // split-gangsheet zips that the previous in-memory Blob download corrupted.
+      triggerAuthedDownload(`${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`);
+
+      toast.success("Download started — check your browser downloads.");
+      await new Promise<void>((resolve) => setTimeout(resolve, 1200));
     } catch (e: any) {
-      toast.error(e?.message || "Download failed");
+      toast.error(e?.message || "PNG export failed");
     } finally {
-      setDownloadingGangsheet(false);
-      setGangsheetDownloadProgress(null);
+      setPngExportProgress(null);
     }
   };
 
@@ -273,9 +324,22 @@ export default function OrderDetailsPage() {
         method: "POST",
         body: JSON.stringify({ format: "PNG", toDrive: false }),
       });
-      const exportId = String(r?.exportId || "");
-      if (!exportId) throw new Error("Export failed");
+      const exportJobId = String(r?.exportJobId || "");
+      if (!exportJobId) throw new Error("Export failed");
 
+      let exportId = "";
+      while (true) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
+        if (statusRes.status === "done") {
+          exportId = String(statusRes.result?.exportId || "");
+          break;
+        } else if (statusRes.status === "failed") {
+          throw new Error(statusRes.error || "Export failed");
+        }
+      }
+
+      if (!exportId) throw new Error("Export failed");
       const url = `${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`;
       const downloaded = await fetchBlobWithProgress(url, {
         headers: getAuthHeader(),
@@ -359,21 +423,28 @@ export default function OrderDetailsPage() {
 
                 <div className="mt-4 flex flex-col sm:flex-row gap-3">
                   <button
-                    disabled={downloadingGangsheet || savingToDrive}
-                    onClick={() => void downloadGangsheet()}
-                    className="flex-1 px-4 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-60"
+                    disabled={savingToDrive || pngExportProgress !== null}
+                    onClick={() => void exportPng()}
+                    className="flex-1 px-4 py-2.5 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-60 min-h-[42px]"
                   >
-                    {downloadingGangsheet ? (
-                      <span className="inline-flex items-center gap-2">
-                        <SpaceLoader size={18} layout="inline" />
-                        Downloading…
+                    {pngExportProgress !== null ? (
+                      <span className="flex flex-col items-center gap-1 w-full">
+                        <span className="text-xs font-medium">
+                          {pngExportProgress.phase} {pngExportProgress.pct}%
+                        </span>
+                        <span className="w-full h-1.5 bg-indigo-800/40 rounded-full overflow-hidden">
+                          <span
+                            className="h-full bg-white rounded-full transition-all duration-300 block"
+                            style={{ width: `${pngExportProgress.pct}%` }}
+                          />
+                        </span>
                       </span>
                     ) : (
-                      "Download Gangsheet"
+                      "Export PNG"
                     )}
                   </button>
                   <button
-                    disabled={downloadingGangsheet || savingToDrive}
+                    disabled={savingToDrive || pngExportProgress !== null}
                     onClick={() => setDriveModalOpen(true)}
                     className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-60"
                   >
@@ -394,18 +465,10 @@ export default function OrderDetailsPage() {
                   </button>
                 </div>
 
-                {(gangsheetDownloadProgress || driveProgress) && (
+                {driveProgress && (
                   <div className="mt-3 text-xs text-gray-500">
-                    {driveProgress ? (
-                      <>
-                        {driveProgress.phase === "download" ? "Downloading" : "Uploading"}{" "}
-                        {Math.round((driveProgress.loaded / Math.max(1, driveProgress.total)) * 100)}%
-                      </>
-                    ) : gangsheetDownloadProgress?.total ? (
-                      <>Downloading {Math.round((gangsheetDownloadProgress.loaded / Math.max(1, gangsheetDownloadProgress.total)) * 100)}%</>
-                    ) : (
-                      <>Downloading…</>
-                    )}
+                    {driveProgress.phase === "download" ? "Downloading" : "Uploading"}{" "}
+                    {Math.round((driveProgress.loaded / Math.max(1, driveProgress.total)) * 100)}%
                   </div>
                 )}
               </div>
@@ -421,7 +484,8 @@ export default function OrderDetailsPage() {
                     sheetSize: overview.specs.sheetSize,
                     orderDescription: `${overview.specs.itemsCount} Items`,
                     status: statusLabelFromBackend(overview.status) as any,
-                    deadline: overview.createdAt,
+                    deadline: overview.deadline || "",
+                    createdAt: overview.createdAt,
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
                   }}
                   timeline={overview.timeline || []}
@@ -434,7 +498,8 @@ export default function OrderDetailsPage() {
                     sheetSize: overview.specs.sheetSize,
                     orderDescription: `${overview.specs.itemsCount} Items`,
                     status: statusLabelFromBackend(overview.status) as any,
-                    deadline: overview.createdAt,
+                    deadline: overview.deadline || "",
+                    createdAt: overview.createdAt,
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
                   }}
                   itemsCount={overview.specs.itemsCount}
@@ -447,21 +512,158 @@ export default function OrderDetailsPage() {
 
           <div className="space-y-6">
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Update Status</div>
+              <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
+                {overview?.status === "SHIPPED" ? "Order Shipped" :
+                 overview?.status === "COMPLETED" ? "Order Delivered" :
+                 "Update Status"}
+              </div>
               <div className="p-4 space-y-2">
-                {radioOptions.map((o) => (
-                  <label key={o.key} className={`flex items-center gap-3 p-3 rounded-xl border ${selectedStatus === o.key ? "border-blue-300 bg-blue-50" : "border-gray-200 bg-white"}`}>
-                    <input
-                      type="radio"
-                      name="status"
-                      checked={selectedStatus === o.key}
+                {overview?.status === "COMPLETED" ? (
+                  <div className="flex flex-col items-center gap-3 py-4 text-center">
+                    <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
+                    <div className="text-sm font-bold text-green-700">Delivered</div>
+                    <div className="text-xs text-gray-500">This order has been delivered to the customer.</div>
+                    {overview.trackingNumber && (
+                      <div className="text-xs font-mono bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200 text-gray-700">
+                        {overview.carrier ? `${overview.carrier.toUpperCase()} · ` : ""}{overview.trackingNumber}
+                      </div>
+                    )}
+                  </div>
+                ) : overview?.status === "SHIPPED" ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2 text-blue-700 text-sm font-semibold">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 17a2 2 0 11-4 0 2 2 0 014 0zm10 0a2 2 0 11-4 0 2 2 0 014 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10l2 .002M13 16l2 .002M13 16V8h4l3 5v3h-2" />
+                      </svg>
+                      In Transit
+                    </div>
+                    {overview.trackingNumber && (
+                      <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1.5">
+                        <div className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Tracking Number</div>
+                        <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
+                        {overview.carrier && <div className="text-xs text-gray-500">Carrier: {overview.carrier.toUpperCase()}</div>}
+                        {overview.trackingUrl && (
+                          <a href={overview.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">Track Package →</a>
+                        )}
+                      </div>
+                    )}
+                    <div className="text-xs text-gray-500 leading-relaxed">The status will automatically update to Delivered once the carrier confirms delivery.</div>
+                    {overview.shipStationLabelUrl && (
+                      <a
+                        href={overview.shipStationLabelUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                        </svg>
+                        Reprint Shipping Label
+                      </a>
+                    )}
+                  </div>
+                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationLabelUrl ? (
+                  // Label is ready — printer reviews and confirms
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2 text-green-700 text-sm font-semibold">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Shipping label ready
+                    </div>
+
+                    <div className="rounded-xl bg-gray-50 border border-gray-200 p-3 space-y-1.5 text-xs">
+                      <div className="font-semibold text-gray-700 uppercase tracking-wide text-[10px]">Ship To</div>
+                      <div className="text-gray-900 font-medium">
+                        {overview.customer.name}
+                      </div>
+                      {overview.shippingAddress && (
+                        <div className="text-gray-500 leading-relaxed">
+                          {overview.shippingAddress.street}<br />
+                          {overview.shippingAddress.city}, {overview.shippingAddress.state} {overview.shippingAddress.postalCode}
+                        </div>
+                      )}
+                    </div>
+
+                    {overview.trackingNumber && (
+                      <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1">
+                        <div className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Tracking</div>
+                        <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
+                        {overview.carrier && <div className="text-xs text-gray-500">{overview.carrier.toUpperCase()}</div>}
+                      </div>
+                    )}
+
+                    <a
+                      href={overview.shipStationLabelUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                      </svg>
+                      Open & Print Label
+                    </a>
+
+                    <button
                       disabled={updatingStatus}
-                      onChange={() => void setStatus(o.key)}
-                      className="w-4 h-4"
-                    />
-                    <div className="text-sm font-semibold text-gray-800">{o.label}</div>
-                  </label>
-                ))}
+                      onClick={() => void setStatus("Order Shipped")}
+                      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors disabled:opacity-60"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      {updatingStatus ? "Confirming…" : "Confirm — Package Ready for Pickup"}
+                    </button>
+
+                    <div className="text-[11px] text-gray-400 text-center leading-relaxed">
+                      Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
+                    </div>
+                  </div>
+                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationTriggeredAt ? (
+                  <div className="flex flex-col items-center gap-3 py-4 text-center">
+                    <SpaceLoader size={28} layout="inline" />
+                    <div className="text-sm font-semibold text-gray-800">Generating shipping label…</div>
+                    <div className="text-xs text-gray-500">ShipStation is creating your label. This usually takes a few seconds.</div>
+                  </div>
+                ) : (
+                  radioOptions.map((o) => {
+                    const isPast = o.rank < currentStatusRank;
+                    const isCurrent = selectedStatus === o.key;
+                    return (
+                      <label
+                        key={o.key}
+                        className={`flex items-center gap-3 p-3 rounded-xl border transition-opacity ${
+                          isCurrent
+                            ? "border-blue-300 bg-blue-50"
+                            : isPast
+                            ? "border-gray-100 bg-gray-50 opacity-40 cursor-not-allowed"
+                            : "border-gray-200 bg-white"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="status"
+                          checked={isCurrent}
+                          disabled={updatingStatus || isPast}
+                          onChange={() => { if (!isPast) void setStatus(o.key); }}
+                          className="w-4 h-4"
+                        />
+                        <div className={`text-sm font-semibold ${isPast ? "text-gray-400" : "text-gray-800"}`}>
+                          {o.label}
+                        </div>
+                        {isPast && (
+                          <span className="ml-auto text-[10px] font-medium text-gray-400 uppercase tracking-wide">Locked</span>
+                        )}
+                      </label>
+                    );
+                  })
+                )}
               </div>
             </div>
 
@@ -501,8 +703,8 @@ export default function OrderDetailsPage() {
 
                 <OrderDetails
                   orderId={overview.orderId}
-                  createdAt={new Date(overview.createdAt).toLocaleString()}
-                  dueDate={new Date(overview.createdAt).toLocaleDateString()}
+                  createdAt={formatDateTime(overview.createdAt)}
+                  dueDate={formatDateTime(overview.deadline)}
                   itemsCount={overview.specs.itemsCount}
                 />
               </>
@@ -519,7 +721,8 @@ export default function OrderDetailsPage() {
           sheetSize: overview.specs.sheetSize,
           orderDescription: `${overview.specs.itemsCount} Items`,
           status: statusLabelFromBackend(overview.status) as any,
-          deadline: overview.createdAt,
+          deadline: overview.deadline || "",
+          createdAt: overview.createdAt,
           priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
         }} />
       )}

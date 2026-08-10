@@ -26,7 +26,7 @@ export const printQueueData: PrintJob[] = [
     customer: "Emma Wilson",
     sheetSize: '16x20"',
     orderDescription: "75 Sweatshirts",
-    status: "Quality Check",
+    status: "Print Shipping Label",
     deadline: "Dec 13, 2:00 PM",
   },
   {
@@ -65,6 +65,6 @@ export const printQueueTabs = [
   { label: "Urgent", count: 1 },
   { label: "Processing", count: 1 },
   { label: "Printing", count: 1 },
-  { label: "Quality Check", count: 1 },
+  { label: "Print Shipping Label", count: 1 },
   { label: "Completed", count: 1 },
 ];

@@ -9,7 +9,7 @@ export const StatusBadge = ({ status }: StatusBadgeProps) => {
         return "bg-[#DC2626] text-white";
       case "Printing":
         return "bg-amber-600 text-white";
-      case "Quality Check":
+      case "Print Shipping Label":
         return "bg-emerald-700 text-white";
       case "Processing":
         return "bg-blue-600 text-white";

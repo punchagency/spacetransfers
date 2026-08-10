@@ -4,6 +4,7 @@ import { FiLogOut, FiUser, FiChevronDown, FiSettings } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { useProfileStore } from '../../state/ProfileStore';
 import { UserAvatar } from './UserAvatar';
+import { clearAuth } from '../../utils/auth';
 
 export const UserMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -27,11 +28,11 @@ export const UserMenu = () => {
 
   const handleLogout = () => {
     try {
-      localStorage.removeItem('printer_token');
-      localStorage.removeItem('printer_user');
+      // clearAuth wipes the session AND notifies the route guard, which
+      // redirects to /auth on its own — no full page reload needed.
+      clearAuth();
       toast.success('Logged out successfully');
-      // Using window.location to ensure a full app reload and clear any state
-      window.location.href = '/auth';
+      navigate('/auth', { replace: true });
     } catch (error) {
       toast.error('Logout failed');
     }

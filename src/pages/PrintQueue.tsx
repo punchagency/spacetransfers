@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FiHelpCircle, FiEye } from "react-icons/fi";
 import { StatusBadge } from "../components/common/StatusBadge";
+import { DeadlineCountdown } from "../components/common/DeadlineCountdown";
 import { useSearchParams } from "react-router-dom";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { SearchInput } from "../components/common/SearchInput";
@@ -25,7 +26,7 @@ export const getTabActiveStyles = (label: string) => {
         bg: "bg-green-100",
         badgeText: "text-green-600",
       };
-    case "Quality Check":
+    case "Print Shipping Label":
       return {
         text: "text-emerald-700",
         border: "border-emerald-700",
@@ -67,7 +68,7 @@ const PrintQueue = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(() => {
     const tab = searchParams.get("tab");
-    const valid = ["All Jobs", "Pending", "Urgent", "Processing", "Printing", "Quality Check", "Completed"];
+    const valid = ["All Jobs", "Pending", "Urgent", "Processing", "Printing", "Print Shipping Label", "Completed"];
     return tab && valid.includes(tab) ? tab : "All Jobs";
   });
   const [selectedJob, setSelectedJob] = useState<PrintJob | null>(null);
@@ -78,21 +79,6 @@ const PrintQueue = () => {
   const handleRowClick = (job: PrintJob) => {
     setSelectedJob(job);
     setIsModalOpen(true);
-  };
-
-  const formatDeadline = (dateStr: string) => {
-    if (!dateStr) return "";
-    try {
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return dateStr;
-      return (
-        d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
-        ", " +
-        d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
-      );
-    } catch {
-      return dateStr;
-    }
   };
 
   const columns = [
@@ -124,9 +110,7 @@ const PrintQueue = () => {
     },
     {
       header: "Deadline",
-      render: (job: PrintJob) => (
-        <span className="text-gray-700">{formatDeadline(job.deadline)}</span>
-      ),
+      render: (job: PrintJob) => <DeadlineCountdown iso={job.deadline} />,
     },
     {
       header: "Actions",
@@ -156,7 +140,7 @@ const PrintQueue = () => {
               : backendStatus === "PRINTING"
               ? "Printing"
               : backendStatus === "QUALITY_CHECK"
-              ? "Quality Check"
+              ? "Print Shipping Label"
               : backendStatus === "COMPLETED"
               ? "Completed"
               : "Pending";
@@ -171,6 +155,7 @@ const PrintQueue = () => {
             orderDescription: String(j.orderDescription || ""),
             status: status as any,
             deadline: String(j.deadline || ""),
+            createdAt: j.createdAt ? String(j.createdAt) : undefined,
             priority: priority === "URGENT" ? ("Urgent" as any) : undefined,
           };
       });
@@ -213,7 +198,7 @@ const PrintQueue = () => {
       Urgent: jobs.filter((j) => j.status === "Urgent").length,
       Processing: jobs.filter((j) => j.status === "Processing").length,
       Printing: jobs.filter((j) => j.status === "Printing").length,
-      "Quality Check": jobs.filter((j) => j.status === "Quality Check").length,
+      "Print Shipping Label": jobs.filter((j) => j.status === "Print Shipping Label").length,
       Completed: jobs.filter((j) => j.status === "Completed").length,
     };
     return Object.entries(counts).map(([label, count]) => ({ label, count }));

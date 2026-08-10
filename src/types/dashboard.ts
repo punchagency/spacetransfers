@@ -10,7 +10,7 @@ export type DashboardJobStatus =
   | "Pending"
   | "Processing"
   | "Printing"
-  | "Quality Check"
+  | "Print Shipping Label"
   | "Completed"
   | "Cancelled";
 
