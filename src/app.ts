@@ -10,8 +10,65 @@ import { errorHandler, notFoundHandler } from "./middleware/error.js";
 const app = express();
 
 app.use(cors({ exposedHeaders: ["Content-Disposition"] }));
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+/**
+ * Body limits, scoped by what each route legitimately carries.
+ *
+ * A single 50 MB ceiling on every route was both too permissive and not
+ * actually sufficient. Too permissive because `express.json` buffers the entire
+ * body in the Node heap before parsing, so a handful of concurrent large
+ * requests can exhaust it — a 50 MB limit on `/orders` is a memory-exhaustion
+ * vector for no benefit. Not sufficient because an order carrying embedded
+ * artwork sailed past it anyway and still 413'd.
+ *
+ * The architectural fix is that artwork never travels in an order at all: the
+ * artboard uploads canvas results as they are produced (see `materializeAsset`)
+ * and every later request carries a URL. Orders are therefore geometry,
+ * pricing and addresses — kilobytes — and the tight limit below is the thing
+ * that keeps them that way rather than letting the old shape creep back in.
+ *
+ * Three tiers:
+ *  - `materialize` takes one image as raw bytes. Generous, and bounded to one
+ *    image per request.
+ *  - The rest of `/customer/assets/*` takes one image as a `data:` URL in JSON
+ *    (`trim`, `fade-check`, `upscale`, `ai-edit`). Same job, base64-inflated.
+ *  - Everything else is metadata. 2 MB is ample for a sheet of several thousand
+ *    placements once artwork is referenced rather than embedded.
+ */
+const RAW_IMAGE_LIMIT = "64mb";
+const IMAGE_JSON_LIMIT = "25mb";
+const STANDARD_BODY_LIMIT = "2mb";
+
+// Mounted ahead of the JSON parsers: materialize receives one image as raw
+// bytes, so it must not be handed to `express.json` first.
+app.use(
+  "/api/customer/assets/materialize",
+  express.raw({ type: "application/octet-stream", limit: RAW_IMAGE_LIMIT }),
+);
+// Prefix mount, so a route added to this family later inherits the right limit
+// instead of silently falling to the 2 MB tier.
+app.use("/api/customer/assets", express.json({ limit: IMAGE_JSON_LIMIT }));
+app.use(express.json({ limit: STANDARD_BODY_LIMIT }));
+app.use(express.urlencoded({ limit: STANDARD_BODY_LIMIT, extended: true }));
+
+/**
+ * Request-size monitoring.
+ *
+ * Logs anything approaching its limit, so an oversized payload is diagnosable
+ * from ordinary logs rather than only when it fails. The warning threshold sits
+ * well below the limit deliberately: catching the trend is what prevents the
+ * outage, and a request at 60% of budget is already a design problem worth
+ * seeing.
+ */
+const SIZE_WARN_BYTES = 512 * 1024;
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  const declared = Number(req.headers["content-length"] ?? 0);
+  if (declared > SIZE_WARN_BYTES) {
+    console.warn(
+      `[REQUEST_SIZE] ${req.method} ${req.originalUrl} — ${(declared / 1048576).toFixed(2)} MB`,
+    );
+  }
+  next();
+});
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (!req.path.startsWith("/api")) return next();

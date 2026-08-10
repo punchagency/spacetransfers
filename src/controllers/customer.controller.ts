@@ -19,6 +19,13 @@ import { autoAssignOrder } from "../services/orderAssignment.service.js";
 import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
+import { assertPersistable } from "../utils/documentSize.js";
+import {
+  assertBufferWithinBounds,
+  decodeDataUrl,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_PIXELS,
+} from "../utils/imageBounds.js";
 import { sendEmail } from "../services/email.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import {
@@ -32,6 +39,7 @@ import {
   planEditWithGemini,
 } from "../services/gemini.service.js";
 import { conformToSource, readSourceGeometry } from "../utils/generativeImage.js";
+import { detectFade } from "../services/fadeDetection.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -73,6 +81,54 @@ const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
     return await fs.promises.readFile(trimmedPath);
   } finally {
     cleanup();
+  }
+};
+
+/**
+ * Converts an embedded image into a hosted one.
+ *
+ * The editor produces every canvas result — auto-crop, background removal,
+ * colour removal, sticker borders, local AI edits — as a
+ * `data:image/png;base64,…` URL and writes it onto the artboard item. Those are
+ * the artwork itself rather than a reference to it, and at print resolution
+ * each runs to tens of megabytes. Carried into an order they are what makes the
+ * request oversized.
+ *
+ * The artboard calls this as soon as such a result appears, so an item holds a
+ * short URL long before checkout. That is the architectural fix: artwork is
+ * uploaded once, when it is created, and every later request references it.
+ *
+ * Accepts raw bytes (`application/octet-stream`) as the primary path. Base64
+ * inside JSON inflates by 4/3 and forces the whole string to be buffered and
+ * JSON-parsed before a byte is usable; raw bytes avoid both. The JSON form is
+ * still honoured so a client that has not reloaded keeps working.
+ */
+export const materializeAsset = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+      const { url: hostedUrl } = await uploadBufferToCloudinary(
+        req.body,
+        "space-transfers/edited",
+      );
+      return res.json({ url: hostedUrl, materialized: true, bytes: req.body.length });
+    }
+
+    const { url } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return next(Object.assign(new Error("url is required"), { statusCode: 400 }));
+    }
+
+    // Already hosted — echoed back so the client can call this indiscriminately
+    // rather than duplicating the "does this need uploading?" test everywhere.
+    if (!url.startsWith("data:")) {
+      return res.json({ url, materialized: false });
+    }
+
+    const buffer = await fetchImageBuffer(url);
+    const { url: hostedUrl } = await uploadBufferToCloudinary(buffer, "space-transfers/edited");
+    res.json({ url: hostedUrl, materialized: true, bytes: buffer.length });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -161,22 +217,53 @@ const MAX_OUTPUT_PX = 8_000;             // prevent runaway output sizes
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Resolves any artwork reference to bytes, with bounds enforced at the door.
+ *
+ * This is the single entry point for image data on the server, so validating
+ * here covers every downstream operation — trim, upscale, fade check, AI edit,
+ * gangsheet export — rather than each having to guard itself. Previously all
+ * three branches were unbounded: a malformed data URL decoded to an empty
+ * Buffer, and a remote URL could return arbitrarily many bytes.
+ */
 async function fetchImageBuffer(url: string): Promise<Buffer> {
   if (url.startsWith("data:")) {
-    const commaIdx = url.indexOf(",");
-    if (commaIdx < 0) throw new Error("Malformed data URL");
-    return Buffer.from(url.slice(commaIdx + 1), "base64");
+    return decodeDataUrl(url);
   }
   if (url.includes("/uploads/")) {
     const marker = "/uploads/";
     const idx = url.lastIndexOf(marker);
+    // basename() strips any traversal segments, so a crafted URL cannot escape
+    // the uploads directory.
     const safeFilename = path.basename(url.substring(idx + marker.length));
     const localPath = path.join(process.cwd(), "uploads", safeFilename);
-    if (fs.existsSync(localPath)) return fs.promises.readFile(localPath);
+    if (fs.existsSync(localPath)) {
+      // Checked before reading rather than after: a file over the ceiling
+      // should not be pulled into memory just to be rejected.
+      const { size } = await fs.promises.stat(localPath);
+      if (size > MAX_IMAGE_BYTES) {
+        throw Object.assign(
+          new Error("That image is too large to process. Please re-export it at a smaller size."),
+          { statusCode: 400, code: "IMAGE_TOO_LARGE" },
+        );
+      }
+      return assertBufferWithinBounds(await fs.promises.readFile(localPath), "image");
+    }
   }
   const r = await fetch(url);
   if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
-  return Buffer.from(await r.arrayBuffer());
+
+  // Trust the advertised length when present, so an oversized remote asset is
+  // refused before its body is buffered.
+  const declared = Number(r.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+    throw Object.assign(
+      new Error("That image is too large to process. Please re-export it at a smaller size."),
+      { statusCode: 400, code: "IMAGE_TOO_LARGE" },
+    );
+  }
+
+  return assertBufferWithinBounds(Buffer.from(await r.arrayBuffer()), "image");
 }
 
 /**
@@ -896,6 +983,34 @@ export const aiEditCapabilities = async (_req: Request, res: Response) => {
 };
 
 /**
+ * AI fade check for an already-uploaded asset.
+ *
+ * Separate from the upload response so the artboard can re-check an image after
+ * an edit that could introduce or remove a fade — a background removal or a
+ * generative repaint both change the alpha channel — without re-uploading it.
+ */
+export const fadeCheckAsset = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { url } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return next(Object.assign(new Error("url is required"), { statusCode: 400 }));
+    }
+
+    const buffer = await fetchImageBuffer(url);
+    const result = await detectFade(buffer);
+
+    console.log(
+      `[FADE] ${result.kind} hasFade=${result.hasFade} ` +
+        `confidence=${result.confidence.toFixed(2)} via ${result.source}`,
+    );
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Prompt understanding.
  *
  * Turns one sentence into an ordered list of atomic edits, resolving follow-ups
@@ -1342,6 +1457,24 @@ export const logout = async (req: Request, res: Response, next: NextFunction) =>
 };
 
 export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
+  /**
+   * Per-stage timing.
+   *
+   * Placing an order touches validation, several Mongo round trips, a counter
+   * increment and a save. A single total tells you nothing about which to look
+   * at when it is slow, so each stage is measured and logged on one line keyed
+   * by order id. Plain counters rather than a tracing library: one request
+   * path, one `Date.now()` per stage, greppable output.
+   */
+  const startedAt = Date.now();
+  const timings: Record<string, number> = {};
+  let stageMark = startedAt;
+  const mark = (stage: string) => {
+    const now = Date.now();
+    timings[stage] = now - stageMark;
+    stageMark = now;
+  };
+
   try {
     const {
       items,
@@ -1427,7 +1560,8 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         sheetWidthIn,
         sheetHeightIn,
         previewImage,
-        artboardItems
+        artboardItems,
+        assetTable
       } = item || {};
 
       if (!type || !name || typeof quantity !== "number" || typeof unitPrice !== "number") {
@@ -1439,13 +1573,38 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       const lineSubtotal = unitPrice * quantity;
       computedSubtotal += lineSubtotal;
 
+      /**
+       * Resolves an artwork reference back to its URL.
+       *
+       * A gang sheet repeats the same few graphics across many placements, so
+       * the client sends each distinct URL once in `assetTable.urls` and refers
+       * to it by integer index. That is what keeps the payload proportional to
+       * distinct artwork rather than to placement count.
+       *
+       * Inline `assetId` / `croppedUrl` are still honoured, so a client that
+       * has not reloaded — or a cart persisted before this shape existed —
+       * keeps working. The reference wins when both are present.
+       */
+      const assetUrls: string[] = Array.isArray(assetTable?.urls) ? assetTable.urls : [];
+      const deref = (ref: unknown, inline: unknown): string | undefined => {
+        if (
+          typeof ref === "number" &&
+          Number.isInteger(ref) &&
+          ref >= 0 &&
+          ref < assetUrls.length
+        ) {
+          return assetUrls[ref];
+        }
+        return typeof inline === "string" && inline ? inline : undefined;
+      };
+
       const normalizedArtboardItems = Array.isArray(artboardItems)
         ? artboardItems
             .filter(Boolean)
             .map((it: any) => ({
               id: Number(it.id),
-              assetId: String(it.assetId || ""),
-              croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
+              assetId: String(deref(it.assetRef, it.assetId) || ""),
+              croppedUrl: deref(it.croppedRef, it.croppedUrl),
               autoCrop: typeof it.autoCrop === "boolean" ? it.autoCrop : undefined,
               widthIn: Number(it.widthIn),
               heightIn: Number(it.heightIn),
@@ -1497,9 +1656,12 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    mark("validate");
+
     const currentUser = req.user?.id
       ? await User.findById(req.user.id).select("regions").lean()
       : null;
+    mark("loadUser");
 
     // Derive region strictly from the shipping address state — same function used during
     // auto-assignment. Returns null for non-US / unknown state codes; never defaults to "West".
@@ -1544,9 +1706,17 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       status: "PENDING"
     });
 
+    mark("buildOrder");
+
+    // Checked before the first save attempt rather than inside the retry loop:
+    // an oversized document fails identically on every retry, and the retry
+    // exists for duplicate display IDs only.
+    assertPersistable(order.toObject(), { label: "order" });
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await order.save();
+        mark("save");
         break;
       } catch (e: any) {
         const isDup = e?.code === 11000 && (e?.keyPattern?.displayId || e?.keyValue?.displayId);
@@ -1630,32 +1800,47 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       meta: { orderId: order.id, status: "PENDING" }
     }).catch(() => {});
 
-    const assignment = await Promise.race([
-      autoAssignOrder(order.id),
-      new Promise<{ assigned: false; orderId: string; reason: string; tookMs: number }>((resolve) =>
-        setTimeout(() => resolve({ assigned: false, orderId: order.id, reason: "Assignment timed out", tookMs: 2000 }), 1900)
-      )
-    ]);
+    /**
+     * Auto-assignment runs after the response.
+     *
+     * It was awaited behind a 1.9s timeout and followed by a second `findById`
+     * to read back what it had written — so every customer paid up to ~2
+     * seconds of dead time on the one click where responsiveness matters most,
+     * and paid it in full whenever no printer matched, since that is the case
+     * that runs longest before giving up.
+     *
+     * Nothing in the response depends on it: the order is saved and paid. Which
+     * printer takes the job is decided afterwards and reaches the client
+     * through the order status it already polls.
+     */
+    void autoAssignOrder(order.id)
+      .then((result: any) => {
+        console.log(
+          `[ORDER_ASSIGN] orderId=${orderId} assigned=${result?.assigned} ` +
+            `reason=${result?.reason ?? "-"} tookMs=${result?.tookMs ?? "-"}`,
+        );
+      })
+      .catch((err: any) => {
+        console.warn(`[ORDER_ASSIGN] orderId=${orderId} failed (non-fatal): ${err?.message}`);
+      });
 
-    const refreshed = await Order.findById(order.id)
-      .select("status assignedPrinter")
-      .populate("assignedPrinter", "companyName name email")
-      .lean();
+    timings.total = Date.now() - startedAt;
+    console.log(
+      `[ORDER_TIMING] orderId=${orderId} items=${orderItems.length} ` +
+        `placements=${orderItems.reduce((n: number, i: any) => n + (i.artboardItems?.length ?? 0), 0)} ` +
+        Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(" "),
+    );
 
     res.status(201).json({
       id: order.id,
       displayId: (order as any).displayId || null,
       createdAt: order.createdAt,
-      status: refreshed?.status || order.status,
+      status: order.status,
       pricing: order.pricing,
-      assignment,
-      assignedPrinter: refreshed?.assignedPrinter
-        ? {
-            id: (refreshed.assignedPrinter as any)?._id,
-            name: (refreshed.assignedPrinter as any)?.companyName || (refreshed.assignedPrinter as any)?.name,
-            email: (refreshed.assignedPrinter as any)?.email
-          }
-        : null
+      // Decided after this response; the client shows PENDING and picks the
+      // printer up from the order record.
+      assignment: { assigned: false, orderId: order.id, reason: "Assignment in progress", tookMs: 0 },
+      assignedPrinter: null
     });
   } catch (error) {
     next(error);
@@ -1675,6 +1860,10 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
       artboardData
     });
 
+    // A saved design carries the same artboard payload an order does, so it
+    // overflows the same way — and losing a design to an opaque 500 is worse
+    // than failing an order, since the work is not recoverable from a cart.
+    assertPersistable(design.toObject(), { label: "design" });
     await design.save();
     await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
 
@@ -1729,6 +1918,11 @@ export const getCart = async (req: Request, res: Response, next: NextFunction) =
 export const updateCart = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { cart } = req.body || {};
+    // The cart is a subdocument of the user, so an oversized cart takes the
+    // whole user document over the limit — and the resulting failure would be
+    // reported against `users`, not the cart, which is a confusing place to
+    // start debugging.
+    assertPersistable({ cart: cart || [] }, { label: "cart" });
     await User.updateOne({ _id: req.user?.id }, { $set: { cart: cart || [] } });
     res.json({ message: "Cart updated" });
   } catch (error) {
@@ -2099,6 +2293,20 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       if (localUrlAccessible(foundAsset.url) && localUrlAccessible(foundAsset.trimmedUrl)) {
         const thumbUrl = computeThumbUrl(foundAsset.trimmedUrl || foundAsset.url);
         const normDpi = foundAsset.dpi || 300;
+        /**
+         * Reuse the stored verdict, and only compute one if this record predates
+         * the fade check. Identical bytes cannot produce a different answer, so
+         * re-running the model here would spend a call to reproduce a result we
+         * already have — while an asset saved before this feature existed still
+         * needs one, or it would silently report "no fade" forever.
+         */
+        const cachedFade = foundAsset.fade ?? (await detectFade(fileBuffer));
+        if (!foundAsset.fade) {
+          await Asset.findByIdAndUpdate(foundAsset._id, { fade: cachedFade }).catch(() => {
+            // A failed backfill is not worth failing the upload over; the
+            // verdict is still returned and will be recomputed next time.
+          });
+        }
         return res.json({
           id: String(foundAsset._id),
           url: foundAsset.url,
@@ -2116,28 +2324,84 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
           trimmedWidthIn: foundAsset.trimmedWidthPx ? +(foundAsset.trimmedWidthPx / normDpi).toFixed(4) : null,
           trimmedHeightIn: foundAsset.trimmedHeightPx ? +(foundAsset.trimmedHeightPx / normDpi).toFixed(4) : null,
           deduplicated: true,
+          fade: cachedFade,
         });
       }
       // Stored URLs are stale local paths — re-process and update the existing record.
       staleAssetId = String(foundAsset._id);
     }
 
-    // Upload original to Cloudinary.
-    const { url: fileUrl } = await uploadBufferToCloudinary(fileBuffer, "space-transfers/assets");
-
+    /**
+     * Decode check, before anything is stored.
+     *
+     * A file whose contents are not really an image — a partly-downloaded or
+     * damaged file, which typically still carries its original extension — used
+     * to travel a long way through this handler. It was uploaded to Cloudinary,
+     * its metadata extraction failed into a swallowed `catch`, and the response
+     * went back as a **201 with `widthPx: undefined`**. The client then computed
+     * `undefined / dpi`, and placed an item on the sheet whose physical size was
+     * NaN: no error anywhere, and a gang sheet that cannot be printed.
+     *
+     * So this is now a hard 400, and it runs *before* the Cloudinary upload —
+     * there is no reason to spend the round trip and the storage on a file that
+     * is about to be rejected.
+     *
+     * PDFs are exempt because sharp cannot decode them without poppler; they are
+     * checked by signature instead, which is all that is available here.
+     */
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
-    try {
-      const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
-      widthPx = metadata.width;
-      heightPx = metadata.height;
-      dpi = metadata.density || 300;
-    } catch (err: any) {
-      if (err.message && err.message.includes('unsupported image format')) {
-        console.log(`Metadata extraction skipped for ${req.file.originalname}: Unsupported format`);
-      } else {
-        console.error("Error reading image metadata:", err);
+    const isPdfUpload = req.file.mimetype === "application/pdf";
+
+    if (isPdfUpload) {
+      if (fileBuffer.subarray(0, 5).toString("latin1") !== "%PDF-") {
+        const error = new Error(
+          `“${req.file.originalname}” could not be read — it isn't a valid PDF. It may be damaged or only partly downloaded. Please re-export it and try again.`,
+        ) as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    } else {
+      try {
+        const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
+        widthPx = metadata.width;
+        heightPx = metadata.height;
+        dpi = metadata.density || 300;
+      } catch (err: any) {
+        console.warn(`[UPLOAD] rejected ${req.file.originalname}: ${err?.message}`);
+      }
+
+      // Dimensions are the test, not merely whether metadata() threw: some
+      // malformed files parse far enough to return an object with no width or
+      // height, and that is exactly the shape that produced the NaN item.
+      if (!widthPx || !heightPx) {
+        const error = new Error(
+          `“${req.file.originalname}” could not be read — the file may be damaged or only partly downloaded. Please re-export it and try again.`,
+        ) as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      // Every sharp call here passes `limitInputPixels: false` to allow
+      // legitimately huge gang sheets, which also removes the guard against a
+      // decompression bomb. Without an explicit ceiling, a 50000×50000 PNG
+      // decodes to ~10 GB and the process is killed by the OS rather than
+      // returning an error.
+      if (widthPx * heightPx > MAX_IMAGE_PIXELS) {
+        console.error(
+          `[UPLOAD] rejected ${req.file.originalname}: ${widthPx}×${heightPx} exceeds ` +
+            `the ${MAX_IMAGE_PIXELS.toLocaleString()} px ceiling`,
+        );
+        const error = new Error(
+          `“${req.file.originalname}” is too large to process (${widthPx}×${heightPx}). ` +
+            `Please re-export it at a smaller resolution.`,
+        ) as CustomError;
+        error.statusCode = 400;
+        throw error;
       }
     }
+
+    // Upload original to Cloudinary.
+    const { url: fileUrl } = await uploadBufferToCloudinary(fileBuffer, "space-transfers/assets");
 
     const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
@@ -2165,6 +2429,23 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     // Cloudinary thumbnail is derived from the URL — no local generation needed.
     const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
 
+    /**
+     * Fade check, on the buffer that is already in memory.
+     *
+     * Done here rather than as a follow-up request because the bytes are right
+     * here: the client would otherwise re-download its own upload just to
+     * inspect the alpha channel. The check short-circuits on images with no
+     * meaningful partial alpha, so the common upload pays only a few
+     * milliseconds of geometry and never reaches the model.
+     */
+    const fade = await detectFade(fileBuffer);
+    if (fade.hasFade) {
+      console.log(
+        `[FADE] ${req.file.originalname}: ${fade.kind} ` +
+          `confidence=${fade.confidence.toFixed(2)} via ${fade.source}`,
+      );
+    }
+
     // Guest uploads: return metadata without persisting to the database
     if (!req.user?.id) {
       return res.status(201).json({
@@ -2182,6 +2463,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
         trimmedHeightPx: trimmedHeightPx || null,
         trimmedWidthIn: trimmedWidthIn || null,
         trimmedHeightIn: trimmedHeightIn || null,
+        fade,
       });
     }
 
@@ -2197,6 +2479,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
         dpi: normalizedDpi,
         mimeType: req.file.mimetype,
         sizeBytes: req.file.size,
+        fade,
       });
       savedAssetId = staleAssetId;
     } else {
@@ -2213,6 +2496,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
         trimmedHeightPx,
         dpi: normalizedDpi,
         contentHash,
+        fade,
       });
       await asset.save();
       savedAssetId = asset.id;
@@ -2233,7 +2517,8 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       trimmedWidthPx: trimmedWidthPx || null,
       trimmedHeightPx: trimmedHeightPx || null,
       trimmedWidthIn: trimmedWidthIn || null,
-      trimmedHeightIn: trimmedHeightIn || null
+      trimmedHeightIn: trimmedHeightIn || null,
+      fade,
     });
   } catch (error) {
     next(error);
@@ -2599,6 +2884,10 @@ export const reorder = async (req: Request, res: Response, next: NextFunction) =
       status: "PENDING"
     });
 
+    // A reorder copies artwork references from an existing order, so it can
+    // only be oversized if the original was — but the original predates this
+    // guard, so it is checked rather than assumed.
+    assertPersistable(newOrder.toObject(), { label: "reorder" });
     await newOrder.save();
 
     res.status(201).json({

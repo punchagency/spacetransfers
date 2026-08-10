@@ -7,10 +7,12 @@ import {
   getOrderById,
   uploadAsset,
   trimAsset,
+  materializeAsset,
   upscaleAsset,
   aiEditAsset,
   aiEditCapabilities,
   aiEditPlan,
+  fadeCheckAsset,
   updateAccount,
   logout,
   listAssets,
@@ -45,6 +47,13 @@ const router = express.Router();
 // users still get server-side DPI/trim metadata and the low-DPI warning fires.
 router.post("/assets", maybeAuthenticate, upload.single("file"), uploadAsset);
 router.post("/assets/trim", maybeAuthenticate, trimAsset);
+// Uploads a canvas-produced image and returns its hosted URL, so artboard items
+// and every later request carry a reference instead of the artwork itself.
+// This is what keeps the cart/order payloads to metadata only.
+router.post("/assets/materialize", maybeAuthenticate, materializeAsset);
+// AI fade check for an already-uploaded asset — used after edits that change
+// the alpha channel (background removal, generative repaint).
+router.post("/assets/fade-check", maybeAuthenticate, fadeCheckAsset);
 router.post("/assets/upscale", maybeAuthenticate, upscaleAsset);
 router.get("/assets/ai-edit/capabilities", maybeAuthenticate, aiEditCapabilities);
 router.post("/assets/ai-edit", maybeAuthenticate, aiEditAsset);
