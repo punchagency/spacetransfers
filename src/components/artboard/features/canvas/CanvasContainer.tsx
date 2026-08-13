@@ -4,6 +4,7 @@ import { getGridStyle, CHECKER_PAIRS, isDarkBg } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
 import EmptyState from "./EmptyState";
+import BulkLoadOverlay from "./BulkLoadOverlay";
 import ArtboardItem from "../items/ArtboardItem";
 import { ArtboardItem as ArtboardItemType } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
@@ -50,6 +51,10 @@ interface CanvasContainerProps {
   onBrowseFiles: () => void;
   isUploading: boolean;
   uploadProgress: number;
+  /** Images placed so far in the active bulk batch. */
+  batchLoaded?: number;
+  /** Size of the active bulk batch; 0 when none is running. */
+  batchTotal?: number;
   uploadFileName: string | null;
   onCancelUpload: () => void;
   /** Something else (the AI button) occupies the bottom-right — lift the scroll-to-top control clear of it. */
@@ -109,6 +114,8 @@ export default function CanvasContainer({
   onBrowseFiles,
   isUploading,
   uploadProgress,
+  batchLoaded = 0,
+  batchTotal = 0,
   uploadFileName,
   onCancelUpload,
   avoidBottomRight = false,
@@ -518,7 +525,27 @@ export default function CanvasContainer({
           </div>
         </div>
       )} */}
-      {isUploading && (
+      {/*
+        Bulk drops get the corner overlay, not the modal below.
+
+        The modal is `inset-0 z-30` — it covers the entire canvas. That was
+        survivable when a drop was a handful of files, but on a 100+ image
+        batch it hid the artboard for the whole upload, and since items were
+        only committed after the last file finished there was nothing to see
+        behind it anyway. Items now land progressively, so the canvas has to
+        stay visible and interactive while the batch runs.
+
+        A single file keeps the modal: it is brief, and a byte-percentage is
+        more informative than "1 / 1 images loaded" for one large artwork.
+      */}
+      {batchTotal > 1 && (
+        <BulkLoadOverlay
+          loaded={batchLoaded}
+          total={batchTotal}
+          onCancel={onCancelUpload}
+        />
+      )}
+      {isUploading && batchTotal <= 1 && (
         <div className="absolute inset-0 z-30 flex items-center justify-center">
           <div className="w-[420px] max-w-[92vw] rounded-2xl border border-gray-200 bg-white px-10 py-10 text-center shadow-lg">
             <div className="mx-auto mb-4 flex items-center justify-center">

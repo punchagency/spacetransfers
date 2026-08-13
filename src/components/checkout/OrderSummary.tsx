@@ -82,7 +82,7 @@ export default function OrderSummary({
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6 sticky  ">
       <div className="flex items-center gap-2 mb-4">
-        <MdShoppingCart className="w-5 h-5 text-blue-600" />
+        <MdShoppingCart className="w-5 h-5 text-black" />
         <h3 className="text-base font-semibold">Order Summary</h3>
       </div>
       
@@ -130,7 +130,7 @@ export default function OrderSummary({
           onClick={onNext}
           disabled={isSubmitting || disableNext}
           className={`w-full mt-4 rounded-lg py-3 text-sm font-semibold text-white transition-colors ${
-            isSubmitting || disableNext ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+            isSubmitting || disableNext ? "bg-gray-400 cursor-not-allowed" : "bg-black hover:bg-gray-900"
           }`}
         >
           {isSubmitting

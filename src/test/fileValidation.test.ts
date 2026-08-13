@@ -112,20 +112,31 @@ describe("validateImageFile", () => {
     expect(result.message).toContain("PDF");
   });
 
-  it("rejects raster bytes behind an .svg name", async () => {
-    // SVG is parsed as XML, so a PNG under that name fails much later and much
-    // more confusingly than it does here.
-    const fake = file(bytes(...PNG_MAGIC), "logo.svg", "image/svg+xml");
-    const result = await validateImageFile(fake);
-    expect(result.ok).toBe(false);
-    expect(result.detected).toBe("png");
-  });
-
-  it("accepts a real SVG", async () => {
+  it("rejects a real SVG", async () => {
+    /**
+     * SVG used to be accepted. It is now refused as a format: it is a vector
+     * document with no intrinsic pixel dimensions, so the DPI reckoning the
+     * print pipeline is built on has nothing to read and a sheet composited
+     * from one cannot be resolution-checked.
+     *
+     * The extension gate in `filterFiles` stops `.svg` before it reaches here;
+     * this covers the other route in — SVG content arriving under some other
+     * name.
+     */
     const svg = file('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>', "logo.svg", "image/svg+xml");
     const result = await validateImageFile(svg);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.detected).toBe("svg");
+    expect(result.message).toContain("isn't supported");
+  });
+
+  it("still identifies raster content behind an .svg name", async () => {
+    // Content-wise this is a perfectly good PNG, so the *content* check passes
+    // it — the `.svg` extension is what refuses it, one layer up in
+    // `filterFiles`. Asserted so the division of responsibility stays explicit.
+    const fake = file(bytes(...PNG_MAGIC), "logo.svg", "image/svg+xml");
+    const result = await validateImageFile(fake);
+    expect(result.detected).toBe("png");
   });
 
   it("accepts a real PDF", async () => {

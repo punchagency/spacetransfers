@@ -314,7 +314,7 @@ export default function Header({
           >
             <MdOutlineShoppingCart size={24} />
             {cartCount !== undefined && cartCount > 0 && (
-              <span className="absolute top-1 right-1 bg-blue-600 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-semibold">
+              <span className="absolute top-1 right-1 bg-black text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-semibold">
                 {cartCount}
               </span>
             )}

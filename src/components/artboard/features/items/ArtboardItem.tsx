@@ -6,7 +6,7 @@ import ItemToolbar from "./ItemToolbar";
 import PropertiesPanel from "./PropertiesPanel";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
-import { CANVAS } from "../../../../config/artboard.config";
+import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { computeRenderCopies } from "../../lib/utils/layoutHelpers";
 
 let hasShownMaxHeightToast = false;
@@ -319,7 +319,6 @@ function ArtboardItem({
     : "bg-blue-500";
 
   const effectiveMargin = marginSize;
-  const MAX_SHEET_HEIGHT_IN = 1200;
   const gap = spacing;
   const maxAvailableWidth = canvasWidth - 2 * effectiveMargin;
   // When the layout engine assigned a 90° nest-rotation, width and height are

@@ -33,8 +33,12 @@ function ConfidenceBadge({ confidence, source }: { confidence: number; source: s
   );
 }
 
+// Same stroke colour, size and stroke-width as the amber toast notices'
+// WarningIcon (UnsupportedFilesWarning.tsx / LargeImageWarning.tsx) — kept in
+// sync by eye rather than by import, since this icon renders inline in a
+// full-width banner rather than through the toast's shared shell.
 const WARN_ICON_DPI = (
-  <svg className="shrink-0" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#EFB106" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg className="mt-px shrink-0" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
     <line x1="12" y1="9" x2="12" y2="13" />
     <line x1="12" y1="17" x2="12.01" y2="17" />
@@ -92,7 +96,7 @@ export default function ArtboardWarning({
   // Both issues — merge into single orange banner at the DPI position (top-10)
   if (hasDpi && hasFade) {
     return (
-      <div className="absolute w-[860px] top-10 left-1/2 -translate-x-1/2 z-50 bg-[#FFF7ED] border border-[#F97316] rounded-lg px-4 py-2 shadow-lg flex items-center gap-2">
+      <div className="pointer-events-auto w-full bg-[#FFF7ED] border border-[#F97316] rounded-lg px-4 py-2 shadow-lg flex items-center gap-2">
         {WARN_ICON_FADE}
         <p style={{ fontFamily: "Roboto", fontWeight: 400, fontSize: "14px", lineHeight: "20px", letterSpacing: "0px", color: "#C2410C" }}>
           <span style={{ fontWeight: 700 }}>Print Issues Detected</span>
@@ -105,7 +109,7 @@ export default function ArtboardWarning({
   // Fade only — orange banner
   if (hasFade) {
     return (
-      <div className="absolute w-[860px] top-10 left-1/2 -translate-x-1/2 z-50 bg-[#FFF7ED] border border-[#F97316] rounded-lg px-4 py-2 shadow-lg flex items-center gap-2">
+      <div className="pointer-events-auto w-full bg-[#FFF7ED] border border-[#F97316] rounded-lg px-4 py-2 shadow-lg flex items-center gap-2">
         {WARN_ICON_FADE}
         <p style={{ fontFamily: "Roboto", fontWeight: 400, fontSize: "14px", lineHeight: "20px", letterSpacing: "0px", color: "#C2410C" }}>
           <span style={{ fontWeight: 700 }}>Fade Detected</span>
@@ -121,7 +125,18 @@ export default function ArtboardWarning({
     );
   }
 
-  // DPI only (low and/or unknown) — amber banner
+  // DPI only (low and/or unknown).
+  //
+  // Same card design as the toast notices — NoticeCard in
+  // UnsupportedFilesWarning.tsx: #F59E0B border, #FFFBEB fill, rounded-xl,
+  // bold #92400E title over a lighter #B45309 body, same icon. Left as its
+  // own full-width docked banner rather than converted into a toast: this
+  // stays visible for as long as any placed item is genuinely under 300 DPI
+  // (it re-derives from `items` every render) and has no dismiss button — a
+  // one-shot toast would auto-hide after ~7s even if the low-DPI artwork is
+  // still on the sheet, and reproducing "stays until fixed" would need new
+  // re-trigger wiring wherever items change. Position, visibility condition
+  // and copy are otherwise unchanged.
   const title = lowDpiCount > 0 && unknownDpiCount > 0
     ? "DPI Issues Detected"
     : unknownDpiCount > 0 && lowDpiCount === 0
@@ -129,13 +144,17 @@ export default function ArtboardWarning({
       : "Low DPI";
 
   return (
-    <div className="absolute w-[860px] top-10 left-1/2 -translate-x-1/2 z-50 bg-[#FFFBEB] border border-[#EFB106] rounded-lg px-4 py-2 shadow-lg flex items-center gap-2">
-      {WARN_ICON_DPI}
-      <p style={{ fontFamily: "Roboto", fontWeight: 400, fontSize: "14px", lineHeight: "20px", letterSpacing: "0px", color: "#EFB106" }}>
-        <span style={{ fontWeight: 700 }}>{title}</span>
-        {" "}— {dpiClause(lowDpiCount, unknownDpiCount)}. For optimal DTF printing quality, images should be at least 300 DPI at print size
-        {unknownDpiCount > 0 ? " — verify undetermined images and enhance them to be safe." : "."}
-      </p>
+    <div className="pointer-events-auto w-full rounded-xl border border-[#F59E0B] bg-[#FFFBEB] px-3.5 py-2.5 shadow-lg">
+      <div className="flex items-start gap-2.5">
+        {WARN_ICON_DPI}
+        <div className="min-w-0 flex-1">
+          <p className="text-[18px] font-bold leading-[18px] text-[#92400E]">{title}</p>
+          <p className="mt-0.5 text-[12.5px] leading-[17px] text-[#B45309]">
+            {dpiClause(lowDpiCount, unknownDpiCount)}. For optimal DTF printing quality, images should be at least 300 DPI at print size
+            {unknownDpiCount > 0 ? " — verify undetermined images and enhance them to be safe." : "."}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

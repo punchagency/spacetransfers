@@ -10,7 +10,7 @@ import {
   getItemFootprint,
 } from "../utils";
 import { snapToGridPoint } from "../utils";
-import { CANVAS, PRICING, UNIT } from "../../../../config/artboard.config";
+import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
@@ -132,7 +132,6 @@ export const useArtboardEffects = (
       prevAutoNestOnRef.current = autoNestStickers;
 
       const effectiveMargin = marginSize;
-      const MAX_SHEET_HEIGHT_IN = 1200;
       const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
       let didClamp = false;
 
@@ -384,7 +383,6 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      const MAX_SHEET_HEIGHT_IN = 1200;
       const bounds = items.reduce(
         (acc, item) => {
           const copies = item.copies || 1;

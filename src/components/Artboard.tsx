@@ -19,7 +19,8 @@ import type { AiPanelBridge } from "./artboard/features/ai";
 import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
-import { CANVAS, ZOOM } from "../config/artboard.config";
+import { ACCEPTED_IMAGE_TYPES, CANVAS, MAX_SHEET_HEIGHT_IN, ZOOM } from "../config/artboard.config";
+import { isSheetFull } from "./artboard/lib/utils";
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -128,6 +129,8 @@ export default function Artboard({
     isUploading,
     uploadProgress,
     uploadFileName,
+    batchLoaded,
+    batchTotal,
     cancelUploads,
     dropFilesAtCenter,
     onDragOver,
@@ -358,8 +361,10 @@ export default function Artboard({
 
   const duplicateSelected = () => {
     if (selectedId == null) return;
-    if (items.length >= CANVAS.MAX_ITEMS) {
-      toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items to add more.`);
+    if (isSheetFull(items as any)) {
+      toast.error(
+        `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
+      );
       return;
     }
     const target = items.find((it) => it.id === selectedId);
@@ -452,7 +457,10 @@ export default function Artboard({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/svg+xml"
+        // Same list the drop filter uses. These had drifted: PDF was accepted
+        // when dragged but absent here, so browsing could not select a file
+        // the artboard would happily have taken.
+        accept={ACCEPTED_IMAGE_TYPES.join(",")}
         multiple
         className="hidden"
         onChange={async (e) => {
@@ -478,6 +486,8 @@ export default function Artboard({
           isUploading={isUploading}
           uploadProgress={uploadProgress}
           uploadFileName={uploadFileName}
+          batchLoaded={batchLoaded}
+          batchTotal={batchTotal}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}
           items={items}
