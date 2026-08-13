@@ -124,15 +124,15 @@ const computeRotatedBounds = (wIn: number, hIn: number, rotationDeg: number) => 
   return { wIn: w, hIn: h };
 };
 
-const computeContentBoundsIn = ({
-  sheetWidthIn,
-  sheetHeightIn,
-  artboardItems,
-  itemSpacingIn,
-  sheetMarginIn,
-}: {
+interface PlacedCopyBox {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+interface PlacementParams {
   sheetWidthIn: number;
-  sheetHeightIn: number;
   artboardItems: Array<{
     widthIn: number;
     heightIn: number;
@@ -143,15 +143,25 @@ const computeContentBoundsIn = ({
   }>;
   itemSpacingIn?: number | null;
   sheetMarginIn?: number | null;
-}) => {
+}
+
+/**
+ * Walks every copy the renderer will actually draw, in sheet inches.
+ *
+ * Extracted from `computeContentBoundsIn` so the crop bounds and the export
+ * cut lines are derived from one implementation of the layout. Copies wrap
+ * into columns, rotation changes an item's footprint, and the gap comes from
+ * the sheet's own spacing setting — reproducing that arithmetic a second time
+ * for the splitter is exactly how a cut line ends up landing somewhere the
+ * renderer did not put an edge, which is how a graphic gets sliced in half.
+ */
+const forEachPlacedCopy = (
+  { sheetWidthIn, artboardItems, itemSpacingIn, sheetMarginIn }: PlacementParams,
+  visit: (box: PlacedCopyBox) => void,
+): void => {
   const gapIn = typeof itemSpacingIn === "number" && itemSpacingIn >= 0 ? itemSpacingIn : GROUP_GAP_IN;
   const marginIn = typeof sheetMarginIn === "number" && sheetMarginIn >= 0 ? sheetMarginIn : 0;
   const effectiveWidthIn = sheetWidthIn - 2 * marginIn;
-
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
 
   for (const it of artboardItems) {
     const copies = Math.max(1, Number(it.copies || 1));
@@ -174,17 +184,118 @@ const computeContentBoundsIn = ({
       const cx = xIn + wIn / 2;
       const cy = yIn + hIn / 2;
 
-      const left = cx - rotated.wIn / 2;
-      const top = cy - rotated.hIn / 2;
-      const right = cx + rotated.wIn / 2;
-      const bottom = cy + rotated.hIn / 2;
+      visit({
+        left: cx - rotated.wIn / 2,
+        top: cy - rotated.hIn / 2,
+        right: cx + rotated.wIn / 2,
+        bottom: cy + rotated.hIn / 2,
+      });
+    }
+  }
+};
 
+/** Vertical extent of every drawn copy, in sheet inches. */
+export const computeItemVerticalSpansIn = (
+  params: PlacementParams,
+): Array<{ topIn: number; bottomIn: number }> => {
+  const spans: Array<{ topIn: number; bottomIn: number }> = [];
+  forEachPlacedCopy(params, ({ top, bottom }) => {
+    spans.push({ topIn: top, bottomIn: bottom });
+  });
+  return spans;
+};
+
+/**
+ * Segments a gang sheet into printable lengths that never bisect a graphic.
+ *
+ * `targetLengthIn` is a target, not a clipping boundary. A cut is proposed at
+ * every multiple of it; if any graphic straddles that line the cut moves down
+ * to the far edge of the straddling graphic, so the piece is emitted whole in
+ * the earlier segment rather than appearing cropped in one part and again in
+ * the next. Moving the line can bring it inside a further graphic, so the
+ * search repeats until the line is clear — bounded by the span count, since
+ * every pass clears at least one span.
+ *
+ * Segments are returned back-to-back (`endIn` of one is `startIn` of the next)
+ * so the parts reassemble into exactly the original sheet: no row is emitted
+ * twice and none is dropped.
+ */
+export const computeGangsheetCuts = ({
+  totalHeightIn,
+  spans,
+  targetLengthIn,
+}: {
+  totalHeightIn: number;
+  spans: Array<{ topIn: number; bottomIn: number }>;
+  targetLengthIn: number;
+}): Array<{ startIn: number; endIn: number }> => {
+  const eps = 1e-6;
+  const cuts: Array<{ startIn: number; endIn: number }> = [];
+  if (!(totalHeightIn > 0) || !(targetLengthIn > 0)) return cuts;
+
+  let start = 0;
+  // Bounded independently of the extension loop: each segment consumes at
+  // least one target length or ends the sheet, so this cannot spin.
+  for (let segment = 0; segment < 10_000 && start < totalHeightIn - eps; segment++) {
+    let end = Math.min(start + targetLengthIn, totalHeightIn);
+
+    for (let guard = 0; guard <= spans.length; guard++) {
+      if (end >= totalHeightIn - eps) break;
+      let pushedTo = end;
+      for (const s of spans) {
+        // Straddling means the line falls strictly inside the graphic. A
+        // graphic that merely ends on the line is already whole above it.
+        if (s.topIn < end - eps && s.bottomIn > end + eps && s.bottomIn > pushedTo) {
+          pushedTo = s.bottomIn;
+        }
+      }
+      if (pushedTo <= end + eps) break;
+      end = Math.min(pushedTo, totalHeightIn);
+    }
+
+    end = Math.min(end, totalHeightIn);
+    if (end <= start + eps) break;
+    cuts.push({ startIn: start, endIn: end });
+    start = end;
+  }
+
+  return cuts;
+};
+
+const computeContentBoundsIn = ({
+  sheetWidthIn,
+  sheetHeightIn,
+  artboardItems,
+  itemSpacingIn,
+  sheetMarginIn,
+}: {
+  sheetWidthIn: number;
+  sheetHeightIn: number;
+  artboardItems: Array<{
+    widthIn: number;
+    heightIn: number;
+    posX: number;
+    posY: number;
+    rotation?: number;
+    copies?: number;
+  }>;
+  itemSpacingIn?: number | null;
+  sheetMarginIn?: number | null;
+}) => {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  forEachPlacedCopy(
+    { sheetWidthIn, artboardItems, itemSpacingIn, sheetMarginIn },
+    ({ left, top, right, bottom }) => {
       if (left < minX) minX = left;
       if (top < minY) minY = top;
       if (right > maxX) maxX = right;
       if (bottom > maxY) maxY = bottom;
-    }
-  }
+    },
+  );
 
   if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return null;
   if (!(maxX > minX) || !(maxY > minY)) return null;
