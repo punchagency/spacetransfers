@@ -1,5 +1,6 @@
 import { MdOutlineRemoveShoppingCart } from "react-icons/md";
 import { RiDeleteBin5Line } from "react-icons/ri";
+import GangsheetPreview from "./GangsheetPreview";
 interface CartItem {
   id: number;
   name: string;
@@ -30,71 +31,40 @@ export default function CartStep({
 }: CartStepProps) {
   const renderItemImage = (item: CartItem) => {
     if (item.type === "gangsheet") {
-      console.log("Gang sheet item:", item);
-      console.log("Items array:", item.items);
-      console.log("Items length:", item.items?.length);
-      if (item.items && item.items.length > 0) {
-        console.log("First item:", item.items[0]);
-        console.log("First item URL:", item.items[0]?.url);
-      }
+      // Prefer an accurate scaled replica built from the artboard items so the
+      // whole sheet is visible with no cropping. A captured snapshot image (if
+      // one exists) is shown contained — never cover — so it is never clipped.
+      const hasSnapshot =
+        item.image && item.image !== "/placeholder-gangsheet.png";
       return (
-        <div className="w-24 h-24 bg-gray-100 rounded border border-gray-200 flex-shrink-0 overflow-hidden">
-          {item.image && item.image !== "/placeholder-gangsheet.png" ? (
+        <div className="bg-[#E9F2F1] rounded border border-gray-200 flex-shrink-0 flex items-center justify-center overflow-hidden">
+          {hasSnapshot ? (
             <img
               src={item.image}
               alt={item.name}
-              className="w-full h-full object-cover"
+              className="object-contain"
+              style={{ maxWidth: 120, maxHeight: 160 }}
             />
           ) : item.items && item.items.length > 0 ? (
-            <div className="w-full h-full bg-[#E9F2F1] flex items-center justify-center p-1">
-              <div className="w-full h-full bg-white rounded shadow-sm flex items-center justify-center overflow-hidden">
-                <div
-                  className="grid gap-0.5 p-0.5"
-                  style={{
-                    gridTemplateColumns: `repeat(${Math.min(3, Math.ceil(Math.sqrt(item.items.length)))}, 1fr)`,
-                  }}
-                >
-                  {item.items.map((subItem: any, idx: number) => {
-                    console.log(
-                      `Rendering item ${idx}:`,
-                      subItem,
-                      "URL:",
-                      subItem?.url,
-                    );
-                    return (
-                      <div key={idx} className="relative aspect-square">
-                        <img
-                          src={subItem.url}
-                          alt=""
-                          className="w-full h-full object-contain"
-                          onError={(e) =>
-                            console.error(
-                              "Image failed to load:",
-                              subItem.url,
-                              e,
-                            )
-                          }
-                          onLoad={() =>
-                            console.log(
-                              "Image loaded successfully:",
-                              subItem.url,
-                            )
-                          }
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+            <GangsheetPreview
+              items={item.items}
+              sheetWidthIn={item.widthIn}
+              sheetHeightIn={item.heightIn}
+              marginIn={(item as any).sheetMarginIn}
+              spacingIn={(item as any).itemSpacingIn}
+              maxWidth={120}
+              maxHeight={160}
+            />
           ) : (
-            <div className="text-4xl flex items-center justify-center">📋</div>
+            <div className="w-16 h-16 sm:w-24 sm:h-24 text-4xl flex items-center justify-center">
+              📋
+            </div>
           )}
         </div>
       );
     }
     return (
-      <div className="w-24 h-24 bg-gray-100 rounded border border-gray-200 flex items-center justify-center flex-shrink-0">
+      <div className="w-16 h-16 sm:w-24 sm:h-24 bg-gray-100 rounded border border-gray-200 flex items-center justify-center flex-shrink-0">
         {item.image ? (
           <img
             src={item.image}
@@ -109,7 +79,7 @@ export default function CartStep({
   };
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6">
+    <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
       <h3 className="text-base font-semibold text-gray-900 mb-4">
         Cart ({cartItems.length})
       </h3>
@@ -119,7 +89,7 @@ export default function CartStep({
           <div className="w-32 h-32 mb-0 opacity-40">
             <MdOutlineRemoveShoppingCart size={100} />
           </div>
-          <h4 className="text-lg font-semibold text-gray-900 mb-2">
+          <h4 className="text-base sm:text-lg font-semibold text-gray-900 mb-2">
             Your cart is empty
           </h4>
           <p className="text-sm text-gray-500 text-center max-w-xs mb-6">
@@ -138,8 +108,8 @@ export default function CartStep({
               className="flex gap-4 pb-6 border-b border-gray-200 last:border-0"
             >
               {renderItemImage(item)}
-              <div className="flex-1">
-                <div className="flex justify-between items-start">
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start">
                   <div>
                     <h4 className="font-semibold text-gray-900">{item.name}</h4>
                     <div className="text-sm text-gray-600 mt-1">
@@ -162,8 +132,13 @@ export default function CartStep({
                   </div>
                   <div>
                     <div className="text-lg font-semibold text-right">
-                      ${item.price}
+                      ${((item.price || 0) * (item.quantity || item.copies || 1)).toFixed(2)}
                     </div>
+                    {(item.quantity || item.copies || 1) > 1 && (
+                      <div className="text-xs text-gray-500 text-right">
+                        ${(item.price || 0).toFixed(2)} each
+                      </div>
+                    )}
                     <div className="flex flex-col items-end gap-2 mt-2">
                       <div className="flex items-center border border-gray-300 rounded overflow-hidden">
                         <button
@@ -184,10 +159,10 @@ export default function CartStep({
                       </div>
                       <button
                         onClick={() => removeItem(item.id)}
-                        className="flex items-center gap-1 text-sm text-red-600 hover:text-red-700"
+                        className="flex items-center justify-center text-gray-700 hover:text-gray-900"
+                        aria-label="Remove item"
                       >
                         <RiDeleteBin5Line className="w-4 h-4" />
-                        Delete
                       </button>
                     </div>
                   </div>

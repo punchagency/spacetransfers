@@ -2,9 +2,53 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>React + TypeScript + Replit</title>
+
+    <title>Space Transfers — Gang Sheet Builder</title>
+    <meta
+      name="description"
+      content="Build print-ready DTF gang sheets in your browser. Upload artwork, auto-nest it onto the sheet, edit with AI, and order transfers with live pricing."
+    />
+
+    <!-- Tab icon. PNG rather than the source SVG on purpose: space.svg is a
+         125 kB base64 PNG in an SVG wrapper, so it carries none of the
+         scalability an SVG favicon is chosen for while costing ~70× the bytes
+         of the 32px raster. 512px covers install prompts; apple-touch-icon is
+         what iOS uses for a home-screen shortcut. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f172a" />
+
+    <!-- Link previews (Open Graph): Slack, iMessage, WhatsApp, LinkedIn, Facebook.
+         `og:image` is made absolute at build time when VITE_SITE_URL is set —
+         several scrapers refuse to resolve a relative image path, which is
+         exactly what leaves a shared link rendering as a bare URL. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Space Transfers" />
+    <meta property="og:title" content="Space Transfers — Gang Sheet Builder" />
+    <meta
+      property="og:description"
+      content="Build print-ready DTF gang sheets in your browser. Upload artwork, auto-nest it onto the sheet, edit with AI, and order transfers with live pricing."
+    />
+    <meta property="og:image" content="%SITE%/og-image.png" />
+    <!-- Declared so a card reserves the right shape before the image loads,
+         rather than reflowing from a square placeholder. -->
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Space Transfers — an astronaut riding a rocket, beside the words Gang Sheet Builder"
+    />
+
+    <!-- X/Twitter reads its own namespace and requires an absolute image URL. -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Space Transfers — Gang Sheet Builder" />
+    <meta
+      name="twitter:description"
+      content="Build print-ready DTF gang sheets in your browser. Upload artwork, auto-nest it onto the sheet, edit with AI, and order transfers with live pricing."
+    />
+    <meta name="twitter:image" content="%SITE%/og-image.png" />
   </head>
   <body>
     <div id="root"></div>

@@ -1,8 +1,18 @@
 import { useEffect, useState, useRef } from "react";
 import { ArtboardItem } from "../../types";
 import { animateItemPosition } from "../utils";
-import { calculateGridLayout } from "../utils";
+import {
+  calculateGridLayout,
+  getRenderedGroupSize,
+  isLowDpi,
+  isUnknownDpi,
+  computeGroupDims,
+  planLocalDisplacement,
+  getItemFootprint,
+} from "../utils";
 import { snapToGridPoint } from "../utils";
+import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
   items: ArtboardItem[],
@@ -14,6 +24,7 @@ export const useArtboardEffects = (
   autoNestStickers: boolean,
   marginSize: number,
   isDraggingItem: boolean,
+  isResizing: boolean,
   showRulers: boolean,
   onHeaderInfoChange?: (info: any) => void,
   initialData?: any,
@@ -25,6 +36,12 @@ export const useArtboardEffects = (
   >({});
   const [lastConfig, setLastConfig] = useState({ marginSize, spacing });
   const prevItemsRef = useRef<ArtboardItem[]>([]);
+  const warnedMaxHeightRef = useRef(false);
+  const rebuildTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounced so a burst of rapid edits (e.g. dragging a copies stepper,
+  // several quick duplicates) coalesces into one repack instead of running
+  // the full free-rectangle engine on every intermediate state.
+  const REBUILD_DEBOUNCE_MS = 150;
 
   // Load initial data
   useEffect(() => {
@@ -41,10 +58,10 @@ export const useArtboardEffects = (
   }, [items, counter, onDataChange]);
 
 
-  // Animate items only when gravity is active
+  // Animate items only when gravity is active (and not suppressed by a copies change)
   useEffect(() => {
     items.forEach((it) => {
-      if (!it.gravityActive) return;
+      if (!it.gravityActive || it.skipAnimation) return;
 
       const element = document.querySelector(
         `[data-item-id="${it.id}"]`
@@ -52,6 +69,13 @@ export const useArtboardEffects = (
       if (!element) return;
 
       const prevItem = prevItemsRef.current.find(p => p.id === it.id);
+      // Skip if position hasn't actually changed — avoids spurious shake before layout runs.
+      if (
+        prevItem &&
+        Math.abs(it.posX - prevItem.posX) <= 0.001 &&
+        Math.abs(it.posY - prevItem.posY) <= 0.001
+      ) return;
+
       animateItemPosition(element, it.posX, it.posY, true, prevItem?.posX, prevItem?.posY);
     });
 
@@ -59,56 +83,274 @@ export const useArtboardEffects = (
     prevItemsRef.current = items;
   }, [items]);
 
-  // Gravity layout and Auto Nesting
+  // Layout maintenance runs in one of two modes, chosen by the Auto-Nest
+  // toggle:
+  //
+  //  • Auto-Nest ON  — CONTINUOUS gravity nesting. Every change (move, resize,
+  //    rotate, copies, add) re-optimizes the WHOLE sheet from scratch via the
+  //    free-rectangle engine (largest items settle to the top), so the board is
+  //    always in a perfectly arranged state. Even items the user hand-dragged
+  //    (pinned) get folded back in. Turning the toggle on after arranging
+  //    things by hand therefore snaps everything back to a clean nest.
+  //
+  //  • Auto-Nest OFF — the iOS-icon model. A change to one item only displaces
+  //    the neighbors it actually collides with (see planLocalDisplacement);
+  //    everything else stays exactly where the user put it. A margin/spacing
+  //    change still triggers one global re-gap (honoring pinned placements),
+  //    since the geometry rules themselves changed.
+  //
+  // Either way this is skipped while the user is actively resizing/dragging
+  // (the drag system owns collision resolution during a drag) or while a
+  // just-dropped item's entrance animation is still playing.
+  const geomKey = (it: ArtboardItem) =>
+    `${it.posX.toFixed(3)}|${it.posY.toFixed(3)}|${it.widthIn.toFixed(4)}|${it.heightIn.toFixed(4)}|${it.copies}|${it.rotation}|${it.nestRotation ?? 0}`;
+  const lastResolvedRef = useRef<Map<number, string> | null>(null);
+  const prevAutoNestOnRef = useRef(autoNestStickers);
+
   useEffect(() => {
-    const hasGravity = items.some((it) => it.gravityActive);
-    const configChanged = lastConfig.marginSize !== marginSize || lastConfig.spacing !== spacing;
     const isAnyItemDropping = items.some(it => it.isDropping);
 
-    if (canvasWidth === 0 || isAnyItemDropping || (!autoNestStickers && !hasGravity && !configChanged)) {
+    if (isResizing || isDraggingItem || canvasWidth === 0 || isAnyItemDropping) {
       prevItemsRef.current = items;
+      if (rebuildTimerRef.current) {
+        clearTimeout(rebuildTimerRef.current);
+        rebuildTimerRef.current = null;
+      }
       return;
     }
 
-    if (configChanged) {
-      setLastConfig({ marginSize, spacing });
-    }
+    if (rebuildTimerRef.current) clearTimeout(rebuildTimerRef.current);
+    rebuildTimerRef.current = setTimeout(() => {
+      rebuildTimerRef.current = null;
 
-    // Add fixed 20px offset to match CanvasMargins visual position
-    const offsetInches = 20 / 96;
-    const effectiveMargin = marginSize + offsetInches;
+      const configChanged = lastConfig.marginSize !== marginSize || lastConfig.spacing !== spacing;
+      if (configChanged) {
+        setLastConfig({ marginSize, spacing });
+      }
+      // Capture the OFF→ON transition before overwriting the ref — turning
+      // auto-nest on must force a repack even if no item geometry changed.
+      const autoNestJustTurnedOn = autoNestStickers && !prevAutoNestOnRef.current;
+      prevAutoNestOnRef.current = autoNestStickers;
 
-    const updates = calculateGridLayout(items, canvasWidth, spacing, autoNestStickers, effectiveMargin);
+      const effectiveMargin = marginSize;
+      const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
+      let didClamp = false;
 
-    setItems((prev) => {
-      const needsUpdate = prev.some(it => {
-        const update = updates.find((u) => u.id === it.id);
-        if (!update) return false;
-        return Math.abs(update.posX - it.posX) > 0.001 || Math.abs(update.posY - it.posY) > 0.001;
-      });
+      const clampPosY = (u: { widthIn: number; heightIn: number; copies?: number; posY: number }) => {
+        const copies = typeof u.copies === "number" && u.copies > 0 ? u.copies : 1;
+        const { height: groupH } = getRenderedGroupSize(u.widthIn, u.heightIn, copies, maxAvailableWidth);
+        const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupH);
+        const nextPosY = Math.max(0, Math.min(u.posY, maxPosY));
+        if (nextPosY < u.posY - 0.001) didClamp = true;
+        return nextPosY;
+      };
 
-      if (!needsUpdate && !configChanged) return prev;
+      const snapshotAndBail = () => {
+        lastResolvedRef.current = new Map(items.map((it) => [it.id, geomKey(it)]));
+      };
 
-      return prev.map((it) => {
-        const update = updates.find((u: any) => u.id === it.id);
-        if (update) {
+      // Non-geometric change guard: if nothing that affects layout changed
+      // (same items, identical geomKeys), leave the canvas EXACTLY as-is — no
+      // repack, no displacement, no position writes. This is what makes locking
+      // an item (or any interaction-only toggle like flip) purely change its
+      // state without rearranging the board, even when Auto-Nest is on. A
+      // config change or the auto-nest turning on still forces the repack below.
+      const prevKeysForGuard = lastResolvedRef.current;
+      if (prevKeysForGuard && !configChanged && !autoNestJustTurnedOn) {
+        const noLayoutChange =
+          prevKeysForGuard.size === items.length &&
+          items.every((it) => prevKeysForGuard.get(it.id) === geomKey(it));
+        if (noLayoutChange) {
+          snapshotAndBail();
+          return;
+        }
+        // Free-placement guard: when the ONLY change is pinned (hand-dragged)
+        // items being MOVED — a pure position change, nothing resized — the
+        // user just repositioned them by hand, so leave every other image
+        // EXACTLY where it is (a drag moves only the dragged image). A resize,
+        // rotation or copy-count change alters the size fields, so it is NOT
+        // caught here and still reflows neighbors to stay gap-free and
+        // collision-free, even for a pinned item.
+        const changed = items.filter(
+          (it) => prevKeysForGuard.get(it.id) !== geomKey(it),
+        );
+        const isPurePositionMove = (it: ArtboardItem) => {
+          const prev = prevKeysForGuard.get(it.id);
+          if (prev === undefined) return false;
+          // geomKey = posX|posY|widthIn|heightIn|copies|rotation|nestRotation.
+          // Only the two position fields may differ for a plain drag.
+          const p = prev.split("|");
+          const c = geomKey(it).split("|");
+          return p[2] === c[2] && p[3] === c[3] && p[4] === c[4] && p[5] === c[5] && p[6] === c[6];
+        };
+        if (changed.length > 0 && changed.every((it) => it.pinned && isPurePositionMove(it))) {
+          snapshotAndBail();
+          return;
+        }
+      }
+
+      let updatesToUse: ArtboardItem[];
+
+      // Auto-nest ON → re-nest continuously on every change; a margin/spacing
+      // change also forces one global re-gap even when auto-nest is off.
+      const runGlobalPack = autoNestStickers || configChanged;
+      if (runGlobalPack) {
+        // Strip `pinned` ONLY at the moment auto-nest is switched on, so a
+        // hand-arranged board snaps into a clean nest on that toggle. While
+        // auto-nest simply stays on, a pin set by dragging is respected — the
+        // dragged item keeps its dropped position and everything else nests
+        // around it, instead of snapping back on the next repack.
+        const source = autoNestJustTurnedOn
+          ? items.map((it) => (it.pinned ? { ...it, pinned: false } : it))
+          : items;
+        const updates = calculateGridLayout(
+          source,
+          canvasWidth,
+          spacing,
+          autoNestStickers,
+          effectiveMargin,
+        ) as ArtboardItem[];
+        updatesToUse = updates.map((u) => ({ ...u, posY: clampPosY(u) }));
+      } else {
+        // Diff against the last resolved layout to find what actually changed.
+        const prevKeys = lastResolvedRef.current;
+        const changedIds: number[] = [];
+        for (const it of items) {
+          const key = prevKeys?.get(it.id);
+          if (key === undefined || key !== geomKey(it)) changedIds.push(it.id);
+        }
+        if (prevKeys === null || changedIds.length === 0) {
+          snapshotAndBail();
+          return;
+        }
+
+        // Refresh the changed items' own copies-grid geometry (a copies or
+        // size change reshapes their flow), clamp them into the sheet, then
+        // displace only whatever neighbors they now collide with.
+        const changedSet = new Set(changedIds);
+        const withFlow = items.map((it) => {
+          if (!changedSet.has(it.id)) return it;
+          const copies = Math.max(1, it.copies || 1);
+          const rotated = it.nestRotation === 90;
+          const w = rotated ? it.heightIn : it.widthIn;
+          const h = rotated ? it.widthIn : it.heightIn;
+          const next: ArtboardItem = { ...it, posY: clampPosY(it) };
+          if (copies > 1) {
+            const { cols } = computeGroupDims(
+              Math.max(1e-6, w),
+              Math.max(1e-6, h),
+              copies,
+              maxAvailableWidth,
+              spacing,
+            );
+            next.flowCols = cols;
+            next.flowStartCol = 0;
+            next.flowEndCol = (copies - 1) % cols;
+          } else {
+            next.flowCols = undefined;
+            next.flowStartCol = undefined;
+            next.flowEndCol = undefined;
+          }
+          // Keep the changed item's own footprint inside the printable width.
+          const fp = getItemFootprint(next, canvasWidth, effectiveMargin, spacing);
+          const maxPosX = Math.max(effectiveMargin, canvasWidth - effectiveMargin - fp.w);
+          next.posX = Math.max(effectiveMargin, Math.min(next.posX, maxPosX));
+          return next;
+        });
+
+        const moves = planLocalDisplacement(withFlow, changedIds, canvasWidth, effectiveMargin, spacing);
+        updatesToUse = withFlow.map((it) => {
+          const m = moves.get(it.id);
+          if (!m) return it;
+          return { ...it, posX: m.posX, posY: clampPosY({ ...it, posY: m.posY }) };
+        });
+      }
+
+      if (didClamp && !warnedMaxHeightRef.current) {
+        toast.error("Max sheet height of 1200 inches reached.");
+        warnedMaxHeightRef.current = true;
+      }
+
+      lastResolvedRef.current = new Map(updatesToUse.map((it) => [it.id, geomKey(it)]));
+
+      setItems((prev) => {
+        // Indexed once. Both passes below used `updatesToUse.find(...)` per
+        // item, so resolving a layout was quadratic in item count — and this
+        // runs on every board change, not just on upload.
+        const updateById = new Map(updatesToUse.map((u) => [u.id, u]));
+
+        const needsUpdate = prev.some(it => {
+          const update = updateById.get(it.id);
+          if (!update) return false;
+          // Check position AND flow geometry — flow shape can change without position moving
+          // (e.g. copies count changes within an already-placed group in the same lane).
+          return (
+            Math.abs(update.posX - it.posX) > 0.001 ||
+            Math.abs(update.posY - it.posY) > 0.001 ||
+            update.flowCols !== it.flowCols ||
+            update.flowStartCol !== it.flowStartCol ||
+            update.flowEndCol !== it.flowEndCol ||
+            (update.nestRotation ?? 0) !== (it.nestRotation ?? 0)
+          );
+        });
+
+        if (!needsUpdate && !prev.some((it) => it.skipAnimation)) return prev;
+
+        return prev.map((it) => {
+          const update = updateById.get(it.id);
+          if (!update) return it.skipAnimation ? { ...it, skipAnimation: false } : it;
+
           const hasMoved = Math.abs(update.posX - it.posX) > 0.001 || Math.abs(update.posY - it.posY) > 0.001;
-
-          const isBeingDragged = isDraggingItem && it.id === selectedId;
-          const shouldFollowLayout = !isBeingDragged && (autoNestStickers || it.gravityActive || configChanged);
-
-          if (!shouldFollowLayout) {
-            // If order changed but we shouldn't follow layout yet (dragging), 
-            // we still need to preserve the gravityActive flag if it's set elsewhere
+          if (
+            !hasMoved &&
+            update.flowCols === it.flowCols &&
+            update.flowStartCol === it.flowStartCol &&
+            update.flowEndCol === it.flowEndCol &&
+            (update.nestRotation ?? 0) === (it.nestRotation ?? 0) &&
+            !it.skipAnimation &&
+            !it.gravityActive
+          ) {
             return it;
           }
 
-          return { ...it, posX: update.posX, posY: update.posY, gravityActive: hasMoved };
-        }
-        return it;
+          return {
+            ...it,
+            posX: update.posX,
+            posY: update.posY,
+            flowCols: update.flowCols,
+            flowStartCol: update.flowStartCol,
+            flowEndCol: update.flowEndCol,
+            nestRotation: (update.nestRotation ?? 0) as 0 | 90,
+            // When a copies change triggered this reflow, suppress animation and clear the flag.
+            gravityActive: it.skipAnimation ? false : hasMoved,
+            skipAnimation: false,
+          };
+        });
       });
-    });
-  }, [items, canvasWidth, autoNestStickers, spacing, marginSize, lastConfig, setItems, isDraggingItem, selectedId]);
+    }, REBUILD_DEBOUNCE_MS);
+
+    return () => {
+      if (rebuildTimerRef.current) {
+        clearTimeout(rebuildTimerRef.current);
+        rebuildTimerRef.current = null;
+      }
+    };
+  }, [items, canvasWidth, autoNestStickers, spacing, marginSize, lastConfig, setItems, isDraggingItem, isResizing]);
+
+  // Clear nest-rotation when auto-nest is turned off so items revert to their
+  // natural orientation instead of remaining in the layout-assigned rotation.
+  const prevAutoNestRef = useRef(autoNestStickers);
+  useEffect(() => {
+    const wasOn = prevAutoNestRef.current;
+    prevAutoNestRef.current = autoNestStickers;
+    if (wasOn && !autoNestStickers) {
+      setItems(prev =>
+        prev.map(it =>
+          (it.nestRotation ?? 0) !== 0 ? { ...it, nestRotation: 0 as const } : it
+        )
+      );
+    }
+  }, [autoNestStickers, setItems]);
 
   // Snap to grid
   useEffect(() => {
@@ -142,44 +384,96 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      // Use exact ruler dimensions
-      // Top ruler: 24 inches
-      // Left ruler: 19.5 inches (24 inches height - ruler offset)
-      const gangSheetWidthIn = 24;
-      const gangSheetHeightIn = 19.5;
+      const bounds = items.reduce(
+        (acc, item) => {
+          const copies = item.copies || 1;
+          const gap = CANVAS.GRID_GAP_IN;
+          const effectiveMargin = marginSize;
+          const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
 
-      const areaSf = +((gangSheetWidthIn * gangSheetHeightIn) / 144).toFixed(2);
+          const scaledWidth = item.widthIn;
+          const scaledHeight = item.heightIn;
+          const capacityCols = Math.max(
+            1,
+            Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
+          );
+          const visibleCols = Math.min(copies, capacityCols);
+          const rows = Math.ceil(copies / capacityCols);
 
-      // Calculate total price based on all items on the artboard
-      const totalPrice = items.reduce((sum, item) => {
-        const itemWidthIn = +item.widthIn.toFixed(2);
-        const itemHeightIn = +item.heightIn.toFixed(2);
-        const itemAreaSf = +((itemWidthIn * itemHeightIn) / 144).toFixed(2);
-        const pricePerSqFt = 5.5;
-        const itemPrice = +(itemAreaSf * pricePerSqFt * (item.copies || 1)).toFixed(2);
-        return sum + itemPrice;
-      }, 0);
+          const groupWidthRaw =
+            visibleCols * scaledWidth + (visibleCols - 1) * gap;
+          const maxGroupWidth = Math.max(0, maxAvailableWidth);
+          const groupWidth = Math.min(groupWidthRaw, maxGroupWidth);
+
+          const groupHeight =
+            rows * scaledHeight + (rows - 1) * gap;
+
+          const centeredLeft =
+            effectiveMargin + (maxAvailableWidth - groupWidth) / 2;
+          const rightBoundLeft = canvasWidth - effectiveMargin - groupWidth;
+          const clampedLeft =
+            copies > 1
+              ? Math.max(
+                  effectiveMargin,
+                  Math.min(centeredLeft, rightBoundLeft),
+                )
+              : Math.max(effectiveMargin, item.posX);
+          const maxTopBySheetLimit = Math.max(
+            0,
+            MAX_SHEET_HEIGHT_IN - groupHeight,
+          );
+          const clampedTop = Math.min(
+            Math.max(effectiveMargin, item.posY),
+            maxTopBySheetLimit,
+          );
+
+          const left = clampedLeft;
+          const top = clampedTop;
+          const right = clampedLeft + groupWidth;
+          const bottom = clampedTop + groupHeight;
+          return {
+            minX: Math.min(acc.minX, left),
+            minY: Math.min(acc.minY, top),
+            maxX: Math.max(acc.maxX, right),
+            maxY: Math.max(acc.maxY, bottom),
+          };
+        },
+        { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: 0, maxY: 0 },
+      );
+
+      const usedWidthIn = items.length > 0 ? Math.max(0, bounds.maxX) : 0;
+      const usedHeightIn = items.length > 0 ? Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bounds.maxY)) : 0;
+
+      // Pricing is based on actual utilized area (not hardcoded).
+      const totalAreaSf = +(
+        (usedWidthIn * usedHeightIn) /
+        PRICING.SQUARE_INCHES_PER_SQ_FT
+      ).toFixed(UNIT.INCH.DECIMALS);
+      const totalPrice = +(totalAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(
+        UNIT.INCH.DECIMALS,
+      );
 
       // Collect all image names
       const imageNames = items.map(item =>
         (item.name || `Item #${item.id}`).replace(/\.[^/.]+$/, "")
       );
 
-      // Get selected item name or default to "Gang Sheet"
-      const selectedItem = selectedId ? items.find(item => item.id === selectedId) : null;
-      const displayName = selectedItem
-        ? (selectedItem.name || `Item #${selectedItem.id}`).replace(/\.[^/.]+$/, "")
-        : 'Instant hot peel';
+      // Default to "Instant hot peel" and do not change when items are selected
+      const displayName = 'Instant hot peel';
 
       onHeaderInfoChange({
         hasItem: items.length > 0,
-        areaSf,
-        widthIn: gangSheetWidthIn,
-        heightIn: gangSheetHeightIn,
+        areaSf: totalAreaSf,
+        widthIn: +usedWidthIn.toFixed(UNIT.INCH.DECIMALS),
+        heightIn: +usedHeightIn.toFixed(UNIT.INCH.DECIMALS),
         name: displayName,
         price: totalPrice,
         imageNames,
+        // Shared with the on-sheet highlight, so the chip's number and the
+        // artwork it lights up can never disagree.
+        lowDpiCount: items.filter(isLowDpi).length,
+        unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
-  }, [items, selectedId, onHeaderInfoChange]);
+  }, [items, canvasWidth, marginSize, onHeaderInfoChange]);
 };

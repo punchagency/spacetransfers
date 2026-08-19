@@ -8,28 +8,40 @@ interface LoadGangSheetModalProps {
   isOpen: boolean;
   onClose: () => void;
   designs: Array<{
-    id: number;
+    id: string;
     title: string;
     time: string;
     size: string;
     thumbnail: string;
   }>;
-  onRename?: (id: number, newTitle: string) => void;
-  onDuplicate?: (id: number) => void;
-  onDelete?: (id: number) => void;
-  onLoad?: (id: number) => void;
+  onRename?: (id: string, newTitle: string) => void;
+  onDuplicate?: (id: string) => void;
+  onDelete?: (id: string) => void;
+  onLoad?: (id: string) => void;
+  onSearch?: (term: string) => void;
 }
 
-const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose, designs, onRename, onDuplicate, onDelete, onLoad }) => {
-  const [editingId, setEditingId] = useState<number | null>(null);
+const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose, designs, onRename, onDuplicate, onDelete, onLoad, onSearch }) => {
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const timeoutRef = React.useRef<ReturnType<typeof setTimeout>>();
 
-  const handleRename = (id: number, currentTitle: string) => {
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const term = e.target.value;
+    setSearchTerm(term);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      if (onSearch) onSearch(term);
+    }, 300);
+  };
+
+  const handleRename = (id: string, currentTitle: string) => {
     setEditingId(id);
     setEditTitle(currentTitle);
   };
 
-  const saveRename = (id: number) => {
+  const saveRename = (id: string) => {
     if (onRename && editTitle.trim()) {
       onRename(id, editTitle.trim());
     }
@@ -37,46 +49,48 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
     setEditTitle("");
   };
 
-  const handleDuplicate = (id: number) => {
+  const handleDuplicate = (id: string) => {
     if (onDuplicate) onDuplicate(id);
   };
 
-  const handleDelete = (id: number) => {
+  const handleDelete = (id: string) => {
     if (onDelete) onDelete(id);
   };
 
   if (!isOpen) return null;
 
   return (
-    <div onClick={onClose} className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs">
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl mx-4">
+    <div onClick={onClose} className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto py-4 sm:py-6 bg-black/20 backdrop-blur-xs">
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl mx-3 sm:mx-4 my-auto">
         {/* Header */}
-        <div className="flex items-center gap-4   px-6 py-5">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 shadow-md">
-            <FaRegFolderOpen className="h-6 w-6 text-white" />
+        <div className="flex items-center gap-3 sm:gap-4 px-4 py-4 sm:px-6 sm:py-5">
+          <div className="flex h-10 w-10 sm:h-12 sm:w-12 flex-shrink-0 items-center justify-center rounded-xl bg-blue-600 shadow-md">
+            <FaRegFolderOpen className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
           </div>
-          <div>
-            <h2 className="text-[24px] text-gray-900">Gang Sheet Gallery</h2>
-            <p className="text-[14px] text-gray-500">
+          <div className="min-w-0">
+            <h2 className="text-[18px] sm:text-[24px] text-gray-900 truncate">Gang Sheet Gallery</h2>
+            <p className="text-[12px] sm:text-[14px] text-gray-500">
               Browse and manage your saved gang sheets
             </p>
           </div>
         </div>
 
         {/* Search */}
-        <div className="border-b border-[#E2E8F0] px-6 py-4">
+        <div className="border-b border-[#E2E8F0] px-4 py-3 sm:px-6 sm:py-4">
           <div className="relative">
             <FiSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
               placeholder="Search designs..."
-              className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-11 pr-4 text-sm text-gray-700 shadow-sm outline-none focus:border-gray-300"
+              className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-11 pr-4 text-sm text-gray-700 shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              value={searchTerm}
+              onChange={handleSearchChange}
             />
           </div>
         </div>
 
         {/* Gang Sheet Cards */}
-        <div className="p-6 pb-8 flex gap-4 overflow-x-auto min-h-[320px]">
+        <div className="p-4 sm:p-6 pb-8 flex gap-4 overflow-x-auto min-h-[280px] sm:min-h-[320px]">
           {designs.length === 0 ? (
             <div className="w-full flex flex-col items-center justify-center text-gray-500">
               <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4">
@@ -91,7 +105,7 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
             designs.map((design) => (
               <div
                 key={design.id}
-                className="w-[260px] flex-shrink-0 overflow-hidden rounded-2xl border-2 border-[#E2E8F0] hover:border-[#155DFC] bg-white shadow-sm cursor-pointer hover:shadow-md transition-all group relative"
+                className="w-[220px] sm:w-[260px] flex-shrink-0 overflow-hidden rounded-2xl border-2 border-[#E2E8F0] hover:border-[#155DFC] bg-white shadow-sm cursor-pointer hover:shadow-md transition-all group relative"
                 onClick={() => {
                   if (onLoad) {
                     onLoad(design.id);
@@ -101,6 +115,7 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
               >
                 <div className="relative h-[200px] bg-[#E9F2F1] overflow-hidden flex items-center justify-center">
                   <img
+                    key={design.thumbnail}
                     src={design.thumbnail}
                     alt={design.title}
                     className="w-full h-full object-contain"
@@ -125,10 +140,10 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
                     <span>{design.size}</span>
                   </div>
                 </div>
-                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                   <button
                     className="flex items-center gap-1 text-gray-700 hover:text-gray-900"
-                    onClick={(e) => {
+                    onClick={(e) => { 
                       e.stopPropagation();
                       handleRename(design.id, design.title);
                     }}
@@ -162,8 +177,8 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
         </div>
 
         {/* Footer */}
-        <div className="flex bg-[#F8FAFC]  items-center justify-between border-t border-[#E2E8F0] px-6 py-4">
-          <p className="text-sm text-gray-500">
+        <div className="flex bg-[#F8FAFC] items-center justify-between gap-3 border-t border-[#E2E8F0] px-4 py-3 sm:px-6 sm:py-4">
+          <p className="text-xs sm:text-sm text-gray-500">
             Click on any design to load it
           </p>
           <button

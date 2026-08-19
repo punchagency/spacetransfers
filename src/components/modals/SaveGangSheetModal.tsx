@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MdClose } from "react-icons/md";
 import { LiaSave } from "react-icons/lia";
 import { FiFileText } from "react-icons/fi";
@@ -8,6 +8,7 @@ interface SaveGangSheetModalProps {
   onClose: () => void;
   onSave: (title: string, thumbnail: string, data: any) => void;
   artboardData?: any;
+  initialTitle?: string | null;
 }
 
 const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
@@ -15,53 +16,62 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
   onClose,
   onSave,
   artboardData,
+  initialTitle,
 }) => {
   const [designName, setDesignName] = useState("Untitled Design");
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setDesignName(initialTitle?.trim() || "Untitled Design");
+  }, [isOpen, initialTitle]);
 
   const handleSave = async () => {
     const artboard = document.querySelector(
       ".flex-1.relative.flex.items-center",
     ) as HTMLElement;
     if (artboard) {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
+      // Cap at 2× so thumbnails stay manageable on 3× mobile screens while still
+      // being Retina-sharp on all desktop displays.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const rect = artboard.getBoundingClientRect();
-      canvas.width = rect.width * 0.5;
-      canvas.height = rect.height * 0.5;
+      const canvas = document.createElement("canvas");
+      canvas.width  = Math.round(rect.width  * dpr);
+      canvas.height = Math.round(rect.height * dpr);
 
+      const ctx = canvas.getContext("2d");
       if (ctx) {
-        const gridBg = artboard.querySelector(
-          ".absolute.inset-0.z-0",
-        ) as HTMLElement;
-        if (gridBg) {
-          const bgStyle = window.getComputedStyle(gridBg);
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // Scale so draw calls use CSS pixel coordinates; the canvas is already
+        // sized in physical (dpr-scaled) pixels.
+        ctx.scale(dpr, dpr);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
 
+        // White background base
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, rect.width, rect.height);
+
+        const gridBg = artboard.querySelector(".absolute.inset-0.z-0") as HTMLElement;
+        if (gridBg) {
           const pattern = ctx.createPattern(
-            await createPatternCanvas(bgStyle),
+            await createPatternCanvas(window.getComputedStyle(gridBg)),
             "repeat",
           );
           if (pattern) {
             ctx.fillStyle = pattern;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillRect(0, 0, rect.width, rect.height);
           }
         }
 
-        const images = artboard.querySelectorAll('img[alt="dropped"]');
+        const images = artboard.querySelectorAll('img[alt^="copy-"], img[alt="dropped"]');
         for (const img of Array.from(images)) {
           const htmlImg = img as HTMLImageElement;
-          const parent = htmlImg.parentElement;
-          if (parent) {
-            const imgRect = parent.getBoundingClientRect();
-            const x = (imgRect.left - rect.left) * 0.5;
-            const y = (imgRect.top - rect.top) * 0.5;
-            const w = imgRect.width * 0.5;
-            const h = imgRect.height * 0.5;
-            ctx.drawImage(htmlImg, x, y, w, h);
-          }
+          const imgRect = htmlImg.getBoundingClientRect();
+          const x = imgRect.left - rect.left;
+          const y = imgRect.top  - rect.top;
+          ctx.drawImage(htmlImg, x, y, imgRect.width, imgRect.height);
         }
 
+        // Lossless PNG thumbnail — no JPEG compression artifacts
         const thumbnail = canvas.toDataURL("image/png");
         onSave(designName, thumbnail, artboardData);
         setDesignName("Untitled Design");
@@ -91,12 +101,13 @@ const SaveGangSheetModal: React.FC<SaveGangSheetModalProps> = ({
   };
 
   if (!isOpen) return null;
-
+ 
   return (
     <div
       onClick={onClose}
       className="fixed inset-0 flex items-center justify-center bg-black/20 backdrop-blur-xs z-50"
     >
+
       <div
         onClick={(e) => e.stopPropagation()}
         className="bg-white rounded-[18px] shadow-lg w-full max-w-md mx-4"
