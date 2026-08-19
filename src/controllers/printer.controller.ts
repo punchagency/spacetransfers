@@ -27,6 +27,8 @@ import {
   exportGangsheetPng24,
   computeItemVerticalSpansIn,
   computeGangsheetCuts,
+  GANGSHEET_SHEET_WIDTH_IN,
+  GANGSHEET_PRINT_DPI,
 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
@@ -68,7 +70,8 @@ interface InMemoryExportJob {
 const exportJobStore = new Map<string, InMemoryExportJob>();
 
 /** The artboard's fixed sheet width. Exports must match it exactly. */
-const GANGSHEET_WIDTH_IN = 23.5;
+/** Re-exported locally for readability; the definition lives with the renderer. */
+const GANGSHEET_WIDTH_IN = GANGSHEET_SHEET_WIDTH_IN;
 
 /**
  * Target printed length per exported part.
@@ -1261,7 +1264,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
               .map((it) => it.assetId)
           ),
         ];
-        let exportDpi = 300;
+        const exportDpi = GANGSHEET_PRINT_DPI;
         {
           const effectiveDpis: number[] = [];
 
@@ -1302,16 +1305,29 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           }
 
           if (effectiveDpis.length > 0) {
-            // MIN so the sheet DPI is never higher than the weakest source can supply —
-            // every image is downscaled or rendered 1:1 (sharp); none are upscaled (blurry).
-            exportDpi = Math.max(72, Math.min(600, Math.min(...effectiveDpis)));
+            // Reported, not applied. Taking the MIN across sources used to set
+            // the whole sheet's DPI, which let one low-resolution graphic
+            // shrink the printed sheet's pixel width for every other graphic on
+            // it. Per-placement under-resolution still surfaces through
+            // `rendered.validation`.
+            const lowest = Math.min(...effectiveDpis);
+            if (lowest < GANGSHEET_PRINT_DPI) {
+              console.warn(
+                `[gangsheet] job=${job.id} lowest source DPI ${lowest} is below the ` +
+                `${GANGSHEET_PRINT_DPI} DPI print target; those items are upscaled into their slots.`,
+              );
+            }
           }
         }
 
         const rendered = await exportGangsheetPng24({
           jobId: job.id,
           printerId: String(printerId),
-          sheetWidthIn: gangsheetItem.sheetWidthIn ?? gangsheetItem.widthIn,
+          // Never `gangsheetItem.sheetWidthIn` — that field holds the artwork's
+          // bounding width (checkout writes it for partner pricing), not the
+          // sheet's. Item `posX` values are absolute against a 23.5" sheet, so
+          // this is the only width that places them where the artboard did.
+          sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
           sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
           artboardItems: fullResItems,
           dpi: exportDpi,
@@ -1500,9 +1516,23 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       throw error;
     }
 
-    const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
-      ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
-      ? gangsheetItem.widthIn : 23.5;
+    /**
+     * The sheet is always the full artboard width — never a value read off the
+     * order item.
+     *
+     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
+     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
+     * `max(bounds.maxX)`), because that is the area partner pricing charges
+     * for — see `computePartnerCostBreakdown`, which multiplies it into the
+     * square footage a partner is paid on. It is therefore load-bearing as a
+     * pricing figure and is deliberately left alone.
+     *
+     * Rendering onto it was the bug: item `posX` values are absolute against a
+     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
+     * x-coordinate in the wrong place and clipped whatever fell past the new
+     * right edge. That is the artboard/preview mismatch.
+     */
+    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
@@ -1711,9 +1741,23 @@ export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, n
       throw error;
     }
 
-    const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
-      ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
-      ? gangsheetItem.widthIn : 23.5;
+    /**
+     * The sheet is always the full artboard width — never a value read off the
+     * order item.
+     *
+     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
+     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
+     * `max(bounds.maxX)`), because that is the area partner pricing charges
+     * for — see `computePartnerCostBreakdown`, which multiplies it into the
+     * square footage a partner is paid on. It is therefore load-bearing as a
+     * pricing figure and is deliberately left alone.
+     *
+     * Rendering onto it was the bug: item `posX` values are absolute against a
+     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
+     * x-coordinate in the wrong place and clipped whatever fell past the new
+     * right edge. That is the artboard/preview mismatch.
+     */
+    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
@@ -1902,11 +1946,23 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
 
         setProgress(10, "Generating PNG...");
 
-        // Compute the export DPI from the actual source image resolutions so we never
-        // upscale artwork. Upscaling runs lanczos3 on pixels that don't exist, which
-        // is the primary cause of blur. We take the minimum effective DPI across all
-        // items and cap at 300 — matching the "true 300 DPI" intent without exceeding
-        // what the source artwork can actually supply.
+        /**
+         * The sheet renders at the print DPI, always.
+         *
+         * This used to take the *minimum* effective source DPI across every item
+         * and render the whole sheet at that, to avoid ever upscaling. The
+         * intent was right and the scope was wrong: one 150-DPI logo dropped the
+         * entire sheet to 150, so a 23.5" sheet came out 3,525px instead of
+         * 7,050 and every other graphic on it was downsampled by half to
+         * accommodate the worst one. Resolution is a property of each image, not
+         * of the sheet they share.
+         *
+         * Under-resolution is still detected and still reported — the renderer
+         * records `asset_<id>_insufficient_px` for any placement whose source has
+         * fewer pixels than its slot, and the customer is warned about the same
+         * artwork at upload time by the low-DPI check. What no longer happens is
+         * one soft image quietly resizing the printed sheet.
+         */
         const uniqueAssetIdsForDpi: string[] = Array.from(
           new Set<string>(
             (fullResItems as any[])
@@ -1914,7 +1970,9 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
               .map((it: any) => String(it.assetId))
           )
         );
-        let exportDpi = 300;
+        const exportDpi = GANGSHEET_PRINT_DPI;
+        /** Diagnostic only — no longer resizes the sheet. */
+        let lowestSourceDpi: number | null = null;
         if (uniqueAssetIdsForDpi.length > 0) {
           const sourceAssets = await Asset.find({
             _id: { $in: uniqueAssetIdsForDpi.map((id: string) => new mongoose.Types.ObjectId(id)) },
@@ -1940,22 +1998,78 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
             }
           }
           if (effectiveDpis.length > 0) {
-            exportDpi = Math.max(72, Math.min(300, Math.min(...effectiveDpis)));
+            lowestSourceDpi = Math.min(...effectiveDpis);
+            if (lowestSourceDpi < GANGSHEET_PRINT_DPI) {
+              console.warn(
+                `[gangsheet] job=${jobId} lowest source DPI ${lowestSourceDpi} is below the ` +
+                `${GANGSHEET_PRINT_DPI} DPI print target; those items are upscaled into their slots.`,
+              );
+            }
           }
         }
 
-        const rendered = await exportGangsheetPng24({
-          jobId: String(jobId),
-          printerId: String(printerId),
+        const itemSpacingIn = typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined;
+        const sheetMarginIn = typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined;
+
+        /**
+         * Cut lines that fall between graphics, not through them.
+         *
+         * Computed *before* any rendering now. They only need the placement
+         * geometry, which is known from the items alone — and knowing them up
+         * front is what lets each part be rendered as its own canvas instead of
+         * being carved out of one enormous buffer. The cut arithmetic itself is
+         * unchanged: same spans, same `computeGangsheetCuts`, same boundaries.
+         */
+        const spans = computeItemVerticalSpansIn({
           sheetWidthIn,
-          sheetHeightIn,
           artboardItems: fullResItems,
-          dpi: exportDpi,
-          cropToContent: false,
-          format: "png",
-          itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
-          sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
+          itemSpacingIn,
+          sheetMarginIn,
         });
+        const cuts = computeGangsheetCuts({
+          totalHeightIn: sheetHeightIn,
+          spans,
+          targetLengthIn: GANGSHEET_TARGET_LENGTH_IN,
+        });
+        const needsSplit = sheetHeightIn > GANGSHEET_TARGET_LENGTH_IN && cuts.length > 1;
+
+        /**
+         * Renders one window of the sheet at full print resolution.
+         *
+         * A whole 23.5"×1200" roll at 300 DPI is 7,050 × 360,000px — 10 GB of
+         * RGBA, far past the renderer's 2 GB buffer ceiling, so it used to be
+         * rendered once at whatever DPI *did* fit (~138) and sliced afterwards.
+         * Every part therefore inherited that reduced resolution: 3,243px wide
+         * instead of 7,050. Rendering per part instead keeps each canvas about
+         * 23.5"×100" — well inside the ceiling — so the width is 7,050px at
+         * 300 DPI for a sheet of any length.
+         *
+         * The window is expressed in sheet inches and handed to the renderer,
+         * which offsets placements by its origin exactly as `cropToContent`
+         * always did. No second layout is involved: item positions, ordering,
+         * spacing and nesting are read unchanged.
+         */
+        const renderWindow = (windowIn?: { topIn: number; heightIn: number }) =>
+          exportGangsheetPng24({
+            jobId: String(jobId),
+            printerId: String(printerId),
+            sheetWidthIn,
+            sheetHeightIn,
+            artboardItems: fullResItems,
+            dpi: exportDpi,
+            cropToContent: false,
+            format: "png",
+            itemSpacingIn,
+            sheetMarginIn,
+            renderWindowIn: windowIn
+              ? { leftIn: 0, topIn: windowIn.topIn, widthIn: sheetWidthIn, heightIn: windowIn.heightIn }
+              : null,
+          });
+
+        // The un-split sheet is still a single full-sheet render, unchanged.
+        const rendered = needsSplit
+          ? await renderWindow({ topIn: cuts[0].startIn, heightIn: cuts[0].endIn - cuts[0].startIn })
+          : await renderWindow();
 
         setProgress(60, "Processing export...");
 
@@ -1971,7 +2085,6 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
         const exportDir = path.join(process.cwd(), "uploads", "exports", "printers", String(printerId), String(jobId));
         await fs.promises.mkdir(exportDir, { recursive: true });
 
-        const needsSplit = rendered.sheet.heightIn > GANGSHEET_TARGET_LENGTH_IN;
 
         let finalFilePath: string;
         let finalFileName: string;
@@ -1985,31 +2098,6 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
           finalByteSize = rendered.byteSize;
           finalFormat = "png";
         } else {
-          const dpi = rendered.dpi;
-          const sheetWidthPx = Math.round(rendered.sheet.widthIn * dpi);
-          const totalHeightPx = Math.round(rendered.sheet.heightIn * dpi);
-
-          /**
-           * Cut lines that fall between graphics, not through them.
-           *
-           * The previous split took fixed slices of the target length, which
-           * cut whatever happened to lie on the boundary: the top half of a
-           * graphic ended one part and the bottom half began the next, so the
-           * artwork was both cropped and duplicated across the seam. The cuts
-           * are now derived from the same placement geometry the renderer
-           * used, and a line that lands inside a graphic moves down past it.
-           */
-          const spans = computeItemVerticalSpansIn({
-            sheetWidthIn: rendered.sheet.widthIn,
-            artboardItems: fullResItems,
-            itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
-            sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
-          });
-          const cuts = computeGangsheetCuts({
-            totalHeightIn: rendered.sheet.heightIn,
-            spans,
-            targetLengthIn: GANGSHEET_TARGET_LENGTH_IN,
-          });
           const numParts = cuts.length;
 
           setProgress(65, `Splitting into ${numParts} part${numParts !== 1 ? "s" : ""}...`);
@@ -2020,19 +2108,28 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
           const zipArchive = archiver("zip", { zlib: { level: 6 } });
           zipArchive.pipe(zipOutput);
 
+          /**
+           * Each part is its own full-resolution render of its own band.
+           *
+           * Previously the whole sheet was rendered once and `sharp.extract`
+           * carved the parts out of it, which is why every part inherited the
+           * downscaled DPI the giant buffer had forced. The band boundaries are
+           * the same `cuts` either way — back-to-back, so the parts still tile
+           * the sheet exactly with nothing repeated and nothing dropped — and
+           * part 1 is already rendered above.
+           */
           for (let i = 0; i < numParts; i++) {
-            // Rounded from the shared inch boundaries, so one part's last row
-            // is the next part's first — the pieces tile the sheet exactly,
-            // with nothing repeated and nothing lost to rounding.
-            const topPx = Math.min(totalHeightPx, Math.round(cuts[i].startIn * dpi));
-            const bottomPx = Math.min(totalHeightPx, Math.round(cuts[i].endIn * dpi));
-            const extractHeightPx = bottomPx - topPx;
-            if (extractHeightPx <= 0) continue;
+            const heightIn = cuts[i].endIn - cuts[i].startIn;
+            if (!(heightIn > 0)) continue;
 
-            const partBuf = await sharp(rendered.filePath, { limitInputPixels: false })
-              .extract({ left: 0, top: topPx, width: sheetWidthPx, height: extractHeightPx })
+            const part =
+              i === 0
+                ? rendered
+                : await renderWindow({ topIn: cuts[i].startIn, heightIn });
+
+            const partBuf = await sharp(part.filePath, { limitInputPixels: false })
               .png({ compressionLevel: 1 })
-              .withMetadata({ density: rendered.dpi })
+              .withMetadata({ density: part.dpi })
               .toBuffer();
 
             zipArchive.append(partBuf, { name: `${baseFilename}_Part_${i + 1}.png` });
