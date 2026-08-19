@@ -22,7 +22,9 @@ import {
   countActiveJobs,
   isAtCapacity,
 } from "../services/partnerCapacity.service.js";
-import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
+import { exportGangsheetPng24,
+  GANGSHEET_SHEET_WIDTH_IN,
+} from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { computeAssignmentDeadline, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
@@ -1758,9 +1760,23 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       throw error;
     }
 
-    const sheetWidthIn = typeof gangsheetItem.sheetWidthIn === "number" && Number.isFinite(gangsheetItem.sheetWidthIn)
-      ? gangsheetItem.sheetWidthIn : typeof gangsheetItem.widthIn === "number" && Number.isFinite(gangsheetItem.widthIn)
-      ? gangsheetItem.widthIn : 23.5;
+    /**
+     * The sheet is always the full artboard width — never a value read off the
+     * order item.
+     *
+     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
+     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
+     * `max(bounds.maxX)`), because that is the area partner pricing charges
+     * for — see `computePartnerCostBreakdown`, which multiplies it into the
+     * square footage a partner is paid on. It is therefore load-bearing as a
+     * pricing figure and is deliberately left alone.
+     *
+     * Rendering onto it was the bug: item `posX` values are absolute against a
+     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
+     * x-coordinate in the wrong place and clipped whatever fell past the new
+     * right edge. That is the artboard/preview mismatch.
+     */
+    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
