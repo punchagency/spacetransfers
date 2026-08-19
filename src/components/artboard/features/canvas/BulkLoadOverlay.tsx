@@ -8,12 +8,18 @@
  * customer watched an opaque card for the entire batch.
  *
  * This sits in a corner, is pointer-transparent, and reports real counts —
- * "82 of 120 images added" answers the question the customer actually has
- * while artwork is appearing behind it. The reassurance line under the title
- * exists because that question has two halves: "is it working" (the counter
- * answers that) and "do I need to wait for it" (nothing did, until now) — a
- * customer who doesn't know the board is already usable will sit and watch a
- * progress bar for a 120-file drop instead of continuing to work.
+ * "Processing 82 of 120 images" answers the question the customer actually has
+ * while artwork is appearing behind it.
+ *
+ * The line under the count used to read "No need to wait — keep designing while
+ * we finish up", which was true of *editing* the board and false of the one
+ * thing customers actually did next: drop another folder. A second batch landing
+ * mid-flight competed with the first for upload slots and packer time and could
+ * stall the board, so the copy was inviting the exact action that broke it. It
+ * now says to wait, and the handler backs that up by queueing a mid-batch drop
+ * rather than starting it (see `submitDrop`). Editing artwork already on the
+ * sheet is still perfectly fine — the overlay is pointer-transparent for that
+ * reason — but that is not what the line needed to be spent on.
  *
  * The glow badge and bar reuse `.animate-pulse-glow` and `.processing-bar-sheen`
  * from `index.css` — both written for exactly this ("progress bar glow while a
@@ -65,7 +71,7 @@ export default function BulkLoadOverlay({
       // `pointer-events-none` on the shell with `pointer-events-auto` on the
       // button only: the customer can keep dragging, selecting and zooming
       // artwork underneath while the rest of the batch lands.
-      className="pointer-events-none absolute bottom-6 left-1/2 z-30 w-[360px] max-w-[92vw] -translate-x-1/2"
+      className="pointer-events-none"
       role="status"
       aria-live="polite"
       aria-atomic="true"
@@ -89,11 +95,14 @@ export default function BulkLoadOverlay({
               <ImagesIcon />
             </div>
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold leading-5 text-slate-900">
-                Adding images to your sheet
+              {/* The count leads, because "how far along is it" is the question
+                  that decides whether to wait — and it is now the title rather
+                  than a footnote under the bar. */}
+              <p className="text-[13px] font-semibold leading-5 tabular-nums text-slate-900">
+                Processing {safeLoaded} of {total} images
               </p>
               <p className="mt-0.5 text-[11.5px] leading-[15px] text-slate-500">
-                No need to wait — keep designing while we finish up.
+                Please wait until the current upload finishes before adding more images.
               </p>
             </div>
           </div>
@@ -108,6 +117,10 @@ export default function BulkLoadOverlay({
           ) : null}
         </div>
 
+        {/* Full width, and reporting only the active batch. Queued images are
+            deliberately not represented here — they are a different quantity,
+            and folding them in would make the percentage mean nothing. They
+            have their own card (see `QueueBadge`). */}
         <div
           className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100 shadow-inner"
           role="progressbar"
@@ -125,11 +138,13 @@ export default function BulkLoadOverlay({
           </div>
         </div>
 
-        <div className="mt-1.5 flex items-baseline justify-between text-[12px] tabular-nums text-slate-600">
-          <span>
-            {safeLoaded} of {total} images added
-          </span>
-          <span className="font-semibold text-[#5C8B86]">{Math.round(pct)}%</span>
+        <div className="mt-1.5 flex items-baseline justify-between gap-3 text-[12px] tabular-nums text-slate-600">
+          {/* Only shown once something is actually waiting, so the card stays a
+              plain progress readout in the ordinary single-batch case. Saying
+              the queued files start automatically is the part that stops a
+              customer re-dropping them. */}
+          <span className="min-w-0 truncate">Images are still processing</span>
+          <span className="shrink-0 font-semibold text-[#5C8B86]">{Math.round(pct)}%</span>
         </div>
       </div>
     </div>

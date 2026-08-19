@@ -16,6 +16,10 @@ import {
   showUnsupportedFilesWarning,
   showUnsupportedFileWarning,
 } from "../../../common/UnsupportedFilesWarning";
+import { showLowDpiWarning } from "../../../common/DpiStatus";
+import { showUploadQueuedNotice } from "../../../common/UploadQueueNotice";
+import { createSerialQueue } from "../utils/serialQueue";
+import type { SerialQueue } from "../utils/serialQueue";
 import type { CommitHistory } from "./useHistory";
 
 /**
@@ -73,6 +77,20 @@ const MAX_ANIMATED_ITEMS = 120;
 /** Total time an animated stagger is allowed to span, in seconds. */
 const STAGGER_WINDOW_S = 0.9;
 
+/**
+ * One drop's worth of work — everything `runDrop` needs, captured at the moment
+ * the customer let go.
+ *
+ * Held as a value rather than run immediately so a drop arriving mid-batch can
+ * wait its turn without losing the position it was dropped at.
+ */
+interface PendingDrop {
+  droppedFiles: File[];
+  droppedUrl: string;
+  dropX: number;
+  dropY: number;
+}
+
 export const useDropHandler = (
   items: ArtboardItem[],
   setItems: React.Dispatch<React.SetStateAction<ArtboardItem[]>>,
@@ -88,9 +106,7 @@ export const useDropHandler = (
   commitHistory?: CommitHistory
 ) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [lowDpiCount, setLowDpiCount] = useState(0);
   const [fadeCount, setFadeCount] = useState(0);
-  const lowDpiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -99,6 +115,22 @@ export const useDropHandler = (
   /** Images placed so far in the active batch, and its size. Drives the overlay. */
   const [batchLoaded, setBatchLoaded] = useState(0);
   const [batchTotal, setBatchTotal] = useState(0);
+
+  /** Files waiting behind the active batch. Drives the overlay's queued line. */
+  const [queuedCount, setQueuedCount] = useState(0);
+
+  /**
+   * The live board, for the two capacity checks that read it directly.
+   *
+   * `items` comes from the render closure, which is correct for a drop handled
+   * immediately but not for one taken off the queue: that batch runs after the
+   * previous one has committed, so the closure it was captured in is by then
+   * several hundred items out of date. Everything else in here already goes
+   * through a functional `setItems`; these two checks are the exception, and a
+   * ref is what keeps them honest across a deferred start.
+   */
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
 
   /**
    * Per-batch state, keyed by a token minted on each drop.
@@ -116,6 +148,41 @@ export const useDropHandler = (
   const batchTokenRef = useRef(0);
   const canceledBatchesRef = useRef(new Set<number>());
   const activeUploadsRef = useRef(new Map<number, Set<XMLHttpRequest>>());
+
+  /**
+   * One batch at a time, with the rest held in order behind it.
+   *
+   * Batches were made independent (see the token scheme above) so that a second
+   * drop could no longer corrupt the first's bookkeeping — but independent is
+   * not the same as free. Two live batches still competed for the same six
+   * upload slots, the same decode budget, and the same packer running over an
+   * ever-growing board, and the progress overlay reports one batch's counts, so
+   * with two in flight it showed neither. On a pair of 100-file drops that is
+   * the board going unresponsive for the length of both.
+   *
+   * A drop arriving mid-batch is therefore queued rather than started. The
+   * ordering and no-overlap rules live in `createSerialQueue`, where they are
+   * testable without a network or a React tree.
+   *
+   * `runDrop` is reached through a ref because the queue is created once while
+   * `runDrop` is rebuilt every render: a queued batch must run against the
+   * board and settings as they are when it *starts*, not as they were when it
+   * was dropped.
+   */
+  const runDropRef = useRef<(job: PendingDrop) => Promise<void>>(async () => {});
+
+  const dropQueueRef = useRef<SerialQueue<PendingDrop> | null>(null);
+  if (!dropQueueRef.current) {
+    dropQueueRef.current = createSerialQueue<PendingDrop>(
+      (job) => runDropRef.current(job),
+      {
+        onChange: ({ pending }) =>
+          setQueuedCount(pending.reduce((sum, d) => sum + d.droppedFiles.length, 0)),
+        onError: (error) => console.error("[upload] batch failed", error),
+      },
+    );
+  }
+  const dropQueue = dropQueueRef.current;
 
   /**
    * Monotonic item-id allocator.
@@ -179,6 +246,11 @@ export const useDropHandler = (
       });
       requests.clear();
     });
+    // Anything still queued is cancelled too. The overlay's Cancel button
+    // reports on everything the customer can see waiting, so leaving the queue
+    // to start up on its own the moment the active batch aborted would be the
+    // upload they just cancelled reappearing by itself.
+    dropQueue.clear();
     setIsUploading(false);
     setUploadProgress(0);
     setUploadFileName(null);
@@ -342,7 +414,7 @@ export const useDropHandler = (
 
     // Length, not count: a sheet is full when its artwork reaches the 1200in
     // maximum, however many images that took.
-    if (isSheetFull(items as any)) {
+    if (isSheetFull(itemsRef.current as any)) {
       toast.error(
         `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
       );
@@ -467,7 +539,7 @@ export const useDropHandler = (
        * refuses any placement past the sheet's length, and `flushPending`
        * reports whatever did not fit.
        */
-      const capacity = Math.max(0, CANVAS.MAX_ITEMS - items.length);
+      const capacity = Math.max(0, CANVAS.MAX_ITEMS - itemsRef.current.length);
       if (dropped.length > capacity) {
         const skipped = dropped.length - capacity;
         toast.error(
@@ -1015,10 +1087,11 @@ export const useDropHandler = (
       showLargeImageWarning(oversizeImages);
     }
 
+    // Same queue, same card and same 7s life as the large-image notice above,
+    // so a drop that trips both shows two stacked notices rather than one
+    // merged sentence or two competing surfaces.
     if (lowDpiImages > 0) {
-      if (lowDpiTimerRef.current) clearTimeout(lowDpiTimerRef.current);
-      setLowDpiCount(lowDpiImages);
-      lowDpiTimerRef.current = setTimeout(() => setLowDpiCount(0), 7000);
+      showLowDpiWarning(lowDpiImages);
     }
     if (fadeImages > 0) {
       if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
@@ -1045,6 +1118,28 @@ export const useDropHandler = (
     return accepted;
   };
 
+  // Published each render so the queue always invokes the current closure.
+  runDropRef.current = runDrop;
+
+  /**
+   * The single entry point for every drop, from either the drag surface or the
+   * file picker.
+   *
+   * Deferral is deliberately not a rejection: the files are kept, in the order
+   * they arrived, and start the moment the board is free. The notice says so,
+   * and repeats collapse into one card with a running total, so a customer who
+   * drops four folders in a row gets one accurate message rather than four.
+   */
+  const submitDrop = (request: PendingDrop) => {
+    const startedNow = dropQueue.submit(request);
+    if (startedNow) return;
+
+    const queued = dropQueue
+      .pending()
+      .reduce((sum, d) => sum + d.droppedFiles.length, 0);
+    showUploadQueuedNotice(queued, batchTotal || request.droppedFiles.length);
+  };
+
   const onDropEvent = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
@@ -1067,7 +1162,7 @@ export const useDropHandler = (
     const dropX = (e.clientX - rect.left - offset) / (ppi * zoomVal);
     const dropY = (e.clientY - rect.top - offset) / (ppi * zoomVal);
 
-    await runDrop({ droppedFiles, droppedUrl, dropX, dropY });
+    submitDrop({ droppedFiles, droppedUrl, dropX, dropY });
   };
 
   const dropFilesAtCenter = async (files: FileList | File[]) => {
@@ -1078,18 +1173,18 @@ export const useDropHandler = (
     const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
     const dropX = currentCanvasWidth / 2;
     const dropY = 6;
-    await runDrop({ droppedFiles, droppedUrl: "", dropX, dropY });
+    submitDrop({ droppedFiles, droppedUrl: "", dropX, dropY });
   };
 
   return {
     isDragging,
-    lowDpiCount,
     fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,
     batchLoaded,
     batchTotal,
+    queuedCount,
     cancelUploads,
     dropFilesAtCenter,
     onDragOver,

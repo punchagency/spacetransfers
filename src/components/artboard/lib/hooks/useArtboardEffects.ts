@@ -4,7 +4,8 @@ import { animateItemPosition } from "../utils";
 import {
   calculateGridLayout,
   getRenderedGroupSize,
-  computeEffectiveDpi,
+  isLowDpi,
+  isUnknownDpi,
   computeGroupDims,
   planLocalDisplacement,
   getItemFootprint,
@@ -468,11 +469,10 @@ export const useArtboardEffects = (
         name: displayName,
         price: totalPrice,
         imageNames,
-        lowDpiCount: items.filter((it) => {
-          const d = computeEffectiveDpi(it);
-          return typeof d === "number" && d < 300;
-        }).length,
-        unknownDpiCount: items.filter((it) => computeEffectiveDpi(it) === null).length,
+        // Shared with the on-sheet highlight, so the chip's number and the
+        // artwork it lights up can never disagree.
+        lowDpiCount: items.filter(isLowDpi).length,
+        unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
   }, [items, canvasWidth, marginSize, onHeaderInfoChange]);

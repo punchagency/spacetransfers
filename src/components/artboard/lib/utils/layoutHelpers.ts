@@ -1,4 +1,4 @@
-import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import { CANVAS, DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 
 /** Vertical gap between stacked copies of one item. */
 const SHEET_GROUP_GAP_IN = CANVAS.GRID_GAP_IN;
@@ -139,6 +139,38 @@ export function computeEffectiveDpi(item: {
   }
   return typeof item.dpi === "number" ? item.dpi : null;
 }
+
+/** The shape the DPI predicates need — a subset of `ArtboardItem`. */
+export type DpiMeasurable = Parameters<typeof computeEffectiveDpi>[0];
+
+/**
+ * The three DPI verdicts, in one place.
+ *
+ * The top-bar chip's count, the tooltip's breakdown and the on-sheet highlight
+ * all have to agree about which artwork is flagged — a chip reading "5" that
+ * lights up four images is worse than no highlight at all. They previously
+ * agreed by having the same expression written out at each call site, which is
+ * an agreement that lasts exactly until someone edits one of them.
+ *
+ * `null` from `computeEffectiveDpi` means *unmeasurable*, not zero: the item's
+ * pixel dimensions aren't known yet (or were never recorded). That is a
+ * different problem from artwork that is measurably soft, so the two are
+ * counted separately — but both are "needs a look", which is what
+ * `isDpiFlagged` covers and what the chip totals.
+ */
+export const isLowDpi = (item: DpiMeasurable): boolean => {
+  const dpi = computeEffectiveDpi(item);
+  return dpi !== null && dpi < DPI.THRESHOLD;
+};
+
+export const isUnknownDpi = (item: DpiMeasurable): boolean =>
+  computeEffectiveDpi(item) === null;
+
+/** Either verdict — i.e. exactly what the chip counts and the highlight marks. */
+export const isDpiFlagged = (item: DpiMeasurable): boolean => {
+  const dpi = computeEffectiveDpi(item);
+  return dpi === null || dpi < DPI.THRESHOLD;
+};
 
 export interface LayoutItem {
   id: number;

@@ -38,7 +38,7 @@ export default function AccountSettingsModal({
     "bg-green-600",
     "bg-emerald-600",
     "bg-teal-600",
-    "bg-cyan-600",
+    "bg-cyan-600", 
     "bg-sky-600",
     "bg-blue-600",
     "bg-indigo-600",

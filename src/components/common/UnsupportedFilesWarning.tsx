@@ -20,11 +20,22 @@ import { MdClose } from "react-icons/md";
 /** Matches the large-image notice, so two warnings from one drop age out together. */
 const WARNING_DURATION_MS = 7000;
 
-const WarningIcon = () => (
+/**
+ * Exported so every amber advisory in the app draws the same triangle rather
+ * than a hand-matched copy of it — including surfaces outside the toast queue,
+ * like the top bar's DPI chip.
+ */
+export const WarningIcon = ({
+  size = 18,
+  className = "",
+}: {
+  size?: number;
+  className?: string;
+}) => (
   <svg
-    className="mt-px shrink-0"
-    width="18"
-    height="18"
+    className={`shrink-0 ${className}`}
+    width={size}
+    height={size}
     viewBox="0 0 24 24"
     fill="none"
     stroke="#D97706"
@@ -76,15 +87,80 @@ export const unsupportedFilesText = (
 });
 
 /**
- * The shared card shell — icon, colours, radius, spacing, animation, dismiss
- * button. Both notices below render through this, so "the exact same UI
- * component and visual design" is structural (one JSX block), not a matter of
- * two copies that have to be kept in sync by hand.
+ * The shared card shell — icon, colours, radius, spacing, type scale.
  *
- * Exported so other toast-based notices (large-image, low-DPI) can render
- * through the identical shell instead of keeping their own near-duplicate
- * markup that has to be hand-matched pixel-for-pixel every time this one
- * changes.
+ * Not exported: `NoticeCard` below is the one public shape it comes in. Every
+ * amber advisory in the app — files skipped, large image, low DPI, upload
+ * queued — renders through it, so "the exact same UI" is one JSX block rather
+ * than four hand-matched copies of the same card.
+ */
+function NoticeCardChrome({
+  title,
+  body,
+  truncateTitle = false,
+  onDismiss,
+  extraClassName = "",
+}: {
+  title: string;
+  body: string;
+  /** Set for content that can be arbitrarily long, e.g. a filename. */
+  truncateTitle?: boolean;
+  /** Optional so a non-toast variant can reuse this chrome without a dead button. */
+  onDismiss?: () => void;
+  extraClassName?: string;
+}) {
+  return (
+    <div
+      role="status"
+      // `polite`: nothing here blocked the customer, so it must not interrupt
+      // a screen reader mid-sentence.
+      aria-live="polite"
+      className={`pointer-events-auto w-[380px] max-w-[92vw] rounded-xl border border-[#F59E0B] bg-[#FFFBEB] px-3.5 py-2.5 shadow-lg ${extraClassName}`}
+    >
+      <div className="flex items-start gap-2.5">
+        <WarningIcon className="mt-px" />
+
+        <div className="min-w-0 flex-1">
+          {/* #92400E on #FFFBEB is ~8.9:1, and #B45309 ~5.6:1 — both clear
+              WCAG AA at these sizes, which plain amber-on-white would not. */}
+          <p
+            className={`text-[18px] font-bold leading-[18px] text-[#92400E] ${
+              truncateTitle ? "truncate" : ""
+            }`}
+            title={truncateTitle ? title : undefined}
+          >
+            {title}
+          </p>
+          <p className="mt-0.5 text-[12.5px] leading-[17px] text-[#B45309]">
+            {body}
+          </p>
+        </div>
+
+        {onDismiss && (
+          <button
+            onClick={onDismiss}
+            aria-label="Dismiss notice"
+            className="-mr-1 -mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[#B45309] transition hover:bg-[#FDE68A] active:scale-95"
+          >
+            <MdClose className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Toast form: fades with the toast queue's visibility and can be dismissed.
+ *
+ * Deliberately carries no top margin. react-hot-toast stacks toasts by
+ * measuring each one's `getBoundingClientRect().height` and translating the
+ * next down by the running total — and that measurement excludes margins. The
+ * `mt-16` this used to have was therefore invisible to the stacking maths, so
+ * the moment two notices were on screen together the second was placed 64px
+ * too high and overlapped the first. The clearance now lives on the `Toaster`'s
+ * `containerStyle` in `App.tsx`, where it applies once to the stack rather than
+ * once per card.
  */
 export const NoticeCard = ({
   t,
@@ -95,46 +171,17 @@ export const NoticeCard = ({
   t: { visible: boolean; id: string };
   title: string;
   body: string;
-  /** Set for content that can be arbitrarily long, e.g. a filename. */
   truncateTitle?: boolean;
 }) => (
-  <div
-    role="status"
-    // `polite`: nothing here blocked the customer, so it must not interrupt
-    // a screen reader mid-sentence.
-    aria-live="polite"
-    className={`pointer-events-auto w-[380px] mt-16 max-w-[92vw] rounded-xl border border-[#F59E0B] bg-[#FFFBEB] px-3.5 py-2.5 shadow-lg transition-all duration-200 ${
+  <NoticeCardChrome
+    title={title}
+    body={body}
+    truncateTitle={truncateTitle}
+    onDismiss={() => toast.dismiss(t.id)}
+    extraClassName={`transition-all duration-200 ${
       t.visible ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1"
     }`}
-  >
-    <div className="flex items-start gap-2.5">
-      <WarningIcon />
-
-      <div className="min-w-0 flex-1">
-        {/* #92400E on #FFFBEB is ~8.9:1, and #B45309 ~5.6:1 — both clear
-            WCAG AA at these sizes, which plain amber-on-white would not. */}
-        <p
-          className={`text-[18px] font-bold leading-[18px] text-[#92400E] ${
-            truncateTitle ? "truncate" : ""
-          }`}
-          title={truncateTitle ? title : undefined}
-        >
-          {title}
-        </p>
-        <p className="mt-0.5 text-[12.5px] leading-[17px] text-[#B45309]">
-          {body}
-        </p>
-      </div>
-
-      <button
-        onClick={() => toast.dismiss(t.id)}
-        aria-label="Dismiss notice"
-        className="-mr-1 -mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-[#B45309] transition hover:bg-[#FDE68A] active:scale-95"
-      >
-        <MdClose className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  </div>
+  />
 );
 
 /**
