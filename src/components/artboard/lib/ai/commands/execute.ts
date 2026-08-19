@@ -320,9 +320,13 @@ export const executeBoardCommands = async (
           receipts.push("Select an image first.");
           break;
         }
+        // Safety ceiling only — whether artwork actually fits is decided by
+        // the packer against the sheet's length.
         const room = CANVAS.MAX_ITEMS - context.items.length;
         if (room <= 0) {
-          receipts.push(`Item limit of ${CANVAS.MAX_ITEMS} reached — remove something first.`);
+          receipts.push(
+            `Sheet is full — remove artwork first.`,
+          );
           break;
         }
         const wanted = targets.length * command.times;

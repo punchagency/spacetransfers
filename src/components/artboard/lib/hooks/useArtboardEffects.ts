@@ -4,13 +4,14 @@ import { animateItemPosition } from "../utils";
 import {
   calculateGridLayout,
   getRenderedGroupSize,
-  computeEffectiveDpi,
+  isLowDpi,
+  isUnknownDpi,
   computeGroupDims,
   planLocalDisplacement,
   getItemFootprint,
 } from "../utils";
 import { snapToGridPoint } from "../utils";
-import { CANVAS, PRICING, UNIT } from "../../../../config/artboard.config";
+import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
@@ -132,7 +133,6 @@ export const useArtboardEffects = (
       prevAutoNestOnRef.current = autoNestStickers;
 
       const effectiveMargin = marginSize;
-      const MAX_SHEET_HEIGHT_IN = 1200;
       const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
       let didClamp = false;
 
@@ -384,7 +384,6 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      const MAX_SHEET_HEIGHT_IN = 1200;
       const bounds = items.reduce(
         (acc, item) => {
           const copies = item.copies || 1;
@@ -470,11 +469,10 @@ export const useArtboardEffects = (
         name: displayName,
         price: totalPrice,
         imageNames,
-        lowDpiCount: items.filter((it) => {
-          const d = computeEffectiveDpi(it);
-          return typeof d === "number" && d < 300;
-        }).length,
-        unknownDpiCount: items.filter((it) => computeEffectiveDpi(it) === null).length,
+        // Shared with the on-sheet highlight, so the chip's number and the
+        // artwork it lights up can never disagree.
+        lowDpiCount: items.filter(isLowDpi).length,
+        unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
   }, [items, canvasWidth, marginSize, onHeaderInfoChange]);

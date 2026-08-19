@@ -121,6 +121,13 @@ export interface ArtboardProps {
   /** Visual-only artboard background. 'transparent' = checkerboard; a hex/named
    *  color or 'rainbow' = solid/gradient fill. Never affects exports. */
   canvasBg?: string;
+  /**
+   * Marks every item the top-bar DPI chip is counting, so the customer can see
+   * which artwork it means. Purely additive chrome — no item's position, size,
+   * rotation or content is touched, and the flag is derived from the same
+   * `computeEffectiveDpi` the chip's own count comes from.
+   */
+  highlightLowDpi?: boolean;
 }
 
 export interface HeaderInfo {

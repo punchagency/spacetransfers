@@ -16,7 +16,17 @@
 /** Longest signature we compare, so only this many bytes are ever read. */
 const SNIFF_BYTES = 16;
 
-export type DetectedKind = "png" | "jpeg" | "gif" | "webp" | "pdf" | "svg" | null;
+export type DetectedKind =
+  | "png"
+  | "jpeg"
+  | "gif"
+  | "webp"
+  | "pdf"
+  | "svg"
+  | "avif"
+  | "tiff"
+  | "bmp"
+  | null;
 
 const startsWith = (bytes: Uint8Array, signature: number[], offset = 0): boolean =>
   signature.every((byte, i) => bytes[offset + i] === byte);
@@ -74,6 +84,29 @@ export const sniffFileKind = (bytes: Uint8Array): DetectedKind => {
   // %PDF-
   if (startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return "pdf";
 
+  // The formats below are all *rejected*, but they are sniffed anyway so the
+  // customer is told what the file actually is. "That's an AVIF" is
+  // actionable; "that isn't a valid image" sends them looking for corruption
+  // in a file that is perfectly intact.
+
+  // ISO-BMFF: 4-byte size, then "ftyp", then a brand. AVIF and HEIC share the
+  // container, so the brand is what separates them.
+  if (startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4)) {
+    const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+    if (brand === "avif" || brand === "avis" || brand.startsWith("hei")) return "avif";
+  }
+
+  // TIFF, both byte orders: "II*\0" (little-endian) and "MM\0*" (big-endian).
+  if (
+    startsWith(bytes, [0x49, 0x49, 0x2a, 0x00]) ||
+    startsWith(bytes, [0x4d, 0x4d, 0x00, 0x2a])
+  ) {
+    return "tiff";
+  }
+
+  // BM
+  if (startsWith(bytes, [0x42, 0x4d])) return "bmp";
+
   // SVG is XML, so it has no binary signature — it is identified by its opening
   // markup instead. A UTF-8 BOM and leading whitespace are both common and
   // neither means the file is broken, so both are skipped before matching.
@@ -89,14 +122,30 @@ export const sniffFileKind = (bytes: Uint8Array): DetectedKind => {
   return null;
 };
 
-/** Which detected kinds satisfy a declared MIME type. */
-const ALLOWED_FOR_TYPE: Record<string, DetectedKind[]> = {
-  // A JPEG named .png is a mislabelling, not a corruption: it decodes fine and
-  // prints fine, so it is accepted rather than rejected on a technicality.
-  "image/png": ["png", "jpeg", "gif", "webp"],
-  "image/jpeg": ["jpeg", "png", "gif", "webp"],
-  "image/svg+xml": ["svg"],
-  "application/pdf": ["pdf"],
+/**
+ * Detected kinds the artboard will actually accept.
+ *
+ * This is the gate that closes the extension-rename hole. `File.type` comes
+ * from the extension, so a WEBP saved as `artwork.png` reports `image/png`
+ * and sails through any MIME-based filter — and the previous table listed
+ * `webp` and `gif` as acceptable content for an `image/png`, so it was
+ * *uploaded and placed*. The formats below are the only ones the print
+ * pipeline can composite.
+ *
+ * PNG and JPEG remain interchangeable between themselves: a JPEG named .png is
+ * a mislabelling of a supported format, decodes fine and prints fine, so
+ * refusing it would block a file that works.
+ */
+const SUPPORTED_KINDS: readonly DetectedKind[] = ["png", "jpeg", "pdf"];
+
+/** Detected kinds that are real images, just not ones we can print. */
+const UNSUPPORTED_KIND_LABELS: Partial<Record<NonNullable<DetectedKind>, string>> = {
+  gif: "GIF",
+  webp: "WEBP",
+  svg: "SVG",
+  avif: "AVIF/HEIC",
+  tiff: "TIFF",
+  bmp: "BMP",
 };
 
 export interface FileValidationResult {
@@ -150,15 +199,26 @@ export const validateImageFile = async (file: File): Promise<FileValidationResul
     };
   }
 
-  const allowed = ALLOWED_FOR_TYPE[file.type];
-  if (allowed && !allowed.includes(detected)) {
-    // The contents are a real file of some kind, just not one that belongs
-    // under this extension — worth saying exactly what it is, since the fix
-    // (rename, or export properly) depends on knowing.
+  if (!SUPPORTED_KINDS.includes(detected)) {
+    const label = UNSUPPORTED_KIND_LABELS[detected] ?? detected.toUpperCase();
+    // Named by what it *is*, not by what its extension claimed. A file the
+    // customer believes is a PNG is really an AVIF, and saying so is the
+    // difference between a fixable problem and a mysterious one.
     return {
       ok: false,
       detected,
-      message: `“${file.name}” is named as ${file.type.split("/")[1]?.toUpperCase() || "an image"} but contains ${detected.toUpperCase()} data. Please re-export it in the correct format.`,
+      message: `“${file.name}” is ${label}, which isn't supported. Please re-export it as PNG, JPG or PDF.`,
+    };
+  }
+
+  // A PDF must genuinely be a PDF: it takes a different path through the
+  // pipeline (no raster crop, no fade check), so accepting a mislabelled one
+  // would route image bytes down the document path.
+  if ((file.type === "application/pdf") !== (detected === "pdf")) {
+    return {
+      ok: false,
+      detected,
+      message: `“${file.name}” is named as ${file.type === "application/pdf" ? "a PDF" : file.type.split("/")[1]?.toUpperCase() || "an image"} but contains ${detected.toUpperCase()} data. Please re-export it in the correct format.`,
     };
   }
 
