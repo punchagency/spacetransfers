@@ -2,16 +2,8 @@ import { useMemo, useState } from 'react';
 import { FiX } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { apiFetch } from '../../utils/api';
+import { REGIONS } from "../../utils/regions";
 
-const REGIONS = [
-  'South',
-  'Central',
-  'Midwest',
-  'Pacific Northwest',
-  'Southwest',
-  'North-east',
-  'Westcoast',
-];
 
 const FORMATS = ['PNG', 'PDF', 'TIFF', 'JPG'];
 

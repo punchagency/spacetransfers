@@ -49,12 +49,18 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
     // gone/expired/revoked, so drop it — clearAuth notifies the route guard,
     // which redirects to /auth on its own.
     //
-    // Note 403 is deliberately NOT treated this way: `PATCH /admin/profile/password`
-    // returns 403 for a wrong *submitted* current password on an otherwise valid
-    // session, and logging the admin out there would be wrong.
-    if (response.status === 401) {
+    // Signing in is the exception: a 401 there is a rejected *credential*, not a
+    // dead session — there is no session yet. Clearing storage would be
+    // meaningless, and reporting "invalid or expired token" to someone who just
+    // mistyped their password explains nothing they can act on.
+    //
+    // Note 403 is deliberately NOT treated as a session failure either:
+    // `PATCH /admin/profile/password` returns 403 for a wrong *submitted*
+    // current password on an otherwise valid session, and logging the admin out
+    // there would be wrong.
+    if (response.status === 401 && !endpoint.startsWith("/auth/login")) {
       clearAuth();
-      throw new Error("Invalid or expired token");
+      throw new Error(data?.message || "Your session has expired. Please sign in again.");
     }
     throw new Error(data?.message || data?.error || "Something went wrong");
   }

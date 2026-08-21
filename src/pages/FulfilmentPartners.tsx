@@ -9,6 +9,7 @@ import { apiFetch } from '../utils/api';
 import toast from 'react-hot-toast';
 import { AddPartnerModal } from '../components/partners/AddPartnerModal';
 import { AssignOrdersModal } from '../components/partners/AssignOrdersModal';
+import { REGIONS } from "../utils/regions";
 
 export const FulfilmentPartners = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -124,13 +125,9 @@ export const FulfilmentPartners = () => {
             containerClassName="w-full md:w-48"
           >
             <option>All Regions</option>
-            <option>South</option>
-            <option>Central</option>
-            <option>Midwest</option>
-            <option>Pacific Northwest</option>
-            <option>Southwest</option>
-            <option>North-east</option>
-            <option>Westcoast</option>
+            {REGIONS.map((region) => (
+              <option key={region}>{region}</option>
+            ))}
           </SelectInput>
         </div>
 

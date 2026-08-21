@@ -4,16 +4,8 @@ import { Toggle } from '../common/Toggle';
 import type { EditPartnerModalProps } from '../../types/partners';
 import toast from 'react-hot-toast';
 import { apiFetch } from '../../utils/api';
+import { REGIONS } from "../../utils/regions";
 
-const REGIONS = [
-    'South',
-    'Central',
-    'Midwest',
-    'Pacific Northwest',
-    'Southwest',
-    'North-east',
-    'Westcoast',
-];
 
 const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
