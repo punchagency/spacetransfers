@@ -20,7 +20,6 @@ const stripePublishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_K
   | string
   | undefined;
 const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
-const paypalClientId = (import.meta as any).env?.VITE_PAYPAL_CLIENT_ID as string | undefined;
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -49,7 +48,7 @@ export default function CheckoutModal({
   const contentRef = useRef<HTMLDivElement>(null);
   const stepperRefs = useRef<(HTMLDivElement | null)[]>([]);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const [payment, setPayment] = useState<"card" | "paypal">("card");
+  const [payment, setPayment] = useState<"card">("card");
   const [shipping, setShipping] = useState<"standard" | "express">("standard");
   const [cartItems, setCartItems] = useState(initialCartItems || []);
   const [checkoutErrors, setCheckoutErrors] = useState<Record<string, string>>({});
@@ -66,7 +65,6 @@ export default function CheckoutModal({
     country: "",
   });
   const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
-  const [paypalData, setPaypalData] = useState<{ paypalOrderId: string; paypalCaptureId: string } | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
 
   /**
@@ -145,10 +143,10 @@ export default function CheckoutModal({
       (formData.country || "US").trim(),
   );
 
-  const isPaymentValid =
-    payment === "paypal"
-      ? Boolean(paypalData)
-      : Boolean((stripePromise && isCardComplete) || (!stripePromise && isCardComplete));
+  // Card requires a configured provider AND a complete card. The previous form
+  // of this check reduced to `isCardComplete` on both branches, so an
+  // unconfigured environment could still advance to placing an order.
+  const isPaymentValid = Boolean(stripePromise && isCardComplete);
 
   const mapItems = () =>
     cartItems.map((item) => {
@@ -303,11 +301,6 @@ export default function CheckoutModal({
     }
 
     if (step === 2) {
-      if (payment === "paypal") {
-        toast.error("Complete PayPal payment to place your order");
-        return;
-      }
-
       if (!isPaymentValid) {
         toast.error("Please enter complete card details.");
         return;
@@ -320,24 +313,13 @@ export default function CheckoutModal({
     if (step === 3) {
       setIsSubmitting(true);
       try {
-        if (payment === "card") {
-          const handler = cardHandlerRef.current;
-          if (!handler) {
-            throw new Error("Card payment is not configured");
-          }
-
-          const { paymentIntentId } = await handler();
-          await placeOrder({ method: "card", paymentIntentId });
-        } else if (payment === "paypal") {
-          if (!paypalData) {
-            throw new Error("PayPal payment not authorized");
-          }
-          await placeOrder({
-            method: "paypal",
-            paypalOrderId: paypalData.paypalOrderId,
-            paypalCaptureId: paypalData.paypalCaptureId,
-          });
+        const handler = cardHandlerRef.current;
+        if (!handler) {
+          throw new Error("Card payment is not configured");
         }
+
+        const { paymentIntentId } = await handler();
+        await placeOrder({ method: "card", paymentIntentId });
       } catch (err: any) {
         toast.error(err.message || "Failed to place order");
       } finally {
@@ -588,17 +570,10 @@ export default function CheckoutModal({
                             postalCode: formData.postalCode,
                             country: formData.country || "US",
                           }}
-                          isSubmitting={isSubmitting}
                           stripeEnabled={true}
-                          paypalClientId={paypalClientId}
                           onCardCompleteChange={setIsCardComplete}
                           onCardHandlerReady={(handler) => {
                             cardHandlerRef.current = handler;
-                          }}
-                          paypalData={paypalData}
-                          onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                            setPaypalData({ paypalOrderId, paypalCaptureId });
-                            setStep(3);
                           }}
                         />
                       </Elements>
@@ -622,17 +597,10 @@ export default function CheckoutModal({
                           postalCode: formData.postalCode,
                           country: formData.country || "US",
                         }}
-                        isSubmitting={isSubmitting}
                         stripeEnabled={false}
-                        paypalClientId={paypalClientId}
                         onCardCompleteChange={setIsCardComplete}
                         onCardHandlerReady={(handler) => {
                           cardHandlerRef.current = handler;
-                        }}
-                        paypalData={paypalData}
-                        onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                          setPaypalData({ paypalOrderId, paypalCaptureId });
-                          setStep(3);
                         }}
                       />
                     ))
@@ -726,17 +694,14 @@ export default function CheckoutModal({
                       disableNext={
                         (step === 0 && !isCartValid) ||
                         (step === 1 && !isCheckoutValid) ||
-                        (step === 2 && payment === "paypal") ||
-                        (step === 2 && payment === "card" && !isPaymentValid)
+                        (step === 2 && !isPaymentValid)
                       }
                       nextLabel={
-                        step === 2 && payment === "paypal"
-                          ? "Complete with PayPal"
-                          : step === 2 && payment === "card" && !isPaymentValid
-                            ? "Enter card details"
-                            : step === 3
-                              ? "Place Order"
-                              : undefined
+                        step === 2 && !isPaymentValid
+                          ? "Enter card details"
+                          : step === 3
+                            ? "Place Order"
+                            : undefined
                       }
                     />
                   )}

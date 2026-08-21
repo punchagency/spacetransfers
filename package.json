@@ -32,7 +32,6 @@
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",
-    "@paypal/react-paypal-js": "^8.9.2",
     "@react-three/cannon": "^6.6.0",
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.18.0",

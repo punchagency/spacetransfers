@@ -1,14 +1,11 @@
-import { MdCreditCard, MdOutlineLocalShipping, MdCheckCircle } from "react-icons/md";
-import { FaPaypal } from "react-icons/fa";
+import { MdCreditCard, MdOutlineLocalShipping } from "react-icons/md";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
-import { PayPalButtons, PayPalScriptProvider } from "@paypal/react-paypal-js";
 import { apiFetch } from "../../lib/utils/api";
 import { useEffect, useMemo, useState } from "react";
-import { processFakePayment, validateCardNumber, validateExpiry, validateCVV } from "@/lib/utils/fakePayments";
 
 interface PaymentStepProps {
-  payment: "card" | "paypal";
-  setPayment: (method: "card" | "paypal") => void;
+  payment: "card";
+  setPayment: (method: "card") => void;
   shipping: "standard" | "express";
   setShipping: (method: "standard" | "express") => void;
   cartItems: any[];
@@ -20,13 +17,9 @@ interface PaymentStepProps {
     postalCode: string;
     country: string;
   };
-  isSubmitting: boolean;
   onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
-  onPaypalCaptured: (data: { paypalOrderId: string; paypalCaptureId: string }) => void;
-  paypalClientId?: string;
   stripeEnabled: boolean;
   onCardCompleteChange?: (complete: boolean) => void;
-  paypalData?: { paypalOrderId: string; paypalCaptureId: string } | null;
 }
 
 function StripeCardSection({
@@ -162,13 +155,9 @@ export default function PaymentStep({
   cartItems,
   customer,
   shippingAddress,
-  isSubmitting,
   onCardHandlerReady,
-  onPaypalCaptured,
-  paypalClientId,
   stripeEnabled,
   onCardCompleteChange,
-  paypalData,
 }: PaymentStepProps) {
   const mappedItems = cartItems.map((item) => ({
     type: item.type || "gangsheet",
@@ -181,8 +170,18 @@ export default function PaymentStep({
   }));
 
   useEffect(() => {
-    if (payment !== "card") onCardHandlerReady(null);
-  }, [onCardHandlerReady, payment]);
+    if (payment !== "card") {
+      onCardHandlerReady(null);
+      return;
+    }
+    // No payment provider configured: there is no handler that could take a
+    // payment, and the card can never report itself complete — so clear both
+    // and leave checkout blocked.
+    if (!stripeEnabled) {
+      onCardHandlerReady(null);
+      onCardCompleteChange?.(false);
+    }
+  }, [onCardHandlerReady, onCardCompleteChange, payment, stripeEnabled]);
 
   return (
     <>
@@ -226,78 +225,16 @@ export default function PaymentStep({
                 onCardCompleteChange={onCardCompleteChange}
               />
             ) : (
-              <FakeCardSection
-                mappedItems={mappedItems}
-                customer={customer}
-                shippingAddress={shippingAddress}
-                onCardHandlerReady={onCardHandlerReady}
-                onCardCompleteChange={onCardCompleteChange}
-              />
+              /**
+               * No Stripe key configured, so there is no way to take a payment.
+               * This says so and blocks checkout, rather than collecting card
+               * details a mock would "approve" — an order that reaches
+               * fulfilment against a payment that never happened is far more
+               * expensive than a blocked checkout.
+               */
+              <CardUnavailable />
             )
           )}
-
-          {/* PayPal temporarily disabled — re-enable by uncommenting this block
-          <label
-            className={`border-2 rounded-lg p-4 flex items-center gap-3 cursor-pointer ${
-              payment === "paypal" ? "border-blue-600 bg-blue-50" : "border-gray-200"
-            }`}
-          >
-            <input type="radio" checked={payment === "paypal"} onChange={() => setPayment("paypal")} className="h-4 w-4" />
-            <FaPaypal className="h-5 w-5 text-gray-600" />
-            <div className="flex-1">
-              <div className="font-medium">PayPal</div>
-              <div className="text-xs text-gray-500">Pay securely with your PayPal account</div>
-            </div>
-          </label>
-          {payment === "paypal" && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              {paypalData ? (
-                <div className="flex items-center gap-3 text-green-700">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100">
-                    <MdCheckCircle className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">PayPal Authorized</p>
-                    <p className="text-xs">You can now proceed to review your order.</p>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <p className="text-sm text-gray-700 mb-4">Complete your payment with PayPal to place your order.</p>
-                  {paypalClientId ? (
-                    <PayPalScriptProvider options={{ clientId: paypalClientId, currency: "USD", intent: "capture" }}>
-                      <PayPalButtons
-                        style={{ layout: "vertical" }}
-                        disabled={isSubmitting}
-                        createOrder={async () => {
-                          const result = await apiFetch("/customer/payments/paypal/create-order", {
-                            method: "POST",
-                            body: JSON.stringify({ items: mappedItems, shippingMethod: shipping }),
-                          });
-                          const id = result?.paypalOrderId;
-                          if (!id) throw new Error("Failed to create PayPal order");
-                          return id;
-                        }}
-                        onApprove={async (data) => {
-                          const captured = await apiFetch("/customer/payments/paypal/capture-order", {
-                            method: "POST",
-                            body: JSON.stringify({ paypalOrderId: data.orderID }),
-                          });
-                          if (!captured?.paypalCaptureId) throw new Error("Failed to capture PayPal payment");
-                          onPaypalCaptured({ paypalOrderId: data.orderID, paypalCaptureId: captured.paypalCaptureId });
-                        }}
-                      />
-                    </PayPalScriptProvider>
-                  ) : (
-                    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                      PayPal is not configured yet.
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-          */}
         </div>
 
         <p className="text-xs text-center text-gray-500 mt-4">
@@ -400,149 +337,23 @@ export default function PaymentStep({
   );
 }
 
-function FakeCardSection({
-  mappedItems,
-  customer,
-  shippingAddress,
-  onCardHandlerReady,
-  onCardCompleteChange,
-}: {
-  mappedItems: any[];
-  customer: { firstName: string; lastName: string; email: string; phone?: string };
-  shippingAddress: {
-    street: string;
-    city: string;
-    state: string;
-    postalCode: string;
-    country: string;
-  };
-  onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
-  onCardCompleteChange?: (complete: boolean) => void;
-}) {
-  const [cardNumber, setCardNumber] = useState("");
-  const [expiry, setExpiry] = useState("");
-  const [cvv, setCvv] = useState("");
-  const [name, setName] = useState(`${customer.firstName} ${customer.lastName}`.trim());
-  const [errors, setErrors] = useState<{ [k: string]: string }>({});
 
-  const amount = useMemo(() => {
-    return mappedItems.reduce((sum, it) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
-  }, [mappedItems]);
-
-  useEffect(() => {
-    const valid =
-      validateCardNumber(cardNumber).valid &&
-      validateExpiry(expiry).valid &&
-      validateCVV(cvv).valid &&
-      name.trim().length > 1;
-    onCardCompleteChange?.(valid);
-
-    const next: { [k: string]: string } = {};
-    if (cardNumber && !validateCardNumber(cardNumber).valid) next.cardNumber = "Enter a valid 16-digit card number";
-    if (expiry && !validateExpiry(expiry).valid) next.expiry = "Use MM/YY and a future date";
-    if (cvv && !validateCVV(cvv).valid) next.cvv = "3–4 digits";
-    if (name && name.trim().length <= 1) next.name = "Cardholder name required";
-    setErrors(next);
-  }, [cardNumber, expiry, cvv, name, onCardCompleteChange]);
-
-  useEffect(() => {
-    const handler = async () => {
-      const numInfo = validateCardNumber(cardNumber);
-      const expInfo = validateExpiry(expiry);
-      const cvvInfo = validateCVV(cvv);
-      if (!numInfo.valid || !expInfo.valid || !cvvInfo.valid || name.trim().length <= 1) {
-        throw new Error("Invalid payment details");
-      }
-      const result = await processFakePayment({
-        cardNumber: numInfo.cleaned,
-        expiry: expInfo.cleaned,
-        cvv: cvvInfo.cleaned,
-        name: name.trim(),
-        amount,
-        billing: {
-          name: name.trim(),
-          street: shippingAddress.street,
-          city: shippingAddress.city,
-          state: shippingAddress.state,
-          postalCode: shippingAddress.postalCode,
-          country: shippingAddress.country,
-          email: customer.email,
-        },
-        items: mappedItems,
-      });
-      if (result.status !== "succeeded") {
-        throw new Error(result.error || "Card was declined");
-      }
-      return { paymentIntentId: result.transactionId };
-    };
-    onCardHandlerReady(handler);
-  }, [amount, cardNumber, expiry, cvv, name, mappedItems, onCardHandlerReady, customer.email, shippingAddress]);
-
-  const formatCardNumber = (v: string) => {
-    const digits = v.replace(/\D/g, "").slice(0, 16);
-    return digits.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
-  };
-
-  const formatExpiry = (v: string) => {
-    const digits = v.replace(/\D/g, "").slice(0, 4);
-    if (digits.length <= 2) return digits;
-    return `${digits.slice(0, 2)}/${digits.slice(2)}`;
-  };
-
+/**
+ * Shown in place of the card form when no Stripe key is configured. Purely
+ * presentational — PaymentStep clears the card handler and the complete flag,
+ * which is what actually keeps checkout blocked.
+ */
+function CardUnavailable() {
   return (
-    <div className="space-y-4 mt-4">
-      <div className="rounded-lg border border-gray-200 bg-white p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-gray-600">Card Number</label>
-            <input
-              value={formatCardNumber(cardNumber)}
-              onChange={(e) => setCardNumber(e.target.value)}
-              inputMode="numeric"
-              placeholder="1234 5678 9012 3456"
-              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
-            {errors.cardNumber && <p className="text-xs text-red-600 mt-1">{errors.cardNumber}</p>}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gray-600">Expiry (MM/YY)</label>
-              <input
-                value={formatExpiry(expiry)}
-                onChange={(e) => setExpiry(e.target.value)}
-                inputMode="numeric"
-                placeholder="MM/YY"
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-              />
-              {errors.expiry && <p className="text-xs text-red-600 mt-1">{errors.expiry}</p>}
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">CVV</label>
-              <input
-                value={cvv}
-                onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                inputMode="numeric"
-                placeholder="123"
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-              />
-              {errors.cvv && <p className="text-xs text-red-600 mt-1">{errors.cvv}</p>}
-            </div>
-          </div>
-          <div className="md:col-span-2">
-            <label className="text-xs text-gray-600">Name on Card</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="John Doe"
-              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
-            {errors.name && <p className="text-xs text-red-600 mt-1">{errors.name}</p>}
-          </div>
-        </div>
-        <div className="mt-3 text-xs text-gray-500">
-          Test cards: Use 4111 1111 1111 1111 (succeeds). Even last digit succeeds; odd fails. 9 simulates timeout.
-        </div>
+    <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+      <div className="font-medium text-amber-900 text-sm">
+        Card payments are unavailable
       </div>
+      <p className="mt-1 text-sm text-amber-800">
+        This environment has no payment provider configured, so card details
+        can't be taken and no order can be placed. Set a Stripe key on the
+        server and reload to continue.
+      </p>
     </div>
   );
 }
