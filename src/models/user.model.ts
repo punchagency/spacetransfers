@@ -116,11 +116,15 @@ export interface IUser extends Document {
         partnerActivity?: boolean;
       };
     };
+    /**
+     * Mirrors the schema below. Payouts run through Stripe Connect only — the
+     * older bank_transfer / paypal / check shape was never persistable, because
+     * the schema has no `accountNumber`, `routingNumber` or `paypalEmail`
+     * fields and Mongoose strict mode dropped them on save.
+     */
     paymentMethod?: {
-      type?: "bank_transfer" | "paypal" | "check";
-      accountNumber?: string;
-      routingNumber?: string;
-      paypalEmail?: string;
+      type?: "stripe_connect";
+      stripeConnectAccountId?: string;
     };
     printingCapabilities?: {
       maxSheetSizeIn?: { width: number; height: number };

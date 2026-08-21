@@ -12,8 +12,7 @@ import { env } from "../config/env.js";
 import { generatePDF } from "pdf-node";
 import fs from "fs";
 import path from "path";
-import { alphaTrimToFile, smartTrimToFile } from "../utils/aiCrop.js";
-import { isRembgEnabled, runRembg } from "../utils/rembg.js";
+import { smartTrimToFile } from "../utils/aiCrop.js";
 import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
 import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN } from "../services/gangsheetExport.service.js";
@@ -55,8 +54,8 @@ const computeThumbUrl = (assetUrl: string | null | undefined): string | null => 
   return assetUrl.substring(0, lastDot) + "-thumb200.webp";
 };
 
-// Trim an image buffer using temp files, optionally running rembg first.
-// Returns the trimmed PNG as a Buffer. Temp files are written to os.tmpdir().
+// Trim an image buffer using temp files. Returns the trimmed PNG as a Buffer.
+// Temp files are written to os.tmpdir().
 const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
   const tmpDir = os.tmpdir();
   const id = crypto.randomUUID();
@@ -68,16 +67,7 @@ const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
   };
   try {
     await sharp(inputBuffer, { limitInputPixels: false }).png().toFile(inputPath);
-    if (isRembgEnabled()) {
-      const rembgPath = path.join(tmpDir, `${id}-rembg.png`);
-      await runRembg(inputPath, rembgPath);
-      const alphaThreshold = parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
-      const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
-      await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
-      fs.unlink(rembgPath, () => {});
-    } else {
-      await smartTrimToFile(inputPath, trimmedPath);
-    }
+    await smartTrimToFile(inputPath, trimmedPath);
     return await fs.promises.readFile(trimmedPath);
   } finally {
     cleanup();
@@ -1524,12 +1514,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 
     if (payment.method === "card" && !payment.paymentIntentId) {
       const error = new Error("payment.paymentIntentId is required for card payments") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    if (payment.method === "paypal" && (!payment.paypalOrderId || !payment.paypalCaptureId)) {
-      const error = new Error("payment.paypalOrderId and payment.paypalCaptureId are required for PayPal payments") as CustomError;
       error.statusCode = 400;
       throw error;
     }

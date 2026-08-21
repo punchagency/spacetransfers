@@ -34,11 +34,7 @@ import {
   reorder,
   getOrderTracking
 } from "../controllers/customer.controller.js";
-import {
-  createStripePaymentIntent,
-  createPaypalOrder,
-  capturePaypalOrder
-} from "../controllers/payments.controller.js";
+import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
@@ -87,7 +83,5 @@ router.post("/designs/:designId/duplicate", duplicateDesign);
 router.post("/cart/quote", getCartQuote);
 router.post("/notifications/gangsheet-utilization-warning", sendGangsheetUtilizationWarning);
 router.post("/payments/stripe/create-intent", createStripePaymentIntent);
-router.post("/payments/paypal/create-order", createPaypalOrder);
-router.post("/payments/paypal/capture-order", capturePaypalOrder);
 
 export default router;

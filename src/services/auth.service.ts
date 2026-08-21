@@ -114,8 +114,26 @@ export const registerUser = async ({
   }
 
   const passwordHash = await hashPassword(password);
-  // Default to CUSTOMER if no role provided or invalid role
-  const resolvedRole = role && Object.values(UserRoles).includes(role) ? role : UserRoles.CUSTOMER;
+
+  /**
+   * Public registration covers customers and print partners only.
+   *
+   * ADMIN is refused outright rather than quietly downgraded: this endpoint is
+   * unauthenticated, so honouring `role: "ADMIN"` let anyone who could reach it
+   * mint themselves an account with full access to pricing, partner management
+   * and payouts. Admin accounts are provisioned directly against the database,
+   * and the admin console has no sign-up screen to match.
+   *
+   * Silently downgrading instead would create a CUSTOMER for someone who asked
+   * for an ADMIN and believes they got one — an error is the honest answer.
+   */
+  const SELF_REGISTERABLE_ROLES: UserRole[] = [UserRoles.CUSTOMER, UserRoles.PRINTER];
+  if (role && !SELF_REGISTERABLE_ROLES.includes(role)) {
+    const error = new Error("That account type cannot be created through registration.") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+  const resolvedRole = role && SELF_REGISTERABLE_ROLES.includes(role) ? role : UserRoles.CUSTOMER;
 
   // Validate required fields based on role
   if (resolvedRole === UserRoles.PRINTER) {

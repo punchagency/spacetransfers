@@ -5,7 +5,6 @@ import {
   listPrintQueue,
   updateJobStatus,
   listPrinterOrders,
-  getPrinterEarnings,
   getDashboardStats,
   updateJobPriority,
   getJobDetails,
@@ -32,8 +31,6 @@ import {
   getOrderSummary,
   getEarningsSummary,
   listEarningsJobs,
-  requestPayout,
-  confirmPayoutRequest,
   getPrinterProfile,
   updatePrinterProfile,
   getPrinterSettings,
@@ -88,9 +85,6 @@ router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);
 router.get("/earnings/summary", getEarningsSummary);
-router.post("/earnings/payout-requests", requestPayout);
-router.post("/earnings/payout-requests/:requestId/confirm", confirmPayoutRequest);
-router.get("/earnings", getPrinterEarnings);
 
 router.get("/availability", getAvailabilityStatus);
 router.patch("/availability", updateAvailabilityStatus);

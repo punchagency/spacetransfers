@@ -3245,70 +3245,6 @@ export const listEarningsJobs = async (req: Request, res: Response, next: NextFu
   }
 };
 
-export const requestPayout = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const printerId = req.user?.id;
-    const { amount, method } = req.body;
-
-    const allowedMethods = ["bank_transfer", "paypal", "check"];
-    if (!method || !allowedMethods.includes(method)) {
-      const error = new Error("Invalid payout method. Must be: bank_transfer | paypal | check") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    if (!amount || amount <= 0) {
-      const error = new Error("Payout amount must be greater than zero") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const orders = await Order.find({
-      assignedPrinter: printerId,
-      status: { $in: ["SHIPPED", "COMPLETED"] }
-    }).select("items pricing").lean();
-
-    const totalAvailable = orders.reduce((sum, order) => sum + calcEarning(order), 0);
-
-    if (amount > totalAvailable) {
-      const error = new Error(`Insufficient balance. Available pending earnings: $${totalAvailable.toFixed(2)}`) as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const requestId = `payout_${Math.random().toString(36).substring(2, 9)}`;
-
-    res.status(201).json({
-      requestId,
-      status: "Requested",
-      amount: Number(amount.toFixed(2))
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const confirmPayoutRequest = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { requestId } = req.params;
-
-    res.json({
-      requestId,
-      status: "Confirmed",
-      confirmedAt: new Date().toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getPrinterEarnings = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    res.json({ message: "Printer earnings blueprint" });
-  } catch (error) {
-    next(error);
-  }
-};
 
 export const getPrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -3490,11 +3426,6 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
     }
 
     const settings = user.settings || {};
-    const paymentMethod = settings.paymentMethod || {};
-
-    const accountMasked = paymentMethod.accountNumber 
-      ? `****${paymentMethod.accountNumber.slice(-4)}`
-      : (paymentMethod.paypalEmail || "N/A");
 
     const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
 
@@ -3517,10 +3448,6 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
           accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
           systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-      },
-      paymentMethod: {
-        type: paymentMethod.type || "bank_transfer",
-        accountMasked,
       },
       printingCapabilities: settings.printingCapabilities || {
         maxSheetSizeIn: { width: 24, height: 19.5 },
@@ -3559,25 +3486,12 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
       }
     };
 
-    if (updateData.paymentMethod && updateData.paymentMethod.account) {
-      const { routing, number } = updateData.paymentMethod.account;
-      if (!user.settings.paymentMethod) user.settings.paymentMethod = {};
-      if (routing) user.settings.paymentMethod.routingNumber = routing;
-      if (number) user.settings.paymentMethod.accountNumber = number;
-      delete updateData.paymentMethod.account;
-    }
-
     deepMerge(user.settings, updateData);
 
     user.markModified("settings");
     await user.save();
 
     const settings = user.settings || {};
-    const paymentMethod = settings.paymentMethod || {};
-    const accountMasked = paymentMethod.accountNumber 
-      ? `****${paymentMethod.accountNumber.slice(-4)}`
-      : (paymentMethod.paypalEmail || "N/A");
-
     const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
 
     res.json({
@@ -3599,10 +3513,6 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
           accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
           systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-      },
-      paymentMethod: {
-        type: paymentMethod.type || "bank_transfer",
-        accountMasked,
       },
       printingCapabilities: settings.printingCapabilities || {
         maxSheetSizeIn: { width: 24, height: 19.5 },

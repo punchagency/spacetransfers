@@ -103,9 +103,12 @@ describe("buildLegalAcceptance", () => {
 describe("client legal mirrors", () => {
   // Path -> the app it belongs to, for a failure message that names the file to
   // edit rather than just reporting a mismatched string.
+  // Only apps that actually register users need a mirror: the mirror exists so
+  // a registering client can echo back the versions it rendered. The admin
+  // console has no sign-up — admin accounts are provisioned directly against
+  // the database — so it has no mirror to drift.
   const mirrors = [
-    ["customer", "space-transfer/src/lib/legal/documents.ts"],
-    ["admin", "space-transfer-admin/src/utils/legal.ts"],
+    ["customer", "space-transfers/src/lib/legal/documents.ts"],
     ["printer", "space-transfer-printer/src/utils/legal.ts"],
   ] as const;
 
