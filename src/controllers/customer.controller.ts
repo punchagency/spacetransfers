@@ -16,7 +16,7 @@ import { alphaTrimToFile, smartTrimToFile } from "../utils/aiCrop.js";
 import { isRembgEnabled, runRembg } from "../utils/rembg.js";
 import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
+import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { assertPersistable } from "../utils/documentSize.js";
@@ -1746,7 +1746,11 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
           const rendered = await exportGangsheetPng24({
             jobId: String(orderId),
             printerId: "order-preview",
-            sheetWidthIn: typeof gangsheetOrderItem.sheetWidthIn === "number" ? gangsheetOrderItem.sheetWidthIn : undefined,
+            // The sheet, not the stored `sheetWidthIn` — that field carries the
+            // artwork's bounding width for partner pricing, and rendering onto
+            // it misplaces every absolute `posX`. Same fix as the printer and
+            // admin previews.
+            sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
             sheetHeightIn: typeof gangsheetOrderItem.sheetHeightIn === "number" ? gangsheetOrderItem.sheetHeightIn : undefined,
             artboardItems: thumbItems,
             dpi: 600,

@@ -5,7 +5,30 @@ import sharp from "sharp";
 import mongoose from "mongoose";
 import { Asset } from "../models/asset.model.js";
 
-const SHEET_DEFAULT_WIDTH_IN = 23.5;
+/**
+ * The physical gang sheet. This is the product, not a default.
+ *
+ * Every artboard coordinate is absolute against a sheet of exactly this width:
+ * `posX` of 20 means twenty inches from the left edge of a 23.5" sheet, and
+ * nothing in the stored item says so. Render onto a canvas of any other width
+ * and every x-coordinate silently means something else — artwork past the new
+ * edge is clipped away, and what survives sits in the wrong place.
+ *
+ * Exported so the render entry points share one definition rather than each
+ * deriving a width from order data, which is how three of them ended up
+ * reading a field that does not hold this quantity (see the callers).
+ */
+export const GANGSHEET_SHEET_WIDTH_IN = 23.5;
+
+/**
+ * Print resolution for a final export: 23.5in × 300 = 7,050px.
+ *
+ * The whole point of a fixed DPI is that physical size and pixel size stay
+ * locked together, so a sheet's pixel width is a pure function of its inches.
+ */
+export const GANGSHEET_PRINT_DPI = 300;
+
+const SHEET_DEFAULT_WIDTH_IN = GANGSHEET_SHEET_WIDTH_IN;
 const SHEET_DEFAULT_HEIGHT_IN = 23.5;
 const GROUP_GAP_IN = 0.06;
 const CROP_PADDING_IN = 0.08;
@@ -324,6 +347,7 @@ export const exportGangsheetPng24 = async ({
   useLossyPreview = false,
   itemSpacingIn,
   sheetMarginIn,
+  renderWindowIn,
 }: {
   jobId: string;
   printerId: string;
@@ -352,6 +376,20 @@ export const exportGangsheetPng24 = async ({
   itemSpacingIn?: number | null;
   /** Left/right margin in inches — must match the artboard margin setting. Defaults to 0 if omitted. */
   sheetMarginIn?: number | null;
+  /**
+   * Render only this window of the sheet, in sheet inches.
+   *
+   * Exists so a sheet longer than one canvas can be produced at full print
+   * resolution: the splitter renders each cut as its own window rather than
+   * rendering the whole roll into one buffer and slicing the result, which is
+   * what forced the DPI cap (and with it the pixel width) down on long sheets.
+   *
+   * It is the same mechanism `cropToContent` already used — an origin offset
+   * plus a smaller canvas — supplied rather than computed, so placement,
+   * ordering and clipping all go through the one existing code path. Wins over
+   * `cropToContent` when both are given.
+   */
+  renderWindowIn?: { leftIn: number; topIn: number; widthIn: number; heightIn: number } | null;
 }): Promise<{
   fileName: string;
   filePath: string;
@@ -366,16 +404,71 @@ export const exportGangsheetPng24 = async ({
 }> => {
   await acquireRenderSlot();
   try {
-  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, useLossyPreview, itemSpacingIn, sheetMarginIn });
+  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, useLossyPreview, itemSpacingIn, sheetMarginIn, renderWindowIn });
   } finally {
     releaseRenderSlot();
   }
 };
 
+/**
+ * Physical inches → print pixels. The only conversion in the pipeline.
+ *
+ * `23.5in × 300dpi = 7050px`, and every other dimension follows the same rule,
+ * so physical size and pixel size can never drift apart.
+ */
+export const toPrintPixels = (inches: number, dpi: number): number =>
+  Math.max(1, Math.round(inches * dpi));
+
+/** RGBA ceiling for one canvas. Above this the render cannot be allocated. */
+const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024;
+/** WebP cannot encode a dimension beyond this, whatever the buffer allows. */
+const MAX_WEBP_DIM = 16383;
+
+/**
+ * The DPI a single canvas of this size can actually be rendered at.
+ *
+ * This is a *memory* limit, not a print decision, and that distinction is the
+ * whole reason long sheets came out at the wrong pixel width. A 23.5"×1200"
+ * roll at 300 DPI is 7,050 × 360,000px — around 10 GB of RGBA — so this
+ * function correctly refuses, and the render silently dropped to ~138 DPI,
+ * taking the sheet's width down to 3,243px with it.
+ *
+ * The answer is not to raise the ceiling but to render less at a time: a
+ * 23.5"×100" band is ~846 MB and comfortably clears it at full resolution. So
+ * callers producing a final export split into bands (see `renderWindowIn`) and
+ * this cap then never binds. It remains as the backstop that stops an
+ * unreasonable canvas from being attempted at all.
+ *
+ * Pure and exported so the relationship between sheet size, DPI and pixel
+ * width is testable without rendering anything.
+ */
+export const resolveRenderDpi = ({
+  widthIn,
+  heightIn,
+  requestedDpi,
+  format = "png",
+}: {
+  widthIn: number;
+  heightIn: number;
+  requestedDpi: number;
+  format?: "png" | "webp";
+}): number => {
+  const areaSqIn = widthIn * heightIn;
+  const maxFromBuffer =
+    areaSqIn > 0 ? Math.floor(Math.sqrt(MAX_BUFFER_BYTES / 4 / areaSqIn)) : requestedDpi;
+
+  if (format === "webp") {
+    const maxFromWidth = Math.floor(MAX_WEBP_DIM / Math.max(1e-6, widthIn));
+    const maxFromHeight = Math.floor(MAX_WEBP_DIM / Math.max(1e-6, heightIn));
+    return Math.max(10, Math.min(requestedDpi, maxFromWidth, maxFromHeight, maxFromBuffer));
+  }
+  return Math.max(10, Math.min(requestedDpi, maxFromBuffer));
+};
+
 const _doExport = async ({
   jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput,
   cropToContent = false, maxComposites, format = "png", useLossyPreview = false,
-  itemSpacingIn, sheetMarginIn,
+  itemSpacingIn, sheetMarginIn, renderWindowIn,
 }: {
   jobId: string; printerId: string; sheetWidthIn?: number | null; sheetHeightIn?: number | null;
   artboardItems: Array<{ assetId: string; croppedUrl?: string; widthIn: number; heightIn: number;
@@ -383,6 +476,7 @@ const _doExport = async ({
   dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
   useLossyPreview?: boolean;
   itemSpacingIn?: number | null; sheetMarginIn?: number | null;
+  renderWindowIn?: { leftIn: number; topIn: number; widthIn: number; heightIn: number } | null;
 }) => {
   const rawDpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
   const widthIn = Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
@@ -414,7 +508,12 @@ const _doExport = async ({
       return a.copies - b.copies;
     });
 
-  const crop = cropToContent
+  // An explicit window is an instruction about which part of the sheet to draw;
+  // `cropToContent` is a request to work that out from the artwork. When both
+  // arrive the caller has already decided, so the window wins.
+  const crop = renderWindowIn
+    ? renderWindowIn
+    : cropToContent
     ? computeContentBoundsIn({
         sheetWidthIn: widthIn,
         sheetHeightIn: heightIn,
@@ -427,35 +526,24 @@ const _doExport = async ({
   const outputSheetWidthIn = crop ? crop.widthIn : widthIn;
   const outputSheetHeightIn = crop ? crop.heightIn : heightIn;
 
-  // Auto-cap DPI so the render stays within memory + encoder limits. Without this,
-  // long roll sheets (e.g. 22" × 1180") throw "Sheet too large" at 300 DPI before
-  // any pixels are drawn. WebP also has a hard 16383-pixel per-dimension limit.
-  const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024;
-  const dpi = (() => {
-    const areaSqIn = outputSheetWidthIn * outputSheetHeightIn;
-    const maxFromBuffer = areaSqIn > 0
-      ? Math.floor(Math.sqrt(MAX_BUFFER_BYTES / 4 / areaSqIn))
-      : rawDpi;
-    if (format === "webp") {
-      const MAX_WEBP_DIM = 16383;
-      const maxFromWidth = Math.floor(MAX_WEBP_DIM / outputSheetWidthIn);
-      const maxFromHeight = Math.floor(MAX_WEBP_DIM / outputSheetHeightIn);
-      return Math.max(10, Math.min(rawDpi, maxFromWidth, maxFromHeight, maxFromBuffer));
-    }
-    return Math.max(10, Math.min(rawDpi, maxFromBuffer));
-  })();
+  const dpi = resolveRenderDpi({
+    widthIn: outputSheetWidthIn,
+    heightIn: outputSheetHeightIn,
+    requestedDpi: rawDpi,
+    format,
+  });
   if (dpi < rawDpi) {
-    console.warn(`[gangsheet] capped DPI ${rawDpi}→${dpi} for ${outputSheetWidthIn.toFixed(1)}"×${outputSheetHeightIn.toFixed(1)}" sheet`);
+    console.warn(`[gangsheet] capped DPI ${rawDpi}→${dpi} for ${outputSheetWidthIn.toFixed(1)}"×${outputSheetHeightIn.toFixed(1)}" canvas — render it as bands to keep full resolution`);
   }
 
-  const widthPx = Math.max(1, Math.round(outputSheetWidthIn * dpi));
-  const heightPx = Math.max(1, Math.round(outputSheetHeightIn * dpi));
+  const widthPx = toPrintPixels(outputSheetWidthIn, dpi);
+  const heightPx = toPrintPixels(outputSheetHeightIn, dpi);
 
   // Cap items used for the cache key to maxComposites so we never stringify 10k+ items.
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
   const itemsHash = computeItemsHash(normalizedItems.slice(0, capForKey));
   const cacheKey = computeCacheKey({
-    v: 9,
+    v: 10,
     jobId,
     printerId,
     dpi,
