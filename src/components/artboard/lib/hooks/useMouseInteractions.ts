@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ArtboardItem } from "../../types";
-import { CANVAS } from "../../../../config/artboard.config";
+import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 import type { CommitHistory } from "./useHistory";
 import {
@@ -109,7 +109,6 @@ export const useMouseInteractions = (
   const selectedIdsRef = useRef(selectedIds);
   selectedIdsRef.current = selectedIds;
 
-  const MAX_SHEET_HEIGHT_IN = 1200;
   const warnedMaxHeightRef = useRef(false);
 
   const getGroupHeightWorstIn = (item: Pick<ArtboardItem, "heightIn" | "copies">) => {

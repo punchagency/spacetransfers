@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { toHostedUrl } from "../../../../lib/utils/payloadImages";
+import { knownHostedUrl, toHostedUrl } from "../../../../lib/utils/payloadImages";
 import type { ArtboardItem } from "../../types";
 
 /**
@@ -46,14 +46,55 @@ export const useMaterializeImages = (
 
   useEffect(() => {
     const pending: string[] = [];
+    /**
+     * Images this session has already uploaded, still sitting on a *new* item.
+     *
+     * Re-dropping the same files produces byte-identical crops, so the second
+     * batch's data URLs are the same strings the first batch uploaded. Those
+     * strings are in `attempted`, so the old code skipped them — but the swap
+     * that retired them ran before these items existed, so nothing ever
+     * replaced them and the second batch kept multi-megabyte base64 in React
+     * state indefinitely. Every `setItems` then re-rendered a board carrying
+     * hundreds of megabytes of strings, which is a large part of why the
+     * *second* bulk upload was the one that ground to a halt.
+     *
+     * `toHostedUrl` already caches by data URL, so the answer is known
+     * immediately and costs no request — it just has to be applied.
+     */
+    const alreadyHosted = new Map<string, string>();
+
     for (const item of items) {
       for (const field of IMAGE_FIELDS) {
         const value = (item as any)[field];
-        if (isDataUrl(value) && value.length >= MIN_BYTES && !attempted.current.has(value)) {
+        if (!isDataUrl(value) || value.length < MIN_BYTES) continue;
+
+        const known = knownHostedUrl(value);
+        if (known) {
+          alreadyHosted.set(value, known);
+        } else if (!attempted.current.has(value)) {
           pending.push(value);
         }
       }
     }
+
+    if (alreadyHosted.size > 0) {
+      setItems((prev) => {
+        let changed = false;
+        const next = prev.map((item) => {
+          let updated = item;
+          for (const field of IMAGE_FIELDS) {
+            const swap = alreadyHosted.get((updated as any)[field]);
+            if (swap) {
+              updated = { ...updated, [field]: swap };
+              changed = true;
+            }
+          }
+          return updated;
+        });
+        return changed ? next : prev;
+      });
+    }
+
     if (pending.length === 0) return;
 
     // De-duplicated before any request: `url` and `croppedUrl` are usually the

@@ -6,7 +6,7 @@ import ItemToolbar from "./ItemToolbar";
 import PropertiesPanel from "./PropertiesPanel";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
-import { CANVAS } from "../../../../config/artboard.config";
+import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { computeRenderCopies } from "../../lib/utils/layoutHelpers";
 
 let hasShownMaxHeightToast = false;
@@ -46,6 +46,12 @@ interface ArtboardItemProps {
   };
   isSelected: boolean;
   isPrimary: boolean;
+  /**
+   * True while the top-bar DPI chip's highlight is on and this item is one of
+   * the images it counts. Chrome only — it adds an outline and changes nothing
+   * about the item's geometry, transform or content.
+   */
+  isDpiHighlighted?: boolean;
   showProperties: boolean;
   addedToCart: boolean;
   onSelect: (multi?: boolean) => void;
@@ -94,6 +100,7 @@ function ArtboardItem({
   item,
   isSelected,
   isPrimary,
+  isDpiHighlighted = false,
   showProperties,
   addedToCart,
   onSelect,
@@ -319,7 +326,6 @@ function ArtboardItem({
     : "bg-blue-500";
 
   const effectiveMargin = marginSize;
-  const MAX_SHEET_HEIGHT_IN = 1200;
   const gap = spacing;
   const maxAvailableWidth = canvasWidth - 2 * effectiveMargin;
   // When the layout engine assigned a 90° nest-rotation, width and height are
@@ -854,6 +860,49 @@ function ArtboardItem({
           </div>
         )}
       </div>
+      {/*
+        DPI highlight.
+
+        Drawn on the same `polygonPathD` the selection outline uses, so it hugs
+        the occupied cells of a copy-grid exactly rather than boxing the whole
+        rectangle — on an item whose last row is partial, a plain box would
+        outline empty sheet.
+
+        Two strokes: a wide translucent halo that carries at a distance on a
+        zoomed-out sheet, and a crisp line on top that stays legible up close.
+        Both in `#EDAE00`, the amber this codebase already uses for DPI
+        attention, so the highlight reads as "more of what the chip said"
+        rather than a new signal to learn.
+
+        Rendered *before* the selection outline so selecting a highlighted item
+        still shows its normal blue, with the amber halo around it — the two
+        states stack instead of one hiding the other.
+      */}
+      {isDpiHighlighted && (
+        <svg
+          className="dpi-highlight-outline absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path
+            d={polygonPathD}
+            fill="none"
+            stroke="#EDAE00"
+            strokeOpacity={0.28}
+            strokeWidth={14}
+            strokeLinejoin="round"
+          />
+          <path
+            d={polygonPathD}
+            fill="none"
+            stroke="#EDAE00"
+            strokeWidth={3}
+            strokeLinejoin="round"
+          />
+        </svg>
+      )}
       {(isSelected || isHovered) && (
         <svg
           className="absolute top-0 left-0 pointer-events-none"

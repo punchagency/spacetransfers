@@ -1,7 +1,7 @@
 import { ArtboardItem } from "../../types";
 import { apiFetch } from "../../../../lib/utils/api";
-import { CANVAS } from "../../../../config/artboard.config";
-import { computeRenderCopies } from "../utils/layoutHelpers";
+import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import { computeRenderCopies, isSheetFull } from "../utils/layoutHelpers";
 import { canvasToLocalUrl } from "../utils/imageUtils";
 import type { CommitHistory } from "./useHistory";
 import toast from "react-hot-toast";
@@ -366,8 +366,10 @@ export const useItemActions = (
       spacing,
     );
     const clamped = Math.min(requested, maxFit);
-    if (clamped > current.copies && items.length >= CANVAS.MAX_ITEMS) {
-      toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items before adding more copies.`);
+    if (clamped > current.copies && isSheetFull(items as any)) {
+      toast.error(
+        `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork before adding more copies.`,
+      );
       return;
     }
     if (clamped === current.copies) return;

@@ -11,7 +11,7 @@ import {
   useAiConversation,
   useMaterializeImages,
 } from "./artboard/lib/hooks";
-import { snapToGridPoint, computeEffectiveDpi } from "./artboard/lib/utils";
+import { snapToGridPoint, isDpiFlagged } from "./artboard/lib/utils";
 import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
@@ -19,7 +19,8 @@ import type { AiPanelBridge } from "./artboard/features/ai";
 import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
-import { CANVAS, ZOOM } from "../config/artboard.config";
+import { ACCEPTED_IMAGE_TYPES, CANVAS, MAX_SHEET_HEIGHT_IN, ZOOM } from "../config/artboard.config";
+import { isSheetFull } from "./artboard/lib/utils";
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -32,6 +33,7 @@ export default function Artboard({
   autoNestStickers = false,
   spacing = 0.5,
   canvasBg = '#f3f4f6',
+  highlightLowDpi = false,
   onRequestAutoNest,
   onUpdateSetting,
   onDataChange,
@@ -123,11 +125,13 @@ export default function Artboard({
 
   const {
     isDragging,
-    lowDpiCount,
     fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,
+    batchLoaded,
+    batchTotal,
+    queuedCount,
     cancelUploads,
     dropFilesAtCenter,
     onDragOver,
@@ -148,6 +152,29 @@ export default function Artboard({
       marginSize,
       history.commit,
     );
+  /**
+   * The items the DPI chip is counting.
+   *
+   * Derived with `computeEffectiveDpi` — the same function `useArtboardEffects`
+   * uses to produce the chip's number — so what lights up on the sheet always
+   * matches what the chip says. `ArtboardItem` measures its own DPI from the
+   * loaded `<img>`, which is right for its own amber border but can differ by a
+   * pixel or two mid-load; trusting that here would let a chip reading "5"
+   * highlight four.
+   *
+   * Empty (and cheap) whenever the highlight is off, so the ordinary render
+   * path pays a single boolean check rather than a pass over the board.
+   */
+  const dpiHighlightIds = useMemo(() => {
+    if (!highlightLowDpi) return null;
+    const flagged = new Set<number>();
+    // Both halves of the chip's count: measurably low, and unmeasurable.
+    for (const it of items) {
+      if (isDpiFlagged(it)) flagged.add(it.id);
+    }
+    return flagged.size > 0 ? flagged : null;
+  }, [highlightLowDpi, items]);
+
   const itemActions = useItemActions(
     items,
     setItems,
@@ -358,8 +385,10 @@ export default function Artboard({
 
   const duplicateSelected = () => {
     if (selectedId == null) return;
-    if (items.length >= CANVAS.MAX_ITEMS) {
-      toast.error(`Item limit of ${CANVAS.MAX_ITEMS} reached. Remove items to add more.`);
+    if (isSheetFull(items as any)) {
+      toast.error(
+        `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
+      );
       return;
     }
     const target = items.find((it) => it.id === selectedId);
@@ -428,12 +457,10 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
+      {/* Resolution is no longer routed through here — it is raised as a toast
+          when a drop lands (`showLowDpiWarning`) and reported continuously by
+          the top-bar chip, so this banner is now purely about fades. */}
       <ArtboardWarning
-        lowDpiCount={lowDpiCount > 0 ? items.filter((it) => {
-          const d = computeEffectiveDpi(it);
-          return typeof d === "number" && d < 300;
-        }).length : 0}
-        unknownDpiCount={items.filter((it) => computeEffectiveDpi(it) === null).length}
         fadeCount={fadeCount > 0 ? items.filter((it) => it.hasFade).length : 0}
         // Only the verdicts behind the flagged items, so the banner's
         // confidence reflects what it is actually warning about.
@@ -452,7 +479,10 @@ export default function Artboard({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/svg+xml"
+        // Same list the drop filter uses. These had drifted: PDF was accepted
+        // when dragged but absent here, so browsing could not select a file
+        // the artboard would happily have taken.
+        accept={ACCEPTED_IMAGE_TYPES.join(",")}
         multiple
         className="hidden"
         onChange={async (e) => {
@@ -478,6 +508,10 @@ export default function Artboard({
           isUploading={isUploading}
           uploadProgress={uploadProgress}
           uploadFileName={uploadFileName}
+          batchLoaded={batchLoaded}
+          batchTotal={batchTotal}
+          queuedCount={queuedCount}
+          dpiHighlightIds={dpiHighlightIds}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}
           items={items}

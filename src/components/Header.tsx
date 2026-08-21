@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { CANVAS, PRICING } from "../config/artboard.config";
+import { DpiStatusChip } from "./common/DpiStatus";
 type HeaderInfo = {
   hasItem: boolean;
   areaSf?: number;
@@ -73,11 +74,16 @@ export default function Header({
   profileAvatarUrl,
   profileName,
   isSidebarOpen,
+  onToggleDpiHighlight,
+  isDpiHighlighting,
 }: {
   info?: HeaderInfo;
   itemCount?: number;
   onMenuClick?: () => void;
   onCartClick?: () => void;
+  /** Reveals the flagged artwork on the sheet. See `DpiStatusChip`. */
+  onToggleDpiHighlight?: () => void;
+  isDpiHighlighting?: boolean;
   cartCount?: number;
   onAddGangSheetToCart?: () => void;
   canAddGangSheetToCart?: boolean;
@@ -212,53 +218,20 @@ export default function Header({
             </span>
           )}
           <span className="text-gray-300">|</span>
-          {(info?.lowDpiCount ?? 0) > 0 && (
-            <span className="relative group" tabIndex={0}>
-              <span className="relative flex items-center justify-center w-5 h-5 rounded-full bg-[#EDAE00] cursor-default">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                  <line x1="12" y1="9" x2="12" y2="13" />
-                  <line x1="12" y1="17" x2="12.01" y2="17" />
-                </svg>
-                {(info?.lowDpiCount ?? 0) > 1 && (
-                  <span className="absolute -top-1.5 -right-1.5 min-w-[14px] h-[14px] px-[3px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center leading-none tabular-nums">
-                    {info!.lowDpiCount! > 100 ? "100+" : info!.lowDpiCount}
-                  </span>
-                )}
-              </span>
-              <span className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-[9999] hidden group-hover:flex group-focus:flex flex-col gap-1 w-64 rounded-xl border border-[#EDAE00]/40 bg-[#FFFBEB] shadow-lg px-3 py-2.5 text-left pointer-events-none">
-                <span className="text-[12px] font-semibold text-[#92600A]">Low DPI Detected</span>
-                <span className="text-[11px] leading-[1.5] text-[#92600A]">
-                  {info!.lowDpiCount} {info!.lowDpiCount === 1 ? "image has" : "images have"} a resolution below 300 DPI.
-                </span>
-                <span className="text-[11px] leading-[1.5] text-[#92600A]">
-                  For optimal DTF printing quality, images should be at least 300 DPI at print size.
-                </span>
-              </span>
-            </span>
+          {/* One chip for both conditions. Two separate amber discs could be on
+              screen at once, each with its own red count bubble, which is the
+              clutter this replaces — the split now lives in the tooltip. The
+              chip returns null when there is nothing to report, so the divider
+              below is conditional on the same total. */}
+          <DpiStatusChip
+            lowDpiCount={info?.lowDpiCount ?? 0}
+            unknownDpiCount={info?.unknownDpiCount ?? 0}
+            onToggleHighlight={onToggleDpiHighlight}
+            isHighlighting={isDpiHighlighting}
+          />
+          {(info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) > 0 && (
+            <span className="text-gray-300">|</span>
           )}
-          {(info?.unknownDpiCount ?? 0) > 0 && (
-            <span className="relative group" tabIndex={0}>
-              <span className="relative flex items-center justify-center w-5 h-5 rounded-full bg-[#EDAE00] cursor-default">
-                <span className="text-white text-[11px] font-bold leading-none">?</span>
-                {(info?.unknownDpiCount ?? 0) > 1 && (
-                  <span className="absolute -top-1.5 -right-1.5 min-w-[14px] h-[14px] px-[3px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center leading-none tabular-nums">
-                    {info!.unknownDpiCount! > 100 ? "100+" : info!.unknownDpiCount}
-                  </span>
-                )}
-              </span>
-              <span className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-[9999] hidden group-hover:flex group-focus:flex flex-col gap-1 w-64 rounded-xl border border-[#EDAE00]/40 bg-[#FFFBEB] shadow-lg px-3 py-2.5 text-left pointer-events-none">
-                <span className="text-[12px] font-semibold text-[#92600A]">Unknown DPI Detected</span>
-                <span className="text-[11px] leading-[1.5] text-[#92600A]">
-                  {info!.unknownDpiCount} {info!.unknownDpiCount === 1 ? "image's" : "images'"} resolution could not be determined.
-                </span>
-                <span className="text-[11px] leading-[1.5] text-[#92600A]">
-                  Print quality can't be confirmed — open the image on the artboard and use Enhance to be safe.
-                </span>
-              </span>
-            </span>
-          )}
-          <span className="text-gray-300">|</span>
           <span
             className="relative cursor-default group"
             tabIndex={0}
@@ -314,7 +287,7 @@ export default function Header({
           >
             <MdOutlineShoppingCart size={24} />
             {cartCount !== undefined && cartCount > 0 && (
-              <span className="absolute top-1 right-1 bg-blue-600 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-semibold">
+              <span className="absolute top-1 right-1 bg-black text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-semibold">
                 {cartCount}
               </span>
             )}

@@ -1,6 +1,7 @@
-import { CANVAS } from "../../../../config/artboard.config";
+import { CANVAS, DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 
-const MAX_SHEET_HEIGHT_IN = 1200;
+/** Vertical gap between stacked copies of one item. */
+const SHEET_GROUP_GAP_IN = CANVAS.GRID_GAP_IN;
 
 /**
  * Returns how many copies of an item can physically fit within the 1200" sheet
@@ -139,6 +140,38 @@ export function computeEffectiveDpi(item: {
   return typeof item.dpi === "number" ? item.dpi : null;
 }
 
+/** The shape the DPI predicates need — a subset of `ArtboardItem`. */
+export type DpiMeasurable = Parameters<typeof computeEffectiveDpi>[0];
+
+/**
+ * The three DPI verdicts, in one place.
+ *
+ * The top-bar chip's count, the tooltip's breakdown and the on-sheet highlight
+ * all have to agree about which artwork is flagged — a chip reading "5" that
+ * lights up four images is worse than no highlight at all. They previously
+ * agreed by having the same expression written out at each call site, which is
+ * an agreement that lasts exactly until someone edits one of them.
+ *
+ * `null` from `computeEffectiveDpi` means *unmeasurable*, not zero: the item's
+ * pixel dimensions aren't known yet (or were never recorded). That is a
+ * different problem from artwork that is measurably soft, so the two are
+ * counted separately — but both are "needs a look", which is what
+ * `isDpiFlagged` covers and what the chip totals.
+ */
+export const isLowDpi = (item: DpiMeasurable): boolean => {
+  const dpi = computeEffectiveDpi(item);
+  return dpi !== null && dpi < DPI.THRESHOLD;
+};
+
+export const isUnknownDpi = (item: DpiMeasurable): boolean =>
+  computeEffectiveDpi(item) === null;
+
+/** Either verdict — i.e. exactly what the chip counts and the highlight marks. */
+export const isDpiFlagged = (item: DpiMeasurable): boolean => {
+  const dpi = computeEffectiveDpi(item);
+  return dpi === null || dpi < DPI.THRESHOLD;
+};
+
 export interface LayoutItem {
   id: number;
   widthIn: number;
@@ -202,7 +235,6 @@ export const getRenderedBounds = (
       ? Math.max(effectiveMargin, Math.min(centeredLeft, rightBoundLeft))
       : Math.max(effectiveMargin, item.posX);
 
-  const MAX_SHEET_HEIGHT_IN = 1200;
   const bottomLimitTop = MAX_SHEET_HEIGHT_IN - group.height;
   const top = Math.min(item.posY, bottomLimitTop);
 
@@ -807,12 +839,51 @@ function evaluateSpill(
   }
 }
 
+/**
+ * Whether some existing gap accepts this item turned but not upright.
+ *
+ * The packer's rotation gate only ever asked whether an item fit the *sheet*
+ * width. That answers "can this be placed at all", not "can this be nested",
+ * so a piece narrow enough for the sheet but too wide for the strip beside a
+ * larger image was never offered the one orientation that would have fitted
+ * there — the strip stayed empty and the piece opened a new row.
+ *
+ * This asks the question per gap instead, and only reports true when turning
+ * genuinely unlocks space that upright cannot use. That distinction is what
+ * keeps the existing conservatism intact: an item that already fits somewhere
+ * upright is not turned merely because rotating would score marginally
+ * better, so a portrait design is never silently laid on its side when it had
+ * a home the right way up.
+ */
+function rotationUnlocksGap(
+  freeRects: FreeRect[],
+  widthIn: number,
+  heightIn: number,
+  copies: number,
+  gap: number,
+): boolean {
+  for (const fr of freeRects) {
+    const uprightFits =
+      fr.w >= widthIn - 1e-6 &&
+      computeGroupDims(widthIn, heightIn, copies, fr.w, gap).gh <= fr.h + 1e-6;
+    if (uprightFits) continue;
+
+    const turnedFits =
+      fr.w >= heightIn - 1e-6 &&
+      computeGroupDims(heightIn, widthIn, copies, fr.w, gap).gh <= fr.h + 1e-6;
+    if (turnedFits) return true;
+  }
+  return false;
+}
+
 function freeRectPack(
   items: LayoutItem[],
   canvasWidthIn: number,
   marginIn: number,
   gapIn: number,
   onlyPackIds?: Set<number>,
+  /** Receives the ids of items that would not fit inside the sheet's length. */
+  overflowedIds?: Set<number>,
 ): LayoutItem[] {
   const margin = Math.max(0, marginIn);
   const gap = Math.max(0, gapIn);
@@ -869,10 +940,33 @@ function freeRectPack(
     void gw;
     maxUsedBottom = Math.max(maxUsedBottom, relY + gh + gap);
   }
-  // Drop whatever's left of the sentinel seed now that fixed items (if any)
-  // are carved out of it — any genuinely bounded gaps they created (beside
-  // or between fixed items) survive this filter untouched.
-  freeRects = freeRects.filter((r) => r.h < RESERVOIR_HEIGHT_THRESHOLD_IN);
+  /**
+   * Bound the leftovers of the sentinel seed instead of discarding them.
+   *
+   * Carving a fixed item out of an unbounded reservoir leaves the strip beside
+   * it just as unbounded, so the old filter threw that strip away along with
+   * the seed. That is the space to the left and right of existing artwork —
+   * exactly the space nesting is supposed to use — and while it was invisible
+   * the incremental path (`placeNewItems`, which treats everything already on
+   * the sheet as fixed) could only ever start a new row underneath.
+   *
+   * The genuine extent of such a strip is the bottom of the existing content:
+   * past that point there is nothing to nest *beside*, and the fresh-row
+   * fallback already covers growing the sheet downward. Clamping to
+   * `maxUsedBottom` therefore turns the discarded remainder into the real gap
+   * without inventing space. A strip with nothing left after the clamp — the
+   * usual case when there are no fixed items at all, where `maxUsedBottom` is
+   * still 0 — drops out exactly as it did before.
+   */
+  freeRects = freeRects.reduce<FreeRect[]>((kept, r) => {
+    if (r.h < RESERVOIR_HEIGHT_THRESHOLD_IN) {
+      kept.push(r);
+      return kept;
+    }
+    const boundedH = maxUsedBottom - r.y;
+    if (boundedH > MIN_USABLE_SLIVER_IN) kept.push({ ...r, h: boundedH });
+    return kept;
+  }, []);
 
   const packable = items
     .filter((it) => !isFixed(it))
@@ -905,11 +999,17 @@ function freeRectPack(
     } else if (!fitsUnrotated) {
       canRotate = true;
     } else if (copies <= 1) {
-      canRotate = false;
+      // A single copy has no grid to rearrange, so the row-count test below
+      // says nothing about it. It is still worth turning when doing so is the
+      // only way into an existing gap — which is the case the sheet-width
+      // check above cannot see.
+      canRotate = rotationUnlocksGap(freeRects, item.widthIn, item.heightIn, copies, gap);
     } else {
       const rows0 = computeGroupDims(item.widthIn, item.heightIn, copies, maxWidth, gap).rows;
       const rows90 = computeGroupDims(item.heightIn, item.widthIn, copies, maxWidth, gap).rows;
-      canRotate = rows90 < rows0;
+      canRotate =
+        rows90 < rows0 ||
+        rotationUnlocksGap(freeRects, item.widthIn, item.heightIn, copies, gap);
     }
 
     // Atomic and spill candidates are evaluated together into one shared
@@ -944,6 +1044,25 @@ function freeRectPack(
     }
 
     if (!best.candidate) continue; // pathological (item wider than the sheet) — leave as-is
+
+    /**
+     * The sheet's bottom edge.
+     *
+     * The packer had no ceiling: its fresh-row fallback is anchored at
+     * `maxUsedBottom` and extends downward indefinitely, so it would happily
+     * return positions past the end of the sheet. Measured, 25,000 one-inch
+     * items packed to 1310in against a 1200in sheet.
+     *
+     * That did not surface while a 1200-*item* cap was doing the gating, since
+     * no realistic sheet reached the length limit first. Now that length is
+     * the real limit, this is the thing enforcing it: an item that cannot fit
+     * inside the sheet is left unplaced and reported to the caller, rather
+     * than being positioned into space that does not exist.
+     */
+    if (margin + best.candidate.fr.y + best.candidate.gh > MAX_SHEET_HEIGHT_IN + 1e-4) {
+      overflowedIds?.add(item.id);
+      continue;
+    }
 
     const { fr, rot, gw, gh, cols } = best.candidate;
     // The fresh-row rect only actually represents free space once it wins —
@@ -1006,8 +1125,21 @@ export function placeNewItems(
   canvasWidth: number,
   spacing: number,
   margin: number = 0.15,
+  /**
+   * Optional out-param collecting ids that did not fit within the sheet's
+   * 1200in length. Callers that can refuse an item (the drop handler) pass a
+   * set and act on it; callers merely re-flowing an existing board omit it.
+   */
+  overflowedIds?: Set<number>,
 ): LayoutItem[] {
-  return freeRectPack(allItems, canvasWidth, margin, Math.max(0, spacing), newIds);
+  return freeRectPack(
+    allItems,
+    canvasWidth,
+    margin,
+    Math.max(0, spacing),
+    newIds,
+    overflowedIds,
+  );
 }
 
 /**
@@ -1500,3 +1632,39 @@ export const calculateDropPosition = (
 
   return { targetX, targetY };
 };
+
+/**
+ * Bottom edge of the sheet's content, in inches.
+ *
+ * Copies wrap vertically, so an item's true extent is its group height, not
+ * `heightIn` — the same worst-case reckoning the drop clamp and the canvas
+ * extent use, kept in one place so all three agree.
+ */
+export function sheetContentBottomIn(items: LayoutItem[]): number {
+  let bottom = 0;
+  for (const it of items) {
+    const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
+    const h = typeof it.heightIn === "number" ? it.heightIn : 0;
+    const y = typeof it.posY === "number" ? it.posY : 0;
+    const groupH = copies <= 1 ? h : copies * h + (copies - 1) * SHEET_GROUP_GAP_IN;
+    bottom = Math.max(bottom, y + groupH);
+  }
+  return bottom;
+}
+
+/** Inches of sheet still available below the current content. */
+export function remainingSheetHeightIn(items: LayoutItem[]): number {
+  return Math.max(0, MAX_SHEET_HEIGHT_IN - sheetContentBottomIn(items));
+}
+
+/**
+ * Whether the sheet has run out of length.
+ *
+ * This — not a count of images — is what limits how much artwork a sheet
+ * holds. The 1in tolerance mirrors the canvas's own "full" indicator so the
+ * gate and the badge cannot disagree by a hair and leave a customer looking
+ * at a full sheet that still accepts a file.
+ */
+export function isSheetFull(items: LayoutItem[]): boolean {
+  return sheetContentBottomIn(items) >= MAX_SHEET_HEIGHT_IN - 1;
+}

@@ -4,6 +4,8 @@ import { getGridStyle, CHECKER_PAIRS, isDarkBg } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
 import EmptyState from "./EmptyState";
+import BulkLoadOverlay from "./BulkLoadOverlay";
+import QueueBadge from "./QueueBadge";
 import ArtboardItem from "../items/ArtboardItem";
 import { ArtboardItem as ArtboardItemType } from "../../types";
 import { CANVAS } from "../../../../config/artboard.config";
@@ -50,6 +52,17 @@ interface CanvasContainerProps {
   onBrowseFiles: () => void;
   isUploading: boolean;
   uploadProgress: number;
+  /** Images placed so far in the active bulk batch. */
+  batchLoaded?: number;
+  /** Size of the active bulk batch; 0 when none is running. */
+  batchTotal?: number;
+  /** Files dropped mid-batch and held until the active one finishes. */
+  queuedCount?: number;
+  /**
+   * Ids the top-bar DPI chip is counting, or null when the highlight is off.
+   * Chrome only — nothing about an item's geometry or content is read from it.
+   */
+  dpiHighlightIds?: Set<number> | null;
   uploadFileName: string | null;
   onCancelUpload: () => void;
   /** Something else (the AI button) occupies the bottom-right — lift the scroll-to-top control clear of it. */
@@ -109,6 +122,10 @@ export default function CanvasContainer({
   onBrowseFiles,
   isUploading,
   uploadProgress,
+  batchLoaded = 0,
+  batchTotal = 0,
+  queuedCount = 0,
+  dpiHighlightIds = null,
   uploadFileName,
   onCancelUpload,
   avoidBottomRight = false,
@@ -163,6 +180,51 @@ export default function CanvasContainer({
     el.scrollTo({ top: 0, behavior: "smooth" });
     setToolbarHidden(false);
   };
+
+  /**
+   * Bring the first flagged item into view when the DPI highlight turns on.
+   *
+   * A sheet can be a hundred feet long, so on a large board every flagged image
+   * may well be scrolled past — an outline nobody can see answers "where is the
+   * bad artwork?" no better than the number on the chip did. This is the
+   * navigation half of the feature; the outline is only the identification half.
+   *
+   * Nothing is moved: the *viewport* scrolls, item positions are untouched.
+   *
+   * Fires only on the off→on transition. `dpiHighlightIds` is rebuilt whenever
+   * `items` changes, so without the latch a background upload finishing would
+   * yank the viewport back while the customer was reading somewhere else.
+   */
+  const wasDpiHighlightingRef = useRef(false);
+  useEffect(() => {
+    const active = Boolean(dpiHighlightIds && dpiHighlightIds.size > 0);
+    const wasActive = wasDpiHighlightingRef.current;
+    wasDpiHighlightingRef.current = active;
+    if (!active || wasActive) return;
+
+    const el = scrollRef.current;
+    if (!el) return;
+
+    let firstTopIn = Number.POSITIVE_INFINITY;
+    for (const it of items) {
+      if (!dpiHighlightIds!.has(it.id)) continue;
+      const { topIn } = getItemVerticalExtent(it, canvasWidth, marginSize, spacing);
+      if (topIn < firstTopIn) firstTopIn = topIn;
+    }
+    if (!Number.isFinite(firstTopIn)) return;
+
+    // `CANVAS.PIXELS_PER_INCH` rather than the `ppi` alias, which is declared
+    // further down the component.
+    const targetPx = firstTopIn * CANVAS.PIXELS_PER_INCH * zoom;
+    // Already on screen — leave the viewport alone. Scrolling to something the
+    // customer is already looking at reads as the board jumping for no reason.
+    if (targetPx >= el.scrollTop && targetPx <= el.scrollTop + el.clientHeight) {
+      return;
+    }
+    // A little headroom above the item, so it lands inside the viewport rather
+    // than flush against its top edge.
+    el.scrollTo({ top: Math.max(0, targetPx - 80), behavior: "smooth" });
+  }, [dpiHighlightIds, items, canvasWidth, marginSize, spacing, zoom]);
 
   const clampedMenu = useMemo(() => {
     if (!menu) return null;
@@ -458,6 +520,7 @@ export default function CanvasContainer({
                   zoom={zoom}
                   scrollTop={scrollTop}
                   viewportHeight={viewportHeight}
+                  isDpiHighlighted={dpiHighlightIds?.has(it.id) ?? false}
                 />
               ))}
             </div>
@@ -518,7 +581,38 @@ export default function CanvasContainer({
           </div>
         </div>
       )} */}
-      {isUploading && (
+      {/*
+        Bulk drops get the corner overlay, not the modal below.
+
+        The modal is `inset-0 z-30` — it covers the entire canvas. That was
+        survivable when a drop was a handful of files, but on a 100+ image
+        batch it hid the artboard for the whole upload, and since items were
+        only committed after the last file finished there was nothing to see
+        behind it anyway. Items now land progressively, so the canvas has to
+        stay visible and interactive while the batch runs.
+
+        A single file keeps the modal: it is brief, and a byte-percentage is
+        more informative than "1 / 1 images loaded" for one large artwork.
+      */}
+      {/* One positioned wrapper, sized to the progress card. `QueueBadge`
+          anchors to its edges, so the two panels stay a fixed distance apart
+          at any viewport width while the progress card itself stays centred on
+          the canvas — the card must not shift sideways just because images got
+          queued behind it. */}
+      {(batchTotal > 1 || queuedCount > 0) && (
+        <div className="pointer-events-none absolute bottom-6 left-1/2 z-30 w-[360px] max-w-[92vw] -translate-x-1/2">
+          <BulkLoadOverlay
+            loaded={batchLoaded}
+            total={batchTotal}
+            onCancel={onCancelUpload}
+          />
+          <QueueBadge count={queuedCount} />
+        </div>
+      )}
+      {/* `queuedCount === 0` so a single-file batch with images waiting behind
+          it shows the compact overlay (which can display the queue badge)
+          rather than this modal, which has nowhere to put it. */}
+      {isUploading && batchTotal <= 1 && queuedCount === 0 && (
         <div className="absolute inset-0 z-30 flex items-center justify-center">
           <div className="w-[420px] max-w-[92vw] rounded-2xl border border-gray-200 bg-white px-10 py-10 text-center shadow-lg">
             <div className="mx-auto mb-4 flex items-center justify-center">

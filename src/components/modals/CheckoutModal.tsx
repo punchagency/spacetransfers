@@ -466,7 +466,7 @@ export default function CheckoutModal({
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 sm:px-6 sm:py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 sm:h-10 sm:w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-600">
+            <div className="flex h-9 w-9 sm:h-10 sm:w-10 flex-shrink-0 items-center justify-center rounded-full bg-black">
               <LuShoppingCart className="h-5 w-5 text-white" />
             </div>
             <div>
@@ -511,7 +511,7 @@ export default function CheckoutModal({
                       i < step
                         ? "border-green-500 bg-green-500 text-white"
                         : i === step
-                          ? "border-blue-600 bg-blue-600 text-white"
+                          ? "border-blue-600 bg-black text-white"
                           : "border-gray-300 bg-white text-gray-400"
                     }`}
                   >
@@ -534,7 +534,7 @@ export default function CheckoutModal({
                     <div className="absolute inset-0 bg-gray-200" />
                     <div
                       ref={(el) => (lineRefs.current[i] = el)}
-                      className="absolute inset-0 bg-blue-600 origin-left"
+                      className="absolute inset-0 bg-black origin-left"
                       style={{ transform: i < step ? "scaleX(1)" : "scaleX(0)" }}
                     />
                   </div>
@@ -655,7 +655,7 @@ export default function CheckoutModal({
                         Order Placed Successfully!
                       </h2>
                       {orderId && (
-                        <div className="mb-4 text-sm sm:text-lg font-medium text-blue-600 bg-blue-50 px-4 py-1 rounded-full border border-blue-100">
+                        <div className="mb-4 text-sm sm:text-lg font-medium text-black bg-black/10 px-4 py-1 rounded-full border border-blue-100">
                           Order #{orderId.slice(-8).toUpperCase()}
                         </div>
                       )}
@@ -666,7 +666,7 @@ export default function CheckoutModal({
                       <div className="flex flex-col sm:flex-row gap-4">
                         <button
                           onClick={handleContinueDesigning}
-                          className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-10 py-3 text-sm font-semibold text-white shadow-lg transition-all hover:bg-blue-700 hover:scale-105"
+                          className="flex items-center justify-center gap-2 rounded-lg bg-black px-10 py-3 text-sm font-semibold text-white shadow-lg transition-all hover:bg-blue-700 hover:scale-105"
                         >
                           Continue Designing
                         </button>  
@@ -708,7 +708,7 @@ export default function CheckoutModal({
 
                       <button
                         onClick={() => setStep(1)}
-                        className="w-full mt-4 rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                        className="w-full mt-4 rounded-lg bg-black py-3 text-sm font-semibold text-white hover:bg-gray-900"
                       >
                         Proceed to Checkout
                       </button>

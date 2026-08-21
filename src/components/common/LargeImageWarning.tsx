@@ -1,5 +1,5 @@
 import toast from "react-hot-toast";
-import { MdClose } from "react-icons/md";
+import { NoticeCard } from "./UnsupportedFilesWarning";
 
 /**
  * Non-blocking notice for artwork larger than the sheet's printable area.
@@ -13,29 +13,14 @@ import { MdClose } from "react-icons/md";
  * Amber rather than red is the whole point: red is reserved for states that
  * actually block progress (a corrupt file, a failed upload). Using it here
  * taught customers to distrust it.
+ *
+ * Renders through `NoticeCard`, the shell the "files skipped" notice defines,
+ * so every amber toast in the app shares one visual definition rather than
+ * three hand-matched copies of the same card.
  */
 
 /** Mid-point of the requested 6–8s window. */
 const WARNING_DURATION_MS = 7000;
-
-const WarningIcon = () => (
-  <svg
-    className="mt-px shrink-0"
-    width="20"
-    height="20"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="#D97706"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden
-  >
-    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-    <line x1="12" y1="9" x2="12" y2="13" />
-    <line x1="12" y1="17" x2="12.01" y2="17" />
-  </svg>
-);
 
 /**
  * Body copy, worded for one image or several.
@@ -67,37 +52,7 @@ export const showLargeImageWarning = (count = 1) => {
   const { title, body } = largeImageWarningText(count);
 
   toast.custom(
-    (t) => (
-      <div
-        role="status"
-        // `polite`, not `assertive`: this must not interrupt a screen-reader
-        // user mid-sentence for something that did not block their work.
-        aria-live="polite"
-        className={`pointer-events-auto w-[420px] max-w-[92vw] rounded-xl border border-[#F59E0B] bg-[#FFFBEB] px-4 py-3 shadow-lg transition-all duration-200 ${
-          t.visible ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1"
-        }`}
-      >
-        <div className="flex items-start gap-3">
-          <WarningIcon />
-
-          <div className="min-w-0 flex-1">
-            <p className="text-[14px] font-bold leading-5 text-[#92400E]">{title}</p>
-            {/* Generous leading and a hard measure: this is three lines of
-                explanation, and at tight line-height it reads as a wall of
-                text people skip. */}
-            <p className="mt-1 text-[13px] leading-[19px] text-[#B45309]">{body}</p>
-          </div>
-
-          <button
-            onClick={() => toast.dismiss(t.id)}
-            aria-label="Dismiss warning"
-            className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[#B45309] transition hover:bg-[#FDE68A] active:scale-95"
-          >
-            <MdClose className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    ),
+    (t) => <NoticeCard t={t} title={title} body={body} />,
     { duration: WARNING_DURATION_MS, id: "large-image-warning" },
   );
 };

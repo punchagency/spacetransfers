@@ -18,8 +18,51 @@ export const CANVAS = {
   RULER_OFFSET_PX: 32,
   GRID_GAP_IN: 0.06,
   SELECTION_BUFFER_IN: 0.084,
-  MAX_ITEMS: 1200,
+  /**
+   * Absolute safety ceiling on placements — NOT the product limit.
+   *
+   * How much artwork a sheet holds is governed by its length
+   * (`MAX_SHEET_HEIGHT_IN`), not by a count: see `isSheetFull`. This value
+   * exists only so a pathological input cannot exhaust browser memory, and it
+   * is set high enough that ordinary work never meets it.
+   *
+   * It used to be 1200, which was the *effective* limit and cut sheets far
+   * short of their advertised length — measured, a sheet of 2in artwork was
+   * stopped at ~166in of a possible 1200in, using 14% of the sheet. Worse, it
+   * read as a length limit because the sheet maximum is also "1200" (inches),
+   * which is exactly how it was reported as a bug.
+   *
+   * 80,000 is above what 1200in can hold even for very small artwork
+   * (~76,000 half-inch placements), so the length limit is always the one that
+   * binds. The packer was measured at 72ms for 80,000 items, and the canvas
+   * virtualizes, so render cost tracks the viewport rather than this number.
+   */
+  MAX_ITEMS: 80_000,
 } as const;
+
+/**
+ * Maximum sheet LENGTH in inches (100 feet).
+ *
+ * Was a bare `1200` literal repeated across six files. Centralised so the
+ * length limit has exactly one definition and cannot drift from the layout
+ * packer, the drop clamp, the item drag bounds or the canvas extent.
+ */
+export const MAX_SHEET_HEIGHT_IN = 1200;
+
+/**
+ * File types the artboard can read, as MIME types.
+ *
+ * Single source for the drop filter, the file-picker `accept` attribute and
+ * the "unsupported file" notice. These had drifted: the drop handler accepted
+ * PDF while the browse dialog's `accept` omitted it, so the same file could be
+ * added by dragging but not by browsing.
+ */
+export const ACCEPTED_IMAGE_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/svg+xml",
+  "application/pdf",
+] as const;
 
 /**
  * Margin values the sidebar dropdown offers.
