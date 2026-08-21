@@ -4,6 +4,8 @@ import { FaCheck } from "react-icons/fa";
 import { HiOutlineEye, HiOutlineEyeOff } from "react-icons/hi";
 import { type AuthFormProps } from "../../types/auth";
 import { apiFetch } from "../../utils/api";
+import { setAuth } from "../../utils/auth";
+import { buildLegalAcceptancePayload } from "../../utils/legal";
 import toast from "react-hot-toast";
 
 export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
@@ -41,8 +43,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           throw new Error("Access denied. Admin account required.");
         }
 
-        localStorage.setItem("admin_token", response.token);
-        localStorage.setItem("admin_user", JSON.stringify(response.user));
+        setAuth(response.token, response.user);
         toast.success("Welcome back, Admin!");
         navigate("/dashboard");
       } else {
@@ -61,12 +62,18 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
             password,
             companyName,
             phone,
-            role: "ADMIN"
+            role: "ADMIN",
+            // Required by the server — registration is refused outright without
+            // it. The single "I agree to the Terms" checkbox covers both
+            // acknowledgements the server asks for.
+            legalAcceptance: buildLegalAcceptancePayload(
+              agreedToTerms,
+              agreedToTerms,
+            ),
           }),
         });
 
-        localStorage.setItem("admin_token", response.token);
-        localStorage.setItem("admin_user", JSON.stringify(response.user));
+        setAuth(response.token, response.user);
         toast.success("Account created successfully!");
         navigate("/dashboard");
       }

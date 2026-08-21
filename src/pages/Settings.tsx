@@ -49,10 +49,10 @@ export const Settings = () => {
         </div>
 
         {/* Content */}
-        {/* {activeTab === "General" && <GeneralSettings />}
+        {activeTab === "General" && <GeneralSettings />}
         {activeTab === "Partner Settings" && <PartnerSettings />}
         {activeTab === "Notifications" && <NotificationSettings />}
-        {activeTab === "Security" && <SecuritySettings />} */}
+        {activeTab === "Security" && <SecuritySettings />}
       </div>
     </DashboardLayout>
   );
