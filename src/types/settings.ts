@@ -12,11 +12,6 @@ export type NotificationsSectionProps = {
   initialPrefs: NotificationEmailPrefs | null;
 };
 
-export type PaymentMethodSectionProps = {
-  primaryMethod: PrimaryMethod;
-  setPrimaryMethod: (value: PrimaryMethod) => void;
-};
-
 export type PrintingCapabilitiesSectionProps = {
   sheetSize: string;
   onSheetSizeChange: (value: string) => void;

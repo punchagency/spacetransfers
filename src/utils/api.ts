@@ -37,9 +37,13 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
     // gone/expired/revoked, so drop it — clearAuth notifies the route guard,
     // which redirects to /auth on its own. No window.location reload needed
     // (that threw away in-flight React state and flashed the whole app).
-    if (response.status === 401) {
+    // Signing in is the exception: a 401 there is a rejected *credential*, not a
+    // dead session — there is no session yet. Clearing storage would be
+    // meaningless, and reporting "invalid or expired token" to someone who just
+    // mistyped their password explains nothing they can act on.
+    if (response.status === 401 && !endpoint.startsWith("/auth/login")) {
       clearAuth();
-      throw new Error("Invalid or expired token");
+      throw new Error(data?.message || "Your session has expired. Please sign in again.");
     }
     throw new Error(data?.message || "Something went wrong");
   }
