@@ -64,6 +64,9 @@ export const createAdminNotification = async ({
     priority,
     title,
     message,
+    // Included so a notification arriving live is as linkable as one loaded
+    // from the list endpoint — otherwise it stays a dead end until a refresh.
+    meta: meta ?? null,
     readAt: null,
     createdAt: notification.createdAt
   });

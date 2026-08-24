@@ -5,7 +5,7 @@ import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { generatePDF } from "pdf-node";
+import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
@@ -167,6 +167,10 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
       const { profit } = calculateOrderFinancials(order);
       return {
         id: order._id,
+        // Same canonical order number the Orders table shows. Without it this
+        // table fell back to a slice of the ObjectId, so Home and Orders
+        // displayed different numbers for the same order.
+        displayId: (order as any).displayId || null,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
         profits: Number(profit.toFixed(2)),
@@ -372,21 +376,31 @@ export const listAdminNotifications = async (req: Request, res: Response, next: 
     if (typeof priority === "string" && ["high", "medium", "low"].includes(priority)) {
       query.priority = priority;
     }
+    // Both the text search and the pagination cursor are $or clauses. Assigning
+    // each to `query.$or` meant the cursor silently overwrote the search, so
+    // paging past the first page of a filtered list returned unfiltered rows.
+    // They are combined under $and so both always apply.
+    const conditions: any[] = [];
+
     if (typeof q === "string" && q.trim()) {
       const re = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-      query.$or = [{ title: re }, { message: re }];
+      conditions.push({ $or: [{ title: re }, { message: re }] });
     }
 
     if (typeof cursor === "string" && cursor.includes("_")) {
       const [createdAtMsRaw, idRaw] = cursor.split("_");
       const createdAtMs = Number(createdAtMsRaw);
       if (Number.isFinite(createdAtMs) && mongoose.Types.ObjectId.isValid(idRaw)) {
-        query.$or = [
-          { createdAt: { $lt: new Date(createdAtMs) } },
-          { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } }
-        ];
+        conditions.push({
+          $or: [
+            { createdAt: { $lt: new Date(createdAtMs) } },
+            { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } }
+          ]
+        });
       }
     }
+
+    if (conditions.length) query.$and = conditions;
 
     const docs = await AdminNotification.find(query)
       .sort({ createdAt: -1, _id: -1 })
@@ -411,6 +425,10 @@ export const listAdminNotifications = async (req: Request, res: Response, next: 
         priority: n.priority,
         title: n.title,
         message: n.message,
+        // Carries orderId / partnerId, so a notification can link to the thing
+        // it is about. It was populated at every call site and then dropped
+        // here, which made every notification a dead end.
+        meta: n.meta ?? null,
         readAt: n.readAt || null,
         createdAt: n.createdAt
       })),
@@ -880,7 +898,11 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       const searchOr: any[] = [
         { "customer.firstName": searchRegex },
         { "customer.lastName": searchRegex },
-        { "customer.email": searchRegex }
+        { "customer.email": searchRegex },
+        // The human-readable id (DTF-0242) is what the UI shows everywhere, so
+        // it is the first thing anyone types into the box. Searching only the
+        // raw ObjectId meant pasting a visible order number returned nothing.
+        { displayId: searchRegex }
       ];
       if (mongoose.Types.ObjectId.isValid(search as string)) {
         searchOr.push({ _id: search as string });
@@ -971,7 +993,20 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         assignedPartner: (order.assignedPrinter as any)?.companyName || null,
         sheetSize,
         isUrgent: order.priority === "URGENT",
-        region: resolveOrderRegion(order, userRegionMap)
+        // The canonical human-readable id (DTF-0244) — the one on invoices,
+        // notifications and ShipStation. The table used to derive its own
+        // "#ORD-9CA3" from the ObjectId, which meant the number an admin could
+        // see was not the number search would match.
+        displayId: (order as any).displayId || null,
+        region: resolveOrderRegion(order, userRegionMap),
+        // Surfaced so the orders table can badge a fallback assignment rather
+        // than the fact being buried in a timeline message.
+        crossRegion: (order as any).crossRegionAssignment
+          ? {
+              customerRegion: (order as any).crossRegionAssignment.customerRegion,
+              assignedRegion: (order as any).crossRegionAssignment.assignedRegion,
+            }
+          : null
       };
     });
 
@@ -1621,6 +1656,9 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     const orderSummary = {
       id: order._id,
+      // The canonical human-readable order number, so every surface shows the
+      // same identifier instead of deriving its own from the ObjectId.
+      displayId: (order as any).displayId || null,
       status: order.status,
       createdAt: order.createdAt,
       
@@ -1999,7 +2037,9 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
     }
 
     if (search) {
-      const searchRegex = new RegExp(search as string, "i");
+      // Escaped: the raw value was compiled straight into a RegExp, so a single
+      // "[" typed into the search box threw and returned a 500.
+      const searchRegex = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
       matchQuery.$or = [
         { name: searchRegex },
         { companyName: searchRegex },
@@ -2205,6 +2245,7 @@ export const getPartnerOrders = async (req: Request, res: Response, next: NextFu
 
     const formattedOrders = results.map(order => ({
       id: order._id,
+      displayId: (order as any).displayId || null,
       status: order.status,
       customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
       total: order.pricing?.total || 0,
@@ -2565,8 +2606,6 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const invoiceTemplatePath = path.join(process.cwd(), "src", "templates", "invoice.html");
-    const htmlTemplate = fs.readFileSync(invoiceTemplatePath, "utf8");
 
     const formattedItems = (order.items || []).map((item) => {
       let description = "";
@@ -2598,7 +2637,9 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
     }
 
     const data = {
-      orderId: order._id,
+      // The invoice is the most customer-visible document there is, so it
+      // carries the canonical DTF-#### number rather than the raw ObjectId.
+      orderId: (order as any).displayId || String(order._id),
       date: (order.createdAt || new Date()).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -2616,21 +2657,12 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
       }
     };
 
-    const pdfOptions = {
-      format: "A4",
-      printBackground: true
-    };
-
-    const result = await generatePDF({
-      html: htmlTemplate,
-      data: data,
-      buffer: true,
-      pdfOptions: pdfOptions
-    });
+    const pdfBuffer = await renderInvoicePdf(data);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="invoice-${order._id}.pdf"`);
-    res.send(result.buffer);
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${data.orderId}.pdf"`);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.send(pdfBuffer);
 
   } catch (error) {
     next(error);
@@ -2830,7 +2862,6 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
         if (!productMap[key]) {
           productMap[key] = {
             name: key,
-            sku: `DTF-${o._id.toString().slice(-4).toUpperCase()}`,
             quantity: 0,
             totalRevenue: 0,
             totalCost: 0
@@ -2851,7 +2882,6 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
 
       return {
         name: p.name,
-        sku: p.sku,
         baseCost: Number(baseCost.toFixed(2)),
         markup: Number(markup.toFixed(1)),
         quantity: p.quantity,

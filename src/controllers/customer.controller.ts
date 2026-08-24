@@ -9,7 +9,7 @@ import mongoose from "mongoose";
 import crypto from "node:crypto";
 import os from "node:os";
 import { env } from "../config/env.js";
-import { generatePDF } from "pdf-node";
+import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import fs from "fs";
 import path from "path";
 import { smartTrimToFile } from "../utils/aiCrop.js";
@@ -2191,6 +2191,8 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
 
     const responseOrders = orders.map((order) => ({
       orderId: order.id,
+      // Same order number the customer sees on their invoice and in emails.
+      displayId: (order as any).displayId || null,
       status: apiStatusMap[order.status] || order.status,
       date: order.createdAt,
       total: order.pricing?.total ?? null,
@@ -2252,6 +2254,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     res.json({
       orderId: order.id,
+      displayId: (order as any).displayId || null,
       status: apiStatusMap[order.status] || order.status,
       items: formattedItems,
       shippingAddress: {
@@ -2796,8 +2799,6 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
       throw error;
     }
 
-    const invoiceTemplatePath = path.join(process.cwd(), "src", "templates", "invoice.html");
-    const htmlTemplate = fs.readFileSync(invoiceTemplatePath, "utf8");
 
     const formattedItems = (order.items || []).map((item) => {
       let description = "";
@@ -2821,7 +2822,9 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
     ];
 
     const data = {
-      orderId: order.id,
+      // The invoice is the most customer-visible document there is, so it
+      // carries the canonical DTF-#### number rather than the raw ObjectId.
+      orderId: (order as any).displayId || order.id,
       date: (order.createdAt || new Date()).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -2839,21 +2842,12 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
       }
     };
 
-    const pdfOptions = {
-      format: "A4",
-      printBackground: true
-    };
-
-    const result = await generatePDF({
-      html: htmlTemplate,
-      data: data,
-      buffer: true,
-      pdfOptions: pdfOptions
-    });
+    const pdfBuffer = await renderInvoicePdf(data);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="invoice-${order.id}.pdf"`);
-    res.send(result.buffer);
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${data.orderId}.pdf"`);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.send(pdfBuffer);
 
   } catch (error) {
     next(error);

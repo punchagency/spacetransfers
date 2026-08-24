@@ -116,12 +116,27 @@ export interface IOrder extends Document {
     pressSeconds?: number;
   };
   statusTimeline?: IStatusTimeline[];
+  /**
+   * Set when an order was fulfilled outside the customer's own region.
+   *
+   * Auto-assignment falls back to adjacent regions when nothing in-region is
+   * free, which keeps orders moving but means longer, costlier shipping. The
+   * fact was previously only recoverable by parsing a timeline message, so it
+   * was invisible in the admin UI and impossible to query.
+   */
+  crossRegionAssignment?: {
+    customerRegion: string;
+    assignedRegion: string;
+    at: Date;
+  } | null;
   assignmentHistory?: Array<{
     time: Date;
     mode: "AUTO" | "MANUAL";
     selectedPrinterId?: string | null;
     selectedPrinterName?: string | null;
     customerRegion?: string | null;
+    assignedRegion?: string | null;
+    isCrossRegion?: boolean;
     customerState?: string | null;
     candidatesConsidered?: number;
     candidatesSameRegion?: number;
@@ -326,6 +341,17 @@ const orderSchema = new Schema<IOrder>(
         time: { type: Date, default: Date.now }
       }
     ],
+    crossRegionAssignment: {
+      type: new Schema(
+        {
+          customerRegion: { type: String, required: true },
+          assignedRegion: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     assignmentHistory: [
       {
         time: { type: Date, default: Date.now },
@@ -333,6 +359,8 @@ const orderSchema = new Schema<IOrder>(
         selectedPrinterId: { type: String },
         selectedPrinterName: { type: String },
         customerRegion: { type: String },
+        assignedRegion: { type: String },
+        isCrossRegion: { type: Boolean },
         customerState: { type: String },
         candidatesConsidered: { type: Number },
         candidatesSameRegion: { type: Number },

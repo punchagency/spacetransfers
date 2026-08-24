@@ -8,6 +8,7 @@ import {
   normalizeRegion
 } from "../utils/region.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
+import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
 import { computeAssignmentDeadline } from "../utils/assignmentDeadline.js";
 import {
@@ -426,6 +427,12 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     actorName: selected.printerName
   } as any);
 
+  // Persisted rather than left implicit in the timeline text, so the admin UI
+  // can badge it and the rows can actually be queried.
+  (order as any).crossRegionAssignment = isCrossRegion
+    ? { customerRegion: customerRegion || "Unknown", assignedRegion, at: assignedAt }
+    : null;
+
   const tookMs = Date.now() - startedAt;
   order.assignmentHistory = order.assignmentHistory || [];
   order.assignmentHistory.push({
@@ -434,6 +441,8 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     selectedPrinterId: selected.printerId,
     selectedPrinterName: selected.printerName,
     customerRegion,
+    assignedRegion,
+    isCrossRegion,
     customerState: customerState || null,
     candidatesConsidered: candidates.length,
     candidatesSameRegion: candidatesSameRegion.length,
@@ -478,6 +487,30 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       `[AUTO_ASSIGN] Notification failed for printer ${selected.printerId}: ${err?.message}`
     );
   });
+
+  // A cross-region assignment means longer, costlier shipping. It is a
+  // deliberate fallback rather than an error, so this is informational — but it
+  // should never happen silently, because a region that keeps triggering it is
+  // a capacity problem worth acting on.
+  if (isCrossRegion) {
+    notifyAllAdmins({
+      category: "orders",
+      priority: "medium",
+      title: "Order assigned outside its region",
+      message:
+        `Order #${displayId} is a ${customerRegion || "Unknown"} order but no partner there was available, ` +
+        `so it went to ${selected.printerName} in ${assignedRegion}. Expect longer, costlier shipping.`,
+      meta: {
+        orderId: String(order._id),
+        displayId,
+        customerRegion,
+        assignedRegion,
+        printerId: selected.printerId,
+        printerName: selected.printerName,
+        type: "cross_region_assignment",
+      },
+    }).catch(() => {});
+  }
 
   // This assignment may have pushed the printer to their maximum active load —
   // reconcile their availability (auto-pause + notify) if so.

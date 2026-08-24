@@ -2380,7 +2380,9 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
     if (shippedNow) syncPartnerCapacitySafe(String(printerId));
 
     res.json({
-      orderId: job.id,
+      // `orderId` means the canonical DTF-#### number on every other printer
+      // endpoint; this one returned the raw ObjectId under the same name.
+      orderId: (job as any).displayId ? String((job as any).displayId) : job.id,
       trackingNumber: job.trackingNumber,
       updatedAt: job.updatedAt.toISOString()
     });
