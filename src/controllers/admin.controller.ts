@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { getRegionFromState, normalizeRegion } from "../utils/region.js";
 import mongoose from "mongoose";
 import fs from "fs";
+import sharp from "sharp";
 import path from "path";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
@@ -9,6 +10,7 @@ import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
+import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
 import { LoginActivity } from "../models/loginActivity.model.js";
 import { Design } from "../models/design.model.js";
 import { AdminNotification } from "../models/adminNotification.model.js";
@@ -518,10 +520,9 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
       throw error;
     }
 
-    const security = admin.settings?.security || { twoFactorEnabled: false };
+    const security = admin.settings?.security || {};
 
     res.status(200).json({
-       twoFactorEnabled: security.twoFactorEnabled || false,
        lastPasswordChange: security.lastPasswordChange || admin.updatedAt || new Date()
      });
    } catch (error) {
@@ -529,45 +530,7 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
    }
  };
  
- export const updateAdminSecuritySettings = async (req: Request, res: Response, next: NextFunction) => {
-   try {
-     const adminId = req.user?.id;
-     const { twoFactorEnabled } = req.body;
- 
-     if (twoFactorEnabled === undefined) {
-       const error = new Error("twoFactorEnabled is required") as CustomError;
-       error.statusCode = 400;
-       throw error;
-     }
- 
-     const admin = await User.findById(adminId);
-     if (!admin) {
-       const error = new Error("Admin not found") as CustomError;
-       error.statusCode = 404;
-       throw error;
-     }
- 
-    if (!admin.settings) admin.settings = { pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } }, security: { twoFactorEnabled: false } };
-     if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
- 
-     const previous2FA = admin.settings.security.twoFactorEnabled;
-     admin.settings.security.twoFactorEnabled = twoFactorEnabled;
- 
-     admin.markModified("settings.security");
-     await admin.save();
- 
-     if (twoFactorEnabled && !previous2FA) {
-       const mockQrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=otpauth://totp/SpaceTransfers:${admin.email}?secret=MOCKSECRET&issuer=SpaceTransfers`;
-       console.log(`[TOTP MOCK] Setup flow initiated for ${admin.email}. QR Code URL sent: ${mockQrCodeUrl}`);
-     }
- 
-     res.status(200).json({ updated: true });
-   } catch (error) {
-     next(error);
-   }
- };
-
-export const getAdminLoginActivity = async (req: Request, res: Response, next: NextFunction) => {
+ export const getAdminLoginActivity = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
     if (!adminId) {
@@ -688,6 +651,14 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
       didUpdate = true;
     }
     if (avatarUrl !== undefined) {
+      // Images are uploaded via POST /admin/profile/upload and stored on
+      // Cloudinary. Accepting a data: URL here would put the whole image back
+      // on the user document, which `authenticate` reads on every request.
+      if (typeof avatarUrl === "string" && avatarUrl.startsWith("data:")) {
+        const error = new Error("Upload images via /admin/profile/upload — an inline data URL cannot be stored.") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
       admin.avatarUrl = avatarUrl === null ? null : String(avatarUrl);
       didUpdate = true;
     }
@@ -725,6 +696,51 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
     await admin.save();
 
     res.status(200).json({ updated: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Avatar upload.
+ *
+ * Mirrors the printer app's `uploadProfileAsset`: the image is resized, encoded
+ * as WebP and stored on Cloudinary, and only the URL is kept on the user.
+ *
+ * The admin console previously read the file as a base64 `data:` URL and PATCHed
+ * that onto `avatarUrl`, so the whole image lived on the user document. That is
+ * expensive in a way that is easy to miss: `authenticate` loads the full user on
+ * every authenticated request, so a 400 KB avatar became ~546 KB of base64 read
+ * from Mongo on *every* API call that admin made.
+ */
+export const uploadAdminAvatar = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    const file = req.file;
+
+    if (!file) {
+      const error = new Error("No file uploaded") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN });
+    if (!admin) {
+      const error = new Error("Admin not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const optimized = await sharp(file.buffer)
+      .resize(400, 400, { fit: "cover" })
+      .webp({ quality: 80 })
+      .toBuffer();
+
+    const { url } = await uploadBufferToCloudinary(optimized, "space-transfers/avatars");
+    admin.avatarUrl = url;
+    await admin.save();
+
+    res.json({ avatarUrl: url });
   } catch (error) {
     next(error);
   }
@@ -789,10 +805,10 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
     if (!admin.settings) {
       admin.settings = {
         pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } },
-        security: { twoFactorEnabled: false }
+        security: {}
       };
     }
-    if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
+    if (!admin.settings.security) admin.settings.security = {};
     admin.settings.security.lastPasswordChange = new Date();
     admin.markModified("settings.security");
     await admin.save();

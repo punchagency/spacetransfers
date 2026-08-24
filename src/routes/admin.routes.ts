@@ -1,5 +1,6 @@
 import express from "express";
 import { authenticate, requireRoles } from "../middleware/auth.js";
+import { upload } from "../middleware/upload.js";
 import { UserRoles } from "../models/user.model.js";
 import { 
   listOrders, 
@@ -31,11 +32,11 @@ import {
   getAdminNotificationSettings, 
   updateAdminNotificationSettings, 
   getAdminSecuritySettings,
-  updateAdminSecuritySettings,
   getAdminLoginActivity,
   getAdminProfile,
   updateAdminProfile,
   updateAdminPassword,
+  uploadAdminAvatar,
   listAdminNotifications,
   setAdminNotificationRead,
   markAllAdminNotificationsRead,
@@ -59,7 +60,6 @@ router.patch("/pricing/global", updateGlobalPricing);
 router.get("/settings/notifications", getAdminNotificationSettings);
 router.patch("/settings/notifications", updateAdminNotificationSettings);
 router.get("/settings/security", getAdminSecuritySettings);
-router.patch("/settings/security", updateAdminSecuritySettings);
 router.get("/security/login-activity", getAdminLoginActivity);
 router.get("/settings/partner-assignment", getPartnerAssignmentSettings);
 router.patch("/settings/partner-assignment", updatePartnerAssignmentSettings);
@@ -68,6 +68,7 @@ router.patch("/profile", updateAdminProfile);
 router.get("/profile/preferences", getAdminNotificationSettings);
 router.patch("/profile/preferences", updateAdminNotificationSettings);
 router.patch("/profile/password", updateAdminPassword);
+router.post("/profile/upload", upload.single("file"), uploadAdminAvatar);
 router.get("/notifications", listAdminNotifications);
 router.get("/notifications/stream", streamAdminNotifications);
 router.patch("/notifications/:id/read", setAdminNotificationRead);

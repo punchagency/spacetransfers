@@ -145,8 +145,13 @@ export interface IUser extends Document {
         specialInkFlat: number;
       };
     };
+    /**
+     * Two-factor was a stored boolean that nothing enforced — login never read
+     * it, there was no TOTP secret, and the "QR code" carried the literal
+     * string MOCKSECRET. It was removed rather than left advertising protection
+     * the account did not have.
+     */
     security?: {
-      twoFactorEnabled: boolean;
       lastPasswordChange?: Date;
     };
   };
@@ -401,7 +406,6 @@ const userSchema = new Schema<IUser>(
         }
       },
       security: {
-        twoFactorEnabled: { type: Boolean, default: false },
         lastPasswordChange: { type: Date }
       }
     },
