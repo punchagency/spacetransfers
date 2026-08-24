@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import {
   clearAuth,
+  getUserSnapshot,
   getToken,
   getUser,
   isAuthenticated,
@@ -136,5 +137,36 @@ describe("subscribeToAuth", () => {
     expect(seen).toHaveBeenCalledTimes(1);
 
     unsubscribe();
+  });
+});
+
+describe("getUserSnapshot — stable identity for useSyncExternalStore", () => {
+  /**
+   * `useSyncExternalStore` compares snapshots with Object.is. A getter that
+   * parses JSON each call returns a new object every time, so every render
+   * looks like a change — React loops and then bails, rendering a blank page.
+   * That shipped once; these tests stop it shipping again.
+   */
+  it("returns the same reference when nothing has changed", () => {
+    setAuth(makeToken({ exp: nowSec() + 3600 }), ADMIN);
+    expect(getUserSnapshot()).toBe(getUserSnapshot());
+  });
+
+  it("returns a new reference only after the stored user actually changes", () => {
+    setAuth(makeToken({ exp: nowSec() + 3600 }), ADMIN);
+    const first = getUserSnapshot();
+
+    setAuth(makeToken({ exp: nowSec() + 3600 }), { ...ADMIN, avatarUrl: "https://example.test/a.webp" });
+    const second = getUserSnapshot();
+
+    expect(second).not.toBe(first);
+    expect(second?.avatarUrl).toBe("https://example.test/a.webp");
+    expect(getUserSnapshot()).toBe(second);
+  });
+
+  it("is stable across repeated reads when signed out", () => {
+    clearAuth();
+    expect(getUserSnapshot()).toBeNull();
+    expect(getUserSnapshot()).toBe(getUserSnapshot());
   });
 });

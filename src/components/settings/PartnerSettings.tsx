@@ -21,12 +21,12 @@ const RULES: Array<{ id: AssignmentRule; label: string; desc: string }> = [
   {
     id: "nearest-region",
     label: "Nearest Region",
-    desc: "Auto-assign to the closest available partner in the customer's region",
+    desc: "Auto-assign to the nearest available partner in the customer's region. If none is free, falls back to a neighbouring region — flagged on the order and notified to admins.",
   },
   {
     id: "manual",
     label: "Manual Assignment",
-    desc: "Leave every order unassigned for an admin to assign by hand",
+    desc: "Never auto-assign. Every order waits for an admin to place it by hand.",
   },
 ];
 

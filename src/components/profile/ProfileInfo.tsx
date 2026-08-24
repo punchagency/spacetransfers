@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FiCamera, FiSave, FiUser } from "react-icons/fi";
 import toast from "react-hot-toast";
 import { apiFetch } from "../../utils/api";
+import { getUser, getToken, setAuth } from "../../utils/auth";
 
 export const ProfileInfo = () => {
   const [loading, setLoading] = useState(true);
@@ -203,44 +204,34 @@ export const ProfileInfo = () => {
 
     setUploadingAvatar(true);
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("Failed to read file"));
-        reader.readAsDataURL(file);
+      /**
+       * Uploaded as a file, not a base64 data URL.
+       *
+       * This previously read the image with FileReader and PATCHed the whole
+       * `data:` URL onto the profile, so the image was stored on the user
+       * document — and `authenticate` loads that document on every
+       * authenticated request. The server now resizes it, encodes WebP and
+       * puts it on Cloudinary, and only the URL is stored.
+       */
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await apiFetch("/admin/profile/upload", {
+        method: "POST",
+        body: form,
       });
 
-      if (!dataUrl) throw new Error("Failed to read image");
+      const url = String(res?.avatarUrl || "");
+      if (!url) throw new Error("Upload succeeded but no image URL was returned");
 
-      await apiFetch("/admin/profile", {
-        method: "PATCH",
-        body: JSON.stringify({ avatarUrl: dataUrl }),
-      });
+      setAvatarUrl(url);
+      setInitial((prev) => (prev ? { ...prev, avatarUrl: url } : prev));
 
-      setAvatarUrl(dataUrl);
-      setInitial((prev) =>
-        prev
-          ? { ...prev, avatarUrl: dataUrl }
-          : {
-              name: fullName,
-              email,
-              phone,
-              avatarUrl: dataUrl,
-              bio,
-              gender,
-              dateOfBirth,
-              nationalId,
-              taxId,
-              address: { street, city, state: stateProv, postalCode, country },
-            }
-      );
-
-      const stored = localStorage.getItem("admin_user");
-      const parsed = stored ? JSON.parse(stored) : {};
-      localStorage.setItem(
-        "admin_user",
-        JSON.stringify({ ...parsed, name: fullName || parsed.name, email, avatarUrl: dataUrl })
-      );
+      // setAuth rather than a bare localStorage write: it notifies subscribers,
+      // so the header avatar updates immediately instead of staying stale until
+      // the next full page load.
+      const current = getUser() || {};
+      setAuth(getToken() || "", { ...current, avatarUrl: url });
 
       toast.success("Profile picture updated");
     } catch (error: any) {

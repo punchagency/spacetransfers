@@ -42,6 +42,38 @@ export function getToken(): string | null {
   }
 }
 
+/**
+ * Referentially stable snapshot of the stored user, for `useSyncExternalStore`.
+ *
+ * `getUser()` parses JSON on every call, so it returns a new object each time.
+ * `useSyncExternalStore` compares snapshots with `Object.is`, so handing it
+ * `getUser` directly means every render looks like a change — React re-renders
+ * forever and then bails out, which renders a blank page.
+ *
+ * The parsed value is cached against the raw string it came from, so the
+ * identity only changes when the stored user actually does.
+ */
+let userSnapshotRaw: string | null = null;
+let userSnapshotValue: AuthUser | null = null;
+
+export function getUserSnapshot(): AuthUser | null {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(USER_KEY);
+  } catch {
+    raw = null;
+  }
+  if (raw !== userSnapshotRaw) {
+    userSnapshotRaw = raw;
+    try {
+      userSnapshotValue = raw ? (JSON.parse(raw) as AuthUser) : null;
+    } catch {
+      userSnapshotValue = null;
+    }
+  }
+  return userSnapshotValue;
+}
+
 export function getUser(): AuthUser | null {
   try {
     const raw = localStorage.getItem(USER_KEY);

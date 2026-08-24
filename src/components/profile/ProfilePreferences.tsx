@@ -42,17 +42,17 @@ export const ProfilePreferences = () => {
       {
         id: "orderUpdates" as const,
         title: "Order Updates",
-        description: "Get notified when orders are placed, assigned, or updated",
+        description: "New orders, assignments, status changes, printer rejections and returns, shipping, delivery, and fulfilment failures",
       },
       {
         id: "partnerActivity" as const,
         title: "Partner Activity",
-        description: "Receive updates about printer signups, approvals, and status changes",
+        description: "Printer signups, approvals, and rejections",
       },
       {
         id: "systemAlerts" as const,
         title: "System Alerts",
-        description: "Important platform alerts such as email delivery failures",
+        description: "Sign-in alerts, failed sign-in attempts, and password changes on your account",
       },
     ];
   }, []);
@@ -101,54 +101,16 @@ export const ProfilePreferences = () => {
         <div>
           <h1 className="text-lg font-bold text-gray-900">Preferences</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Customize your dashboard experience.
+            Choose which events notifies you. Turning a category off stops both the
+            emails and the in-app notifications for it.
           </p>
         </div>
       </div>
 
-      <div className="border-t border-gray-100 mb-8"></div>
-
-      {/* Language & Region */}
-      <div className="space-y-6">
-        <h3 className="text-base font-bold text-gray-900">Language & Region</h3>
-
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium text-gray-700">Language</label>
-          <input
-            type="text"
-            placeholder="English (US)"
-            disabled={true}
-            className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500 outline-none placeholder:text-gray-400"
-          />
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium text-gray-700">Timezone</label>
-          <input
-            type="text"
-            placeholder="Pacific Time (PT)"
-            disabled={true}
-            className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500 outline-none placeholder:text-gray-400"
-          />
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-sm font-medium text-gray-700">
-            Date Format
-          </label>
-          <input
-            type="text"
-            placeholder="MM/DD/YYYY"
-            disabled={true}
-            className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-500 outline-none placeholder:text-gray-400"
-          />
-        </div>
-      </div>
-
-      {/* Email Notifications */}
-      <div className="mt-10">
+      {/* Notifications */}
+      <div>
         <h3 className="text-base font-bold text-gray-900 mb-6">
-          Email Notifications
+          Notifications
         </h3>
 
         <div className="space-y-4">
@@ -172,14 +134,12 @@ export const ProfilePreferences = () => {
                   onClick={() => void toggleEmailCategory(g.id)}
                   disabled={loading || Boolean(savingKey)}
                   aria-label={`${g.title} notifications`}
-                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none ${
-                    enabled ? "bg-blue-600" : "bg-gray-200"
-                  } ${isSaving ? "opacity-70" : ""}`}
+                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none ${enabled ? "bg-blue-600" : "bg-gray-200"
+                    } ${isSaving ? "opacity-70" : ""}`}
                 >
                   <span
-                    className={`${
-                      enabled ? "translate-x-6" : "translate-x-1"
-                    } inline-block h-5 w-5 transform rounded-full bg-white transition-transform`}
+                    className={`${enabled ? "translate-x-6" : "translate-x-1"
+                      } inline-block h-5 w-5 transform rounded-full bg-white transition-transform`}
                   />
                 </button>
               </div>
