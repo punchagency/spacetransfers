@@ -29,6 +29,7 @@ import {
   getCart,
   updateCart,
   getCartQuote,
+  getPricingConfig,
   sendGangsheetUtilizationWarning,
   downloadInvoice,
   reorder,
@@ -57,6 +58,9 @@ router.post("/assets/ai-edit", maybeAuthenticate, aiEditAsset);
 // call on every submit to decompose multi-step requests before editing starts.
 router.post("/assets/ai-edit/plan", maybeAuthenticate, aiEditPlan);
 router.get("/assets", maybeAuthenticate, listAssets);
+// Public pricing rates — the cart is usable before sign-in and must show a
+// total that matches what checkout will charge.
+router.get("/pricing", maybeAuthenticate, getPricingConfig);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));
 

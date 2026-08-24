@@ -37,6 +37,9 @@ export type SelectionResult =
       assigned: true;
       selected: PrinterCandidate;
       customerRegion: string;
+      /** The region the selected printer is in — differs from `customerRegion` on a fallback. */
+      assignedRegion: string;
+      isCrossRegion: boolean;
       candidatesConsidered: number;
       candidatesSameRegion: number;
     }
@@ -49,9 +52,29 @@ export type SelectionResult =
     };
 
 /**
+ * Region fallback order, used when the customer's own region has no available
+ * partner. West is last in every chain so a domestic order only crosses the
+ * continent as a genuine last resort.
+ */
+export const REGION_FALLBACKS: Record<string, string[]> = {
+  West:      ["Midwest", "Northeast", "South"],
+  Midwest:   ["Northeast", "South", "West"],
+  Northeast: ["Midwest", "South", "West"],
+  South:     ["Midwest", "Northeast", "West"],
+};
+
+/**
  * Core matching algorithm — pure function, no I/O.
- * Mirrors exactly what autoAssignOrder does after it builds the candidate list.
- * Returns the best printer for the order, or null with a reason.
+ *
+ * `autoAssignOrder` delegates to this after building its candidate list, so the
+ * rule that runs in production is the rule these tests cover. That was not
+ * previously true: this function blocked cross-region assignment outright while
+ * production fell back to adjacent regions, and a large suite asserted a rule
+ * the system did not enforce.
+ *
+ * Preference order is the customer's own region first, then the fallback chain.
+ * Within whichever pool is used: nearest → lowest utilisation → highest rating
+ * → id, so the result is deterministic.
  */
 export const selectPrinterFromCandidates = (
   customerState: string | null | undefined,
@@ -76,11 +99,27 @@ export const selectPrinterFromCandidates = (
   // Strict same-region filter — cross-region is always blocked.
   const sameRegion = eligible.filter((c) => c.printerRegion === customerRegion);
 
-  if (sameRegion.length === 0) {
+  let pool = sameRegion;
+  let assignedRegion = customerRegion;
+  let isCrossRegion = false;
+
+  if (pool.length === 0) {
+    for (const fallbackRegion of REGION_FALLBACKS[customerRegion] || []) {
+      const regionCandidates = eligible.filter((c) => c.printerRegion === fallbackRegion);
+      if (regionCandidates.length > 0) {
+        pool = regionCandidates;
+        assignedRegion = fallbackRegion;
+        isCrossRegion = true;
+        break;
+      }
+    }
+  }
+
+  if (pool.length === 0) {
     const reason =
       eligible.length === 0
         ? "No available printers"
-        : `No available printers in region (${customerRegion}). Cross-region assignment is disabled.`;
+        : `No available printers in region (${customerRegion}) or any fallback region.`;
     return {
       assigned: false,
       customerRegion,
@@ -91,7 +130,7 @@ export const selectPrinterFromCandidates = (
   }
 
   // Sort: nearest → lowest utilisation → highest rating → stable id
-  const sorted = [...sameRegion].sort((a, b) => {
+  const sorted = [...pool].sort((a, b) => {
     const aDist = Number.isFinite(a.distanceMiles) ? a.distanceMiles : Infinity;
     const bDist = Number.isFinite(b.distanceMiles) ? b.distanceMiles : Infinity;
     if (aDist !== bDist) return aDist - bDist;
@@ -106,6 +145,8 @@ export const selectPrinterFromCandidates = (
     assigned: true,
     selected: sorted[0],
     customerRegion,
+    assignedRegion,
+    isCrossRegion,
     candidatesConsidered: candidates.length,
     candidatesSameRegion: sameRegion.length,
   };
@@ -313,58 +354,21 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     );
   }
 
-  // Preferred region is the customer's own region. When no printers are available
-  // there, fall back through adjacent regions in priority order, excluding West
-  // as a last resort so domestic assignments avoid cross-continental shipping.
-  const REGION_FALLBACKS: Record<string, string[]> = {
-    "West":      ["Midwest", "Northeast", "South"],
-    "Midwest":   ["Northeast", "South",    "West"],
-    "Northeast": ["Midwest",  "South",     "West"],
-    "South":     ["Midwest",  "Northeast", "West"],
-  };
+  // Selection itself is delegated to the pure `selectPrinterFromCandidates`
+  // above, so the rule that runs here is exactly the rule the unit tests cover.
+  // This block previously reimplemented the region fallback and the sort, and
+  // the two implementations had already drifted apart.
+  const selection = selectPrinterFromCandidates(customerState, eligibleCandidates);
+  const candidatesSameRegion = eligibleCandidates.filter(
+    (c) => c.printerRegion === customerRegion,
+  );
 
-  const candidatesSameRegion = customerRegion
-    ? eligibleCandidates.filter((c) => c.printerRegion === customerRegion)
-    : [];
-
-  let pool = candidatesSameRegion;
-  let assignedRegion: string = customerRegion || "";
-  let isCrossRegion = false;
-
-  if (pool.length === 0) {
-    const fallbackChain = REGION_FALLBACKS[customerRegion || ""] || [];
-    for (const fallbackRegion of fallbackChain) {
-      const regionCandidates = eligibleCandidates.filter((c) => c.printerRegion === fallbackRegion);
-      if (regionCandidates.length > 0) {
-        pool = regionCandidates;
-        assignedRegion = fallbackRegion;
-        isCrossRegion = true;
-        console.log(
-          `[AUTO_ASSIGN] FALLBACK orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
-          `no same-region printers, using fallback region=${fallbackRegion} count=${regionCandidates.length}`
-        );
-        break;
-      }
-    }
-  }
-
-  if (pool.length > 0) {
-    console.log(
-      `[AUTO_ASSIGN] POOL region=${assignedRegion}${isCrossRegion ? " (cross-region fallback)" : ""} count=${pool.length} ` +
-      `printers=[${pool.map((c) => `${c.printerName}(${c.printerState})`).join(",")}]`
-    );
-  }
-
-  if (pool.length === 0) {
+  if (!selection.assigned) {
     const tookMs = Date.now() - startedAt;
-    const noRegionReason =
-      eligibleCandidates.length === 0
-        ? "No available printers"
-        : `No available printers in region (${customerRegion || "unknown"}) or any fallback region.`;
-
     console.log(
       `[AUTO_ASSIGN] UNASSIGNED orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
-      `totalAvailable=${eligibleCandidates.length} sameRegion=0 reason="${noRegionReason}" tookMs=${tookMs}`
+      `totalAvailable=${eligibleCandidates.length} sameRegion=${candidatesSameRegion.length} ` +
+      `reason="${selection.reason}" tookMs=${tookMs}`
     );
 
     order.assignmentHistory = order.assignmentHistory || [];
@@ -377,28 +381,26 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       customerState: customerState || null,
       candidatesConsidered: candidates.length,
       candidatesSameRegion: 0,
-      reason: noRegionReason,
+      reason: selection.reason,
       tookMs
     } as any);
     await order.save();
-    return { assigned: false, orderId: String(order._id), reason: noRegionReason, tookMs };
+    return { assigned: false, orderId: String(order._id), reason: selection.reason, tookMs };
   }
 
-  // Sort within the pool: distance → utilization → rating → id (deterministic)
-  pool.sort((a, b) => {
-    const aDist = Number.isFinite(a.distanceMiles) ? a.distanceMiles : Number.POSITIVE_INFINITY;
-    const bDist = Number.isFinite(b.distanceMiles) ? b.distanceMiles : Number.POSITIVE_INFINITY;
-    if (aDist !== bDist) return aDist - bDist;
+  const assignedRegion = selection.assignedRegion;
+  const isCrossRegion = selection.isCrossRegion;
 
-    const aUtil = a.maxConcurrent ? a.activeCount / a.maxConcurrent : a.activeCount;
-    const bUtil = b.maxConcurrent ? b.activeCount / b.maxConcurrent : b.activeCount;
-    if (aUtil !== bUtil) return aUtil - bUtil;
+  if (isCrossRegion) {
+    console.log(
+      `[AUTO_ASSIGN] FALLBACK orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
+      `no same-region printers, assigned in region=${assignedRegion}`
+    );
+  }
 
-    if (a.rating !== b.rating) return b.rating - a.rating;
-    return a.printerId.localeCompare(b.printerId);
-  });
-
-  const selected = pool[0];
+  const selected = eligibleCandidates.find(
+    (c) => c.printerId === selection.selected.printerId,
+  )!;
   const selectedId = selected.printerId;
 
   order.assignedPrinter = new mongoose.Types.ObjectId(selectedId);

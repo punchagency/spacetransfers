@@ -57,15 +57,17 @@ describe("selectPrinterFromCandidates — same-region assignment", () => {
 // ── no printers in region ────────────────────────────────────────────────────
 
 describe("selectPrinterFromCandidates — no printers in customer region", () => {
-  it("returns assigned=false when no same-region printer is available", () => {
+  it("falls back out of region when no same-region printer is available", () => {
     const candidates = [
       makePrinter({ printerId: "west", printerState: "CA", printerRegion: "West" }),
     ];
     const result = selectPrinterFromCandidates("TX", candidates); // TX → South, CA → West
-    assert.equal(result.assigned, false);
-    if (!result.assigned) {
-      assert.match(result.reason, /No available printers in region/);
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
       assert.equal(result.customerRegion, "South");
+      assert.equal(result.assignedRegion, "West");
+      assert.equal(result.isCrossRegion, true);
+      assert.equal(result.candidatesSameRegion, 0);
     }
   });
 
@@ -89,23 +91,31 @@ describe("selectPrinterFromCandidates — no printers in customer region", () =>
 
 // ── cross-region blocking ────────────────────────────────────────────────────
 
-describe("selectPrinterFromCandidates — cross-region blocking", () => {
-  it("never assigns a West printer to a South customer", () => {
+describe("selectPrinterFromCandidates — cross-region fallback", () => {
+  it("assigns a West printer to a South customer only as a flagged fallback", () => {
     const candidates = [
       makePrinter({ printerId: "ca", printerState: "CA", printerRegion: "West" }),
       makePrinter({ printerId: "wa", printerState: "WA", printerRegion: "West" }),
     ];
     const result = selectPrinterFromCandidates("TX", candidates);
-    assert.equal(result.assigned, false);
-    if (!result.assigned) assert.equal(result.candidatesSameRegion, 0);
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
+      assert.equal(result.candidatesSameRegion, 0);
+      assert.equal(result.assignedRegion, "West");
+      assert.equal(result.isCrossRegion, true);
+    }
   });
 
-  it("never assigns a Northeast printer to a Midwest customer", () => {
+  it("assigns a Northeast printer to a Midwest customer as a flagged fallback", () => {
     const candidates = [
       makePrinter({ printerId: "ny", printerState: "NY", printerRegion: "Northeast" }),
     ];
     const result = selectPrinterFromCandidates("IL", candidates); // IL → Midwest
-    assert.equal(result.assigned, false);
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
+      assert.equal(result.assignedRegion, "Northeast"); // first in Midwest's chain
+      assert.equal(result.isCrossRegion, true);
+    }
   });
 
   it("does not treat a null printer region as matching any customer region", () => {

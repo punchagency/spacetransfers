@@ -14,6 +14,7 @@ import fs from "fs";
 import path from "path";
 import { smartTrimToFile } from "../utils/aiCrop.js";
 import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
+import { getGlobalPricing, computeTotals as computeOrderTotals } from "../services/pricing.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
 import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
@@ -1633,11 +1634,42 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const expectedTotal = roundToTwo(pricing.subtotal + pricing.shippingCost + pricing.tax);
-    if (roundToTwo(pricing.total) !== expectedTotal) {
-      const error = new Error("pricing.total does not match subtotal + shippingCost + tax") as CustomError;
-      error.statusCode = 400;
-      throw error;
+    /**
+     * Shipping, tax and total are recomputed here rather than taken from the
+     * request.
+     *
+     * The old check only asserted the client's own numbers were internally
+     * consistent, so any self-consistent set was accepted — which is how orders
+     * came to be recorded with $19.99 shipping and zero tax while Stripe
+     * charged $24.99 plus 8%. Deriving them from the same pricer the charge
+     * uses makes the saved order and the charge agree by construction.
+     *
+     * `subtotal` is still checked against the line items above rather than
+     * recomputed, because unit prices are per-design and the server has no
+     * cheaper way to re-derive them here. That remains the open half of the
+     * payment-trust problem.
+     */
+    const globalPricing = await getGlobalPricing();
+    const authoritativeTotals = computeOrderTotals({
+      subtotal: roundedComputedSubtotal,
+      shippingMethod,
+      pricing: globalPricing,
+    });
+
+    const recordedPricing = {
+      subtotal: authoritativeTotals.subtotal,
+      shippingCost: authoritativeTotals.shippingCost,
+      tax: authoritativeTotals.tax,
+      total: authoritativeTotals.total,
+      currency: authoritativeTotals.currency,
+    };
+
+    if (roundToTwo(pricing.total) !== authoritativeTotals.total) {
+      console.warn(
+        `[ORDER_PRICING] client sent total ${roundToTwo(pricing.total)} but server computed ` +
+          `${authoritativeTotals.total} (shipping ${authoritativeTotals.shippingCost}, tax ${authoritativeTotals.tax}) — ` +
+          `recording the server figure`,
+      );
     }
 
     mark("validate");
@@ -1686,7 +1718,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       shippingAddress: enrichedShippingAddress,
       shippingMethod,
       payment,
-      pricing,
+      pricing: recordedPricing,
       status: "PENDING"
     });
 
@@ -1784,7 +1816,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       category: "orders",
       priority: "medium",
       title: "New order placed",
-      message: `${String(customer.firstName)} ${String(customer.lastName)} • $${Number(pricing.total).toFixed(2)}`,
+      message: `${String(customer.firstName)} ${String(customer.lastName)} • $${recordedPricing.total.toFixed(2)}`,
       meta: { orderId: order.id, status: "PENDING" }
     }).catch(() => {});
 
@@ -2557,6 +2589,28 @@ const roundToTwo = (value: number) => {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 };
 
+/**
+ * The rates the storefront needs to display a total that matches what will be
+ * charged: shipping per method, and the tax percentage.
+ *
+ * Read-only and free of customer data, so it is available to guests — the cart
+ * is usable before sign-in and would otherwise show a total the checkout then
+ * contradicts. `getCartQuote` cannot serve this: it prices saved designs by id,
+ * and cart items are unsaved gang sheets with no `designId`.
+ */
+export const getPricingConfig = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pricing = await getGlobalPricing();
+    res.status(200).json({
+      shipping: pricing.shipping,
+      taxRatePct: pricing.taxRatePct,
+      currency: "USD",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getCartQuote = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { items, shippingMethod, shippingCountry, shippingPostalCode } = req.body || {};
@@ -2660,30 +2714,24 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       });
     }
 
-    subtotal = roundToTwo(subtotal);
-
-    let shippingCost = 0;
-    if (shippingMethod === "standard") {
-      shippingCost = 8.99;
-    } else if (shippingMethod === "express") {
-      shippingCost = 19.99;
-    }
-
-    let taxRate = 0;
-    if (shippingCountry === "United States") {
-      taxRate = 0.094;
-    }
-
-    const tax = roundToTwo(subtotal * taxRate);
-    const total = roundToTwo(subtotal + shippingCost + tax);
+    // Shipping and tax come from the shared pricer so this quote, the Stripe
+    // charge and the saved order cannot disagree. This path previously used its
+    // own rates (express $19.99, 9.4% tax gated on the country string being
+    // exactly "United States") while the charge path used $24.99 and a flat 8%.
+    const pricing = await getGlobalPricing();
+    const totals = computeOrderTotals({
+      subtotal: roundToTwo(subtotal),
+      shippingMethod,
+      pricing,
+    });
 
     res.status(200).json({
       items: quoteItems,
-      subtotal,
-      shippingCost,
-      tax,
-      total,
-      currency: "USD"
+      subtotal: totals.subtotal,
+      shippingCost: totals.shippingCost,
+      tax: totals.tax,
+      total: totals.total,
+      currency: totals.currency
     });
   } catch (error) {
     next(error);

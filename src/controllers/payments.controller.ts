@@ -1,32 +1,10 @@
 import { Request, Response, NextFunction } from "express";
 import Stripe from "stripe";
+import { priceItems } from "../services/pricing.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
-
-const roundToTwo = (value: number) =>
-  Math.round((value + Number.EPSILON) * 100) / 100;
-
-const computeTotals = (items: any[], shippingMethod: string) => {
-  const subtotal = roundToTwo(
-    items.reduce((sum, it) => {
-      const qty =
-        typeof it?.quantity === "number"
-          ? it.quantity
-          : typeof it?.copies === "number"
-            ? it.copies
-            : 1;
-      const unit = typeof it?.unitPrice === "number" ? it.unitPrice : it?.price || 0;
-      return sum + qty * unit;
-    }, 0),
-  );
-
-  const shippingCost = shippingMethod === "express" ? 24.99 : 8.99;
-  const tax = roundToTwo(subtotal * 0.08);
-  const total = roundToTwo(subtotal + shippingCost + tax);
-  return { subtotal, shippingCost, tax, total, currency: "USD" as const };
-};
 
 const getStripe = () => {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -59,7 +37,7 @@ export const createStripePaymentIntent = async (
       throw error;
     }
 
-    const totals = computeTotals(items, shippingMethod);
+    const totals = await priceItems(items, shippingMethod);
     const amountCents = Math.max(1, Math.round(totals.total * 100));
 
     const intent = await stripe.paymentIntents.create({
