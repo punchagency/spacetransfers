@@ -100,10 +100,17 @@ export default function OrderDetailsPage() {
   const [savingToDrive, setSavingToDrive] = useState(false);
   const [driveProgress, setDriveProgress] = useState<{ phase: "download" | "upload"; loaded: number; total: number } | null>(null);
 
+  /**
+   * The canonical order number (DTF-####), which is what the customer, the
+   * admin console, invoices and ShipStation all use. This used to derive its
+   * own "ORD-9CA3" from the ObjectId, so the same order carried a different
+   * number here than everywhere else.
+   */
   const displayId = useMemo(() => {
+    if (overview?.displayId) return String(overview.displayId);
     const id = String(jobId || "");
-    return id ? `ORD-${id.slice(-4).toUpperCase()}` : "ORD";
-  }, [jobId]);
+    return id ? `#${id.slice(-8).toUpperCase()}` : "—";
+  }, [overview?.displayId, jobId]);
 
   const selectedStatus = useMemo(() => {
     if (!overview) return "Pending Review";
