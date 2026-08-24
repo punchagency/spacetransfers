@@ -8,9 +8,12 @@ import {
 } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
 import toast from "react-hot-toast";
+import { formatOrderNumber } from "../../lib/utils/orderNumber";
 
 interface Order {
   orderId: string;
+  /** Canonical order number (DTF-####); absent on pre-displayId orders. */
+  displayId?: string | null;
   status: string;
   date: string;
   total: number | null;
@@ -179,7 +182,7 @@ export default function OrderHistoryModal({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <p className="text-sm font-semibold text-gray-900">
-                          #{order.orderId.slice(-8).toUpperCase()}
+                          {formatOrderNumber(order.displayId, order.orderId)}
                         </p>
                         <span
                           className={`rounded-full ${styles.bg} px-2.5 py-0.5 text-xs font-medium ${styles.text}`}

@@ -11,6 +11,7 @@ import { IoLocationOutline } from "react-icons/io5";
 import { LuFileText, LuRefreshCw } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
 import toast from "react-hot-toast";
+import { formatOrderNumber } from "../../lib/utils/orderNumber";
 
 interface OrderDetailsModalProps {
   isOpen: boolean;
@@ -139,7 +140,7 @@ export default function OrderDetailsModal({
                 </span>
               </div>
               <p className="text-sm text-gray-500">
-                #{order.orderId.slice(-8).toUpperCase()} · {new Date(order.date || Date.now()).toLocaleDateString()}
+                {formatOrderNumber(order.displayId, order.orderId)} · {new Date(order.date || Date.now()).toLocaleDateString()}
               </p>
             </div>
           </div>

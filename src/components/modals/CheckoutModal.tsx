@@ -15,6 +15,7 @@ import { AssetIndex } from "../../lib/utils/assetTable";
 import toast from "react-hot-toast";
 import { Elements } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
+import { formatOrderNumber } from "../../lib/utils/orderNumber";
 
 const stripePublishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as
   | string
@@ -66,6 +67,8 @@ export default function CheckoutModal({
   });
   const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
+  // The canonical DTF-#### number the customer will see everywhere else.
+  const [orderDisplayId, setOrderDisplayId] = useState<string | null>(null);
 
   /**
    * Resolves any leftover embedded artwork as soon as checkout opens, rather
@@ -313,6 +316,7 @@ export default function CheckoutModal({
 
     if (result?.id) {
       setOrderId(result.id);
+      setOrderDisplayId(result.displayId || null);
     }
     setStep(4);
     if (onCheckoutSuccess) {
@@ -666,7 +670,7 @@ export default function CheckoutModal({
                       </h2>
                       {orderId && (
                         <div className="mb-4 text-sm sm:text-lg font-medium text-black bg-black/10 px-4 py-1 rounded-full border border-blue-100">
-                          Order #{orderId.slice(-8).toUpperCase()}
+                          Order {formatOrderNumber(orderDisplayId, orderId)}
                         </div>
                       )}
                       <p className="mb-8 max-w-md text-gray-600">
