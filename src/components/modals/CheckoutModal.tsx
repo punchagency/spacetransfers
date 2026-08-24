@@ -102,9 +102,51 @@ export default function CheckoutModal({
       )
       .toFixed(2),
   );
-  const shippingCost = shipping === "standard" ? 8.99 : 19.99;
-  const tax = 0;
-  const total = Number((subtotal + shippingCost).toFixed(2));
+  /**
+   * Shipping and tax rates come from the server so the total shown here is the
+   * total that gets charged.
+   *
+   * These were hardcoded — express $19.99 and tax always 0 — while the server
+   * charged $24.99 plus 8%. On a $100 express order the customer saw $119.99
+   * and was charged $132.99.
+   *
+   * The fallback matches the server's own default, so a failed fetch shows a
+   * plausible figure rather than $0 shipping; the server recomputes on submit
+   * either way, so it can never be the figure actually charged.
+   */
+  const [rates, setRates] = useState<{
+    shipping: { standard: number; express: number };
+    taxRatePct: number;
+  }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8 });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    apiFetch("/customer/pricing")
+      .then((r) => {
+        if (cancelled || !r?.shipping) return;
+        setRates({
+          shipping: {
+            standard: Number(r.shipping.standard),
+            express: Number(r.shipping.express),
+          },
+          taxRatePct: Number(r.taxRatePct),
+        });
+      })
+      .catch(() => {
+        // Non-fatal: keep the fallback rates. The server is authoritative at
+        // submit, so a stale display cannot become a wrong charge.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const shippingCost = Number(
+    (shipping === "standard" ? rates.shipping.standard : rates.shipping.express).toFixed(2),
+  );
+  const tax = Number((subtotal * (rates.taxRatePct / 100)).toFixed(2));
+  const total = Number((subtotal + shippingCost + tax).toFixed(2));
 
   const validateCheckout = () => {
     const errors: Record<string, string> = {};
