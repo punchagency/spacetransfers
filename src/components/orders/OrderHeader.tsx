@@ -1,12 +1,15 @@
 import { FiArrowLeft } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
+import { formatOrderNumber } from '../../utils/orderNumber';
 
 interface OrderHeaderProps {
     orderId: string;
+    /** Canonical order number (DTF-####). Falls back to a slice of the raw id. */
+    displayId?: string | null;
     status: string;
 }
 
-export const OrderHeader = ({ orderId, status }: OrderHeaderProps) => {
+export const OrderHeader = ({ orderId, displayId, status }: OrderHeaderProps) => {
     const navigate = useNavigate();
 
     const getStatusColor = (status: string) => {
@@ -36,7 +39,7 @@ export const OrderHeader = ({ orderId, status }: OrderHeaderProps) => {
                 </span>
             </div>
             <div>
-                <h1 className="text-2xl font-bold text-gray-900">Order #{orderId.toString().slice(-6).toUpperCase()}</h1>
+                <h1 className="text-2xl font-bold text-gray-900">Order {formatOrderNumber(displayId, orderId)}</h1>
                 <p className="text-gray-500">View and manage order details</p>
             </div>
         </div>

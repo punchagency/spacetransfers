@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../../utils/api';
 import type { PartnerOrderRow } from '../../types/partners';
+import { formatOrderNumber } from '../../utils/orderNumber';
 
 export const PartnerOrders = ({
     partnerId,
@@ -30,6 +31,7 @@ export const PartnerOrders = ({
                 const mapped: PartnerOrderRow[] = Array.isArray(res.orders)
                     ? res.orders.map((row: any) => ({
                         id: String(row.id),
+                        displayId: row.displayId ? String(row.displayId) : null,
                         status: String(row.status),
                         customer: String(row.customer),
                         total: Number(row.total || 0),
@@ -49,7 +51,7 @@ export const PartnerOrders = ({
     const filtered = useMemo(() => {
         if (!search.trim()) return orders;
         const s = search.trim().toLowerCase();
-        return orders.filter((o) => o.id.toLowerCase().includes(s) || o.customer.toLowerCase().includes(s) || o.status.toLowerCase().includes(s));
+        return orders.filter((o) => formatOrderNumber(o.displayId, o.id).toLowerCase().includes(s) || o.id.toLowerCase().includes(s) || o.customer.toLowerCase().includes(s) || o.status.toLowerCase().includes(s));
     }, [orders, search]);
 
     const statusStyle = (status: string) => {
@@ -68,7 +70,7 @@ export const PartnerOrders = ({
                     <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input
                         type="text"
-                        placeholder="Search orders..."
+                        placeholder="Search by order ID, customer or status"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         className="w-full pl-10 pr-4 py-2 border border-gray-100 bg-gray-50/50 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:bg-white focus:border-blue-500 transition-all"
@@ -123,7 +125,7 @@ export const PartnerOrders = ({
                             ) : (
                                 filtered.map((order) => (
                                     <tr key={order.id} className="text-sm hover:bg-gray-50 transition-colors">
-                                        <td className="px-6 py-4 font-bold text-gray-900">{order.id.slice(-8).toUpperCase()}</td>
+                                        <td className="px-6 py-4 font-bold text-gray-900">{formatOrderNumber(order.displayId, order.id)}</td>
                                         <td className="px-6 py-4 font-bold text-gray-900">{order.customer}</td>
                                         <td className="px-6 py-4 text-gray-500">
                                             {new Date(order.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}

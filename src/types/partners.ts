@@ -37,6 +37,7 @@ export interface PartnerSettingsApi {
 }
 
 export interface PartnerOrderRow {
+    displayId?: string | null;
   id: string;
   status: string;
   customer: string;

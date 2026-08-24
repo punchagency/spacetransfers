@@ -16,15 +16,23 @@ const tabs = [
 
 export const Orders = () => {
   const [activeTab, setActiveTab] = useState('All');
+  const [searchTerm, setSearchTerm] = useState('');
+  // Debounced so typing doesn't fire a request per keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const { ordersList, loadingList, nextCursor, fetchOrdersList } = useOrdersStore();
 
   useEffect(() => {
-    fetchOrdersList({ status: activeTab, cursor: null, append: false });
-  }, [activeTab, fetchOrdersList]);
+    fetchOrdersList({ status: activeTab, cursor: null, append: false, search: debouncedSearch });
+  }, [activeTab, debouncedSearch, fetchOrdersList]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => window.clearTimeout(id);
+  }, [searchTerm]);
 
   const handleLoadMore = () => {
     if (nextCursor) {
-      fetchOrdersList({ status: activeTab, cursor: nextCursor, append: true });
+      fetchOrdersList({ status: activeTab, cursor: nextCursor, append: true, search: debouncedSearch });
     }
   };
 
@@ -37,7 +45,7 @@ export const Orders = () => {
             <p className="text-gray-500">View and manage all orders across your network</p>
           </div>
           <button 
-            onClick={() => fetchOrdersList({ status: activeTab, cursor: null, append: false })}
+            onClick={() => fetchOrdersList({ status: activeTab, cursor: null, append: false, search: debouncedSearch })}
             className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
           >
             <FiRefreshCcw className={loadingList ? 'animate-spin' : ''} />
@@ -70,7 +78,10 @@ export const Orders = () => {
           </div>
           <input
             type="text"
-            placeholder="Search orders..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            aria-label="Search orders"
+            placeholder="Search by order number, customer name or email"
             className="pl-10 pr-4 py-2 border border-gray-200 rounded-xl w-full text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white shadow-sm placeholder:text-gray-400"
           />
         </div>

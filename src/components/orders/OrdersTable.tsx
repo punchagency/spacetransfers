@@ -37,7 +37,23 @@ export const OrdersTable = ({
   const columns = [
     { header: "Order ID", key: "id" as keyof Order, className: "font-medium text-gray-900" },
     { header: "Customer", key: "customer" as keyof Order, className: "text-gray-700 font-medium" },
-    { header: "Region", key: "region" as keyof Order, className: "text-gray-500" },
+    {
+      header: "Region",
+      sortValue: (o: Order) => o.region,
+      render: (order: Order) => (
+        <div className="flex items-center gap-2">
+          <span className="text-gray-500">{order.region}</span>
+          {order.crossRegion && (
+            <span
+              title={`No partner was available in ${order.crossRegion.customerRegion}, so this went to ${order.crossRegion.assignedRegion}. Expect longer, costlier shipping.`}
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 whitespace-nowrap"
+            >
+              → {order.crossRegion.assignedRegion}
+            </span>
+          )}
+        </div>
+      )
+    },
     {
       header: "Partner",
       sortValue: (o: Order) => o.partner,

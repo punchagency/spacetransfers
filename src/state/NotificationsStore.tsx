@@ -10,6 +10,8 @@ export type AdminNotificationItem = {
   priority: AdminNotificationPriority;
   title: string;
   message: string;
+  /** Context for the thing the notification is about — e.g. `{ orderId, partnerId }`. */
+  meta?: Record<string, any> | null;
   readAt: string | null;
   createdAt: string;
 };
@@ -40,10 +42,12 @@ const startSse = async ({
   endpoint,
   onEvent,
   signal,
+  onOpen,
 }: {
   endpoint: string;
   onEvent: (event: string, data: any) => void;
   signal: AbortSignal;
+  onOpen?: () => void;
 }) => {
   const token = localStorage.getItem("admin_token");
   const res = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -55,6 +59,7 @@ const startSse = async ({
   });
 
   if (!res.ok || !res.body) return;
+  onOpen?.();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -199,10 +204,42 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
     const abort = new AbortController();
     abortRef.current = abort;
 
-    startSse({
-      endpoint: "/admin/notifications/stream",
-      signal: abort.signal,
-      onEvent: (event, data) => {
+    /**
+     * Reconnect loop.
+     *
+     * `startSse` returns whenever the stream ends — a server restart, a proxy
+     * idle timeout, a laptop waking from sleep. Without this the bell simply
+     * stopped updating until someone reloaded the page, and nothing said so.
+     *
+     * Backoff caps at 30s so a server that is down does not get hammered, and
+     * resets on a clean connect so a brief blip recovers immediately.
+     */
+    let attempt = 0;
+    const connect = async () => {
+      while (!abort.signal.aborted) {
+        try {
+          await startSse({
+            endpoint: "/admin/notifications/stream",
+            signal: abort.signal,
+            onEvent: handleEvent,
+            onOpen: () => {
+              attempt = 0;
+              // Catch up on anything missed while disconnected.
+              refresh({ status: "unread" }).catch(() => {});
+            },
+          });
+        } catch {
+          // fall through to the backoff below
+        }
+        if (abort.signal.aborted) return;
+        attempt += 1;
+        const delay = Math.min(30000, 1000 * 2 ** (attempt - 1));
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    };
+
+    const handleEvent = (event: string, data: any) => {
+      {
         if (event === "notification.created" && data && data.id) {
           const n: AdminNotificationItem = {
             id: String(data.id),
@@ -210,6 +247,7 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
             priority: data.priority,
             title: data.title,
             message: data.message,
+            meta: data.meta ?? null,
             readAt: data.readAt || null,
             createdAt: new Date(data.createdAt || Date.now()).toISOString(),
           };
@@ -231,8 +269,10 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
         if (event === "notification.email_failed") {
           refresh({ status: "unread" }).catch(() => {});
         }
-      },
-    }).catch(() => {});
+      }
+    };
+
+    connect();
 
     return () => {
       abort.abort();

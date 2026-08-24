@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { PartnersTable } from '../components/partners/PartnersTable';
 import { FiPlus, FiSend } from 'react-icons/fi';
@@ -20,22 +20,24 @@ export const FulfilmentPartners = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Debounced so typing doesn't fire a request per keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  const filteredPartners: Partner[] = useMemo(() => {
-    return partners.filter((partner) => {
-      const matchesSearch =
-        partner.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        partner.email.toLowerCase().includes(searchTerm.toLowerCase());
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => window.clearTimeout(id);
+  }, [searchTerm]);
 
-      const matchesStatus =
-        statusFilter === 'All Status' || partner.status === statusFilter;
-
-      const matchesRegion =
-        regionFilter === 'All Regions' || partner.regions.includes(regionFilter);
-
-      return matchesSearch && matchesStatus && matchesRegion;
-    });
-  }, [partners, searchTerm, statusFilter, regionFilter]);
+  /**
+   * The server already applied search, status and region — this list is the
+   * result of that query, so re-filtering it here only removes rows.
+   *
+   * It did exactly that: the server matches a partner's contact `name`,
+   * `companyName` or `email`, but returns `companyName` as the display `name`.
+   * Searching a partner's contact name therefore matched server-side and was
+   * then discarded client-side, so a partner that exists reported "no results".
+   */
+  const filteredPartners: Partner[] = partners;
 
   useEffect(() => {
     const fetchPartners = async () => {
@@ -44,7 +46,7 @@ export const FulfilmentPartners = () => {
         const params = new URLSearchParams();
         if (statusFilter !== 'All Status') params.set('status', statusFilter);
         if (regionFilter !== 'All Regions') params.set('region', regionFilter);
-        if (searchTerm.trim()) params.set('search', searchTerm.trim());
+        if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
         params.set('limit', '50');
 
         const response = await apiFetch(`/admin/partners?${params.toString()}`);
@@ -68,7 +70,7 @@ export const FulfilmentPartners = () => {
     };
 
     fetchPartners();
-  }, [refreshKey, searchTerm, statusFilter, regionFilter]);
+  }, [refreshKey, debouncedSearch, statusFilter, regionFilter]);
 
   return (
     <DashboardLayout>
@@ -102,7 +104,7 @@ export const FulfilmentPartners = () => {
         {/* Filters */}
         <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col md:flex-row gap-4 items-center">
           <SearchInput
-            placeholder="Search by name or region..."
+            placeholder="Search by name, company or email"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             containerClassName="flex-1 w-full"

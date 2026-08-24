@@ -1,6 +1,5 @@
 export interface EarningsRow {
   name: string;
-  sku: string;
   baseCost: number;
   markupPct: number;
   finalPrice: number;

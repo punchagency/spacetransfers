@@ -126,7 +126,7 @@ export const OrderDetails = () => {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <OrderHeader orderId={id || ''} status={order.status} />
+        <OrderHeader orderId={id || ''} displayId={order.displayId} status={order.status} />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* LEFT COLUMN - Order Summary */}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { FiX } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { apiFetch } from '../../utils/api';
+import { formatOrderNumber } from '../../utils/orderNumber';
 
 type PartnerOption = {
   id: string;
@@ -12,6 +13,7 @@ type PartnerOption = {
 
 type OrderRow = {
   id: string;
+  displayId?: string | null;
   customer: string;
   total: number;
   status: string;
@@ -59,6 +61,7 @@ export const AssignOrdersModal = ({
 
         const mappedOrders: OrderRow[] = (orderRes.orders || []).map((o: any) => ({
           id: String(o.id),
+          displayId: o.displayId ? String(o.displayId) : null,
           customer: String(o.customer || 'N/A'),
           total: Number(o.total || 0),
           status: String(o.status || 'N/A'),
@@ -93,6 +96,7 @@ export const AssignOrdersModal = ({
     if (!s) return unassignedOrders;
     return unassignedOrders.filter((o) => {
       return (
+        formatOrderNumber(o.displayId, o.id).toLowerCase().includes(s) ||
         o.id.toLowerCase().includes(s) ||
         o.customer.toLowerCase().includes(s) ||
         (o.region || '').toLowerCase().includes(s) ||
@@ -236,7 +240,7 @@ export const AssignOrdersModal = ({
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search unassigned orders..."
+                placeholder="Search by order ID, customer, region or status"
                 className="w-full px-4 py-3 bg-gray-50 border border-gray-100 rounded-xl text-sm font-medium text-gray-900 outline-none focus:bg-white focus:border-blue-500 transition-all"
                 aria-label="Search orders"
                 disabled={loading || assigning}
@@ -291,7 +295,7 @@ export const AssignOrdersModal = ({
                               className="h-4 w-4 text-blue-600 border-gray-300 rounded"
                             />
                           </td>
-                          <td className="px-4 py-4 font-bold text-gray-900">{o.id.slice(-8).toUpperCase()}</td>
+                          <td className="px-4 py-4 font-bold text-gray-900">{formatOrderNumber(o.displayId, o.id)}</td>
                           <td className="px-4 py-4 text-gray-900">{o.customer}</td>
                           <td className="px-4 py-4 text-gray-500">{o.region || 'N/A'}</td>
                           <td className="px-4 py-4 text-gray-500">{o.status}</td>

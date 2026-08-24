@@ -1,3 +1,4 @@
+import { formatOrderNumber } from "./orderNumber";
 import type { Order as OrderRow } from "../data/orders";
 
 const normalizeStatus = (status: string): OrderRow["status"] => {
@@ -24,11 +25,12 @@ export const mapAdminOrderToRow = (o: any): OrderRow => {
         : "N/A";
 
   return {
-    id: `#ORD-${id.slice(-4).toUpperCase()}`,
+    id: formatOrderNumber(o.displayId, id),
     actualId: id,
     createdAtMs: new Date(o.createdAt).getTime(),
     customer,
-    region: o.region || "West",
+    region: o.region || "Unknown",
+    crossRegion: o.crossRegion || null,
     partner: o.assignedPartner || "Unassigned",
     status: normalizeStatus(o.status),
     amount: `$${Number(o.total || 0).toFixed(2)}`,

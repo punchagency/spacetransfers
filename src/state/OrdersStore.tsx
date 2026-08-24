@@ -10,7 +10,7 @@ type OrdersState = {
   loadingRecent: boolean;
   loadingList: boolean;
   fetchRecentOrders: (range?: string) => Promise<{ stats: any }>;
-  fetchOrdersList: (params?: { status?: string; cursor?: string | null; append?: boolean }) => Promise<void>;
+  fetchOrdersList: (params?: { status?: string; cursor?: string | null; append?: boolean; search?: string }) => Promise<void>;
   upsertOrderRow: (actualId: string, patch: Partial<OrderRow>) => void;
 };
 
@@ -28,7 +28,10 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
     setRecords((prev) => {
       const next = { ...prev };
       for (const r of rows) {
-        const key = r.actualId || r.id.replace("#ORD-", "").toLowerCase();
+        // actualId (the raw ObjectId) is always set by the mapper; the second
+        // branch is a guard only. It used to strip a "#ORD-" prefix that no
+        // longer exists now that rows carry the canonical DTF-#### number.
+        const key = r.actualId || r.id.toLowerCase();
         next[key] = { ...next[key], ...r };
       }
       return next;
@@ -55,12 +58,23 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
       status,
       cursor = null,
       append = false,
-    }: { status?: string; cursor?: string | null; append?: boolean } = {}) => {
+      search,
+    }: { status?: string; cursor?: string | null; append?: boolean; search?: string } = {}) => {
       setLoadingList(true);
       try {
         const statusParam = status && status !== "All" ? `&status=${encodeURIComponent(status)}` : "";
         const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
-        const response = await apiFetch(`/orders?limit=15${statusParam}${cursorParam}`);
+        const searchParam = search && search.trim() ? `&search=${encodeURIComponent(search.trim())}` : "";
+        /**
+         * `/admin/orders`, not the generic `/orders` feed.
+         *
+         * `mapAdminOrderToRow` reads `region`, `assignedPartner` and `profits`,
+         * and the generic feed returns none of them — so every row fell back to
+         * region "West", partner "Unassigned" and profit $0.00 regardless of
+         * the truth. The admin endpoint returns those fields, and is also the
+         * only one that supports `search`.
+         */
+        const response = await apiFetch(`/admin/orders?limit=15${statusParam}${cursorParam}${searchParam}`);
         const rows: OrderRow[] = Array.isArray(response.orders)
           ? response.orders.map((o: any) => mapAdminOrderToRow(o))
           : [];

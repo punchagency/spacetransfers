@@ -95,7 +95,6 @@ export const Earnings = () => {
         const mappedRows: EarningsRow[] = Array.isArray(response.products)
           ? response.products.map((p: any) => ({
               name: String(p.name || "Custom Print"),
-              sku: String(p.sku || ""),
               baseCost: Number(p.baseCost || 0),
               markupPct: Number(p.markup || 0),
               finalPrice: Number(p.finalPrice || 0),
@@ -123,7 +122,7 @@ export const Earnings = () => {
       ? rows
       : rows.filter((r) => {
           return (
-            r.name.toLowerCase().includes(q) || r.sku.toLowerCase().includes(q)
+            r.name.toLowerCase().includes(q)
           );
         });
 
@@ -139,10 +138,7 @@ export const Earnings = () => {
     {
       header: "Product Name",
       render: (row: EarningsRow) => (
-        <div className="leading-tight">
-          <div className="font-medium text-gray-900">{row.name}</div>
-          <div className="text-xs text-gray-500 mt-1">{row.sku}</div>
-        </div>
+        <div className="font-medium text-gray-900">{row.name}</div>
       ),
     },
     {
@@ -229,7 +225,7 @@ export const Earnings = () => {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by name or region..."
+            placeholder="Search by product name"
             className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-sm placeholder:text-gray-400"
           />
         </div>
