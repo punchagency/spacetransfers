@@ -109,6 +109,21 @@ export const resolveGeo = async (
   }
 };
 
+export interface RecordedLogin {
+  device: string;
+  location: string;
+  ip: string;
+  /**
+   * True when this user has signed in successfully before, but never from this
+   * device and place.
+   *
+   * False for a first-ever sign-in: that one is enrolment, not a stranger, and
+   * alerting on it just greets every new admin with a security warning about
+   * themselves.
+   */
+  isNewContext: boolean;
+}
+
 export const recordLoginActivity = async ({
   req,
   userId,
@@ -117,22 +132,33 @@ export const recordLoginActivity = async ({
   req: Request;
   userId: string;
   status: LoginActivityStatus;
-}): Promise<void> => {
+}): Promise<RecordedLogin | null> => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(userId)) return;
+    if (!mongoose.Types.ObjectId.isValid(userId)) return null;
     const ua = String(req.headers["user-agent"] || "");
     const rawIp = extractClientIp(req);
     const { ip, location } = await resolveGeo(rawIp);
+    const device = parseDevice(ua);
+    const uid = new mongoose.Types.ObjectId(userId);
+
+    // Counted before the insert, or this sign-in would match itself.
+    const [priorSuccesses, sameContext] = await Promise.all([
+      LoginActivity.countDocuments({ userId: uid, status: "success" }),
+      LoginActivity.countDocuments({ userId: uid, status: "success", device, location }),
+    ]);
 
     await LoginActivity.create({
-      userId: new mongoose.Types.ObjectId(userId),
-      device: parseDevice(ua),
+      userId: uid,
+      device,
       ip,
       location,
       status,
       userAgent: ua
     });
+
+    return { device, location, ip, isNewContext: priorSuccesses > 0 && sameContext === 0 };
   } catch {
     /* recording is best-effort — never surface an error to the login flow */
+    return null;
   }
 };

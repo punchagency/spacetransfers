@@ -14,7 +14,18 @@ import fs from "fs";
 import path from "path";
 import { smartTrimToFile } from "../utils/aiCrop.js";
 import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
-import { getGlobalPricing, computeTotals as computeOrderTotals } from "../services/pricing.service.js";
+import {
+  getGlobalPricing,
+  computeTotals as computeOrderTotals,
+  deriveItemUnitPrice,
+  itemQuantity,
+  sheetUnitPrice,
+  normalizeShippingMethod,
+  totalBillableSqFt,
+} from "../services/pricing.service.js";
+import { quoteShipping } from "../services/shipping.service.js";
+import { deriveParcel } from "../services/packaging.service.js";
+import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
 import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
@@ -1532,6 +1543,12 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    const roundToTwo = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+    // Read before the items are priced: every line, the shipping and the tax on
+    // this order come from one set of rates.
+    const globalPricing = await getGlobalPricing();
+
     let computedSubtotal = 0;
     const orderItems = items.map((item: any) => {
       const {
@@ -1540,8 +1557,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         name,
         widthIn,
         heightIn,
-        quantity,
-        unitPrice,
         sheetWidthIn,
         sheetHeightIn,
         previewImage,
@@ -1549,10 +1564,29 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         assetTable
       } = item || {};
 
-      if (!type || !name || typeof quantity !== "number" || typeof unitPrice !== "number") {
-        const error = new Error("Each item requires type, name, quantity and unitPrice") as CustomError;
+      if (!type || !name) {
+        const error = new Error("Each item requires type and name") as CustomError;
         error.statusCode = 400;
         throw error;
+      }
+
+      /**
+       * Priced here, from the sheet's dimensions and the configured rate.
+       *
+       * `quantity` and `unitPrice` used to be taken from the request and only
+       * checked for internal consistency, so any self-consistent set was
+       * accepted — a caller could name a $0.01 subtotal for a full sheet and
+       * both this order and the Stripe charge would honour it.
+       */
+      const quantity = itemQuantity(item);
+      const unitPrice = deriveItemUnitPrice(item, globalPricing);
+
+      const clientUnitPrice = Number(item?.unitPrice);
+      if (Number.isFinite(clientUnitPrice) && roundToTwo(clientUnitPrice) !== unitPrice) {
+        console.warn(
+          `[ORDER_PRICING] item "${String(name)}" sent unitPrice ${roundToTwo(clientUnitPrice)} ` +
+            `but ${widthIn}x${heightIn}in at $${globalPricing.baseRatePerSqFt}/sq ft is ${unitPrice} — charging ${unitPrice}`,
+        );
       }
 
       const lineSubtotal = unitPrice * quantity;
@@ -1625,13 +1659,17 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       };
     });
 
-    const roundToTwo = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
     const roundedComputedSubtotal = roundToTwo(computedSubtotal);
 
     if (roundToTwo(pricing.subtotal) !== roundedComputedSubtotal) {
-      const error = new Error("pricing.subtotal does not match computed items subtotal") as CustomError;
-      error.statusCode = 400;
-      throw error;
+      // Not an error any more: the server priced these lines itself, so a
+      // disagreement means the client's figure was stale or wrong, not that the
+      // order is invalid. Rejecting here would turn a rate change mid-checkout
+      // into a failed order.
+      console.warn(
+        `[ORDER_PRICING] client sent subtotal ${roundToTwo(pricing.subtotal)} but server priced ` +
+          `the items at ${roundedComputedSubtotal} — recording the server figure`,
+      );
     }
 
     /**
@@ -1644,16 +1682,32 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
      * charged $24.99 plus 8%. Deriving them from the same pricer the charge
      * uses makes the saved order and the charge agree by construction.
      *
-     * `subtotal` is still checked against the line items above rather than
-     * recomputed, because unit prices are per-design and the server has no
-     * cheaper way to re-derive them here. That remains the open half of the
-     * payment-trust problem.
+     * `subtotal` is no longer taken on trust either: each line is priced above
+     * from its own dimensions and the configured rate, so the whole total is
+     * now derived rather than asserted.
      */
-    const globalPricing = await getGlobalPricing();
+    const shippingQuote = await quoteShipping({
+      totalSqFt: totalBillableSqFt(items),
+      method: normalizeShippingMethod(shippingMethod),
+      destination: {
+        state: String(shippingAddress?.state || ""),
+        postalCode: String(shippingAddress?.postalCode || ""),
+        country: String(shippingAddress?.country || "US"),
+        city: shippingAddress?.city ? String(shippingAddress.city) : undefined,
+      },
+      packaging: globalPricing.packaging,
+      markupPct: globalPricing.shippingMarkupPct,
+      fallbackRates: globalPricing.shipping,
+      // Quote from the region that will actually fulfil this, not from the
+      // fixed warehouse postcode in the environment.
+      origin: await predictShippingOrigin(shippingAddress?.state).catch(() => null),
+    });
+
     const authoritativeTotals = computeOrderTotals({
       subtotal: roundedComputedSubtotal,
       shippingMethod,
       pricing: globalPricing,
+      shippingCost: shippingQuote.cost,
     });
 
     const recordedPricing = {
@@ -1719,6 +1773,17 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       shippingMethod,
       payment,
       pricing: recordedPricing,
+      shippingQuote: {
+        carrierCost: shippingQuote.carrierCost ?? undefined,
+        chargedCost: shippingQuote.cost,
+        serviceName: shippingQuote.serviceName ?? undefined,
+        serviceCode: shippingQuote.serviceCode ?? undefined,
+        source: shippingQuote.source,
+        fallbackReason: shippingQuote.fallbackReason,
+        originPostalCode: shippingQuote.originPostalCode ?? undefined,
+        originPartnerRegion: shippingQuote.originPartnerRegion ?? undefined,
+        parcel: deriveParcel(totalBillableSqFt(items), globalPricing.packaging),
+      },
       status: "PENDING"
     });
 
@@ -2594,17 +2659,25 @@ const roundToTwo = (value: number) => {
 
 /**
  * The rates the storefront needs to display a total that matches what will be
- * charged: shipping per method, and the tax percentage.
+ * charged: the per-square-foot sheet rate, shipping per method, and the tax
+ * percentage.
  *
  * Read-only and free of customer data, so it is available to guests — the cart
  * is usable before sign-in and would otherwise show a total the checkout then
  * contradicts. `getCartQuote` cannot serve this: it prices saved designs by id,
  * and cart items are unsaved gang sheets with no `designId`.
+ *
+ * `baseRatePerSqFt` is served here because the editor prices a sheet as the
+ * user draws it, long before anything is saved. It used to price from a
+ * constant compiled into the client bundle, which meant the admin's Retail
+ * Pricing field was authoritative over nothing — the number that actually set
+ * every price could only be changed by a redeploy.
  */
 export const getPricingConfig = async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const pricing = await getGlobalPricing();
     res.status(200).json({
+      baseRatePerSqFt: pricing.baseRatePerSqFt,
       shipping: pricing.shipping,
       taxRatePct: pricing.taxRatePct,
       currency: "USD",
@@ -2641,6 +2714,10 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       error.statusCode = 400;
       throw error;
     }
+
+    // Read once, above the loop: the same rates must price every line item,
+    // the shipping and the tax on this quote.
+    const pricing = await getGlobalPricing();
 
     const quoteItems: any[] = [];
     let subtotal = 0;
@@ -2684,20 +2761,31 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
           throw error;
         }
 
-        if (design.pricing && typeof design.pricing.price === "number") {
-          unitPrice = design.pricing.price;
-        } else if (design.pricing && typeof design.pricing.areaSqFt === "number") {
-          const baseRatePerSqFt = 3.5;
-          unitPrice = design.pricing.areaSqFt * baseRatePerSqFt;
-        } else if (typeof widthIn === "number" && typeof heightIn === "number") {
-          const areaSqFt = (widthIn * heightIn) / 144;
-          const baseRatePerSqFt = 3.5;
-          unitPrice = areaSqFt * baseRatePerSqFt;
-        } else {
+        /**
+         * Priced from area x the current global rate, not from the price
+         * stored on the design.
+         *
+         * The stored price is a snapshot of whatever rate was in force when
+         * the sheet was saved, so preferring it meant a rate change never
+         * reached carts holding older designs. Two hard-coded `3.5` fallbacks
+         * sat behind it, which is what actually priced anything that reached
+         * them — a third retail rate, invisible to the admin and disagreeing
+         * with `global_pricing` by a factor of seven.
+         */
+        const areaSqFt =
+          typeof design.pricing?.areaSqFt === "number" && Number.isFinite(design.pricing.areaSqFt)
+            ? design.pricing.areaSqFt
+            : null;
+
+        if (areaSqFt == null || areaSqFt <= 0) {
           const error = new Error("Unable to determine price for gangsheet item") as CustomError;
           error.statusCode = 400;
           throw error;
         }
+
+        // Same helper the payment intent and the saved order use, so a quote
+        // cannot promise a number the checkout then contradicts.
+        unitPrice = sheetUnitPrice(areaSqFt, pricing);
       } else {
         const error = new Error(`Unsupported cart item type: ${type}`) as CustomError;
         error.statusCode = 400;
@@ -2721,17 +2809,36 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
     // charge and the saved order cannot disagree. This path previously used its
     // own rates (express $19.99, 9.4% tax gated on the country string being
     // exactly "United States") while the charge path used $24.99 and a flat 8%.
-    const pricing = await getGlobalPricing();
+    const shippingQuote = await quoteShipping({
+      totalSqFt: totalBillableSqFt(items),
+      method: normalizeShippingMethod(shippingMethod),
+      destination: {
+        state: String(req.body?.shippingState || ""),
+        postalCode: String(shippingPostalCode || ""),
+        country: String(shippingCountry || "US"),
+        city: req.body?.shippingCity ? String(req.body.shippingCity) : undefined,
+      },
+      packaging: pricing.packaging,
+      markupPct: pricing.shippingMarkupPct,
+      fallbackRates: pricing.shipping,
+      origin: await predictShippingOrigin(req.body?.shippingState).catch(() => null),
+    });
+
     const totals = computeOrderTotals({
       subtotal: roundToTwo(subtotal),
       shippingMethod,
       pricing,
+      shippingCost: shippingQuote.cost,
     });
 
     res.status(200).json({
       items: quoteItems,
       subtotal: totals.subtotal,
       shippingCost: totals.shippingCost,
+      // Named so the storefront can say "USPS Ground Advantage" instead of just
+      // a number, and so a fallback is visible rather than silent.
+      shippingService: shippingQuote.serviceName,
+      shippingSource: shippingQuote.source,
       tax: totals.tax,
       total: totals.total,
       currency: totals.currency

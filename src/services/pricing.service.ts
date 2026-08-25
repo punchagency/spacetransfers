@@ -1,4 +1,16 @@
 import { Settings } from "../models/settings.model.js";
+import { predictShippingOrigin } from "./orderAssignment.service.js";
+import {
+  DEFAULT_PACKAGING_PROFILE,
+  normalizePackagingProfile,
+  type PackagingProfile,
+} from "./packaging.service.js";
+import {
+  quoteShipping,
+  type ShippingDestination,
+  type ShippingMarkupPct,
+  type ShippingQuote,
+} from "./shipping.service.js";
 
 /**
  * Single source of truth for what a customer is charged.
@@ -16,7 +28,13 @@ import { Settings } from "../models/settings.model.js";
 
 export interface GlobalPricing {
   baseRatePerSqFt: number;
+  /**
+   * The flat rates are no longer what a customer pays. They are the fallback
+   * used when the carrier cannot be reached — see `shipping.service`.
+   */
   shipping: { standard: number; express: number };
+  shippingMarkupPct: ShippingMarkupPct;
+  packaging: PackagingProfile;
   taxRatePct: number;
 }
 
@@ -26,35 +44,72 @@ export interface GlobalPricing {
  * configured one behave identically.
  */
 export const DEFAULT_GLOBAL_PRICING: GlobalPricing = {
-  baseRatePerSqFt: 24.0,
+  /**
+   * 3.50, because that is what the storefront has actually been charging.
+   *
+   * This default read 24.00 while nothing consumed it — the editor priced from
+   * its own compiled constant of 3.50. Now that the field is authoritative,
+   * a fresh install must start at the rate customers were really paying;
+   * seeding 24.00 would have made deploying this a sevenfold price rise.
+   */
+  baseRatePerSqFt: 3.5,
   shipping: { standard: 8.99, express: 24.99 },
+  // A starting point, not a considered figure. Set it once a real parcel has
+  // been costed — on a $9 parcel this recovers 90c, which will not cover a tube.
+  shippingMarkupPct: 10,
+  packaging: DEFAULT_PACKAGING_PROFILE,
   taxRatePct: 8.0,
 };
 
 const roundToTwo = (value: number) =>
   Math.round((value + Number.EPSILON) * 100) / 100;
 
+/**
+ * Absent-or-junk becomes the fallback; an explicit 0 is kept, because free
+ * shipping and a 0% tax rate are both legitimate settings.
+ *
+ * The null and empty-string cases are why this is not just `Number(value)`:
+ * both coerce to 0, which is finite and non-negative, so the fallback never
+ * fired and the rate silently became zero. That was harmless while nothing
+ * read `baseRatePerSqFt`; now that it prices every sheet, clearing the field
+ * in the admin form would have made every gang sheet free.
+ */
 const finiteOr = (value: unknown, fallback: number): number => {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "string" && value.trim() === "") return fallback;
+  if (typeof value !== "number" && typeof value !== "string") return fallback;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 
 /**
- * Reads the configured rates, falling back field-by-field rather than
- * all-or-nothing: a settings document saved with one bad value should not
- * silently discard the operator's other three.
+ * Coerces a stored settings value into usable rates, falling back
+ * field-by-field rather than all-or-nothing: a settings document saved with one
+ * bad value should not silently discard the operator's other three.
+ *
+ * Separate from the read so it can be exercised without a database.
  */
-export const getGlobalPricing = async (): Promise<GlobalPricing> => {
-  const doc = await Settings.findOne({ key: "global_pricing" }).lean();
-  const v = (doc as any)?.value || {};
+export const normalizeGlobalPricing = (value: unknown): GlobalPricing => {
+  const v = (value as any) || {};
   return {
     baseRatePerSqFt: finiteOr(v.baseRatePerSqFt, DEFAULT_GLOBAL_PRICING.baseRatePerSqFt),
     shipping: {
       standard: finiteOr(v.shipping?.standard, DEFAULT_GLOBAL_PRICING.shipping.standard),
       express: finiteOr(v.shipping?.express, DEFAULT_GLOBAL_PRICING.shipping.express),
     },
+    shippingMarkupPct: finiteOr(
+      v.shippingMarkupPct,
+      DEFAULT_GLOBAL_PRICING.shippingMarkupPct,
+    ),
+    packaging: normalizePackagingProfile(v.packaging),
     taxRatePct: finiteOr(v.taxRatePct, DEFAULT_GLOBAL_PRICING.taxRatePct),
   };
+};
+
+/** Reads the configured rates from the settings document. */
+export const getGlobalPricing = async (): Promise<GlobalPricing> => {
+  const doc = await Settings.findOne({ key: "global_pricing" }).lean();
+  return normalizeGlobalPricing((doc as any)?.value);
 };
 
 export type ShippingMethod = "standard" | "express";
@@ -87,38 +142,143 @@ export const computeTotals = ({
   subtotal,
   shippingMethod,
   pricing,
+  shippingCost: quotedShipping,
 }: {
   subtotal: number;
   shippingMethod: unknown;
   pricing: GlobalPricing;
+  /**
+   * The live carrier quote, where one could be obtained. Omitted, the
+   * configured flat rate stands in — which is now a fallback rather than the
+   * price, so callers that can reach the carrier should always pass this.
+   */
+  shippingCost?: number;
 }): OrderTotals => {
   const safeSubtotal = roundToTwo(Math.max(0, finiteOr(subtotal, 0)));
   const method = normalizeShippingMethod(shippingMethod);
-  const shippingCost = roundToTwo(pricing.shipping[method]);
+  const shippingCost = roundToTwo(
+    quotedShipping === undefined ? pricing.shipping[method] : finiteOr(quotedShipping, pricing.shipping[method]),
+  );
   const tax = roundToTwo(safeSubtotal * (pricing.taxRatePct / 100));
   const total = roundToTwo(safeSubtotal + shippingCost + tax);
   return { subtotal: safeSubtotal, shippingCost, tax, total, currency: "USD" };
 };
 
 /**
- * Subtotal for a list of line items. Accepts the shapes the cart and the order
- * payload each use (`quantity`/`copies`, `unitPrice`/`price`) so one function
- * can serve both callers.
+ * The area a gang sheet is billed on: width x height in square feet, to two
+ * decimals.
+ *
+ * Two decimals because that is the area the editor shows and the customer
+ * agrees to — "11.00 sq ft x $3.50 = $38.50". Billing the unrounded
+ * 11.002018 sq ft would charge $38.51 for a sheet the cart said was $38.50.
+ *
+ * Deliberately unlike the partner-cost side, which prices exact area: there is
+ * no displayed figure there, so rounding would only lose accuracy. Here the
+ * displayed figure is the agreement.
  */
-export const computeSubtotal = (items: unknown[]): number =>
+export const billableAreaSqFt = (widthIn: unknown, heightIn: unknown): number | null => {
+  const w = Number(widthIn);
+  const h = Number(heightIn);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return roundToTwo((w * h) / 144);
+};
+
+/** What a gang sheet of a given area costs at the configured retail rate. */
+export const sheetUnitPrice = (areaSqFt: number, pricing: GlobalPricing): number =>
+  roundToTwo(roundToTwo(finiteOr(areaSqFt, 0)) * pricing.baseRatePerSqFt);
+
+const badRequest = (message: string) => {
+  const error = new Error(message) as Error & { statusCode?: number };
+  error.statusCode = 400;
+  return error;
+};
+
+/**
+ * The price of one line, derived from what will physically be produced.
+ *
+ * The client's `unitPrice` is not consulted. It used to be the only input, and
+ * it is a free-floating number attached to nothing — a request could name its
+ * own subtotal and both the Stripe charge and the saved order would honour it.
+ * Area cannot be lied about profitably in the same way: the dimensions that set
+ * the price are the dimensions the partner prints to, so understating them
+ * buys a smaller sheet rather than a cheaper one.
+ */
+export const deriveItemUnitPrice = (item: unknown, pricing: GlobalPricing): number => {
+  const it = (item as any) || {};
+  const type = String(it.type || "gangsheet").toLowerCase();
+
+  if (type !== "gangsheet") {
+    throw badRequest(`Unsupported item type: ${String(it.type)}`);
+  }
+
+  const areaSqFt = billableAreaSqFt(it.widthIn, it.heightIn);
+  if (areaSqFt == null) {
+    // Not a fallback to the client's figure: a sheet with no positive
+    // dimensions has nothing to print and no basis for a price. Accepting one
+    // at the client's `unitPrice` is how a zero-area order could be placed for
+    // the price of shipping alone.
+    throw badRequest("Each gang sheet requires positive widthIn and heightIn");
+  }
+
+  return sheetUnitPrice(areaSqFt, pricing);
+};
+
+/** Quantity as a whole number of sheets, at least one. */
+export const itemQuantity = (item: unknown): number => {
+  const it = (item as any) || {};
+  return Math.max(1, Math.floor(finiteOr(it.quantity ?? it.copies, 1)));
+};
+
+/**
+ * Subtotal for a list of line items, priced server-side from each item's
+ * dimensions rather than from the prices the caller supplied.
+ */
+export const computeSubtotal = (items: unknown[], pricing: GlobalPricing): number =>
   roundToTwo(
-    (Array.isArray(items) ? items : []).reduce((sum: number, it: any) => {
-      const qty = finiteOr(it?.quantity ?? it?.copies, 1);
-      const unit = finiteOr(it?.unitPrice ?? it?.price, 0);
-      return sum + qty * unit;
-    }, 0),
+    (Array.isArray(items) ? items : []).reduce(
+      (sum: number, it: any) => sum + itemQuantity(it) * deriveItemUnitPrice(it, pricing),
+      0,
+    ),
   );
 
-/** Convenience: load the configured rates and price a set of items in one call. */
+/**
+ * Load the configured rates, quote the carrier, and price a set of items.
+ *
+ * `destination` is what makes a live rate possible. Without it the flat
+ * fallback is used, which is why the Stripe intent must be given the address
+ * the checkout already collected — otherwise the intent and the saved order
+ * would be built from different shipping numbers.
+ */
 export const priceItems = async (
   items: unknown[],
   shippingMethod: unknown,
-): Promise<OrderTotals> => {
+  destination?: ShippingDestination | null,
+): Promise<OrderTotals & { shipping: ShippingQuote }> => {
   const pricing = await getGlobalPricing();
-  return computeTotals({ subtotal: computeSubtotal(items), shippingMethod, pricing });
+  const subtotal = computeSubtotal(items, pricing);
+  const method = normalizeShippingMethod(shippingMethod);
+
+  const shipping = await quoteShipping({
+    totalSqFt: totalBillableSqFt(items),
+    method,
+    destination: destination ?? null,
+    packaging: pricing.packaging,
+    markupPct: pricing.shippingMarkupPct,
+    fallbackRates: pricing.shipping,
+    origin: destination?.state
+      ? await predictShippingOrigin(destination.state).catch(() => null)
+      : null,
+  });
+
+  return {
+    ...computeTotals({ subtotal, shippingMethod: method, pricing, shippingCost: shipping.cost }),
+    shipping,
+  };
 };
+
+/** Total billed area across a set of line items — what the parcel is sized from. */
+export const totalBillableSqFt = (items: unknown[]): number =>
+  (Array.isArray(items) ? items : []).reduce((sum: number, it: any) => {
+    const area = billableAreaSqFt(it?.widthIn, it?.heightIn);
+    return area == null ? sum : sum + area * itemQuantity(it);
+  }, 0);

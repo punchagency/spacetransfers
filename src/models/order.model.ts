@@ -92,6 +92,17 @@ export interface IOrder extends Document {
   status: "PENDING" | "PROCESSING" | "PRINTING" | "QUALITY_CHECK" | "SHIPPED" | "COMPLETED" | "CANCELLED" | "REJECTED" | "PAUSED" | "PAID" | "paid";
   rejectionReason?: string;
   trackingNumber?: string;
+  shippingQuote?: {
+    carrierCost?: number;
+    chargedCost?: number;
+    serviceName?: string;
+    serviceCode?: string;
+    source?: "carrier" | "fallback";
+    fallbackReason?: string;
+    originPostalCode?: string;
+    originPartnerRegion?: string;
+    parcel?: { weightLb?: number; lengthIn?: number; widthIn?: number; heightIn?: number };
+  };
   carrier?: string;
   trackingUrl?: string;
   trackingEvents?: ITrackingEvent[];
@@ -281,6 +292,30 @@ const orderSchema = new Schema<IOrder>(
     },
     rejectionReason: {
       type: String
+    },
+    /**
+     * What the carrier quoted and what we charged, kept apart.
+     *
+     * Neither was recorded before: shipping was a flat $8.99 and the label's
+     * real cost was thrown away, so "are we losing money on shipping?" had no
+     * answer in the data. `source` distinguishes a live quote from the flat
+     * fallback, so fallbacks can be counted rather than assumed rare.
+     */
+    shippingQuote: {
+      carrierCost: { type: Number },
+      chargedCost: { type: Number },
+      serviceName: { type: String },
+      serviceCode: { type: String },
+      source: { type: String, enum: ["carrier", "fallback"] },
+      fallbackReason: { type: String },
+      originPostalCode: { type: String },
+      originPartnerRegion: { type: String },
+      parcel: {
+        weightLb: { type: Number },
+        lengthIn: { type: Number },
+        widthIn: { type: Number },
+        heightIn: { type: Number }
+      }
     },
     trackingNumber: {
       type: String

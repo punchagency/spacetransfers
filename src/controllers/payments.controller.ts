@@ -25,7 +25,7 @@ export const createStripePaymentIntent = async (
       throw error;
     }
 
-    const { items, shippingMethod } = req.body || {};
+    const { items, shippingMethod, shippingAddress } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       const error = new Error("items array is required") as CustomError;
       error.statusCode = 400;
@@ -37,7 +37,15 @@ export const createStripePaymentIntent = async (
       throw error;
     }
 
-    const totals = await priceItems(items, shippingMethod);
+    // The address is passed so the intent is built from the same live carrier
+    // quote the order will use. Without it the intent would price shipping from
+    // the flat fallback and then disagree with what gets recorded.
+    const totals = await priceItems(items, shippingMethod, {
+      state: String(shippingAddress?.state || ""),
+      postalCode: String(shippingAddress?.postalCode || ""),
+      country: String(shippingAddress?.country || "US"),
+      city: shippingAddress?.city ? String(shippingAddress.city) : undefined,
+    });
     const amountCents = Math.max(1, Math.round(totals.total * 100));
 
     const intent = await stripe.paymentIntents.create({

@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from "express";
+import { deriveParcel } from "../services/packaging.service.js";
+import { getGlobalPricing, totalBillableSqFt } from "../services/pricing.service.js";
 import { Order } from "../models/order.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
@@ -2272,6 +2274,20 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
       country: addr.country ?? "US",
       items,
       totalAmount: Number((job as any).pricing?.total ?? 0),
+      // The parcel recorded when the order was placed, so the label declares
+      // the same thing the rate was quoted against. Falls back to deriving it
+      // for orders that predate the field.
+      parcel: (job as any).shippingQuote?.parcel?.weightLb
+        ? {
+            weightLb: Number((job as any).shippingQuote.parcel.weightLb),
+            lengthIn: Number((job as any).shippingQuote.parcel.lengthIn),
+            widthIn: Number((job as any).shippingQuote.parcel.widthIn),
+            heightIn: Number((job as any).shippingQuote.parcel.heightIn),
+          }
+        : deriveParcel(
+            totalBillableSqFt((job as any).items || []),
+            (await getGlobalPricing()).packaging,
+          ),
     });
 
     const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =

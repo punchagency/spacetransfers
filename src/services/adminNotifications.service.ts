@@ -13,6 +13,19 @@ const categoryToPrefKey: Record<AdminNotificationCategory, AdminPreferenceKey> =
   system: "systemAlerts"
 };
 
+/**
+ * System alerts stay ON.
+ *
+ * They were briefly defaulted off because the category was unusable: it was
+ * dominated by "Sign-in detected", which fired on every login and was broadcast
+ * to every admin. That was fixed at the source — the alert now fires only for a
+ * sign-in from an unrecognised device, and only to the account it concerns.
+ *
+ * With the noise gone the category is worth receiving: what remains is "Sign-in
+ * from a new device", "Failed sign-in attempt", "Password changed" and "Email
+ * verified", all security notices about the admin's own account. Defaulting
+ * those off would have silenced the warnings along with the noise.
+ */
 export const getDefaultAdminNotificationPrefs = (): Record<AdminPreferenceKey, boolean> => ({
   orderUpdates: true,
   partnerActivity: true,

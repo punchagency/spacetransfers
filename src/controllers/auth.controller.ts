@@ -16,7 +16,7 @@ import { User } from "../models/user.model.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { sendEmail } from "../services/email.service.js";
 import { recordLoginActivity, extractClientIp, resolveGeo } from "../services/loginActivity.service.js";
-import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { createAdminNotification } from "../services/adminNotifications.service.js";
 
 export const me = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -88,19 +88,36 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     const userId = String(result.user.id);
 
     // Log the successful sign-in for the Security → Login Activity view.
-    recordLoginActivity({ req, userId, status: "success" }).catch(() => {});
+    const recorded = await recordLoginActivity({ req, userId, status: "success" }).catch(() => null);
 
-    // Send a system alert notification for successful login (especially if from a new location).
+    /**
+     * Alert only on a sign-in from a device and place this account has not used
+     * before.
+     *
+     * This fired on *every* login, and went to `notifyAllAdmins` — so one
+     * sign-in emailed all six admins a message reading "Your admin account was
+     * signed into", which was true for exactly one of them. Between the
+     * frequency and the inaccuracy it trained people to ignore the one channel
+     * that carries security notices.
+     *
+     * Now it goes to the admin whose account it actually was, and only when
+     * there is something worth looking at.
+     */
     try {
-      const ip = extractClientIp(req);
-      const { location } = await resolveGeo(ip);
-      if (result.user.role === "ADMIN") {
-        notifyAllAdmins({
+      if (result.user.role === "ADMIN" && recorded?.isNewContext) {
+        createAdminNotification({
+          adminId: userId,
           category: "system",
-          priority: "low",
-          title: "Sign-in detected",
-          message: `Your admin account was signed into from ${location}`,
-          meta: { userId, ip, location, type: "login_success" }
+          priority: "medium",
+          title: "Sign-in from a new device",
+          message: `Your admin account was signed into from ${recorded.location} on ${recorded.device}. If this was not you, change your password.`,
+          meta: {
+            userId,
+            ip: recorded.ip,
+            location: recorded.location,
+            device: recorded.device,
+            type: "login_success_new_device"
+          }
         }).catch(() => {});
       }
     } catch {
@@ -124,11 +141,14 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
             try {
               const ip = extractClientIp(req);
               const { location } = await resolveGeo(ip);
-              notifyAllAdmins({
+              // Also was notifyAllAdmins. A failed attempt on one account is
+              // that account holder's business, not a broadcast to everyone.
+              createAdminNotification({
+                adminId: userId,
                 category: "system",
                 priority: "medium",
                 title: "Failed sign-in attempt",
-                message: `A failed sign-in attempt was made from ${location}`,
+                message: `A failed sign-in attempt was made on your admin account from ${location}`,
                 meta: { userId, ip, location, type: "login_failed" }
               }).catch(() => {});
             } catch {

@@ -525,3 +525,71 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     tookMs
   };
 };
+
+export interface PredictedOrigin {
+  postalCode: string;
+  state: string;
+  city: string;
+  region: string;
+  printerName: string;
+  /** True when no printer serves the customer's own region and a fallback was used. */
+  isFallbackRegion: boolean;
+}
+
+/**
+ * Where an order will most likely ship *from*, worked out before any printer is
+ * assigned.
+ *
+ * Shipping rates were quoted from a single fixed origin in the environment
+ * (`SHIPSTATION_FROM_*`, an Austin postcode) while the label ships from the
+ * assigned partner's own address. Quote and label therefore described different
+ * journeys — and the error was systematic, not random: assignment matches
+ * partners to the customer's region, so real shipments are short local hops
+ * that were being priced as though they crossed the country.
+ *
+ * The exact partner cannot be known at quote time — assignment needs a saved
+ * order, and the customer is charged before one exists. But it does not need to
+ * be: partners are chosen by region, and a region's partners are by definition
+ * clustered, so any partner in the serving region gives the right origin
+ * geography. That is what this returns.
+ *
+ * Deliberately ignores capacity, business hours and load. Those decide *which*
+ * partner, not *where from*, and consulting them here would couple the quote to
+ * state that changes between quoting and assigning.
+ */
+export const predictShippingOrigin = async (
+  customerState: string | null | undefined
+): Promise<PredictedOrigin | null> => {
+  const customerRegion = normalizeRegion(getRegionFromState(customerState));
+  if (!customerRegion) return null;
+
+  const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
+    .select("name companyName regions businessAddress defaultShippingAddress")
+    .lean();
+
+  // Same order assignment would try: the customer's own region first, then its
+  // configured fallbacks.
+  for (const region of [customerRegion, ...(REGION_FALLBACKS[customerRegion] || [])]) {
+    for (const p of printers as any[]) {
+      // businessAddress first — it is what `createShipStationLabel` uses as the
+      // ship-from, so the quote and the label agree on the origin.
+      const addr = p.businessAddress?.postalCode ? p.businessAddress : p.defaultShippingAddress;
+      if (!addr?.postalCode) continue;
+
+      const printerRegion =
+        normalizeRegion(getRegionFromState(addr.state)) || normalizeRegion(p.regions?.[0]);
+      if (printerRegion !== region) continue;
+
+      return {
+        postalCode: String(addr.postalCode),
+        state: String(addr.state || ""),
+        city: String(addr.city || ""),
+        region,
+        printerName: String(p.companyName || p.name || "Print Partner"),
+        isFallbackRegion: region !== customerRegion,
+      };
+    }
+  }
+
+  return null;
+};

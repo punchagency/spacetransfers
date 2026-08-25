@@ -18,6 +18,12 @@ import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminN
 import { notifyAllAdmins, createAdminNotification } from "../services/adminNotifications.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import {
+  calculateOrderPartnerEarning,
+  canDerivePartnerEarning,
+  isPartnerEarningRealized,
+} from "../services/partnerEarnings.service.js";
+import { DEFAULT_GLOBAL_PRICING, normalizeGlobalPricing } from "../services/pricing.service.js";
+import {
   syncPartnerCapacitySafe,
   getAssignmentSettings,
   getEffectiveMaxConcurrent,
@@ -109,12 +115,19 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     const currentRevenue = revenueStats[0].current[0]?.total || 0;
     const priorRevenue = revenueStats[0].prior[0]?.total || 0;
 
-    let trendPct = 0;
-    if (priorRevenue > 0) {
-      trendPct = ((currentRevenue - priorRevenue) / priorRevenue) * 100;
-    } else if (currentRevenue > 0) {
-      trendPct = 100;
-    }
+    /**
+     * `trendPct` alone could not express "nothing to compare against".
+     *
+     * With no revenue in the prior window it reported +100%, which reads as
+     * growth rather than "this is the first period with any revenue"; and a
+     * genuine flat period (prior > 0, identical totals) also produced 0, which
+     * the client could not tell apart from two empty periods. `priorAmount` is
+     * returned so the caller can distinguish the cases.
+     */
+    const comparable = priorRevenue > 0;
+    const trendPct = comparable
+      ? ((currentRevenue - priorRevenue) / priorRevenue) * 100
+      : 0;
 
     const partnerStats = await User.aggregate([
       { $match: { role: UserRoles.PRINTER } },
@@ -132,7 +145,7 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     const recentOrdersRaw = await Order.find()
       .sort({ updatedAt: -1 })
       .limit(10)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing");
 
     const recentUserIds = Array.from(
       new Set(
@@ -148,21 +161,35 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
       recentUsers.map((u: any) => [String(u._id), Array.isArray(u.regions) ? (u.regions[0] || null) : null])
     );
 
-        const calculateOrderFinancials = (order: Pick<IOrder, "pricing" | "items">) => {
+    /**
+     * Margin on an order: what the customer paid, minus what the assigned
+     * partner is owed.
+     *
+     * The payout comes from `calculateOrderPartnerEarning` — the same function
+     * that drives real payouts — so this figure matches what actually leaves
+     * the business. It previously assumed a flat $3.50/sq ft for every partner
+     * (and $5.00 for dimensionless items), ignoring each partner's negotiated
+     * base rate, tiers, rush percentage and special-ink fee. For a partner on
+     * $2.50/sq ft that understated margin by a dollar per square foot, and it
+     * overstated for anyone above $3.50.
+     *
+     * With no partner assigned there is no negotiated rate yet, so the shared
+     * default applies and the result is an expected margin rather than a
+     * settled one.
+     */
+    const calculateOrderFinancials = (order: any) => {
       const customerCharge = order.pricing?.total || 0;
-      
-      const partnerPayout = (order.items || []).reduce((total, item) => {
-        const { widthIn, heightIn, quantity = 1 } = item;
-        if (widthIn && heightIn) {
-          const areaSqFt = (widthIn * heightIn) / 144;
-          return total + (areaSqFt * 3.50 * quantity);
-        }
-        return total + (5.00 * quantity);
-      }, 0);
+      const partnerPricing = (order.assignedPrinter as any)?.settings?.pricing || {};
 
-      const profit = customerCharge - partnerPayout;
+      // Null, not zero, when there is nothing to derive a cost from — see
+      // `canDerivePartnerEarning`. Subtracting a zero we invented is how an
+      // order with no sheet dimensions came to report 100% margin.
+      if (!canDerivePartnerEarning(order)) {
+        return { customerCharge, partnerPayout: null, profit: null };
+      }
 
-      return { customerCharge, partnerPayout, profit };
+      const partnerPayout = calculateOrderPartnerEarning(order, partnerPricing);
+      return { customerCharge, partnerPayout, profit: customerCharge - partnerPayout };
     };
  
     const recentOrders = recentOrdersRaw.map(order => {
@@ -175,7 +202,12 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         displayId: (order as any).displayId || null,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
-        profits: Number(profit.toFixed(2)),
+        // null travels to the client, which renders it as "—". Sending 0 here
+        // would be indistinguishable from a genuinely costless order.
+        profits: profit === null ? null : Number(profit.toFixed(2)),
+        // False until the job ships: partners are not paid before then, and
+        // revenue is counted from placement, so both sides are still a forecast.
+        profitsRealized: isPartnerEarningRealized(order),
         status: order.status,
         createdAt: order.createdAt,
         updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
@@ -194,7 +226,9 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         activePartners: partners.active,
         totalRevenue: {
           amount: Number(currentRevenue.toFixed(2)),
-          trendPct: Number(trendPct.toFixed(1))
+          trendPct: Number(trendPct.toFixed(1)),
+          priorAmount: Number(priorRevenue.toFixed(2)),
+          comparable
         }
       },
       recentOrders
@@ -208,18 +242,16 @@ export const getGlobalPricing = async (req: Request, res: Response, next: NextFu
   try {
     const settings = await Settings.findOne({ key: "global_pricing" });
 
+    // One source for the fallback, so this endpoint and the pricer cannot
+    // drift — they previously agreed only by coincidence.
     if (!settings) {
-      return res.status(200).json({
-        baseRatePerSqFt: 24.00,
-        shipping: {
-          standard: 8.99,
-          express: 24.99
-        },
-        taxRatePct: 8.0
-      });
+      return res.status(200).json(DEFAULT_GLOBAL_PRICING);
     }
 
-    res.status(200).json(settings.value);
+    // Normalised, not raw: a document saved before a field existed must still
+    // come back with that field, or the console would render it blank and then
+    // save the blank over the working default.
+    res.status(200).json(normalizeGlobalPricing(settings.value));
   } catch (error) {
     next(error);
   }
@@ -227,19 +259,24 @@ export const getGlobalPricing = async (req: Request, res: Response, next: NextFu
 
 export const updateGlobalPricing = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { baseRatePerSqFt, shipping, taxRatePct } = req.body;
+    /**
+     * The whole document is rewritten on save, so every field has to be listed
+     * here. It previously named only three, which meant saving from the console
+     * silently deleted the shipping markup and packaging profile — the rates
+     * would keep working, quietly, on defaults nobody chose.
+     *
+     * Normalising the merged result also means a partial request cannot blank a
+     * field: anything absent falls back to what is already stored.
+     */
+    const existing = await Settings.findOne({ key: "global_pricing" }).lean();
+    const merged = normalizeGlobalPricing({
+      ...((existing as any)?.value || {}),
+      ...req.body,
+    });
 
     const settings = await Settings.findOneAndUpdate(
       { key: "global_pricing" },
-      {
-        $set: {
-          value: {
-            baseRatePerSqFt,
-            shipping,
-            taxRatePct
-          }
-        }
-      },
+      { $set: { value: merged } },
       { upsert: true, new: true, runValidators: true }
     );
 
@@ -953,7 +990,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       .select("-items.artboardItems")
       .sort({ updatedAt: -1, _id: -1 })
       .limit(pageSize + 1)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions")
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing")
       .lean();
 
     const hasNextPage = orders.length > pageSize;
@@ -979,24 +1016,21 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
         : "N/A";
 
+      // Same source as the dashboard and as real payouts — see
+      // calculateOrderFinancials above for why the flat rate was wrong.
       const customerCharge = order.pricing?.total || 0;
-      const partnerPayout = (order.items || []).reduce((total: number, item: any) => {
-        const widthIn = Number(item.widthIn || 0);
-        const heightIn = Number(item.heightIn || 0);
-        const quantity = Number(item.quantity || 1);
-        if (widthIn > 0 && heightIn > 0) {
-          const areaSqFt = (widthIn * heightIn) / 144;
-          return total + (areaSqFt * 3.5 * quantity);
-        }
-        return total;
-      }, 0);
-      const profits = customerCharge - partnerPayout;
+      const derivable = canDerivePartnerEarning(order);
+      const profits = derivable
+        ? customerCharge -
+          calculateOrderPartnerEarning(order, (order.assignedPrinter as any)?.settings?.pricing || {})
+        : null;
   
       return {
         id: order._id,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
-        profits: Number(profits.toFixed(2)),
+        profits: profits === null ? null : Number(profits.toFixed(2)),
+        profitsRealized: isPartnerEarningRealized(order),
         status: order.status,
         createdAt: order.createdAt,
         updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
@@ -2065,7 +2099,10 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
 
     const globalPricingSetting = await Settings.findOne({ key: "global_pricing" }).lean();
     const globalPricing = (globalPricingSetting as any)?.value;
-    const saleRatePerSqFt = typeof globalPricing?.baseRatePerSqFt === "number" ? globalPricing.baseRatePerSqFt : 24.0;
+    const saleRatePerSqFt =
+      typeof globalPricing?.baseRatePerSqFt === "number"
+        ? globalPricing.baseRatePerSqFt
+        : DEFAULT_GLOBAL_PRICING.baseRatePerSqFt;
 
     const pipeline: any[] = [
       { $match: matchQuery },
@@ -2569,7 +2606,9 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    const order = await Order.findById(orderIdString).lean();
+    const order = await Order.findById(orderIdString)
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "settings.pricing")
+      .lean();
 
     if (!order) {
       const error = new Error("Order not found") as CustomError;
@@ -2579,23 +2618,23 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
 
     const customerCharge = order.pricing?.total || 0;
 
-    const calculateItemCost = (item: any) => {
-      const { widthIn, heightIn, quantity = 1 } = item;
-      if (widthIn && heightIn) {
-        const areaSqFt = (widthIn * heightIn) / 144;
-        const costPerSqFt = 3.50; 
-        return areaSqFt * costPerSqFt * quantity;
-      }
-      return 5.00 * quantity;
-    };
-
-    const partnerPayout = (order.items || []).reduce((total, item) => total + calculateItemCost(item), 0);
-    const margin = customerCharge - partnerPayout;
+    // The assigned partner's own negotiated rates, via the same function that
+    // drives real payouts. This used to assume a flat $3.50/sq ft regardless of
+    // partner, so the financials panel disagreed with what was actually paid.
+    const derivable = canDerivePartnerEarning(order);
+    const partnerPayout = derivable
+      ? calculateOrderPartnerEarning(order, (order.assignedPrinter as any)?.settings?.pricing || {})
+      : null;
+    const margin = partnerPayout === null ? null : customerCharge - partnerPayout;
 
     res.status(200).json({
       customerCharge: Number(customerCharge.toFixed(2)),
-      partnerPayout: Number(partnerPayout.toFixed(2)),
-      margin: Number(margin.toFixed(2)),
+      partnerPayout: partnerPayout === null ? null : Number(partnerPayout.toFixed(2)),
+      margin: margin === null ? null : Number(margin.toFixed(2)),
+      // Says why the two above are absent, so the panel can explain itself
+      // rather than showing a blank with no reason.
+      marginUnavailableReason: derivable ? undefined : "This order has no sheet dimensions to derive a partner cost from.",
+      marginRealized: isPartnerEarningRealized(order),
       currency: order.pricing?.currency || "USD"
     });
   } catch (error) {
@@ -2789,7 +2828,7 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
     const orders = await Order.find({
       createdAt: { $gte: startDate },
       status: { $nin: ["CANCELLED", "REJECTED"] }
-    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing");
 
     const priorOrders = await Order.find({
       createdAt: { $gte: priorStartDate, $lt: priorEndDate },
