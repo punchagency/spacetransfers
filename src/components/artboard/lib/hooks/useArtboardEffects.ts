@@ -12,6 +12,7 @@ import {
 } from "../utils";
 import { snapToGridPoint } from "../utils";
 import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import { usePricePerSqFt } from "../../../../lib/utils/pricingRates";
 import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
@@ -31,6 +32,7 @@ export const useArtboardEffects = (
   onDataChange?: (data: any) => void,
   counter?: number
 ) => {
+  const pricePerSqFt = usePricePerSqFt();
   const [originalPositions, setOriginalPositions] = useState<
     Record<number, { posX: number; posY: number }>
   >({});
@@ -449,7 +451,7 @@ export const useArtboardEffects = (
         (usedWidthIn * usedHeightIn) /
         PRICING.SQUARE_INCHES_PER_SQ_FT
       ).toFixed(UNIT.INCH.DECIMALS);
-      const totalPrice = +(totalAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(
+      const totalPrice = +(totalAreaSf * pricePerSqFt).toFixed(
         UNIT.INCH.DECIMALS,
       );
 
@@ -475,5 +477,5 @@ export const useArtboardEffects = (
         unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
-  }, [items, canvasWidth, marginSize, onHeaderInfoChange]);
+  }, [items, canvasWidth, marginSize, onHeaderInfoChange, pricePerSqFt]);
 };

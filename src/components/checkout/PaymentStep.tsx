@@ -62,6 +62,9 @@ function StripeCardSection({
         body: JSON.stringify({
           items: mappedItems,
           shippingMethod: shipping,
+          // Sent so the intent is priced from the same live carrier quote the
+          // order will use; without it the two disagree on shipping.
+          shippingAddress,
         }),
       });
 

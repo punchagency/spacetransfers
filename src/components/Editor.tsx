@@ -21,9 +21,11 @@ import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
+import { usePricePerSqFt } from "../lib/utils/pricingRates";
 import { computeRenderCopies } from "./artboard/lib/utils/layoutHelpers";
 
 export default function Editor() {
+  const pricePerSqFt = usePricePerSqFt();
   // Phone detection drives both the one-time notice and the hiding of tools
   // that can't be operated smoothly on a small touch screen (see below).
   const isMobile = useIsMobile();
@@ -738,7 +740,7 @@ export default function Editor() {
       const fullSheetAreaSf =
         (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
         PRICING.SQUARE_INCHES_PER_SQ_FT;
-      const fullSheetPrice = +(fullSheetAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(2);
+      const fullSheetPrice = +(fullSheetAreaSf * pricePerSqFt).toFixed(2);
       const priceToUse = forceFullSheetPrice
         ? fullSheetPrice
         : headerInfo?.price || 0;
@@ -884,7 +886,7 @@ export default function Editor() {
       const fullSheetAreaSf =
         (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
         PRICING.SQUARE_INCHES_PER_SQ_FT;
-      const fullSheetPrice = +(fullSheetAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(2);
+      const fullSheetPrice = +(fullSheetAreaSf * pricePerSqFt).toFixed(2);
       const utilizationPct =
         typeof headerInfo?.areaSf === "number" && fullSheetAreaSf > 0
           ? (headerInfo.areaSf / fullSheetAreaSf) * 100

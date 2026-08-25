@@ -135,7 +135,14 @@ export const ANIMATION = {
 // Pricing configuration
 export const PRICING = {
   DEFAULT_ITEM_PRICE: 12.34,
-  PRICE_PER_SQ_FT: 3.5,
+  /**
+   * Only used until the live rate arrives from `GET /customer/pricing`, which
+   * is the authority — see `lib/utils/pricingRates`. Read it through
+   * `usePricePerSqFt()`, never directly: this constant priced every order
+   * until the admin's Retail Pricing field was wired up, and reading it again
+   * would quietly restore that.
+   */
+  FALLBACK_PRICE_PER_SQ_FT: 3.5,
   SQUARE_INCHES_PER_SQ_FT: 144,
 } as const;
 

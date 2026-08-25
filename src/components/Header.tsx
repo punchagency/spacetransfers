@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
-import { CANVAS, PRICING } from "../config/artboard.config";
+import { CANVAS } from "../config/artboard.config";
+import { usePricePerSqFt } from "../lib/utils/pricingRates";
 import { DpiStatusChip } from "./common/DpiStatus";
 type HeaderInfo = {
   hasItem: boolean;
@@ -104,6 +105,7 @@ export default function Header({
   profileName?: string;
   isSidebarOpen?: boolean;
 }) {
+  const pricePerSqFt = usePricePerSqFt();
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
 
@@ -241,7 +243,7 @@ export default function Header({
               <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-0.5">Pricing Breakdown</span>
               <span className="flex justify-between gap-4 text-[12px] text-gray-700">
                 <span>Rate</span>
-                <span className="font-medium tabular-nums">${PRICING.PRICE_PER_SQ_FT.toFixed(2)}&nbsp;/&nbsp;sq&nbsp;ft</span>
+                <span className="font-medium tabular-nums">${pricePerSqFt.toFixed(2)}&nbsp;/&nbsp;sq&nbsp;ft</span>
               </span>
               <span className="flex justify-between gap-4 text-[12px] text-gray-700">
                 <span>Area</span>
