@@ -83,6 +83,37 @@ export const OrdersTable = ({
       key: "profit" as keyof Order,
       className: "font-bold text-gray-900",
       sortValue: (o: Order) => Number(String(o.profit || "").replace(/[^0-9.]/g, "")) || 0,
+      /**
+       * Marked "est." until the order ships.
+       *
+       * Revenue is counted from the moment an order is placed, and the partner
+       * is not paid until it ships, so both halves of this figure are a
+       * forecast until then. Presenting it identically to a settled margin
+       * overstated how much of it was real.
+       *
+       * "—" means something different: no sheet dimensions, so no cost could be
+       * derived at all. That one carries its own explanation.
+       */
+      render: (order: Order) => {
+        const unknown = order.profit === "—";
+        return (
+          <span
+            className={unknown ? "font-normal text-gray-400 cursor-help" : "font-bold text-gray-900"}
+            title={
+              unknown
+                ? "No sheet dimensions on this order, so no partner cost can be worked out."
+                : order.profitRealized
+                  ? undefined
+                  : "Estimated. The partner is not paid until the order ships, so this is not settled yet."
+            }
+          >
+            {order.profit}
+            {!unknown && !order.profitRealized && (
+              <span className="ml-1 text-[11px] font-normal text-gray-400">est.</span>
+            )}
+          </span>
+        );
+      },
     },
     {
       header: "Date",

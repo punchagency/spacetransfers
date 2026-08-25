@@ -52,7 +52,7 @@ export const ProfilePreferences = () => {
       {
         id: "systemAlerts" as const,
         title: "System Alerts",
-        description: "Sign-in alerts, failed sign-in attempts, and password changes on your account",
+        description: "Sign-ins from a new device, failed sign-in attempts, and password changes on your account",
       },
     ];
   }, []);

@@ -34,7 +34,19 @@ export const mapAdminOrderToRow = (o: any): OrderRow => {
     partner: o.assignedPartner || "Unassigned",
     status: normalizeStatus(o.status),
     amount: `$${Number(o.total || 0).toFixed(2)}`,
-    profit: `$${Number(o.profits || 0).toFixed(2)}`,
+    /**
+     * "—" when the server could not derive a partner cost, which is not the
+     * same as a cost of zero.
+     *
+     * `Number(o.profits || 0)` collapsed the two, and because the server used
+     * to send `total - 0` for such orders, the table showed profit equal to the
+     * full amount — reporting 100% margin on orders it had no cost data for.
+     */
+    profit:
+      o.profits === null || o.profits === undefined
+        ? "—"
+        : `$${Number(o.profits).toFixed(2)}`,
+    profitRealized: Boolean(o.profitsRealized),
     date: new Date(o.createdAt).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",

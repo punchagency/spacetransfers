@@ -39,34 +39,38 @@ export const Earnings = () => {
           {
             title: "Total Profits",
             value: currency(response.kpis?.totalProfits?.value || 0),
-            trend:
+            trendPct:
               typeof response.kpis?.totalProfits?.trendPct === "number"
-                ? `${response.kpis.totalProfits.trendPct > 0 ? "+" : ""}${response.kpis.totalProfits.trendPct}%`
-                : "",
+                ? response.kpis.totalProfits.trendPct
+                : null,
+            trendHint: "Compared with the previous 30 days",
           },
           {
             title: "Total Costs",
             value: currency(response.kpis?.totalCosts?.value || 0),
-            trend:
+            trendPct:
               typeof response.kpis?.totalCosts?.trendPct === "number"
-                ? `${response.kpis.totalCosts.trendPct > 0 ? "+" : ""}${response.kpis.totalCosts.trendPct}%`
-                : "",
+                ? response.kpis.totalCosts.trendPct
+                : null,
+            trendHint: "Compared with the previous 30 days",
           },
           {
             title: "Profit Earned",
             value: currency(response.kpis?.profitEarned?.value || 0),
-            trend:
+            trendPct:
               typeof response.kpis?.profitEarned?.trendPct === "number"
-                ? `${response.kpis.profitEarned.trendPct > 0 ? "+" : ""}${response.kpis.profitEarned.trendPct}%`
-                : "",
+                ? response.kpis.profitEarned.trendPct
+                : null,
+            trendHint: "Compared with the previous 30 days",
           },
           {
             title: "Total Revenue",
             value: currency(response.kpis?.totalRevenue?.value || 0),
-            trend:
+            trendPct:
               typeof response.kpis?.totalRevenue?.trendPct === "number"
-                ? `${response.kpis.totalRevenue.trendPct > 0 ? "+" : ""}${response.kpis.totalRevenue.trendPct}%`
-                : "",
+                ? response.kpis.totalRevenue.trendPct
+                : null,
+            trendHint: "Compared with the previous 30 days",
           },
         ]);
 
