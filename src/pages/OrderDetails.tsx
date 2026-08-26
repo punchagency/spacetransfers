@@ -5,7 +5,9 @@ import { OrderHeader } from '../components/orders/OrderHeader';
 import { OrderSummary } from '../components/orders/OrderSummary';
 import { OrderTimeline } from '../components/orders/OrderTimeline';
 import { OrderFinancials } from '../components/orders/OrderFinancials';
-import { apiFetch } from '../utils/api';
+import { OrderPartner } from '../components/orders/OrderPartner';
+import { apiFetch, getApiBaseUrl } from '../utils/api';
+import { getToken } from '../utils/auth';
 import toast from 'react-hot-toast';
 
 export const OrderDetails = () => {
@@ -52,9 +54,18 @@ export const OrderDetails = () => {
   useEffect(() => {
     if (!id) return;
     const ac = new AbortController();
-    const token = localStorage.getItem("admin_token");
+    /**
+     * Base URL and token come from the shared helpers.
+     *
+     * This hard-coded `http://localhost:4000/api`, so the live-update stream
+     * could only ever work on a developer's machine — in any deployment it
+     * pointed at a host that is not there. The failure was invisible because
+     * `run()` swallows the error and the 5s poll above kept the page fresh, so
+     * the stream looked like it was working while doing nothing.
+     */
+    const token = getToken();
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    const url = `http://localhost:4000/api/orders/${encodeURIComponent(id)}/stream`;
+    const url = `${getApiBaseUrl()}/orders/${encodeURIComponent(id)}/stream`;
 
     let buffer = "";
     let pendingRefresh: number | null = null;
@@ -137,7 +148,8 @@ export const OrderDetails = () => {
           {/* RIGHT COLUMN */}
           <div className="lg:col-span-1 space-y-6">
             <OrderTimeline order={order} />
-            <OrderFinancials order={order} />
+            <OrderPartner order={order} />
+            <OrderFinancials order={order} orderId={id || ''} orderNumber={order.displayId} />
           </div>
         </div>
       </div>

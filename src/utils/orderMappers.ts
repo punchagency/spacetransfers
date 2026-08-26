@@ -1,17 +1,14 @@
 import { formatOrderNumber } from "./orderNumber";
+import { formatOrderStatus } from "./orderStatus";
 import type { Order as OrderRow } from "../data/orders";
 
-const normalizeStatus = (status: string): OrderRow["status"] => {
-  const s = String(status || "").toUpperCase();
-  if (s === "PENDING") return "Pending";
-  if (s === "PROCESSING") return "Assigned";
-  if (s === "PRINTING") return "Processing";
-  if (s === "SHIPPED") return "Ready to Ship";
-  if (s === "COMPLETED") return "Completed";
-  if (s === "REJECTED") return "Rejected";
-  if (s === "CANCELLED") return "Cancelled";
-  return "Pending";
-};
+/**
+ * Display label for a row. Delegates to the shared map so the table, the detail
+ * header and the timeline cannot drift apart — which is exactly what happened
+ * when each kept its own copy.
+ */
+const normalizeStatus = (status: string): OrderRow["status"] =>
+    formatOrderStatus(status) as OrderRow["status"];
 
 export const mapAdminOrderToRow = (o: any): OrderRow => {
   const id = o.id?.toString?.() || String(o.id || "");

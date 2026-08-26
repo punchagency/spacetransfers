@@ -2,24 +2,21 @@ import { useNavigate } from "react-router-dom";
 import type { Order } from "../../data/orders";
 import { GenericTable } from "../common/GenericTable";
 
-const getStatusColor = (status: string) => {
-  switch (status) {
-    case "Assigned":
-      return "text-amber-500";
-    case "Completed":
-      return "text-green-500";
-    case "Ready to Ship":
-      return "text-gray-900";
-    case "Processing":
-      return "text-indigo-600";
-    case "Pending":
-      return "text-yellow-400";
-    case "Rejected":
-      return "text-red-500";
-    case "Cancelled":
-      return "text-gray-400";
-    default:
-      return "text-gray-500";
+/**
+ * Keyed on the row's display label via the shared map's inverse — the row only
+ * carries the label, and duplicating a second colour table here is how the
+ * labels drifted in the first place.
+ */
+const getStatusColor = (label: string) => {
+  switch (label) {
+    case "Completed":   return "text-green-600";
+    case "Shipped":     return "text-gray-900";
+    case "Ready to Ship": return "text-purple-600";
+    case "Printing":    return "text-indigo-600";
+    case "Assigned":    return "text-blue-600";
+    case "Unassigned":  return "text-amber-500";
+    case "Cancelled":   return "text-gray-400";
+    default:            return "text-gray-500";
   }
 };
 
@@ -123,10 +120,17 @@ export const OrdersTable = ({
     },
     {
       header: "Action",
+      /*
+       * A span, not a button. It never had an onClick — it "worked" only
+       * because the click bubbled up to the row's own navigate handler, so a
+       * stopPropagation anywhere above would have silently killed it while it
+       * still looked clickable. The whole row is the control; this is the
+       * affordance that says so.
+       */
       render: () => (
-        <button className="text-gray-400 hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
+        <span className="text-gray-400 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
           View
-        </button>
+        </span>
       )
     },
   ];

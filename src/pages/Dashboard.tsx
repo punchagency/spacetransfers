@@ -61,8 +61,15 @@ export const Dashboard = () => {
             value: stats.totalOrders?.toString() || "0",
           },
           {
-            title: "Pending Orders",
+            /*
+              Counts PENDING, which now means "no partner attached" and nothing
+              else — assignment moves an order to PROCESSING. Before that change
+              PENDING covered both, so "Pending Orders" was a vague mix; it is
+              now the one queue an admin has to act on, and the label says which.
+            */
+            title: "Unassigned Orders",
             value: stats.pendingOrders?.toString() || "0",
+            subtitle: "Awaiting a print partner",
           },
           {
             title: "Total Revenue",
@@ -134,7 +141,7 @@ export const Dashboard = () => {
           ))}
         </SelectInput>
         <span className="text-xs text-gray-400">
-          Applies to Total Orders, Pending Orders and Total Revenue
+          Applies to Total Orders, Unassigned Orders and Total Revenue
         </span>
       </div>
 

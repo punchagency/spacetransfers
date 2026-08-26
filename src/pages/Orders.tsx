@@ -6,12 +6,13 @@ import { useOrdersStore } from '../state/OrdersStore';
 
 const tabs = [
   { label: 'All', value: 'All' },
-  { label: 'Pending', value: 'PENDING' },
-  { label: 'Processing', value: 'PROCESSING' },
+  // PENDING now means "no partner yet" and nothing else, so the tab says so.
+  { label: 'Unassigned', value: 'PENDING' },
+  { label: 'Assigned', value: 'PROCESSING' },
   { label: 'Printing', value: 'PRINTING' },
+  { label: 'Ready to Ship', value: 'QUALITY_CHECK' },
   { label: 'Shipped', value: 'SHIPPED' },
   { label: 'Completed', value: 'COMPLETED' },
-  { label: 'Rejected', value: 'REJECTED' },
 ];
 
 export const Orders = () => {

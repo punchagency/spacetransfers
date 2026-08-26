@@ -7,7 +7,8 @@ export interface Order {
     /** Set when the order was fulfilled outside the customer's own region. */
     crossRegion?: { customerRegion: string; assignedRegion: string } | null;
     partner: string;
-    status: "Assigned" | "Completed" | "Ready to Ship" | "Processing" | "Pending" | "Rejected" | "Shipped" | "Cancelled";
+    /** Display labels from `utils/orderStatus`, not backend values. */
+    status: "Unassigned" | "Assigned" | "Printing" | "Ready to Ship" | "Shipped" | "Completed" | "Cancelled" | string;
     amount: string;
     profit: string;
     /**

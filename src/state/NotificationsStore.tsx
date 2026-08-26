@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { getApiBaseUrl } from "../utils/api";
+import { getToken } from "../utils/auth";
 import { apiFetch } from "../utils/api";
 
 export type AdminNotificationCategory = "orders" | "partners" | "system";
@@ -36,7 +38,11 @@ type NotificationsState = {
 
 const NotificationsStoreContext = createContext<NotificationsState | null>(null);
 
-const API_BASE_URL = "http://localhost:4000/api";
+/**
+ * Was hard-coded to `http://localhost:4000/api`, so notifications could only
+ * stream on a developer's machine. Same defect as the order-detail stream had.
+ */
+const API_BASE_URL = getApiBaseUrl();
 
 const startSse = async ({
   endpoint,
@@ -49,7 +55,7 @@ const startSse = async ({
   signal: AbortSignal;
   onOpen?: () => void;
 }) => {
-  const token = localStorage.getItem("admin_token");
+  const token = getToken();
   const res = await fetch(`${API_BASE_URL}${endpoint}`, {
     method: "GET",
     headers: {
