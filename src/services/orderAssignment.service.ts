@@ -409,8 +409,19 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   const assignedAt = new Date();
   order.assignedAt = assignedAt;
   order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
-  if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
-    order.status = "PENDING";
+  /**
+   * Assignment moves the order to PROCESSING.
+   *
+   * PENDING previously meant two different things — "no partner yet" and
+   * "partner attached, not started" — so the Orders list could not show which
+   * orders still needed a partner, which is the only case an admin has to act
+   * on. It also left the timeline's "Assigned to {partner}" branch unreachable.
+   *
+   * Only from PENDING: re-assigning an order already in PRINTING or beyond must
+   * not drag it backwards.
+   */
+  if (String(order.status || "").toUpperCase() === "PENDING") {
+    order.status = "PROCESSING";
   }
   order.statusTimeline = order.statusTimeline || [];
 

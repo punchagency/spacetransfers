@@ -8,12 +8,14 @@ import { broadcastToAllAdmins } from "./adminNotificationsHub.js";
 
 // Statuses that count against a partner's active job capacity. A job in any of
 // these states is "occupying a slot"; once it moves to a terminal state
-// (SHIPPED / COMPLETED / CANCELLED / REJECTED) the slot frees up.
+// (SHIPPED / COMPLETED / CANCELLED) the slot frees up.
+//
+// PAUSED dropped with the status itself — only the orphaned `executeJobAction`
+// PAUSE case ever wrote it, and no UI reached that.
 export const ACTIVE_ORDER_STATUSES = [
   "PENDING",
   "PROCESSING",
   "PRINTING",
-  "PAUSED",
   "QUALITY_CHECK",
 ] as const;
 

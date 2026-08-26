@@ -83,13 +83,6 @@ export interface IUser extends Document {
     customerRating: number;
   };
   settings: {
-    profile?: {
-      bio?: string;
-      gender?: string;
-      dateOfBirth?: string;
-      nationalId?: string;
-      taxId?: string;
-    };
     businessHours?: {
       monday?: { isOpen: boolean; start: string; end: string };
       tuesday?: { isOpen: boolean; start: string; end: string };
@@ -347,13 +340,15 @@ const userSchema = new Schema<IUser>(
       customerRating: { type: Number, default: 0 }
     },
     settings: {
-      profile: {
-        bio: { type: String, default: "" },
-        gender: { type: String, default: "" },
-        dateOfBirth: { type: String, default: "" },
-        nationalId: { type: String, default: "" },
-        taxId: { type: String, default: "" }
-      },
+      /*
+       * `profile` (bio, gender, dateOfBirth, nationalId, taxId) removed.
+       * Nothing anywhere read it — the admin console collected it, echoed it
+       * back and used it for nothing, and the schema defaults created an empty
+       * copy on every user of every role.
+       *
+       * Date of birth and national ID are the ones worth naming: storing staff
+       * identity documents with no purpose is a liability, not a feature.
+       */
       businessHours: {
         monday: { isOpen: Boolean, start: String, end: String },
         tuesday: { isOpen: Boolean, start: String, end: String },

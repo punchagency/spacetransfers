@@ -90,3 +90,28 @@ describe("profit is a forecast until the order ships", () => {
     assert.equal(isPartnerEarningRealized(null), false);
   });
 });
+
+describe("the financials panel gets the same treatment as the table", () => {
+  it("has one derivability rule shared by every profit surface", () => {
+    // Four surfaces compute margin: the dashboard's recent orders, listOrders,
+    // getOrderFinancials, and the order-detail endpoint behind the Invoice &
+    // Financials panel. The last was missed on the first pass and reported
+    // `customerPaid - 0` for a dimensionless order.
+    const dimensionless = { items: [{ quantity: 1, unitPrice: 38.5 }] };
+    const real = { items: [{ widthIn: 24.34, heightIn: 65.09, quantity: 1 }] };
+    assert.equal(canDerivePartnerEarning(dimensionless), false);
+    assert.equal(canDerivePartnerEarning(real), true);
+  });
+
+  it("keeps 'unknown cost' separate from 'not settled yet'", () => {
+    // A dimensionless SHIPPED order is settled but still has no cost; a
+    // dimensioned PENDING one has a cost that is merely an estimate. The panel
+    // renders "—" for the first and "est." for the second.
+    const shippedNoDims = { status: "SHIPPED", items: [{ quantity: 1 }] };
+    const pendingWithDims = { status: "PENDING", items: [{ widthIn: 12, heightIn: 12, quantity: 1 }] };
+    assert.equal(canDerivePartnerEarning(shippedNoDims), false);
+    assert.equal(isPartnerEarningRealized(shippedNoDims), true);
+    assert.equal(canDerivePartnerEarning(pendingWithDims), true);
+    assert.equal(isPartnerEarningRealized(pendingWithDims), false);
+  });
+});

@@ -616,7 +616,7 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
 export const getAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
-    const admin = await User.findById(adminId).select("name email phone avatarUrl defaultShippingAddress settings.profile");
+    const admin = await User.findById(adminId).select("name email phone avatarUrl");
 
     if (!admin) {
       const error = new Error("Admin not found") as CustomError;
@@ -629,20 +629,16 @@ export const getAdminProfile = async (req: Request, res: Response, next: NextFun
       email: admin.email,
       phone: admin.phone || null,
       avatarUrl: admin.avatarUrl || null,
-      profile: {
-        bio: admin.settings?.profile?.bio || "",
-        gender: admin.settings?.profile?.gender || "",
-        dateOfBirth: admin.settings?.profile?.dateOfBirth || "",
-        nationalId: admin.settings?.profile?.nationalId || "",
-        taxId: admin.settings?.profile?.taxId || ""
-      },
-      address: admin.defaultShippingAddress || {
-        street: "",
-        city: "",
-        state: "",
-        postalCode: "",
-        country: ""
-      }
+      /*
+       * Bio, gender, date of birth, national ID, tax ID and a postal address
+       * are no longer collected or returned. Nothing read any of them — they
+       * were stored, echoed back, and used by nothing.
+       *
+       * Date of birth and national ID are the ones worth naming: holding
+       * identity documents for staff with no purpose is a liability, not a
+       * feature. An admin account needs a name, an email, a phone number and a
+       * picture.
+       */
     });
   } catch (error) {
     next(error);
@@ -652,7 +648,7 @@ export const getAdminProfile = async (req: Request, res: Response, next: NextFun
 export const updateAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
-    const { name, email, phone, avatarUrl, profile, address } = req.body;
+    const { name, email, phone, avatarUrl } = req.body;
 
     const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN });
     if (!admin) {
@@ -700,29 +696,6 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
       didUpdate = true;
     }
 
-    if (profile !== undefined && profile && typeof profile === "object") {
-      if (!admin.settings) (admin as any).settings = {};
-      if (!admin.settings.profile) (admin.settings as any).profile = {};
-
-      if (profile.bio !== undefined) (admin.settings.profile as any).bio = String(profile.bio || "");
-      if (profile.gender !== undefined) (admin.settings.profile as any).gender = String(profile.gender || "");
-      if (profile.dateOfBirth !== undefined) (admin.settings.profile as any).dateOfBirth = String(profile.dateOfBirth || "");
-      if (profile.nationalId !== undefined) (admin.settings.profile as any).nationalId = String(profile.nationalId || "");
-      if (profile.taxId !== undefined) (admin.settings.profile as any).taxId = String(profile.taxId || "");
-      admin.markModified("settings.profile");
-      didUpdate = true;
-    }
-
-    if (address !== undefined && address && typeof address === "object") {
-      admin.defaultShippingAddress = {
-        street: String(address.street || ""),
-        city: String(address.city || ""),
-        state: String(address.state || ""),
-        postalCode: String(address.postalCode || ""),
-        country: String(address.country || "")
-      };
-      didUpdate = true;
-    }
 
     if (!didUpdate) {
       const error = new Error("No update data provided") as CustomError;
@@ -1319,13 +1292,34 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
+    /**
+     * Accepts both the admin console's display labels and the raw backend
+     * values, so a caller cannot be caught out by which one it holds.
+     *
+     * "Assigned" previously mapped to PENDING. Once assignment started setting
+     * PROCESSING, the console's label for that state pointed at its opposite —
+     * sending "Assigned" would have un-assigned the order. PROCESSING and
+     * QUALITY_CHECK had no mapping at all, so the admin could not set them.
+     */
     const statusMap: { [key: string]: string } = {
       "Pending": "PENDING",
-      "Assigned": "PENDING",
+      "Unassigned": "PENDING",
+      "Assigned": "PROCESSING",
+      "Processing": "PROCESSING",
       "In Progress": "PRINTING",
+      "Printing": "PRINTING",
+      "Ready to Ship": "QUALITY_CHECK",
+      "Quality Check": "QUALITY_CHECK",
       "Shipped": "SHIPPED",
       "Completed": "COMPLETED",
-      "Cancelled": "CANCELLED"
+      "Cancelled": "CANCELLED",
+      PENDING: "PENDING",
+      PROCESSING: "PROCESSING",
+      PRINTING: "PRINTING",
+      QUALITY_CHECK: "QUALITY_CHECK",
+      SHIPPED: "SHIPPED",
+      COMPLETED: "COMPLETED",
+      CANCELLED: "CANCELLED"
     };
 
     const dbStatus = statusMap[status] as any;
@@ -1492,8 +1486,10 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       order.assignedAt = assignedAt;
       order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
     }
-    if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
-      order.status = "PENDING";
+    // Same rule as auto-assignment: attaching a partner moves PENDING to
+    // PROCESSING, and never drags a further-along order backwards.
+    if (String(order.status || "").toUpperCase() === "PENDING") {
+      order.status = "PROCESSING";
     }
 
     const message = isReassignment 
@@ -1610,10 +1606,17 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       priority: (order as any).priority,
       adjustments: (order as any)?.pricing?.adjustments || []
     });
-    const totalPartnerCost = breakdown.subtotal;
+    /**
+     * Null when there is nothing to derive a cost from — the fourth surface
+     * that needed this. An order whose items carry no sheet dimensions has an
+     * unknown partner cost, not a zero one, and `customerPaid - 0` reported
+     * 100% margin on orders with no cost data at all.
+     */
+    const costDerivable = canDerivePartnerEarning(order);
+    const totalPartnerCost = costDerivable ? breakdown.subtotal : null;
 
     const customerPaid = order.pricing?.total || 0;
-    const adminProfit = customerPaid - totalPartnerCost;
+    const adminProfit = totalPartnerCost === null ? null : customerPaid - totalPartnerCost;
 
     const gangsheetOrderItem = (order.items || []).find((it: any) => it?.type === "gangsheet") as any | null;
     const designId = gangsheetOrderItem?.designId || order.items?.[0]?.designId || null;
@@ -1740,8 +1743,14 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
       financials: {
         customerPaid: Number(customerPaid.toFixed(2)),
-        partnerCost: Number(totalPartnerCost.toFixed(2)),
-        adminProfit: Number(adminProfit.toFixed(2)),
+        partnerCost: totalPartnerCost === null ? null : Number(totalPartnerCost.toFixed(2)),
+        adminProfit: adminProfit === null ? null : Number(adminProfit.toFixed(2)),
+        // False until the job ships: the partner is not paid before then, so
+        // the margin is a forecast — same rule the Orders table uses.
+        profitRealized: isPartnerEarningRealized(order),
+        unavailableReason: costDerivable
+          ? undefined
+          : "This order has no sheet dimensions, so no partner cost can be worked out.",
         currency: order.pricing?.currency || "USD"
       },
 
@@ -2764,9 +2773,6 @@ export const getOrderTimeline = async (req: Request, res: Response, next: NextFu
           message = `Assigned to ${(order.assignedPrinter as unknown as IUser).companyName}`;
         } else if (["PRINTING", "QUALITY_CHECK"].includes(entry.status)) {
           who = "Printer";
-        } else if (entry.status === "REJECTED") {
-          who = "Admin";
-          message = `Order rejected. Reason: ${order.rejectionReason || "Not specified"}`;
         }
 
         events.push({

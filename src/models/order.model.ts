@@ -89,7 +89,7 @@ export interface IOrder extends Document {
     currency: string;
     adjustments?: IOrderAdjustment[];
   };
-  status: "PENDING" | "PROCESSING" | "PRINTING" | "QUALITY_CHECK" | "SHIPPED" | "COMPLETED" | "CANCELLED" | "REJECTED" | "PAUSED" | "PAID" | "paid";
+  status: "PENDING" | "PROCESSING" | "PRINTING" | "QUALITY_CHECK" | "SHIPPED" | "COMPLETED" | "CANCELLED";
   rejectionReason?: string;
   trackingNumber?: string;
   shippingQuote?: {
@@ -287,7 +287,17 @@ const orderSchema = new Schema<IOrder>(
     },
     status: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED", "REJECTED", "PAUSED", "PAID", "paid"],
+      /**
+       * REJECTED, PAUSED, PAID and "paid" were removed: nothing reachable wrote
+       * them. REJECTED and PAUSED were only ever set by `executeJobAction`,
+       * which no UI calls; PAID/"paid" were never written at all and the
+       * lower-case duplicate would have split any query that did.
+       *
+       * Declining a job is `cancelPrinterOrder`, which returns the order to
+       * PENDING and reassigns it — better than a terminal rejected state, since
+       * the order gets re-homed instead of stranded.
+       */
+      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"],
       default: "PENDING"
     },
     rejectionReason: {

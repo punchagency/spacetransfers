@@ -2193,11 +2193,20 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
 
     if (status) {
       const normalized = status.toString().trim().toLowerCase();
+      /**
+       * Deliberately coarser than the internal states: a customer does not need
+       * to know whether their sheet is queued at a partner, on the press, or
+       * waiting for a label — only that it is being made.
+       *
+       * PRINTING and QUALITY_CHECK previously matched no filter at all, so an
+       * order in production was invisible under every option. PAID/"paid" were
+       * removed from the schema and are dropped here with them.
+       */
       const statusMap: { [key: string]: string[] } = {
         pending: ["PENDING"],
-        processing: ["PROCESSING"],
+        processing: ["PROCESSING", "PRINTING", "QUALITY_CHECK"],
         shipped: ["SHIPPED"],
-        completed: ["COMPLETED", "PAID", "paid"],
+        completed: ["COMPLETED"],
         cancelled: ["CANCELLED"]
       };
 

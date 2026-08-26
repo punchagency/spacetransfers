@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { PRINTER_STATUS_LABEL, printerStatusLabel } from "../utils/orderStatusLabels.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { getGlobalPricing, totalBillableSqFt } from "../services/pricing.service.js";
 import { Order } from "../models/order.model.js";
@@ -309,16 +310,8 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       .limit(12)
       .lean();
 
-    const mapStatus = (s: string) => {
-      const v = String(s || "").toUpperCase();
-      if (v === "PENDING") return "Pending Review";
-      if (v === "PROCESSING" || v === "PRINTING") return "In Progress - Printing";
-      if (v === "QUALITY_CHECK") return "Print Shipping Label";
-      if (v === "SHIPPED") return "Order Shipped";
-      if (v === "COMPLETED") return "Completed";
-      if (v === "CANCELLED") return "Cancelled";
-      return "Pending Review";
-    };
+    // One shared map — see `utils/orderStatusLabels`.
+    const mapStatus = printerStatusLabel;
 
     const assignedJobs = activeAssignedJobs.map((job: any) => ({
       id: String(job._id),
@@ -475,13 +468,9 @@ export const updateJobStatus = async (req: Request, res: Response, next: NextFun
     // Completing (or otherwise moving out of an active state) frees capacity.
     syncPartnerCapacitySafe(String(printerId));
 
-    const pqLabelMap: Record<string, string> = {
-      PENDING: "Pending",
-      PROCESSING: "Processing",
-      PRINTING: "Printing",
-      QUALITY_CHECK: "Quality Check",
-      COMPLETED: "Completed",
-    };
+    // Was a second, disagreeing copy: "Quality Check" here vs "Print Shipping
+    // Label" in the job list, for the same state and the same reader.
+    const pqLabelMap = PRINTER_STATUS_LABEL;
     notifyPrinter({
       printerId: String(printerId),
       category: "jobs",
@@ -696,15 +685,9 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
     const { action, reason } = req.body;
     const printerId = req.user?.id;
 
-    const allowedActions = ["ACCEPT", "REJECT", "START", "PAUSE", "RESUME"];
+    const allowedActions = ["ACCEPT", "START"];
     if (!action || !allowedActions.includes(action)) {
-      const error = new Error("Invalid action. Must be one of: ACCEPT | REJECT | START | PAUSE | RESUME") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    if (action === "REJECT" && !reason) {
-      const error = new Error("REJECT requires a reason field") as CustomError;
+      const error = new Error("Invalid action. Must be one of: ACCEPT | START") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -716,8 +699,8 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
       throw error;
     }
 
-    // Business hours enforcement for ACCEPT and REJECT
-    if (action === "ACCEPT" || action === "REJECT") {
+    // Business hours enforcement for ACCEPT
+    if (action === "ACCEPT") {
       const printer = await User.findById(printerId).select("settings.businessHours settings.jobCapacity name companyName email").lean();
       if (printer && !isPrinterAvailableAt(printer)) {
         const error = new Error("Action not allowed outside your configured business hours") as CustomError;
@@ -736,34 +719,15 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
         }
         nextStatus = "PROCESSING";
         break;
-      case "REJECT":
-        if (job.status !== "PENDING") {
-          const error = new Error(`Cannot REJECT job in ${job.status} state. REJECT transitions Pending -> Rejected.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "REJECTED";
-        job.rejectionReason = reason;
-        break;
+      /*
+       * REJECT, PAUSE and RESUME removed with the REJECTED and PAUSED statuses.
+       * Declining a job is `cancelPrinterOrder`, which returns the order to
+       * PENDING and reassigns it — the order gets re-homed rather than stranded
+       * in a terminal state, and unlike these it is reachable from the app.
+       */
       case "START":
         if (job.status !== "PROCESSING") {
           const error = new Error(`Cannot START job in ${job.status} state. START transitions Processing -> Printing.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "PRINTING";
-        break;
-      case "PAUSE":
-        if (job.status !== "PRINTING") {
-          const error = new Error(`Cannot PAUSE job in ${job.status} state. PAUSE transitions Printing -> Paused.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "PAUSED";
-        break;
-      case "RESUME":
-        if (job.status !== "PAUSED") {
-          const error = new Error(`Cannot RESUME job in ${job.status} state. RESUME transitions Paused -> Printing.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -776,83 +740,27 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
     job.statusTimeline.push({
       status: nextStatus as any,
       time: new Date(),
-      ...(action === "REJECT" ? { message: reason } : {}),
     });
     await job.save();
 
-    // REJECT moves the job to a terminal state and frees a capacity slot.
-    if (nextStatus === "REJECTED") syncPartnerCapacitySafe(String(printerId));
-
     const displayId = (job as any).displayId || String(job._id).slice(-6).toUpperCase();
-    const rejectedAt = new Date().toISOString();
 
-    if (action === "REJECT") {
-      // Determine if the job was auto-assigned
-      const lastAssignment = Array.isArray((job as any).assignmentHistory)
-        ? (job as any).assignmentHistory.slice(-1)[0]
-        : null;
-      const wasAutoAssigned = lastAssignment?.mode === "AUTO";
+    const actionLabelMap: Record<string, { title: string; priority: "high" | "medium" | "low" }> = {
+      ACCEPT: { title: "Job accepted",         priority: "medium" },
+      START:  { title: "Job started printing", priority: "low"    },
+    };
+    const { title: actionTitle, priority: actionPriority } =
+      actionLabelMap[action] || { title: `Job action: ${action}`, priority: "low" as const };
 
-      const printerUser = await User.findById(printerId).select("name companyName email").lean();
-      const printerName = (printerUser as any)?.companyName || (printerUser as any)?.name || "Printer";
-      const printerEmail = (printerUser as any)?.email || "";
-
-      // Notify all admins with full details
-      notifyAllAdmins({
-        category: "orders",
-        priority: "high",
-        title: "Job rejected by printer",
-        message: `Order #${displayId} was rejected by ${printerName}${wasAutoAssigned ? " (auto-assigned job)" : ""}. Reason: ${reason}`,
-        meta: {
-          orderId: String(job._id),
-          displayId,
-          printerId: String(printerId),
-          printerName,
-          printerEmail,
-          rejectionReason: reason,
-          rejectedAt,
-          wasAutoAssigned,
-          previousStatus: "PENDING",
-        },
-      }).catch(() => {});
-
-      // Confirm to the printer that the rejection was recorded
-      notifyPrinter({
-        printerId: String(printerId),
-        category: "jobs",
-        priority: "medium",
-        title: "Job rejection confirmed",
-        message: `You successfully rejected Order #${displayId}. Reason: "${reason}". The admin has been notified.`,
-        meta: {
-          orderId: String(job._id),
-          displayId,
-          action: "REJECT",
-          status: nextStatus,
-          rejectionReason: reason,
-          rejectedAt,
-          wasAutoAssigned,
-        },
-        settingsKey: "orderUpdates",
-      }).catch(() => {});
-    } else {
-      // Generic notification for all other actions
-      const actionLabelMap: Record<string, { title: string; priority: "high" | "medium" | "low" }> = {
-        ACCEPT: { title: "Job accepted",         priority: "medium" },
-        START:  { title: "Job started printing", priority: "low"    },
-        PAUSE:  { title: "Job paused",           priority: "low"    },
-        RESUME: { title: "Job resumed",          priority: "low"    },
-      };
-      const { title: actionTitle, priority: actionPriority } = actionLabelMap[action] || { title: `Job action: ${action}`, priority: "low" as const };
-      notifyPrinter({
-        printerId: String(printerId),
-        category: "jobs",
-        priority: actionPriority,
-        title: actionTitle,
-        message: `Order #${displayId} — ${actionTitle.toLowerCase()}.`,
-        meta: { orderId: String(job._id), action, status: nextStatus },
-        settingsKey: "orderUpdates",
-      }).catch(() => {});
-    }
+    notifyPrinter({
+      printerId: String(printerId),
+      category: "jobs",
+      priority: actionPriority,
+      title: actionTitle,
+      message: `Order #${displayId} — ${actionTitle.toLowerCase()}.`,
+      meta: { orderId: String(job._id), action, status: nextStatus },
+      settingsKey: "orderUpdates",
+    }).catch(() => {});
 
     res.json({ id: job.id, status: job.status });
   } catch (error) {
@@ -2781,7 +2689,11 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     }
 
     const allowedLabels: Record<string, string> = {
-      "Pending Review": "PENDING",
+      // PROCESSING, not PENDING: the job is still assigned to this partner —
+      // they are moving it back to "not started", not releasing it. PENDING now
+      // means "no partner attached", so mapping here would have produced an
+      // order that was pending and assigned at the same time.
+      "Pending Review": "PROCESSING",
       "In Progress": "PRINTING",
       "In Progress - Printing": "PRINTING",
       "Print Shipping Label": "QUALITY_CHECK",
