@@ -44,12 +44,13 @@ export interface GlobalPricing {
    */
   rushSurchargePct: number;
   /**
-   * What a newly created partner starts on.
+   * The rate every partner is paid at. Read through `getPartnerPayRate`.
    *
-   * These were hard-coded in three places — `createPartner`, the
-   * `getPartnerPricing` fallback, and the user schema default — so the rate a
-   * partner was actually put on could not be seen or changed from the console.
-   * A commercial term was being set silently by a form that never mentions it.
+   * Named "defaults" because it began as the starting rate for a new partner
+   * while each could still carry their own. Per-partner pricing has since been
+   * removed — there is one rate for the whole network — so this is now the rate
+   * itself rather than a default. Kept under this key so stored settings
+   * documents do not need migrating.
    */
   partnerDefaults: {
     baseRatePerSqFt: number;
