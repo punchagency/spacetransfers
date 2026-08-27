@@ -491,40 +491,6 @@ export const updateJobStatus = async (req: Request, res: Response, next: NextFun
   }
 };
 
-export const updateJobPriority = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { priority } = req.body;
-    const printerId = req.user?.id;
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    if (priority === "Urgent") {
-      job.priority = "URGENT";
-    } else if (priority === null) {
-      job.priority = "NORMAL";
-    } else {
-      const error = new Error("Invalid priority value. Must be 'Urgent' or null.") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    await job.save();
-
-    res.json({
-      id: job.id,
-      priority: job.priority
-    });
-  } catch (error) {
-    next(error);
-  }
-};
 
 export const getJobDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {

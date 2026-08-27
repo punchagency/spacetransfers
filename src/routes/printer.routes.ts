@@ -6,7 +6,6 @@ import {
   updateJobStatus,
   listPrinterOrders,
   getDashboardStats,
-  updateJobPriority,
   getJobDetails,
   getJobCustomerInfo,
   getPrinterJobOverview,
@@ -80,7 +79,6 @@ router.patch("/jobs/:jobId/specs", updateJobSpecs);
 router.patch("/jobs/:jobId/tracking", updateJobTracking);
 router.post("/jobs/:jobId/actions", executeJobAction);
 router.patch("/print-queue/:jobId/status", updateJobStatus);
-router.patch("/print-queue/:jobId/priority", updateJobPriority);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);

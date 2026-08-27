@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
 import { getRegionFromState, normalizeRegion } from "../utils/region.js";
 import mongoose from "mongoose";
 import fs from "fs";
@@ -20,6 +21,7 @@ import { notifyPrinter } from "../services/printerNotifications.service.js";
 import {
   calculateOrderPartnerEarning,
   canDerivePartnerEarning,
+  getOrderPartnerCostBreakdown,
   isPartnerEarningRealized,
 } from "../services/partnerEarnings.service.js";
 import { DEFAULT_GLOBAL_PRICING, normalizeGlobalPricing } from "../services/pricing.service.js";
@@ -894,6 +896,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const {
       status,
       partnerId,
+      priority,
       search,
       cursor,
       limit = "20"
@@ -904,15 +907,17 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const extraFilters: any[] = [];
 
     if (status) {
-      const statusMap: { [key: string]: string } = {
-        "Pending": "PENDING",
-        "Assigned": "PENDING",
-        "In Progress": "PRINTING",
-        "Shipped": "SHIPPED",
-        "Completed": "COMPLETED",
-        "Cancelled": "CANCELLED"
-      };
-      query.status = statusMap[status as string] || (status as string).toUpperCase();
+      // Shared with updateOrderStatus, so the value that filters a list and the
+      // value that writes a status can never disagree again.
+      query.status = resolveOrderStatusInput(status) ?? String(status).toUpperCase();
+    }
+
+    if (priority) {
+      const resolved = resolveOrderPriorityInput(priority);
+      if (resolved === "URGENT") query.priority = "URGENT";
+      // NORMAL must also match orders placed before priority existed, which
+      // carry no field at all — matching only "NORMAL" would hide them.
+      else if (resolved === "NORMAL") query.priority = { $ne: "URGENT" };
     }
 
     if (partnerId) {
@@ -1292,37 +1297,11 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
-    /**
-     * Accepts both the admin console's display labels and the raw backend
-     * values, so a caller cannot be caught out by which one it holds.
-     *
-     * "Assigned" previously mapped to PENDING. Once assignment started setting
-     * PROCESSING, the console's label for that state pointed at its opposite —
-     * sending "Assigned" would have un-assigned the order. PROCESSING and
-     * QUALITY_CHECK had no mapping at all, so the admin could not set them.
-     */
-    const statusMap: { [key: string]: string } = {
-      "Pending": "PENDING",
-      "Unassigned": "PENDING",
-      "Assigned": "PROCESSING",
-      "Processing": "PROCESSING",
-      "In Progress": "PRINTING",
-      "Printing": "PRINTING",
-      "Ready to Ship": "QUALITY_CHECK",
-      "Quality Check": "QUALITY_CHECK",
-      "Shipped": "SHIPPED",
-      "Completed": "COMPLETED",
-      "Cancelled": "CANCELLED",
-      PENDING: "PENDING",
-      PROCESSING: "PROCESSING",
-      PRINTING: "PRINTING",
-      QUALITY_CHECK: "QUALITY_CHECK",
-      SHIPPED: "SHIPPED",
-      COMPLETED: "COMPLETED",
-      CANCELLED: "CANCELLED"
-    };
+    // One shared map — see `utils/orderStatusInput`. This and the list filter
+    // were separate copies that drifted apart.
+    const resolved = resolveOrderStatusInput(status);
 
-    const dbStatus = statusMap[status] as any;
+    const dbStatus = resolved as any;
     if (!dbStatus) {
       const error = new Error(`Invalid status value: ${status}`) as CustomError;
       error.statusCode = 400;
@@ -1403,7 +1382,7 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const { partnerId, priority = "Normal", force = false } = req.body;
+    const { partnerId, force = false } = req.body;
 
     if (!partnerId) {
       const error = new Error("partnerId is required") as CustomError;
@@ -1476,7 +1455,14 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     }
 
     order.assignedPrinter = partnerId;
-    order.priority = priority.toUpperCase() as any;
+    /*
+     * Priority is deliberately not touched here.
+     *
+     * It is fixed at checkout by the customer's shipping choice and holds for
+     * the order's whole life. Assignment used to overwrite it — defaulting to
+     * "Normal" and writing unconditionally — which stripped rushes customers
+     * had paid for.
+     */
     // (Re)start the 24h fulfilment clock from this assignment moment. A no-op
     // re-assign to the printer who already holds the order keeps its existing
     // deadline (nothing changed); a first assignment or a hand-off to a different
@@ -1713,6 +1699,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       // same identifier instead of deriving its own from the ObjectId.
       displayId: (order as any).displayId || null,
       status: order.status,
+      priority: String((order as any).priority || "NORMAL").toUpperCase(),
       createdAt: order.createdAt,
       
       customer: {
@@ -1743,6 +1730,16 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
       financials: {
         customerPaid: Number(customerPaid.toFixed(2)),
+        /**
+         * The rush surcharge, broken out.
+         *
+         * URGENT adds the partner's `rushPct` to what they are owed — 10% on
+         * every seeded partner — and it was folded silently into partnerCost.
+         * An admin could raise a payout by a tenth and see only the new total,
+         * with nothing on screen saying why.
+         */
+        rushFee: costDerivable ? Number(breakdown.rushFee.toFixed(2)) : null,
+        baseCost: costDerivable ? Number(breakdown.base.toFixed(2)) : null,
         partnerCost: totalPartnerCost === null ? null : Number(totalPartnerCost.toFixed(2)),
         adminProfit: adminProfit === null ? null : Number(adminProfit.toFixed(2)),
         // False until the job ships: the partner is not paid before then, so
@@ -1931,15 +1928,9 @@ export const exportOrders = async (req: Request, res: Response, next: NextFuncti
       if (to) query.createdAt.$lte = new Date(to as string);
     }
     if (status) {
-      const statusMap: { [key: string]: string } = {
-        "Pending": "PENDING",
-        "Assigned": "PENDING",
-        "In Progress": "PRINTING",
-        "Shipped": "SHIPPED",
-        "Completed": "COMPLETED",
-        "Cancelled": "CANCELLED"
-      };
-      query.status = statusMap[status as string] || (status as string).toUpperCase();
+      // Same shared map as the list and the writer — this was a third and
+      // fourth copy, both still mapping "Assigned" to PENDING.
+      query.status = resolveOrderStatusInput(status) ?? String(status).toUpperCase();
     }
 
     const filename = `orders-export-${new Date().toISOString().split('T')[0]}.csv`;
@@ -1995,6 +1986,7 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       phone,
       regions,
       capabilities,
+      address,
       status
     } = req.body;
 
@@ -2049,6 +2041,31 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
     const allowedStatuses = ["Active", "Pending", "Suspended", "Under Review"];
     const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Pending";
 
+    /**
+     * A partner created without an address is quietly degraded, not broken —
+     * which is worse, because nothing reports it:
+     *
+     *  - `predictShippingOrigin` needs a postcode, so rates for their region
+     *    fall back to the configured warehouse instead of shipping from them.
+     *  - `createShipStationLabel` uses `businessAddress` as the ship-from, so
+     *    their labels declare the wrong origin.
+     *  - candidate ranking sorts nearest-first on a state centroid; with no
+     *    state the distance is Infinity, so they are always chosen last within
+     *    their own region.
+     *
+     * Stored in both fields because both are read: `businessAddress` for the
+     * label, `defaultShippingAddress` for region and distance.
+     */
+    const partnerAddress = address && typeof address === "object"
+      ? {
+          street: String(address.street || "").trim(),
+          city: String(address.city || "").trim(),
+          state: String(address.state || "").trim().toUpperCase(),
+          postalCode: String(address.postalCode || "").trim(),
+          country: String(address.country || "US").trim(),
+        }
+      : null;
+
     const newPartner = new User({
       name: resolvedContactName,
       companyName: resolvedCompanyName,
@@ -2058,6 +2075,9 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       role: UserRoles.PRINTER,
       status: resolvedStatus,
       passwordHash,
+      ...(partnerAddress
+        ? { businessAddress: partnerAddress, defaultShippingAddress: partnerAddress }
+        : {}),
       settings: {
         printingCapabilities: {
           maxSheetSizeIn: capabilities?.maxSheetSizeIn || { width: 24, height: 19.5 },
@@ -2274,15 +2294,9 @@ export const getPartnerOrders = async (req: Request, res: Response, next: NextFu
     const query: any = { assignedPrinter: partnerIdString };
 
     if (status) {
-      const statusMap: { [key: string]: string } = {
-        "Pending": "PENDING",
-        "Assigned": "PENDING",
-        "In Progress": "PRINTING",
-        "Shipped": "SHIPPED",
-        "Completed": "COMPLETED",
-        "Cancelled": "CANCELLED"
-      };
-      query.status = statusMap[status as string] || (status as string).toUpperCase();
+      // Same shared map as the list and the writer — this was a third and
+      // fourth copy, both still mapping "Assigned" to PENDING.
+      query.status = resolveOrderStatusInput(status) ?? String(status).toUpperCase();
     }
 
     if (cursor) {
@@ -2604,6 +2618,7 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
   }
 };
 
+
 export const getOrderFinancials = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
@@ -2631,9 +2646,10 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
     // drives real payouts. This used to assume a flat $3.50/sq ft regardless of
     // partner, so the financials panel disagreed with what was actually paid.
     const derivable = canDerivePartnerEarning(order);
-    const partnerPayout = derivable
-      ? calculateOrderPartnerEarning(order, (order.assignedPrinter as any)?.settings?.pricing || {})
+    const breakdown = derivable
+      ? getOrderPartnerCostBreakdown(order, (order.assignedPrinter as any)?.settings?.pricing || {})
       : null;
+    const partnerPayout = breakdown ? breakdown.subtotal : null;
     const margin = partnerPayout === null ? null : customerCharge - partnerPayout;
 
     res.status(200).json({
@@ -2644,6 +2660,18 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
       // rather than showing a blank with no reason.
       marginUnavailableReason: derivable ? undefined : "This order has no sheet dimensions to derive a partner cost from.",
       marginRealized: isPartnerEarningRealized(order),
+      priority: (order as any).priority || "NORMAL",
+      // Broken out so an URGENT order shows what the rush actually costs
+      // instead of burying it in the payout total.
+      partnerCostBreakdown: breakdown
+        ? {
+            base: breakdown.base,
+            rushFee: breakdown.rushFee,
+            specialInkFee: breakdown.specialInkFee,
+            ratePerSqFt: breakdown.appliedRatePerSqFt,
+            totalSqFt: breakdown.totalSqFt,
+          }
+        : null,
       currency: order.pricing?.currency || "USD"
     });
   } catch (error) {

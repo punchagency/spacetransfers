@@ -72,18 +72,26 @@ export const canDerivePartnerEarning = (order: any): boolean => {
  * (base rate / tiers / surcharges) via the shared cost breakdown. Falls back to
  * an empty pricing object (which the breakdown handles with sane defaults).
  */
-export const calculateOrderPartnerEarning = (
-  order: any,
-  partnerPricing: any,
-): number => {
-  const breakdown = computePartnerCostBreakdown({
+/**
+ * The full cost breakdown, not just the total.
+ *
+ * Marking an order URGENT adds the partner's `rushPct` to what they are owed —
+ * 10% on every seeded partner — and that was folded silently into
+ * `partnerPayout`. An admin could raise a payout by a tenth and see only the
+ * new total, with nothing saying why.
+ */
+export const getOrderPartnerCostBreakdown = (order: any, partnerPricing: any) =>
+  computePartnerCostBreakdown({
     items: Array.isArray(order?.items) ? order.items : [],
     partnerPricing: partnerPricing || {},
     priority: order?.priority,
     adjustments: order?.pricing?.adjustments || [],
   });
-  return breakdown.subtotal;
-};
+
+export const calculateOrderPartnerEarning = (
+  order: any,
+  partnerPricing: any,
+): number => getOrderPartnerCostBreakdown(order, partnerPricing).subtotal;
 
 /** Best-effort completion date: the timeline entry for SHIPPED/COMPLETED, else updatedAt. */
 export const getOrderCompletionDate = (order: any): Date | null => {

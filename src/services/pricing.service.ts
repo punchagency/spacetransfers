@@ -34,6 +34,15 @@ export interface GlobalPricing {
    */
   shipping: { standard: number; express: number };
   shippingMarkupPct: ShippingMarkupPct;
+  /**
+   * Charged to the customer on a rush order, as a percentage of the subtotal.
+   *
+   * Separate from express shipping, which is a carrier pass-through: paying a
+   * courier to move the parcel faster does nothing to move the job up a
+   * partner's queue, and none of that premium reaches your margin. Rushing
+   * *production* costs the partner's `rushPct`, and this is what covers it.
+   */
+  rushSurchargePct: number;
   packaging: PackagingProfile;
   taxRatePct: number;
 }
@@ -57,6 +66,10 @@ export const DEFAULT_GLOBAL_PRICING: GlobalPricing = {
   // A starting point, not a considered figure. Set it once a real parcel has
   // been costed — on a $9 parcel this recovers 90c, which will not cover a tube.
   shippingMarkupPct: 10,
+  // Sized against the partner side: their rush is 10% of partner cost, and
+  // partner cost runs well under the subtotal, so 10% of subtotal covers it
+  // with room. Tune once real rush jobs have been costed.
+  rushSurchargePct: 10,
   packaging: DEFAULT_PACKAGING_PROFILE,
   taxRatePct: 8.0,
 };
@@ -101,6 +114,10 @@ export const normalizeGlobalPricing = (value: unknown): GlobalPricing => {
       v.shippingMarkupPct,
       DEFAULT_GLOBAL_PRICING.shippingMarkupPct,
     ),
+    rushSurchargePct: finiteOr(
+      v.rushSurchargePct,
+      DEFAULT_GLOBAL_PRICING.rushSurchargePct,
+    ),
     packaging: normalizePackagingProfile(v.packaging),
     taxRatePct: finiteOr(v.taxRatePct, DEFAULT_GLOBAL_PRICING.taxRatePct),
   };
@@ -114,11 +131,27 @@ export const getGlobalPricing = async (): Promise<GlobalPricing> => {
 
 export type ShippingMethod = "standard" | "express";
 
+/**
+ * Express shipping means the customer asked for this order to be hurried, so it
+ * is what sets production priority.
+ *
+ * The checkout has always promised "priority handling" on the express option
+ * and charged for it, while `order.priority` was only ever set by an admin at
+ * assignment — so the promise was sold and never kept.
+ */
+export const priorityForShippingMethod = (method: unknown): "NORMAL" | "URGENT" =>
+  normalizeShippingMethod(method) === "express" ? "URGENT" : "NORMAL";
+
+export const isUrgentPriority = (priority: unknown): boolean =>
+  String(priority ?? "").trim().toUpperCase() === "URGENT";
+
 export const normalizeShippingMethod = (method: unknown): ShippingMethod =>
   String(method || "").toLowerCase() === "express" ? "express" : "standard";
 
 export interface OrderTotals {
   subtotal: number;
+  /** Zero unless the order is URGENT. */
+  rushSurcharge: number;
   shippingCost: number;
   tax: number;
   total: number;
@@ -143,10 +176,13 @@ export const computeTotals = ({
   shippingMethod,
   pricing,
   shippingCost: quotedShipping,
+  priority,
 }: {
   subtotal: number;
   shippingMethod: unknown;
   pricing: GlobalPricing;
+  /** URGENT adds the rush surcharge. Anything else is treated as normal. */
+  priority?: unknown;
   /**
    * The live carrier quote, where one could be obtained. Omitted, the
    * configured flat rate stands in — which is now a fallback rather than the
@@ -159,9 +195,15 @@ export const computeTotals = ({
   const shippingCost = roundToTwo(
     quotedShipping === undefined ? pricing.shipping[method] : finiteOr(quotedShipping, pricing.shipping[method]),
   );
-  const tax = roundToTwo(safeSubtotal * (pricing.taxRatePct / 100));
-  const total = roundToTwo(safeSubtotal + shippingCost + tax);
-  return { subtotal: safeSubtotal, shippingCost, tax, total, currency: "USD" };
+  const rushSurcharge = isUrgentPriority(priority)
+    ? roundToTwo(safeSubtotal * (pricing.rushSurchargePct / 100))
+    : 0;
+
+  // Taxed with the subtotal, not with shipping: rushing production is part of
+  // the goods-and-services charge, and shipping is excluded from the tax base.
+  const tax = roundToTwo((safeSubtotal + rushSurcharge) * (pricing.taxRatePct / 100));
+  const total = roundToTwo(safeSubtotal + rushSurcharge + shippingCost + tax);
+  return { subtotal: safeSubtotal, rushSurcharge, shippingCost, tax, total, currency: "USD" };
 };
 
 /**
@@ -254,6 +296,8 @@ export const priceItems = async (
   shippingMethod: unknown,
   destination?: ShippingDestination | null,
 ): Promise<OrderTotals & { shipping: ShippingQuote }> => {
+  // Priority is derived, not passed: it follows the shipping method, so the
+  // intent cannot disagree with the order about whether a rush was charged.
   const pricing = await getGlobalPricing();
   const subtotal = computeSubtotal(items, pricing);
   const method = normalizeShippingMethod(shippingMethod);
@@ -271,7 +315,13 @@ export const priceItems = async (
   });
 
   return {
-    ...computeTotals({ subtotal, shippingMethod: method, pricing, shippingCost: shipping.cost }),
+    ...computeTotals({
+      subtotal,
+      shippingMethod: method,
+      pricing,
+      shippingCost: shipping.cost,
+      priority: priorityForShippingMethod(method),
+    }),
     shipping,
   };
 };

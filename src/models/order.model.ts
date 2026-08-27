@@ -83,6 +83,7 @@ export interface IOrder extends Document {
   };
   pricing: {
     subtotal?: number;
+    rushSurcharge?: number;
     shippingCost?: number;
     tax?: number;
     total: number;
@@ -272,6 +273,9 @@ const orderSchema = new Schema<IOrder>(
     },
     pricing: {
       subtotal: { type: Number },
+      // What the customer paid for the rush, distinct from the partner's rush
+      // surcharge on the cost side.
+      rushSurcharge: { type: Number },
       shippingCost: { type: Number },
       tax: { type: Number },
       total: { type: Number, required: true },

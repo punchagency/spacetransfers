@@ -21,6 +21,7 @@ import {
   itemQuantity,
   sheetUnitPrice,
   normalizeShippingMethod,
+  priorityForShippingMethod,
   totalBillableSqFt,
 } from "../services/pricing.service.js";
 import { quoteShipping } from "../services/shipping.service.js";
@@ -1703,15 +1704,26 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       origin: await predictShippingOrigin(shippingAddress?.state).catch(() => null),
     });
 
+    /**
+     * Priority is the customer's choice, made at checkout by picking express.
+     *
+     * It used to be set only by an admin at assignment — so the express
+     * option's "priority handling" was charged for and never delivered, and the
+     * partner's rush surcharge was applied to orders nobody had paid a rush on.
+     */
+    const orderPriority = priorityForShippingMethod(shippingMethod);
+
     const authoritativeTotals = computeOrderTotals({
       subtotal: roundedComputedSubtotal,
       shippingMethod,
       pricing: globalPricing,
       shippingCost: shippingQuote.cost,
+      priority: orderPriority,
     });
 
     const recordedPricing = {
       subtotal: authoritativeTotals.subtotal,
+      rushSurcharge: authoritativeTotals.rushSurcharge,
       shippingCost: authoritativeTotals.shippingCost,
       tax: authoritativeTotals.tax,
       total: authoritativeTotals.total,
@@ -1772,6 +1784,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       shippingAddress: enrichedShippingAddress,
       shippingMethod,
       payment,
+      priority: orderPriority,
       pricing: recordedPricing,
       shippingQuote: {
         carrierCost: shippingQuote.carrierCost ?? undefined,
@@ -2687,6 +2700,9 @@ export const getPricingConfig = async (_req: Request, res: Response, next: NextF
     const pricing = await getGlobalPricing();
     res.status(200).json({
       baseRatePerSqFt: pricing.baseRatePerSqFt,
+      // The storefront shows this as a line on express orders, so it has to
+      // know the rate or the cart total would not match what is charged.
+      rushSurchargePct: pricing.rushSurchargePct,
       shipping: pricing.shipping,
       taxRatePct: pricing.taxRatePct,
       currency: "USD",
@@ -2838,11 +2854,15 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       shippingMethod,
       pricing,
       shippingCost: shippingQuote.cost,
+      // Quoted the same way the order will be priced, so the cart cannot show a
+      // total the checkout then contradicts.
+      priority: priorityForShippingMethod(shippingMethod),
     });
 
     res.status(200).json({
       items: quoteItems,
       subtotal: totals.subtotal,
+      rushSurcharge: totals.rushSurcharge,
       shippingCost: totals.shippingCost,
       // Named so the storefront can say "USPS Ground Advantage" instead of just
       // a number, and so a fallback is visible rather than silent.
