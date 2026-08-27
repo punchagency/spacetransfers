@@ -43,6 +43,19 @@ export interface GlobalPricing {
    * *production* costs the partner's `rushPct`, and this is what covers it.
    */
   rushSurchargePct: number;
+  /**
+   * What a newly created partner starts on.
+   *
+   * These were hard-coded in three places — `createPartner`, the
+   * `getPartnerPricing` fallback, and the user schema default — so the rate a
+   * partner was actually put on could not be seen or changed from the console.
+   * A commercial term was being set silently by a form that never mentions it.
+   */
+  partnerDefaults: {
+    baseRatePerSqFt: number;
+    rushPct: number;
+    specialInkFlat: number;
+  };
   packaging: PackagingProfile;
   taxRatePct: number;
 }
@@ -70,6 +83,9 @@ export const DEFAULT_GLOBAL_PRICING: GlobalPricing = {
   // partner cost runs well under the subtotal, so 10% of subtotal covers it
   // with room. Tune once real rush jobs have been costed.
   rushSurchargePct: 10,
+  // The values that were previously hard-coded, so nothing moves by adopting
+  // this — it only becomes visible and editable.
+  partnerDefaults: { baseRatePerSqFt: 2.5, rushPct: 10, specialInkFlat: 5 },
   packaging: DEFAULT_PACKAGING_PROFILE,
   taxRatePct: 8.0,
 };
@@ -118,6 +134,17 @@ export const normalizeGlobalPricing = (value: unknown): GlobalPricing => {
       v.rushSurchargePct,
       DEFAULT_GLOBAL_PRICING.rushSurchargePct,
     ),
+    partnerDefaults: {
+      baseRatePerSqFt: finiteOr(
+        v.partnerDefaults?.baseRatePerSqFt,
+        DEFAULT_GLOBAL_PRICING.partnerDefaults.baseRatePerSqFt,
+      ),
+      rushPct: finiteOr(v.partnerDefaults?.rushPct, DEFAULT_GLOBAL_PRICING.partnerDefaults.rushPct),
+      specialInkFlat: finiteOr(
+        v.partnerDefaults?.specialInkFlat,
+        DEFAULT_GLOBAL_PRICING.partnerDefaults.specialInkFlat,
+      ),
+    },
     packaging: normalizePackagingProfile(v.packaging),
     taxRatePct: finiteOr(v.taxRatePct, DEFAULT_GLOBAL_PRICING.taxRatePct),
   };

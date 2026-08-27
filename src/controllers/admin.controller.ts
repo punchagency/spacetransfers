@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
 import { getRegionFromState, normalizeRegion } from "../utils/region.js";
+import { sendEmail } from "../services/email.service.js";
 import mongoose from "mongoose";
 import fs from "fs";
 import sharp from "sharp";
@@ -24,7 +25,11 @@ import {
   getOrderPartnerCostBreakdown,
   isPartnerEarningRealized,
 } from "../services/partnerEarnings.service.js";
-import { DEFAULT_GLOBAL_PRICING, normalizeGlobalPricing } from "../services/pricing.service.js";
+import {
+  DEFAULT_GLOBAL_PRICING,
+  normalizeGlobalPricing,
+  getGlobalPricing as getGlobalPricingRates,
+} from "../services/pricing.service.js";
 import {
   syncPartnerCapacitySafe,
   getAssignmentSettings,
@@ -1076,17 +1081,22 @@ export const getPartnerPricing = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
+    /**
+     * Falls back to the admin's configured partner defaults.
+     *
+     * This previously invented tiered rates of $20.00 / $18.50 / $17.00 against
+     * a $2.50 base — retail figures on the cost side, roughly seven times what
+     * any partner is actually paid. They were display-only, but an admin who
+     * opened the Pricing tab and pressed Save would have written them for real.
+     */
+    const { partnerDefaults } = await getGlobalPricingRates();
     const pricing = partner.settings?.pricing || {
-      baseRatePerSqFt: 2.5,
-      tiered: [
-        { minSqFt: 0, maxSqFt: 2, rate: 20.00 },
-        { minSqFt: 2, maxSqFt: 5, rate: 18.50 },
-        { minSqFt: 5, maxSqFt: null, rate: 17.00 }
-      ],
+      baseRatePerSqFt: partnerDefaults.baseRatePerSqFt,
+      tiered: [],
       surcharges: {
-        rushPct: 10,
-        specialInkFlat: 5.00
-      }
+        rushPct: partnerDefaults.rushPct,
+        specialInkFlat: partnerDefaults.specialInkFlat,
+      },
     };
 
     res.status(200).json(pricing);
@@ -2009,11 +2019,6 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    if (!resolvedContactName) {
-      const error = new Error("contactName is required") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
 
     if (typeof email !== "string" || !email.trim()) {
       const error = new Error("email is required") as CustomError;
@@ -2021,17 +2026,15 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    if (typeof phone !== "string" || !phone.trim()) {
-      const error = new Error("phone is required") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    if (!Array.isArray(regions) || regions.length === 0) {
-      const error = new Error("regions must be a non-empty array") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
+    /*
+     * Name and email are the whole requirement.
+     *
+     * Everything else — phone, address, service areas, capabilities — is the
+     * partner's own information, and they know it better than whoever is typing
+     * the form. They fill it in after they set their password. Nothing can be
+     * assigned to them before an admin approves them anyway, which is where
+     * completeness is checked.
+     */
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -2040,8 +2043,99 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    const tempPassword = crypto.randomBytes(8).toString('hex');
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    /**
+     * No temporary password is issued.
+     *
+     * This used to mint one, hash it, and then `console.log` it in plaintext —
+     * a live credential written to the server logs — while sending nothing at
+     * all, so the partner could never actually use it. The account now gets an
+     * unusable random secret and the partner sets their own via an invite link,
+     * which means there is no shared credential to leak in the first place.
+     */
+    const { partnerDefaults } = await getGlobalPricingRates();
+
+    const unusableSecret = crypto.randomBytes(32).toString("hex");
+    const passwordHash = await bcrypt.hash(unusableSecret, 10);
+
+    const inviteToken = crypto.randomBytes(32).toString("hex");
+    const inviteTokenHash = crypto.createHash("sha256").update(inviteToken).digest("hex");
+
+    /**
+     * Validated here, not only in the form.
+     *
+     * The console checks all of this, but the endpoint accepted anything: a
+     * region of "Atlantis", an email of "not-an-email", no address, a state of
+     * "ZZ", a negative sheet size. None of it errors — it produces a partner
+     * that is quietly broken:
+     *
+     *  - a region that does not normalize makes them unassignable, because
+     *    `normalizeRegion` returns null and a null region blocks assignment
+     *  - an unresolvable state means no region and an infinite distance, so
+     *    they rank last in their own region forever
+     *  - a malformed email means they can never be contacted or sign in
+     *
+     * A form is a convenience, not a boundary. This is the boundary.
+     */
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email).trim())) {
+      const error = new Error("A valid email address is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const suppliedRegions = Array.isArray(regions) ? regions : [];
+    const normalizedRegions = suppliedRegions
+      .map((r: any) => normalizeRegion(String(r).trim()))
+      .filter(Boolean) as string[];
+    if (normalizedRegions.length !== suppliedRegions.length) {
+      const unknown = suppliedRegions.filter((r: any) => !normalizeRegion(String(r).trim()));
+      const error = new Error(
+        `Unrecognised service area(s): ${unknown.join(", ")}. Must be one of West, Midwest, South, Northeast.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    /*
+     * The address is optional now, but if one is given it must be usable: a
+     * state that resolves to no region means no ranking distance and no
+     * shipping origin, which is worse than having no address at all because it
+     * looks complete.
+     */
+    const hasAddress = Boolean(address && typeof address === "object" && String(address.street || "").trim());
+    if (hasAddress) {
+      if (!getRegionFromState(String(address.state || ""))) {
+        const error = new Error(
+          `'${address.state}' is not a US state this platform serves`,
+        ) as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      if (!String(address.city || "").trim() || !String(address.postalCode || "").trim()) {
+        const error = new Error("Business address needs a city and a postal code") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    if (capabilities) {
+      const { width, height } = capabilities.maxSheetSizeIn || {};
+      const positive = (n: any) => Number.isFinite(Number(n)) && Number(n) > 0;
+      if (capabilities.maxSheetSizeIn && !(positive(width) && positive(height))) {
+        const error = new Error("Maximum sheet size must be positive") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      if (capabilities.maxDPI !== undefined && !positive(capabilities.maxDPI)) {
+        const error = new Error("Maximum DPI must be a positive number") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      if (capabilities.formats !== undefined && (!Array.isArray(capabilities.formats) || capabilities.formats.length === 0)) {
+        const error = new Error("At least one supported file format is required") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    }
 
     const allowedStatuses = ["Active", "Pending", "Suspended", "Under Review"];
     const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Pending";
@@ -2076,14 +2170,37 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       companyName: resolvedCompanyName,
       email: String(email).trim(),
       phone: String(phone).trim(),
-      regions: regions.map((r: any) => String(r).trim()).filter(Boolean),
+      regions: normalizedRegions,
       role: UserRoles.PRINTER,
       status: resolvedStatus,
       passwordHash,
+      /*
+       * Stored in the reset-password fields rather than a new pair, so the
+       * existing `POST /auth/reset-password` consumes an invite unchanged. A
+       * 7-day window because this is an invitation, not a password recovery —
+       * the 15 minutes used for recovery would expire before most people read
+       * their email.
+       */
+      resetPasswordTokenHash: inviteTokenHash,
+      resetPasswordExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       ...(partnerAddress
         ? { businessAddress: partnerAddress, defaultShippingAddress: partnerAddress }
         : {}),
       settings: {
+        /*
+         * Written explicitly from the admin's configured defaults rather than
+         * left to the schema's hard-coded 2.5. The rate a partner starts on is
+         * a commercial term; it should be visible and changeable in Settings,
+         * not buried in a model file.
+         */
+        pricing: {
+          baseRatePerSqFt: partnerDefaults.baseRatePerSqFt,
+          tiered: [],
+          surcharges: {
+            rushPct: partnerDefaults.rushPct,
+            specialInkFlat: partnerDefaults.specialInkFlat,
+          },
+        },
         printingCapabilities: {
           maxSheetSizeIn: capabilities?.maxSheetSizeIn || { width: 24, height: 19.5 },
           supportedFormats: capabilities?.formats || ["PNG", "PDF", "TIFF"],
@@ -2094,7 +2211,36 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
 
     await newPartner.save();
 
-    console.log(`[EMAIL MOCK] Welcome email sent to ${email} with temporary password: ${tempPassword}`);
+    /**
+     * A real send, through the shared `sendEmail` — which already tries
+     * SendGrid first and falls back to SMTP, so this needs credentials, not
+     * code. Until they exist it fails and says so; it no longer pretends.
+     */
+    const inviteUrl = `${env.printerAppUrl.replace(/\/$/, "")}/auth?inviteToken=${encodeURIComponent(inviteToken)}`;
+    const invite = await sendEmail({
+      to: String(email).trim(),
+      subject: "You have been added to Space Transfers",
+      html: `
+        <p>Hello ${resolvedContactName || resolvedCompanyName},</p>
+        <p>${resolvedCompanyName} has been added to Space Transfers as a print partner.</p>
+        <p>Set your password to get started — the link is valid for 7 days:</p>
+        <p><a href="${inviteUrl}">Set your password</a></p>
+        <p>Once you are in, please complete your business address, service areas and
+        printing capabilities. We cannot send you work until those are filled in and
+        your account has been approved.</p>
+      `,
+    }).catch((e: any) => ({ sent: false, messageId: null, error: e?.message || "send failed" }));
+
+    if (!invite.sent) {
+      // Loud, because the partner cannot sign in until this reaches them — and
+      // silence here is exactly how the previous version hid the same problem.
+      console.error(
+        `[PARTNER_INVITE] could not email ${email} — they cannot set a password until this is fixed. ` +
+          `Reason: ${invite.error || "no email transport configured"}`,
+      );
+    } else {
+      console.log(`[PARTNER_INVITE] invite sent to ${email}`);
+    }
 
     res.status(201).json({
       id: newPartner._id,
