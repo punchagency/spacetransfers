@@ -2,32 +2,34 @@ import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { useEffect, useState } from 'react';
 import { PartnerHeader } from '../components/partners/PartnerHeader';
 import { PartnerOverview } from '../components/partners/PartnerOverview';
-import { PartnerPricing } from '../components/partners/PartnerPricing';
 import { PartnerOrders } from '../components/partners/PartnerOrders';
 import { PartnerSettings } from '../components/partners/PartnerSettings';
 import { useParams } from 'react-router-dom';
 import { apiFetch } from '../utils/api';
 import toast from 'react-hot-toast';
-import type { PartnerDetailsData, PartnerOrderRow, PartnerPricingApi, PartnerSettingsApi } from '../types/partners';
+import type { PartnerDetailsData, PartnerOrderRow, PartnerSettingsApi } from '../types/partners';
 
 export const PartnerDetails = () => {
     const [activeTab, setActiveTab] = useState('Overview');
     const { id } = useParams<{ id: string }>();
     const [partner, setPartner] = useState<PartnerDetailsData | null>(null);
-    const [pricing, setPricing] = useState<PartnerPricingApi | null>(null);
     const [settings, setSettings] = useState<PartnerSettingsApi | null>(null);
     const [orders, setOrders] = useState<PartnerOrderRow[]>([]);
     const [loading, setLoading] = useState(true);
-    const tabs = ['Overview', 'Pricing', 'Orders', 'Settings'];
+    /*
+     * No Pricing tab. There is one rate for the whole network, set in
+     * Settings -> General, so a per-partner pricing screen would have been an
+     * editor for a value that no longer varies by partner.
+     */
+    const tabs = ['Overview', 'Orders', 'Settings'];
 
     useEffect(() => {
         const fetchAll = async () => {
             if (!id) return;
             setLoading(true);
             try {
-                const [p, pr, s, o] = await Promise.all([
+                const [p, settingsRes, ordersRes] = await Promise.all([
                     apiFetch(`/admin/partners/${id}`),
-                    apiFetch(`/admin/partners/${id}/pricing`),
                     apiFetch(`/admin/partners/${id}/settings`),
                     apiFetch(`/admin/partners/${id}/orders?limit=20`),
                 ]);
@@ -46,11 +48,10 @@ export const PartnerDetails = () => {
                     rating: Number(p.rating || 5.0),
                 });
 
-                setPricing(pr);
-                setSettings(s);
+                setSettings(settingsRes);
                 setOrders(
-                    Array.isArray(o.orders)
-                        ? o.orders.map((row: any) => ({
+                    Array.isArray(ordersRes.orders)
+                        ? ordersRes.orders.map((row: any) => ({
                             id: String(row.id),
                             status: String(row.status),
                             customer: String(row.customer),
@@ -113,13 +114,6 @@ export const PartnerDetails = () => {
                                 <div className="p-6">
                                     {activeTab === 'Overview' && (
                                         <PartnerOverview partner={partner} settings={settings} />
-                                    )}
-                                    {activeTab === 'Pricing' && (
-                                        <PartnerPricing
-                                            partnerId={partner.id}
-                                            pricing={pricing}
-                                            onUpdated={(nextPricing: PartnerPricingApi) => setPricing(nextPricing)}
-                                        />
                                     )}
                                     {activeTab === 'Orders' && (
                                         <PartnerOrders partnerId={partner.id} orders={orders} onUpdated={setOrders} />

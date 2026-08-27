@@ -4,9 +4,7 @@ export interface Partner {
   email: string;
   regions: string[];
   status: "Active" | "Pending" | "Suspended" | "Under Review";
-  basePrice: string;
-  salePrice: string;
-  profit: string;
+  ordersInProgress: string;
   orders: string;
 }
 
@@ -22,12 +20,6 @@ export interface PartnerDetailsData {
   status: "Active" | "Pending" | "Suspended" | "Under Review";
   ordersCompleted: number;
   rating: number;
-}
-
-export interface PartnerPricingApi {
-  baseRatePerSqFt: number;
-  tiered?: Array<{ minSqFt: number; maxSqFt?: number | null; rate: number }>;
-  surcharges?: { rushPct: number; specialInkFlat: number };
 }
 
 export interface PartnerSettingsApi {
@@ -74,9 +66,3 @@ export interface PricingData {
   markupAmount: string;
 }
 
-export interface PricingEditorModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSave: (data: PricingData) => void;
-  initialData: PricingData;
-}

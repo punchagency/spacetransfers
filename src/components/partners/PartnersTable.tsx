@@ -57,9 +57,14 @@ export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
                 </span>
             )
         },
-        { header: "Base Price", key: "basePrice" as keyof Partner, className: "text-[#364153] font-medium" },
-        { header: "Sale Price", key: "salePrice" as keyof Partner, className: "text-[#364153] font-medium" },
-        { header: "Profit", key: "profit" as keyof Partner, className: "text-[#364153] font-bold" },
+        /*
+         * Base price, sale price and profit were removed when pricing became
+         * network-wide: they showed the same three numbers on every row, and
+         * "profit" was a per-sq-ft margin rather than anything this partner had
+         * earned. In progress differs per partner and is what an admin needs
+         * when choosing who to assign to.
+         */
+        { header: "In Progress", key: "ordersInProgress" as keyof Partner, className: "text-gray-900 font-medium" },
         { header: "Completed", key: "orders" as keyof Partner, className: "text-gray-900 font-medium" },
         {
             header: "Action",

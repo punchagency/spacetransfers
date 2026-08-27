@@ -47,9 +47,7 @@ export const FulfilmentPartners = () => {
     email: String(p.email || 'N/A'),
     regions: Array.isArray(p.regions) ? p.regions : [],
     status: p.status as Partner['status'],
-    basePrice: String(p.basePrice || '$0.00'),
-    salePrice: String(p.salePrice || '$0.00'),
-    profit: String(p.profit || '$0.00'),
+    ordersInProgress: String(p.ordersInProgress ?? '0'),
     orders: String(p.orders ?? p.ordersCompleted ?? '0'),
   });
 
