@@ -44,6 +44,9 @@ export const mapAdminOrderToRow = (o: any): OrderRow => {
         ? "—"
         : `$${Number(o.profits).toFixed(2)}`,
     profitRealized: Boolean(o.profitsRealized),
+    // Already on the wire from listOrders and rendered nowhere: an admin could
+    // add 10% to a payout and then never see which orders carried it.
+    isUrgent: Boolean(o.isUrgent),
     date: new Date(o.createdAt).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",

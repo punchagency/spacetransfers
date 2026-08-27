@@ -24,6 +24,7 @@ interface GlobalPricing {
   baseRatePerSqFt: number;
   shipping: { standard: number; express: number };
   shippingMarkupPct: number;
+  rushSurchargePct: number;
   packaging: { weightPerSqFtLb: number; bands: PackagingBand[] };
   taxRatePct: number;
 }
@@ -35,6 +36,7 @@ const FALLBACK: GlobalPricing = {
   baseRatePerSqFt: 3.5,
   shipping: { standard: 8.99, express: 24.99 },
   shippingMarkupPct: 10,
+  rushSurchargePct: 10,
   packaging: {
     weightPerSqFtLb: 0.08,
     bands: [
@@ -67,6 +69,7 @@ export const GeneralSettings = () => {
             express: Number(data?.shipping?.express ?? FALLBACK.shipping.express),
           },
           shippingMarkupPct: Number(data?.shippingMarkupPct ?? FALLBACK.shippingMarkupPct),
+          rushSurchargePct: Number(data?.rushSurchargePct ?? FALLBACK.rushSurchargePct),
           packaging: {
             weightPerSqFtLb: Number(
               data?.packaging?.weightPerSqFtLb ?? FALLBACK.packaging.weightPerSqFtLb,
@@ -96,6 +99,7 @@ export const GeneralSettings = () => {
       pricing.shipping.standard,
       pricing.shipping.express,
       pricing.shippingMarkupPct,
+      pricing.rushSurchargePct,
       pricing.packaging.weightPerSqFtLb,
       pricing.taxRatePct,
     ];
@@ -259,6 +263,13 @@ export const GeneralSettings = () => {
               ))}
             </div>
           </div>
+
+          {numberField(
+            "Rush surcharge (%)",
+            pricing.rushSurchargePct,
+            (n) => setPricing((p) => ({ ...p, rushSurchargePct: n })),
+            "Added to the subtotal when a customer picks Express Shipping, which puts their job at the front of the partner's queue. Covers the rush the partner is paid — express shipping itself only pays the courier.",
+          )}
 
           {numberField(
             "Tax Rate (%)",

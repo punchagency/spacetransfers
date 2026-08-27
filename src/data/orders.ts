@@ -17,5 +17,6 @@ export interface Order {
      * table marks it rather than presenting it as money already made.
      */
     profitRealized?: boolean;
+    isUrgent?: boolean;
     date: string;
 }

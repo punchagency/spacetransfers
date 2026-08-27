@@ -32,7 +32,29 @@ export const OrdersTable = ({
   const navigate = useNavigate();
 
   const columns = [
-    { header: "Order ID", key: "id" as keyof Order, className: "font-medium text-gray-900" },
+    {
+      header: "Order ID",
+      key: "id" as keyof Order,
+      className: "font-medium text-gray-900",
+      /*
+       * Urgent is shown here because it is the only place an admin can see it
+       * after setting it — and it is not decorative: URGENT applies the
+       * partner's rush surcharge, so it changes what the order costs.
+       */
+      render: (order: Order) => (
+        <span className="flex items-center gap-2">
+          {order.id}
+          {order.isUrgent && (
+            <span
+              className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-200"
+              title="Urgent — the partner is paid a rush surcharge on this order"
+            >
+              Urgent
+            </span>
+          )}
+        </span>
+      ),
+    },
     { header: "Customer", key: "customer" as keyof Order, className: "text-gray-700 font-medium" },
     {
       header: "Region",

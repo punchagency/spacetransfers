@@ -1,4 +1,4 @@
-import { FiAlertTriangle, FiMail, FiMapPin, FiPrinter } from 'react-icons/fi';
+import { FiAlertTriangle, FiMail, FiMapPin, FiPrinter, FiZap } from 'react-icons/fi';
 
 /**
  * Who is printing this order.
@@ -17,6 +17,7 @@ import { FiAlertTriangle, FiMail, FiMapPin, FiPrinter } from 'react-icons/fi';
 interface OrderPartnerProps {
     order: {
         status?: string;
+        priority?: string;
         assignedPartner?: {
             id: string;
             name?: string | null;
@@ -29,6 +30,7 @@ interface OrderPartnerProps {
         } | null;
         financials?: {
             partnerCost: number | null;
+            rushFee?: number | null;
             profitRealized?: boolean;
             unavailableReason?: string;
             currency: string;
@@ -37,6 +39,11 @@ interface OrderPartnerProps {
 }
 
 export const OrderPartner = ({ order }: OrderPartnerProps) => {
+    const priority = String(order.priority || 'NORMAL').toUpperCase();
+    const isUrgent = priority === 'URGENT';
+    const rushFee = order.financials?.rushFee ?? null;
+
+
     const partner = order.assignedPartner;
     const region = order.regionInfo;
     const currency = order.financials?.currency || 'USD';
@@ -48,7 +55,49 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
 
     return (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-6">Print Partner</h2>
+            <div className="flex items-start justify-between mb-6 gap-3">
+                <h2 className="text-lg font-semibold text-gray-900">Print Partner</h2>
+                {isUrgent && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-200 shrink-0">
+                        <FiZap className="w-3 h-3" /> Urgent
+                    </span>
+                )}
+            </div>
+
+            {/*
+              Read-only. Priority is fixed by the customer's shipping choice at
+              checkout and holds for the order's whole life.
+
+              This used to be a NORMAL/URGENT toggle. It changed only the
+              partner's side, so flipping up paid a rush nobody had been
+              charged for, and flipping down kept a rush the customer had paid
+              and would no longer receive — a refund owed with no record of it.
+              Both were invisible, and flipping down read as *higher* margin.
+            */}
+            <div className="flex items-center justify-between gap-3 mb-6 pb-6 border-b border-gray-100">
+                <div>
+                    <p className="text-sm text-gray-600">Priority</p>
+                    {isUrgent && rushFee !== null && rushFee > 0 && (
+                        <p className="text-xs text-gray-400 mt-0.5">
+                            Adds {fmt(rushFee)} to the partner&rsquo;s payout
+                        </p>
+                    )}
+                </div>
+                <span
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0 ${
+                        isUrgent
+                            ? 'bg-red-50 text-red-700 border border-red-100'
+                            : 'bg-gray-100 text-gray-600'
+                    }`}
+                    title={
+                        isUrgent
+                            ? 'Set by the customer choosing express shipping at checkout.'
+                            : 'Set by the customer choosing standard shipping at checkout.'
+                    }
+                >
+                    {isUrgent ? 'Urgent' : 'Normal'}
+                </span>
+            </div>
 
             {!partner ? (
                 /*
