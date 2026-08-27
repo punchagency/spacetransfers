@@ -3,6 +3,7 @@ import { FiChevronDown, FiSearch } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../../utils/api';
+import { formatOrderStatus, orderStatusBadgeClass } from '../../utils/orderStatus';
 import type { PartnerOrderRow } from '../../types/partners';
 import { formatOrderNumber } from '../../utils/orderNumber';
 
@@ -51,17 +52,8 @@ export const PartnerOrders = ({
     const filtered = useMemo(() => {
         if (!search.trim()) return orders;
         const s = search.trim().toLowerCase();
-        return orders.filter((o) => formatOrderNumber(o.displayId, o.id).toLowerCase().includes(s) || o.id.toLowerCase().includes(s) || o.customer.toLowerCase().includes(s) || o.status.toLowerCase().includes(s));
+        return orders.filter((o) => formatOrderNumber(o.displayId, o.id).toLowerCase().includes(s) || o.id.toLowerCase().includes(s) || o.customer.toLowerCase().includes(s) || formatOrderStatus(o.status).toLowerCase().includes(s));
     }, [orders, search]);
-
-    const statusStyle = (status: string) => {
-        const s = status.toUpperCase();
-        if (s === 'COMPLETED') return 'bg-green-50 text-green-600 border border-green-100';
-        if (s === 'PROCESSING' || s === 'PRINTING') return 'bg-blue-50 text-blue-600 border border-blue-100';
-        if (s === 'SHIPPED') return 'bg-purple-50 text-purple-600 border border-purple-100';
-        if (s === 'CANCELLED' || s === 'REJECTED') return 'bg-red-50 text-red-600 border border-red-100';
-        return 'bg-amber-50 text-amber-600 border border-amber-100';
-    };
 
     return (
         <div className="space-y-6 animate-in fade-in duration-300">
@@ -83,10 +75,16 @@ export const PartnerOrders = ({
                             onChange={(e) => setStatusFilter(e.target.value)}
                             className="w-full pl-4 pr-10 py-2 border border-gray-100 bg-gray-50/50 rounded-lg text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:bg-white focus:border-blue-500 transition-all"
                         >
+                            {/* Matches the console's shared vocabulary. This
+                                offered "Pending" and "In Progress" — the old
+                                names — and had no option at all for
+                                Ready to Ship, so those orders were unreachable
+                                from this tab. */}
                             <option>All Status</option>
-                            <option>Pending</option>
+                            <option>Unassigned</option>
                             <option>Assigned</option>
-                            <option>In Progress</option>
+                            <option>Printing</option>
+                            <option>Ready to Ship</option>
                             <option>Shipped</option>
                             <option>Completed</option>
                             <option>Cancelled</option>
@@ -132,8 +130,8 @@ export const PartnerOrders = ({
                                         </td>
                                         <td className="px-6 py-4">
                                             <div className="flex justify-center">
-                                                <span className={`px-3 py-1 rounded-md text-[11px] font-bold ${statusStyle(order.status)}`}>
-                                                    {order.status}
+                                                <span className={`px-3 py-1 rounded-md text-[11px] font-bold ${orderStatusBadgeClass(order.status)}`}>
+                                                    {formatOrderStatus(order.status)}
                                                 </span>
                                             </div>
                                         </td>

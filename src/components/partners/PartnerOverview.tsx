@@ -18,7 +18,15 @@ export const PartnerOverview = ({
             ? `Across ${partner.performanceSampleSize} completed order${partner.performanceSampleSize === 1 ? '' : 's'}`
             : undefined;
     return (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        /*
+         * Company Information on the left, the two short cards stacked on the
+         * right. As a flat two-column grid, System Status — now four lines after
+         * the unused fields went — sat alone in a full-height cell with
+         * Performance dropped below it, leaving a large hole in the middle of
+         * the page. `items-start` keeps each card its own height rather than
+         * stretching to match the tallest in the row.
+         */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
             {/* Company Information */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
                 <h2 className="text-md font-bold text-gray-900">Company Information</h2>
@@ -91,6 +99,7 @@ export const PartnerOverview = ({
                 </div>
             </div>
 
+            <div className="space-y-6">
             {/* System Status */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6 h-fit">
                 <h2 className="text-md font-bold text-gray-900">System Status</h2>
@@ -149,6 +158,7 @@ export const PartnerOverview = ({
                         <span className="text-sm font-bold text-gray-900">{partner.rating.toFixed(1)}</span>
                     </div>
                 </div>
+            </div>
             </div>
         </div>
     );

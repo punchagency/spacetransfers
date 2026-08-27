@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { REGIONS } from '../../utils/regions';
 import { Toggle } from '../common/Toggle';
 import toast from 'react-hot-toast';
@@ -18,8 +18,6 @@ export const PartnerSettings = ({
     settings: PartnerSettingsApi | null;
     onUpdated: (settings: PartnerSettingsApi, nextStatus?: 'Active' | 'Pending' | 'Suspended' | 'Under Review') => void;
 }) => {
-    const [dailyMax, setDailyMax] = useState<string>('0');
-    const [maxConcurrent, setMaxConcurrent] = useState<string>('0');
     const [orderAssignedEmail, setOrderAssignedEmail] = useState(false);
     const [jobCompletedEmail, setJobCompletedEmail] = useState(false);
     const [isPartnerActive, setIsPartnerActive] = useState(partnerStatus === 'Active');
@@ -41,20 +39,10 @@ export const PartnerSettings = ({
 
     useEffect(() => {
         if (!settings) return;
-        setDailyMax(String(settings.jobCapacity?.dailyMax ?? 0));
-        setMaxConcurrent(String(settings.jobCapacity?.maxConcurrent ?? 0));
         setAutoAccept(settings.jobCapacity?.autoAccept ?? true);
         setOrderAssignedEmail(settings.notifications?.orderAssigned ?? false);
         setJobCompletedEmail(settings.notifications?.jobCompleted ?? false);
     }, [settings]);
-
-    const canSave = useMemo(() => {
-        const d = Number(dailyMax);
-        const m = Number(maxConcurrent);
-        if (!Number.isFinite(d) || d < 0 || d > 100000) return false;
-        if (!Number.isFinite(m) || m < 0 || m > 100000) return false;
-        return true;
-    }, [dailyMax, maxConcurrent]);
 
     const persistStatus = async (nextActive: boolean) => {
         setIsSaving(true);
@@ -75,13 +63,13 @@ export const PartnerSettings = ({
     };
 
     const handleSave = async () => {
-        if (!canSave) return;
         setIsSaving(true);
         try {
             const payload: PartnerSettingsApi = {
                 jobCapacity: {
-                    dailyMax: Number(dailyMax),
-                    maxConcurrent: Number(maxConcurrent),
+                    // Only auto-accept is set here now. The two capacity limits
+                    // were removed from the UI, and omitting them leaves any
+                    // stored value untouched rather than zeroing it.
                     autoAccept
                 },
                 notifications: {
@@ -156,30 +144,13 @@ export const PartnerSettings = ({
                     <h2 className="text-[16px] font-bold text-gray-900">Production Settings</h2>
 
                     <div className="space-y-6">
-                        {/* Max Sheets */}
-                        <div className="space-y-2">
-                            <label className="text-sm font-bold text-gray-900">Max Sheets Per Day</label>
-                            <input
-                                type="number"
-                                value={dailyMax}
-                                onChange={(e) => setDailyMax(e.target.value)}
-                                className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-lg text-sm font-medium text-gray-900 focus:bg-white focus:border-blue-500 transition-all outline-none"
-                            />
-                            <p className="text-[13px] text-gray-400 font-medium">Maximum daily capacity for this partner</p>
-                        </div>
-
-                        {/* Cut-off Time */}
-                        <div className="space-y-2">
-                            <label className="text-sm font-bold text-gray-900">Max Concurrent Jobs</label>
-                            <input
-                                type="number"
-                                value={maxConcurrent}
-                                onChange={(e) => setMaxConcurrent(e.target.value)}
-                                className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-lg text-sm font-medium text-gray-900 focus:bg-white focus:border-blue-500 transition-all outline-none"
-                            />
-                            <p className="text-[13px] text-gray-400 font-medium">Limit of jobs that can be handled concurrently</p>
-                        </div>
-
+                        {/*
+                          Max Sheets Per Day and Max Concurrent Jobs removed.
+                          Concurrency is governed globally by "Maximum Jobs per
+                          Partner" in Settings -> Partners, and a per-partner
+                          override on top of it was a second limit to keep in
+                          step for no benefit. No partner had either set.
+                        */}
                         {/* Weekend Availability */}
                         <div className="flex items-center justify-between pt-2">
                             <div className="space-y-0.5">
@@ -227,7 +198,7 @@ export const PartnerSettings = ({
             {/* Save Button */}
             <div className="flex justify-end pt-4">
                 <button
-                    disabled={!canSave || isSaving}
+                    disabled={isSaving}
                     onClick={handleSave}
                     className="bg-blue-600 text-white px-8 py-2.5 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-md disabled:opacity-60 disabled:hover:bg-blue-600"
                 >
