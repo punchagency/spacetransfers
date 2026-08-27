@@ -19,6 +19,11 @@ export interface PartnerDetailsData {
   regions: string[];
   status: "Active" | "Pending" | "Suspended" | "Under Review";
   ordersCompleted: number;
+  /** Null until the partner has shipped something — not zero, which would read as instant. */
+  averageProductionHours?: number | null;
+  /** Null until there is a finished job with a deadline to measure against. */
+  onTimeDeliveryRate?: number | null;
+  performanceSampleSize?: number;
   rating: number;
 }
 

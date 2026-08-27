@@ -45,6 +45,13 @@ export const PartnerDetails = () => {
                     regions: Array.isArray(p.regions) ? p.regions : [],
                     status: p.status,
                     ordersCompleted: Number(p.ordersCompleted || 0),
+                    // Passed through as null rather than coerced: "no data yet"
+                    // and "zero hours" are different answers.
+                    averageProductionHours:
+                        typeof p.averageProductionHours === 'number' ? p.averageProductionHours : null,
+                    onTimeDeliveryRate:
+                        typeof p.onTimeDeliveryRate === 'number' ? p.onTimeDeliveryRate : null,
+                    performanceSampleSize: Number(p.performanceSampleSize || 0),
                     rating: Number(p.rating || 5.0),
                 });
 
@@ -113,7 +120,7 @@ export const PartnerDetails = () => {
 
                                 <div className="p-6">
                                     {activeTab === 'Overview' && (
-                                        <PartnerOverview partner={partner} settings={settings} />
+                                        <PartnerOverview partner={partner} />
                                     )}
                                     {activeTab === 'Orders' && (
                                         <PartnerOrders partnerId={partner.id} orders={orders} onUpdated={setOrders} />

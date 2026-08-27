@@ -1,16 +1,22 @@
 import { FiBriefcase, FiMail, FiPhone, FiMapPin, FiGlobe } from 'react-icons/fi';
-import type { PartnerDetailsData, PartnerSettingsApi } from '../../types/partners';
+import type { PartnerDetailsData } from '../../types/partners';
 
 export const PartnerOverview = ({
     partner,
-    settings
 }: {
     partner: PartnerDetailsData;
-    settings: PartnerSettingsApi | null;
 }) => {
-    const dailyMax = settings?.jobCapacity?.dailyMax;
-    const maxSheet = settings?.capabilities?.maxSheetSizeIn;
-    const formats = settings?.capabilities?.formats || [];
+    /*
+     * Capacity, supported sheet sizes, shipping carriers and supported formats
+     * were removed from this page. None of them affected anything: nothing
+     * filters assignment on a sheet size or a format, and the carrier line was
+     * a hard-coded "N/A". They read as commitments the platform was honouring
+     * and it was honouring none of them.
+     */
+    const sampleNote =
+        partner.performanceSampleSize && partner.performanceSampleSize > 0
+            ? `Across ${partner.performanceSampleSize} completed order${partner.performanceSampleSize === 1 ? '' : 's'}`
+            : undefined;
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Company Information */}
@@ -95,28 +101,6 @@ export const PartnerOverview = ({
                             {partner.status}
                         </span>
                     </div>
-                    <div className="flex justify-between items-center">
-                        <span className="text-sm font-medium text-gray-500">Capacity</span>
-                        <span className="text-sm font-bold text-gray-900">{typeof dailyMax === 'number' && dailyMax > 0 ? `${dailyMax} sheets/day` : 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between items-start">
-                        <span className="text-sm font-medium text-gray-500">Supported Sheet Sizes</span>
-                        <div className="flex flex-wrap justify-end gap-2 max-w-[200px]">
-                            {maxSheet ? (
-                                <span className="px-2 py-1 bg-gray-50 text-gray-600 rounded-md text-[11px] font-medium border border-gray-100">
-                                    {maxSheet.width}" × {maxSheet.height}"
-                                </span>
-                            ) : (
-                                <span className="text-sm font-bold text-gray-900">N/A</span>
-                            )}
-                        </div>
-                    </div>
-                    <div className="flex justify-between items-start">
-                        <span className="text-sm font-medium text-gray-500">Shipping Carriers</span>
-                        <div className="text-right space-y-1">
-                            <p className="text-sm font-bold text-gray-400 italic">N/A</p>
-                        </div>
-                    </div>
                 </div>
             </div>
 
@@ -128,29 +112,41 @@ export const PartnerOverview = ({
                         <span className="text-sm font-medium text-gray-500">Total Orders Completed</span>
                         <span className="text-sm font-bold text-gray-900">{partner.ordersCompleted.toLocaleString()}</span>
                     </div>
+                    {/*
+                      Both of these read a hard-coded "N/A". The data to compute
+                      them was already stored — when the partner was given the
+                      job, when it shipped, and the deadline they were held to.
+                      Still "no data yet" until they have finished something,
+                      but now it means that rather than being a placeholder.
+                    */}
                     <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-500">Average Production Time</span>
-                        <span className="text-sm font-bold text-gray-400 italic">N/A</span>
+                        {typeof partner.averageProductionHours === 'number' ? (
+                            <span className="text-sm font-bold text-gray-900" title={sampleNote}>
+                                {partner.averageProductionHours < 24
+                                    ? `${partner.averageProductionHours} hrs`
+                                    : `${(partner.averageProductionHours / 24).toFixed(1)} days`}
+                            </span>
+                        ) : (
+                            <span className="text-sm font-medium text-gray-400">No completed jobs yet</span>
+                        )}
                     </div>
                     <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-500">On-Time Delivery Rate</span>
-                        <span className="text-sm font-bold text-gray-400 italic">N/A</span>
+                        {typeof partner.onTimeDeliveryRate === 'number' ? (
+                            <span
+                                className={`text-sm font-bold ${partner.onTimeDeliveryRate >= 90 ? 'text-gray-900' : 'text-amber-600'}`}
+                                title={sampleNote}
+                            >
+                                {partner.onTimeDeliveryRate}%
+                            </span>
+                        ) : (
+                            <span className="text-sm font-medium text-gray-400">No completed jobs yet</span>
+                        )}
                     </div>
                     <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-500">Rating</span>
                         <span className="text-sm font-bold text-gray-900">{partner.rating.toFixed(1)}</span>
-                    </div>
-                    <div className="flex justify-between items-start">
-                        <span className="text-sm font-medium text-gray-500">Supported Formats</span>
-                        <div className="flex flex-wrap justify-end gap-2 max-w-[220px]">
-                            {formats.length > 0 ? formats.map((fmt) => (
-                                <span key={fmt} className="px-2 py-1 bg-gray-50 text-gray-600 rounded-md text-[11px] font-medium border border-gray-100">
-                                    {fmt}
-                                </span>
-                            )) : (
-                                <span className="text-sm font-bold text-gray-400 italic">N/A</span>
-                            )}
-                        </div>
                     </div>
                 </div>
             </div>
