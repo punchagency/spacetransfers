@@ -33,22 +33,41 @@ export const computeAssignmentDeadline = (assignedAt: Date): Date =>
  * `assignedAt + 24h`, then to `createdAt + 24h` for legacy orders that predate
  * the assignment-timestamp fields.
  */
-export const resolveOrderDeadlineIso = (order: {
-  assignmentDeadline?: Date | string | null;
-  assignedAt?: Date | string | null;
-  createdAt?: Date | string | null;
-}): string | null => {
+const deadlineFrom = (
+  from: Date,
+  priority: unknown,
+  acceptHours?: { normal: number; urgent: number },
+): Date =>
+  acceptHours
+    ? computeAssignmentDeadlineFor(from, priority, acceptHours)
+    : computeAssignmentDeadline(from);
+
+export const resolveOrderDeadlineIso = (
+  order: {
+    assignmentDeadline?: Date | string | null;
+    assignedAt?: Date | string | null;
+    createdAt?: Date | string | null;
+    priority?: string | null;
+  },
+  /**
+   * The configured accept windows. Optional so existing callers keep working,
+   * but every caller should pass them: without it the fallback below reverts to
+   * the flat 24h constant and shows a partner a different number from the one
+   * the SLA monitor enforces.
+   */
+  acceptHours?: { normal: number; urgent: number },
+): string | null => {
   if (order?.assignmentDeadline) {
     const d = new Date(order.assignmentDeadline);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
   }
   if (order?.assignedAt) {
     const a = new Date(order.assignedAt);
-    if (!Number.isNaN(a.getTime())) return computeAssignmentDeadline(a).toISOString();
+    if (!Number.isNaN(a.getTime())) return deadlineFrom(a, order.priority, acceptHours).toISOString();
   }
   if (order?.createdAt) {
     const c = new Date(order.createdAt);
-    if (!Number.isNaN(c.getTime())) return computeAssignmentDeadline(c).toISOString();
+    if (!Number.isNaN(c.getTime())) return deadlineFrom(c, order.priority, acceptHours).toISOString();
   }
   return null;
 };

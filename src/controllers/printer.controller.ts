@@ -229,6 +229,7 @@ const calcEarning = (order: any): number => {
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
 
     const now = new Date();
@@ -319,7 +320,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
       order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
       // ISO deadline (assignment + 24h); the frontend renders a live countdown.
-      deadline: resolveOrderDeadlineIso(job),
+      deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
       assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: mapStatus(String(job.status || "")),
       isUrgent: String(job.priority || "").toUpperCase() === "URGENT",
@@ -337,7 +338,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       customerName: `${job.customer.firstName} ${job.customer.lastName}`,
       order: `${job.items.length} Items`,
-      deadline: resolveOrderDeadlineIso(job),
+      deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
       assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
       status: "Urgent",
       isUrgent: true,
@@ -380,6 +381,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
 
 export const listPrintQueue = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
     const { status } = req.query;
 
@@ -426,7 +428,7 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
         sheetSize,
         orderDescription: firstItem.name || "N/A",
         status: job.status,
-        deadline: resolveOrderDeadlineIso(job),
+        deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
         assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
         createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
         priority: job.priority
@@ -2283,6 +2285,7 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
 
 export const listPrinterOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
     const { status, q, limit = "30", cursor } = req.query;
 
@@ -2398,7 +2401,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       const orderId = String((order as any)._id);
       // Due date follows the fulfilment deadline (assignment + 24h), not the
       // order's creation time.
-      const deadlineIso = resolveOrderDeadlineIso(order as any);
+      const deadlineIso = resolveOrderDeadlineIso(order as any, slaAcceptHours);
       return {
         id: orderId,
         actualId: orderId,
@@ -2433,6 +2436,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
 
 export const getPrinterJobOverview = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const { jobId } = req.params as any;
     const printerId = req.user?.id;
     const id = Array.isArray(jobId) ? String(jobId[0] || "") : String(jobId || "");
@@ -2522,7 +2526,7 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       updatedAt: (job as any).updatedAt,
       assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
       // ISO fulfilment deadline (assignment + 24h); frontend renders a countdown.
-      deadline: resolveOrderDeadlineIso(job as any),
+      deadline: resolveOrderDeadlineIso(job as any, slaAcceptHours),
       faceThumbnail,
       customer: {
         name: `${(job as any).customer?.firstName || ""} ${(job as any).customer?.lastName || ""}`.trim(),

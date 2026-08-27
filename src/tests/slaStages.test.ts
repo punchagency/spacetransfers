@@ -171,3 +171,53 @@ describe("settings", () => {
     assert.equal(normalizeSlaSettings({ maxAutoReassignments: -1 }).maxAutoReassignments, 2);
   });
 });
+
+describe("changing a window does not take work off partners already holding it", () => {
+  const at = (h: number) => new Date(Date.UTC(2026, 0, 1, h));
+
+  it("enforces the deadline stored at assignment, not a freshly computed one", () => {
+    // Assigned under a 24h rule; the operator then tightens it to 4h.
+    const tightened = normalizeSlaSettings({ enabled: true, acceptHours: { normal: 4, urgent: 4 } });
+    const order = {
+      status: "PROCESSING",
+      priority: "NORMAL",
+      assignedAt: at(0),
+      assignmentDeadline: at(24),
+      statusTimeline: [],
+    };
+    // 6h in: past the new rule, well inside what this partner was promised.
+    assert.equal(evaluateSla(order, tightened, at(6)), null);
+    // And it still breaches once the promised deadline actually passes.
+    assert.ok(evaluateSla(order, tightened, at(25)));
+  });
+
+  it("uses the new window for anything assigned after the change", () => {
+    const tightened = normalizeSlaSettings({ enabled: true, acceptHours: { normal: 4, urgent: 4 } });
+    // No stored deadline — a fresh assignment computes from current settings.
+    const fresh = { status: "PROCESSING", priority: "NORMAL", assignedAt: at(0), statusTimeline: [] };
+    assert.ok(evaluateSla(fresh, tightened, at(5)), "the shorter window applies");
+  });
+
+  it("ignores an unreadable stored deadline rather than trusting it", () => {
+    const order = {
+      status: "PROCESSING",
+      priority: "NORMAL",
+      assignedAt: at(0),
+      assignmentDeadline: new Date("not a date"),
+      statusTimeline: [],
+    };
+    assert.ok(evaluateSla(order, sla, at(25)), "falls back to the configured window");
+  });
+
+  it("does not apply a stored assignment deadline to the printing stage", () => {
+    // The stored value is the accept clock; PRINT must run from press-start.
+    const order = {
+      status: "PRINTING",
+      priority: "NORMAL",
+      assignedAt: at(0),
+      assignmentDeadline: at(1),
+      statusTimeline: [{ status: "PRINTING", time: at(0) }],
+    };
+    assert.equal(evaluateSla(order, sla, at(2)), null, "1h stored must not breach a 48h print window");
+  });
+});

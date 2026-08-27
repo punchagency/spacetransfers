@@ -89,6 +89,7 @@ export const evaluateSla = (
     status?: string;
     priority?: string;
     assignedAt?: Date | string | null;
+    assignmentDeadline?: Date | string | null;
     statusTimeline?: Array<{ status?: string; time?: Date | string }>;
   },
   sla: SlaSettings,
@@ -115,7 +116,24 @@ export const evaluateSla = (
   if (!startedAt || Number.isNaN(startedAt.getTime())) return null;
 
   const hoursAllowed = hoursForStage(stage, order.priority, sla);
-  const dueAt = new Date(startedAt.getTime() + hoursAllowed * HOUR_MS);
+
+  /**
+   * ACCEPT honours the deadline stored at assignment; only PRINT is derived
+   * from the current settings.
+   *
+   * Recomputing ACCEPT from live settings meant tightening the window took work
+   * away from partners who were told they had longer — and the countdown in
+   * their own app still showed the old figure, because that reads the stored
+   * value. Two sources of truth, disagreeing, with someone's job in the middle.
+   * Honouring the stored deadline makes the promise and the enforcement the
+   * same number, and a shortened window applies from the next assignment on.
+   */
+  const stored = stage === "ACCEPT" && order.assignmentDeadline ? new Date(order.assignmentDeadline) : null;
+  const dueAt =
+    stored && !Number.isNaN(stored.getTime())
+      ? stored
+      : new Date(startedAt.getTime() + hoursAllowed * HOUR_MS);
+
   const overdueMs = now.getTime() - dueAt.getTime();
   if (overdueMs <= 0) return null;
 

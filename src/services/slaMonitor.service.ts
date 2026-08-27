@@ -126,7 +126,7 @@ export const runSlaSweep = async (now: Date = new Date()): Promise<SlaSweepResul
 
   const orders = await Order.find({ status: { $in: ["PROCESSING", "PRINTING"] } })
     .populate("assignedPrinter", "companyName name")
-    .select("displayId status priority assignedAt assignedPrinter statusTimeline assignmentHistory")
+    .select("displayId status priority assignedAt assignmentDeadline assignedPrinter statusTimeline assignmentHistory")
     .lean(false);
 
   for (const order of orders) {
