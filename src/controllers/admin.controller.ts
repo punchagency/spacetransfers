@@ -27,6 +27,7 @@ import {
 } from "../services/partnerEarnings.service.js";
 import {
   DEFAULT_GLOBAL_PRICING,
+  getPartnerPayRate,
   normalizeGlobalPricing,
   getGlobalPricing as getGlobalPricingRates,
 } from "../services/pricing.service.js";
@@ -185,9 +186,13 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
      * default applies and the result is an expected margin rather than a
      * settled one.
      */
+    // One rate for the whole network, read once for this response rather than
+    // per order.
+    const partnerPayRate = await getPartnerPayRate();
+
     const calculateOrderFinancials = (order: any) => {
       const customerCharge = order.pricing?.total || 0;
-      const partnerPricing = (order.assignedPrinter as any)?.settings?.pricing || {};
+      const partnerPricing = partnerPayRate;
 
       // Null, not zero, when there is nothing to derive a cost from — see
       // `canDerivePartnerEarning`. Subtracting a zero we invented is how an
@@ -994,6 +999,8 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       users.map((u: any) => [String(u._id), Array.isArray(u.regions) ? (u.regions[0] || null) : null])
     );
 
+    const partnerPayRate = await getPartnerPayRate();
+
     const formattedOrders = results.map(order => {
       const firstItem = order.items?.[0] || {};
       const sheetSize = firstItem.widthIn && firstItem.heightIn 
@@ -1006,7 +1013,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       const derivable = canDerivePartnerEarning(order);
       const profits = derivable
         ? customerCharge -
-          calculateOrderPartnerEarning(order, (order.assignedPrinter as any)?.settings?.pricing || {})
+          calculateOrderPartnerEarning(order, partnerPayRate)
         : null;
   
       return {
@@ -1060,89 +1067,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
   }
 };
 
-export const getPartnerPricing = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { partnerId } = req.params;
 
-    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
-    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
-      const error = new Error("Invalid Partner ID") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
-      .select("settings.pricing")
-      .lean();
-
-    if (!partner) {
-      const error = new Error("Partner not found or is not a printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    /**
-     * Falls back to the admin's configured partner defaults.
-     *
-     * This previously invented tiered rates of $20.00 / $18.50 / $17.00 against
-     * a $2.50 base — retail figures on the cost side, roughly seven times what
-     * any partner is actually paid. They were display-only, but an admin who
-     * opened the Pricing tab and pressed Save would have written them for real.
-     */
-    const { partnerDefaults } = await getGlobalPricingRates();
-    const pricing = partner.settings?.pricing || {
-      baseRatePerSqFt: partnerDefaults.baseRatePerSqFt,
-      tiered: [],
-      surcharges: {
-        rushPct: partnerDefaults.rushPct,
-        specialInkFlat: partnerDefaults.specialInkFlat,
-      },
-    };
-
-    res.status(200).json(pricing);
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updatePartnerPricing = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { partnerId } = req.params;
-    const { baseRatePerSqFt, tiered, surcharges } = req.body;
-
-    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
-    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
-      const error = new Error("Invalid Partner ID") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const updateData: any = {};
-    if (baseRatePerSqFt !== undefined) updateData["settings.pricing.baseRatePerSqFt"] = baseRatePerSqFt;
-    if (tiered !== undefined) updateData["settings.pricing.tiered"] = tiered;
-    if (surcharges !== undefined) updateData["settings.pricing.surcharges"] = surcharges;
-
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: updateData },
-      { new: true, runValidators: true }
-    ).select("settings.pricing").lean();
-
-    if (!partner) {
-      const error = new Error("Partner not found or is not a printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    res.status(200).json({
-      id: partner._id,
-      updated: true,
-      pricing: partner.settings?.pricing
-    });
-  } catch (error) {
-    next(error);
-  }
-};
 
 export const getPartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -1603,7 +1528,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     const partner = assignedPrinterId ? await User.findById(assignedPrinterId).select("settings.pricing").lean() : null;
     const breakdown = computePartnerCostBreakdown({
       items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: (partner as any)?.settings?.pricing || {},
+      partnerPricing: await getPartnerPayRate(),
       priority: (order as any).priority,
       adjustments: (order as any)?.pricing?.adjustments || []
     });
@@ -2052,8 +1977,6 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      * unusable random secret and the partner sets their own via an invite link,
      * which means there is no shared credential to leak in the first place.
      */
-    const { partnerDefaults } = await getGlobalPricingRates();
-
     const unusableSecret = crypto.randomBytes(32).toString("hex");
     const passwordHash = await bcrypt.hash(unusableSecret, 10);
 
@@ -2188,19 +2111,11 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
         : {}),
       settings: {
         /*
-         * Written explicitly from the admin's configured defaults rather than
-         * left to the schema's hard-coded 2.5. The rate a partner starts on is
-         * a commercial term; it should be visible and changeable in Settings,
-         * not buried in a model file.
+         * No per-partner pricing is written. Every partner is paid at the one
+         * network rate from Settings -> General, resolved at payout time by
+         * `getPartnerPayRate`. A copy stored here would be a second source of
+         * truth free to drift from it.
          */
-        pricing: {
-          baseRatePerSqFt: partnerDefaults.baseRatePerSqFt,
-          tiered: [],
-          surcharges: {
-            rushPct: partnerDefaults.rushPct,
-            specialInkFlat: partnerDefaults.specialInkFlat,
-          },
-        },
         printingCapabilities: {
           maxSheetSizeIn: capabilities?.maxSheetSizeIn || { width: 24, height: 19.5 },
           supportedFormats: capabilities?.formats || ["PNG", "PDF", "TIFF"],
@@ -2277,12 +2192,6 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
       ];
     }
 
-    const globalPricingSetting = await Settings.findOne({ key: "global_pricing" }).lean();
-    const globalPricing = (globalPricingSetting as any)?.value;
-    const saleRatePerSqFt =
-      typeof globalPricing?.baseRatePerSqFt === "number"
-        ? globalPricing.baseRatePerSqFt
-        : DEFAULT_GLOBAL_PRICING.baseRatePerSqFt;
 
     const pipeline: any[] = [
       { $match: matchQuery },
@@ -2307,8 +2216,36 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
         }
       },
       {
+        /*
+         * How many jobs this partner is holding right now.
+         *
+         * Replaces the base/sale/profit columns, which became the same three
+         * numbers on every row once pricing went network-wide. This one differs
+         * per partner and is what an admin needs when deciding who to assign to.
+         */
+        $lookup: {
+          from: "orders",
+          let: { partnerId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$assignedPrinter", "$$partnerId"] },
+                    { $in: ["$status", ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"]] }
+                  ]
+                }
+              }
+            },
+            { $count: "count" }
+          ],
+          as: "activeCountArr"
+        }
+      },
+      {
         $addFields: {
-          ordersCompleted: { $ifNull: [{ $arrayElemAt: ["$completedCountArr.count", 0] }, 0] }
+          ordersCompleted: { $ifNull: [{ $arrayElemAt: ["$completedCountArr.count", 0] }, 0] },
+          ordersInProgress: { $ifNull: [{ $arrayElemAt: ["$activeCountArr.count", 0] }, 0] }
         }
       },
       {
@@ -2321,7 +2258,7 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
           regions: 1,
           rating: 1,
           ordersCompleted: 1,
-          "settings.pricing.baseRatePerSqFt": 1
+          ordersInProgress: 1,
         }
       },
       { $sort: { ordersCompleted: -1, _id: -1 } }
@@ -2358,9 +2295,13 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
       regions: p.regions || [],
       rating: p.rating || 5.0,
       ordersCompleted: p.ordersCompleted,
-      basePrice: `$${Number(p.settings?.pricing?.baseRatePerSqFt ?? 18).toFixed(2)}`,
-      salePrice: `$${Number(saleRatePerSqFt).toFixed(2)}`,
-      profit: `$${(Number(saleRatePerSqFt) - Number(p.settings?.pricing?.baseRatePerSqFt ?? 18)).toFixed(2)}`,
+      /*
+       * Base price, sale price and profit removed. With one network-wide rate
+       * they were the same three numbers on every row, and "profit" was a
+       * per-sq-ft margin rather than this partner's contribution — which read
+       * like a partner-level figure and was not one.
+       */
+      ordersInProgress: Number(p.ordersInProgress ?? 0).toLocaleString(),
       orders: Number(p.ordersCompleted ?? 0).toLocaleString()
     }));
 
@@ -2782,7 +2723,7 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
       : null;
     const breakdown = computePartnerCostBreakdown({
       items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: (partner as any)?.settings?.pricing || {},
+      partnerPricing: await getPartnerPayRate(),
       priority: (order as any).priority,
       adjustments: (order as any)?.pricing?.adjustments || []
     });
@@ -2828,7 +2769,7 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
     // partner, so the financials panel disagreed with what was actually paid.
     const derivable = canDerivePartnerEarning(order);
     const breakdown = derivable
-      ? getOrderPartnerCostBreakdown(order, (order.assignedPrinter as any)?.settings?.pricing || {})
+      ? getOrderPartnerCostBreakdown(order, await getPartnerPayRate())
       : null;
     const partnerPayout = breakdown ? breakdown.subtotal : null;
     const margin = partnerPayout === null ? null : customerCharge - partnerPayout;
@@ -3060,11 +3001,14 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
           .filter(Boolean) as string[]
       )
     );
+    const payRate = await getPartnerPayRate();
     const partnerDocs = partnerIds.length
-      ? await User.find({ _id: { $in: partnerIds } }).select("settings.pricing").lean()
+      ? await User.find({ _id: { $in: partnerIds } }).select("_id").lean()
       : [];
     const partnerPricingMap = new Map<string, any>(
-      partnerDocs.map((p: any) => [String(p._id), p.settings?.pricing || {}])
+      // Every partner maps to the same rate now; the map is kept so the payout
+      // draft's shape does not change.
+      partnerDocs.map((p: any) => [String(p._id), payRate])
     );
 
     const calcOrderPartnerCost = (o: any): number => {

@@ -150,6 +150,34 @@ export const normalizeGlobalPricing = (value: unknown): GlobalPricing => {
   };
 };
 
+/**
+ * The rate every partner is paid at.
+ *
+ * There is one rate for the whole network, set by the admin. Partners used to
+ * carry their own `settings.pricing`, so the same sheet cost a different amount
+ * depending on who printed it and the console had no single number to show —
+ * and nothing stopped a partner-level rate drifting above the retail rate.
+ *
+ * Returns the same shape the per-partner object had, so the cost breakdown is
+ * unchanged: it still receives a pricing object, it just always receives this
+ * one.
+ */
+export const getPartnerPayRate = async (): Promise<{
+  baseRatePerSqFt: number;
+  tiered: never[];
+  surcharges: { rushPct: number; specialInkFlat: number };
+}> => {
+  const { partnerDefaults } = await getGlobalPricing();
+  return {
+    baseRatePerSqFt: partnerDefaults.baseRatePerSqFt,
+    tiered: [],
+    surcharges: {
+      rushPct: partnerDefaults.rushPct,
+      specialInkFlat: partnerDefaults.specialInkFlat,
+    },
+  };
+};
+
 /** Reads the configured rates from the settings document. */
 export const getGlobalPricing = async (): Promise<GlobalPricing> => {
   const doc = await Settings.findOne({ key: "global_pricing" }).lean();

@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { PRINTER_STATUS_LABEL, printerStatusLabel } from "../utils/orderStatusLabels.js";
 import { deriveParcel } from "../services/packaging.service.js";
-import { getGlobalPricing, totalBillableSqFt } from "../services/pricing.service.js";
+import { getGlobalPricing, getPartnerPayRate, totalBillableSqFt } from "../services/pricing.service.js";
 import { Order } from "../models/order.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
@@ -2506,8 +2506,8 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
     const currency = String(storedPricing.currency || "USD");
 
     // Use the same cost formula the admin sees: printer's configured rate applied to sheet dimensions.
-    const printerUser = await User.findById(printerId).select("settings.pricing").lean();
-    const partnerPricing = (printerUser as any)?.settings?.pricing || {};
+    // The partner sees the same rate everyone is paid; they do not set it.
+    const partnerPricing = await getPartnerPayRate();
     const breakdown = computePartnerCostBreakdown({
       items: Array.isArray((job as any).items) ? (job as any).items : [],
       partnerPricing,

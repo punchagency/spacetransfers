@@ -16,8 +16,6 @@ import {
   listPartners, 
   getPartnerById, 
   getPartnerOrders, 
-  getPartnerPricing, 
-  updatePartnerPricing, 
   getPartnerSettings, 
   updatePartnerSettings, 
   updatePartnerStatus, 
@@ -91,8 +89,6 @@ router.post("/partners/:partnerId/approve", approvePrinter);
 router.post("/partners/:partnerId/reject", rejectPrinter);
 router.get("/partners/:partnerId", getPartnerById);
 router.get("/partners/:partnerId/orders", getPartnerOrders);
-router.get("/partners/:partnerId/pricing", getPartnerPricing);
-router.patch("/partners/:partnerId/pricing", updatePartnerPricing);
 router.get("/partners/:partnerId/settings", getPartnerSettings);
 router.patch("/partners/:partnerId/settings", updatePartnerSettings);
 router.patch("/partners/:partnerId/status", updatePartnerStatus);

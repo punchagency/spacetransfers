@@ -3,6 +3,7 @@ import { Order } from "../models/order.model.js";
 import { User } from "../models/user.model.js";
 import { Payout } from "../models/payout.model.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import { getPartnerPayRate } from "./pricing.service.js";
 
 /**
  * Single source of truth for partner earnings & payout eligibility.
@@ -142,8 +143,8 @@ export interface EligibleJobsResult {
 export const getEligibleJobsForPrinter = async (
   printerId: string,
 ): Promise<EligibleJobsResult> => {
-  const partner = await User.findById(printerId).select("settings.pricing").lean();
-  const partnerPricing = (partner as any)?.settings?.pricing || {};
+  // One network-wide rate, not the partner's own — see `getPartnerPayRate`.
+  const partnerPricing = await getPartnerPayRate();
 
   const reserved = await getReservedOrderIds(printerId);
 
