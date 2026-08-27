@@ -21,16 +21,80 @@ export const ACTIVE_ORDER_STATUSES = [
 
 export type AssignmentRule = "nearest-region" | "manual";
 
+/**
+ * Stage deadlines, in hours, per priority.
+ *
+ * Two stages because they fail differently. A job sitting unstarted can be
+ * handed to someone else safely — nothing physical has happened. A job that has
+ * been on the press too long must NOT be reassigned: the partner may have film
+ * loaded, and moving it means printing twice and paying twice. That one is
+ * raised for a human instead.
+ */
+export interface SlaStageHours {
+  normal: number;
+  urgent: number;
+}
+
+export interface SlaSettings {
+  /**
+   * Off by default, deliberately. This moves live jobs between businesses, so
+   * it starts only when an operator turns it on knowingly.
+   */
+  enabled: boolean;
+  /** PROCESSING -> PRINTING. Breach reassigns. */
+  acceptHours: SlaStageHours;
+  /** PRINTING -> QUALITY_CHECK. Breach escalates, never reassigns. */
+  printHours: SlaStageHours;
+  /** Stops a job bouncing between partners forever. */
+  maxAutoReassignments: number;
+}
+
 export interface PartnerAssignmentSettings {
   rule: AssignmentRule;
   maxJobsEnabled: boolean;
   maxJobsValue: number | null;
+  sla: SlaSettings;
 }
+
+export const DEFAULT_SLA_SETTINGS: SlaSettings = {
+  enabled: false,
+  acceptHours: { normal: 24, urgent: 4 },
+  printHours: { normal: 48, urgent: 12 },
+  maxAutoReassignments: 2,
+};
 
 const DEFAULT_SETTINGS: PartnerAssignmentSettings = {
   rule: "nearest-region",
   maxJobsEnabled: true,
   maxJobsValue: 10,
+  sla: DEFAULT_SLA_SETTINGS,
+};
+
+const positiveHours = (value: unknown, fallback: number): number => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+export const normalizeSlaSettings = (value: unknown): SlaSettings => {
+  const v = (value as any) || {};
+  return {
+    enabled: v.enabled === true,
+    acceptHours: {
+      normal: positiveHours(v.acceptHours?.normal, DEFAULT_SLA_SETTINGS.acceptHours.normal),
+      urgent: positiveHours(v.acceptHours?.urgent, DEFAULT_SLA_SETTINGS.acceptHours.urgent),
+    },
+    printHours: {
+      normal: positiveHours(v.printHours?.normal, DEFAULT_SLA_SETTINGS.printHours.normal),
+      urgent: positiveHours(v.printHours?.urgent, DEFAULT_SLA_SETTINGS.printHours.urgent),
+    },
+    // Zero is meaningful — it disables reassignment while leaving escalation on.
+    maxAutoReassignments: (() => {
+      const n = Number(v.maxAutoReassignments);
+      return Number.isFinite(n) && n >= 0
+        ? Math.floor(n)
+        : DEFAULT_SLA_SETTINGS.maxAutoReassignments;
+    })(),
+  };
 };
 
 /**
@@ -45,7 +109,7 @@ export const getAssignmentSettings = async (): Promise<PartnerAssignmentSettings
   const rawMax = Number(value.maxJobsValue);
   const maxJobsValue =
     maxJobsEnabled && Number.isFinite(rawMax) && rawMax > 0 ? Math.floor(rawMax) : maxJobsEnabled ? DEFAULT_SETTINGS.maxJobsValue : null;
-  return { rule, maxJobsEnabled, maxJobsValue };
+  return { rule, maxJobsEnabled, maxJobsValue, sla: normalizeSlaSettings(value.sla) };
 };
 
 /**

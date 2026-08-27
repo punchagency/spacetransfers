@@ -5,6 +5,7 @@ import { env } from "./config/env.js";
 import { processDueAdminNotificationEmailBatches } from "./services/adminNotifications.service.js";
 import { scheduleFridayPayouts } from "./services/payoutScheduler.service.js";
 import { startTrackingPoller } from "./services/trackingPoller.service.js";
+import { startSlaMonitor } from "./services/slaMonitor.service.js";
 
 /**
  * Last-resort guards.
@@ -62,6 +63,11 @@ const start = async (): Promise<void> => {
 
     // Start ShipStation tracking poller (SHIPPED → COMPLETED on delivery confirmation)
     startTrackingPoller();
+
+    // Start the SLA monitor. It reads its settings on every pass and does
+    // nothing at all until an operator enables it in the console, so starting
+    // it here does not begin moving jobs.
+    startSlaMonitor();
   }
 };
 

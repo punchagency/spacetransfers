@@ -6,6 +6,23 @@
  */
 export const ASSIGNMENT_SLA_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+/**
+ * The same window, but shortened for a rush job.
+ *
+ * The flat constant above ran at one speed for everything: an URGENT order the
+ * customer paid a rush surcharge on got exactly as long as a normal one, which
+ * made the surcharge a charge for nothing on the timing side.
+ */
+export const computeAssignmentDeadlineFor = (
+  assignedAt: Date,
+  priority: unknown,
+  acceptHours: { normal: number; urgent: number },
+): Date => {
+  const urgent = String(priority ?? "").trim().toUpperCase() === "URGENT";
+  const hours = urgent ? acceptHours.urgent : acceptHours.normal;
+  return new Date(assignedAt.getTime() + hours * 60 * 60 * 1000);
+};
+
 /** The deadline for a job assigned at `assignedAt` (assignedAt + 24h). */
 export const computeAssignmentDeadline = (assignedAt: Date): Date =>
   new Date(assignedAt.getTime() + ASSIGNMENT_SLA_MS);

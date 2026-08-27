@@ -28,6 +28,7 @@ import { DEFAULT_GLOBAL_PRICING, normalizeGlobalPricing } from "../services/pric
 import {
   syncPartnerCapacitySafe,
   getAssignmentSettings,
+  normalizeSlaSettings,
   getEffectiveMaxConcurrent,
   countActiveJobs,
   isAtCapacity,
@@ -37,7 +38,7 @@ import { exportGangsheetPng24,
 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
-import { computeAssignmentDeadline, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
+import { computeAssignmentDeadlineFor, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -1470,7 +1471,11 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     if (!alreadyHoldsThisOrder || !order.assignmentDeadline) {
       const assignedAt = new Date();
       order.assignedAt = assignedAt;
-      order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
+      order.assignmentDeadline = computeAssignmentDeadlineFor(
+      assignedAt,
+      (order as any).priority,
+      (await getAssignmentSettings()).sla.acceptHours,
+    );
     }
     // Same rule as auto-assignment: attaching a partner moves PENDING to
     // PROCESSING, and never drags a further-along order backwards.
@@ -3065,6 +3070,9 @@ export const getPartnerAssignmentSettings = async (req: Request, res: Response, 
       assignmentRule: value.rule || "nearest-region",
       maxJobsEnabled: value.maxJobsEnabled !== false,
       maxJobsValue: value.maxJobsValue || 10,
+      // Normalised, so a document saved before the SLA existed still comes back
+      // with usable windows instead of blanks the console would save over.
+      sla: normalizeSlaSettings(value.sla),
     });
   } catch (error) {
     next(error);
@@ -3073,16 +3081,26 @@ export const getPartnerAssignmentSettings = async (req: Request, res: Response, 
 
 export const updatePartnerAssignmentSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { assignmentRule, maxJobsEnabled, maxJobsValue } = req.body;
+    const { assignmentRule, maxJobsEnabled, maxJobsValue, sla } = req.body;
 
     if (!assignmentRule || !["nearest-region", "manual"].includes(assignmentRule)) {
       return res.status(400).json({ error: "Invalid assignment rule" });
     }
 
+    /**
+     * Merged over what is stored, not written fresh.
+     *
+     * This replaced the whole value object from three named fields, so saving
+     * the assignment rule would have silently deleted the SLA windows — and the
+     * monitor would have carried on against defaults nobody chose. Same failure
+     * the pricing settings had.
+     */
+    const existing = await Settings.findOne({ key: "partnerAssignment" }).lean();
     const settingValue = {
       rule: assignmentRule,
       maxJobsEnabled: maxJobsEnabled !== false,
       maxJobsValue: maxJobsEnabled ? Math.max(1, parseInt(maxJobsValue, 10)) : null,
+      sla: normalizeSlaSettings(sla ?? (existing as any)?.value?.sla),
     };
 
     let settings = await Settings.findOne({ key: "partnerAssignment" });
@@ -3101,6 +3119,7 @@ export const updatePartnerAssignmentSettings = async (req: Request, res: Respons
       assignmentRule: settingValue.rule,
       maxJobsEnabled: settingValue.maxJobsEnabled,
       maxJobsValue: settingValue.maxJobsValue,
+      sla: settingValue.sla,
     });
   } catch (error) {
     next(error);

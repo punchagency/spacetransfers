@@ -10,6 +10,7 @@ import {
   getEffectiveMaxConcurrent,
   decideCapacityTransition,
   isAtCapacity,
+  DEFAULT_SLA_SETTINGS,
   type PartnerAssignmentSettings,
 } from "../services/partnerCapacity.service.js";
 
@@ -17,6 +18,7 @@ const settings = (over: Partial<PartnerAssignmentSettings> = {}): PartnerAssignm
   rule: "nearest-region",
   maxJobsEnabled: true,
   maxJobsValue: 10,
+  sla: DEFAULT_SLA_SETTINGS,
   ...over,
 });
 

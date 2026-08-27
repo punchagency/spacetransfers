@@ -10,7 +10,7 @@ import {
 import { notifyPrinter } from "./printerNotifications.service.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { isPrinterAvailableAt } from "../utils/businessHours.js";
-import { computeAssignmentDeadline } from "../utils/assignmentDeadline.js";
+import { computeAssignmentDeadlineFor } from "../utils/assignmentDeadline.js";
 import {
   ACTIVE_ORDER_STATUSES,
   getAssignmentSettings,
@@ -408,7 +408,11 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
   // Start the 24h fulfilment clock from the exact assignment moment.
   const assignedAt = new Date();
   order.assignedAt = assignedAt;
-  order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
+  order.assignmentDeadline = computeAssignmentDeadlineFor(
+      assignedAt,
+      (order as any).priority,
+      (await getAssignmentSettings()).sla.acceptHours,
+    );
   /**
    * Assignment moves the order to PROCESSING.
    *
