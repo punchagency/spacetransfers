@@ -387,6 +387,13 @@ const userSchema = new Schema<IUser>(
         maxResolutionDPI: Number
       },
       pricing: {
+        /*
+         * Last resort only. Both creation paths — admin `createPartner` and
+         * self-registration — now write `partnerDefaults` from the admin's
+         * General Settings explicitly, so this should never be the value a
+         * real partner ends up on. It stays as a floor for documents written
+         * outside those paths (fixtures, migrations, direct edits).
+         */
         baseRatePerSqFt: { type: Number, default: 2.5 },
         tiered: [
           {

@@ -14,7 +14,10 @@ export const computePartnerCostBreakdown = ({
   const baseRatePerSqFt =
     typeof partnerPricing?.baseRatePerSqFt === "number" && Number.isFinite(partnerPricing.baseRatePerSqFt)
       ? partnerPricing.baseRatePerSqFt
-      : 2.5;
+      : // Unreachable for any partner created through the console or by
+        // self-registration; both write the configured rate. Kept so a payout
+        // is never silently zero if a document somehow has none.
+        2.5;
 
   const tiers = Array.isArray(partnerPricing?.tiered) ? partnerPricing.tiered : [];
   const surchargesCfg = partnerPricing?.surcharges || {};

@@ -1,4 +1,5 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
+import { getGlobalPricing } from "./pricing.service.js";
 import { buildLegalAcceptance, type LegalAcceptanceInput, type LegalAcceptanceRecord } from "../config/legal.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress, isUSCountry } from "../utils/geocoding.js";
@@ -168,6 +169,29 @@ export const registerUser = async ({
     status: resolvedRole === UserRoles.PRINTER ? "Pending" : "Active",
     legalAcceptance: acceptanceRecord
   };
+
+  /**
+   * A partner who signs up themselves gets the same starting rates as one an
+   * admin adds.
+   *
+   * This path never wrote `settings.pricing` at all, so a self-registered
+   * partner fell through to the schema's hard-coded 2.5 — silently ignoring
+   * whatever the console said new partners should start on. Two ways in, two
+   * different pay rates, and nothing to show which you had got.
+   */
+  if (resolvedRole === UserRoles.PRINTER) {
+    const { partnerDefaults } = await getGlobalPricing();
+    userPayload.settings = {
+      pricing: {
+        baseRatePerSqFt: partnerDefaults.baseRatePerSqFt,
+        tiered: [],
+        surcharges: {
+          rushPct: partnerDefaults.rushPct,
+          specialInkFlat: partnerDefaults.specialInkFlat,
+        },
+      },
+    };
+  }
 
   if (companyName) userPayload.companyName = companyName;
   if (phone) userPayload.phone = phone;
