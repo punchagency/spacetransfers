@@ -1104,7 +1104,10 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
     };
 
     res.status(200).json({
-      jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0 },
+      // autoAccept was missing from this fallback, so a partner with no
+      // jobCapacity document came back without it and the toggle defaulted
+      // blind.
+      jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0, autoAccept: true },
       notifications,
       capabilities
     });
@@ -1130,11 +1133,22 @@ export const updatePartnerSettings = async (req: Request, res: Response, next: N
     if (jobCapacity) {
       if (jobCapacity.maxConcurrent !== undefined) updateData["settings.jobCapacity.maxConcurrent"] = jobCapacity.maxConcurrent;
       if (jobCapacity.dailyMax !== undefined) updateData["settings.jobCapacity.dailyMax"] = jobCapacity.dailyMax;
+      /*
+       * Auto-accept had no branch at all, so the toggle in the console never
+       * saved anything: it moved, reported success, and reverted on reload.
+       */
+      if (jobCapacity.autoAccept !== undefined) updateData["settings.jobCapacity.autoAccept"] = jobCapacity.autoAccept;
     }
 
     if (notifications) {
       if (notifications.orderAssigned !== undefined) updateData["settings.notifications.email.newJobs"] = notifications.orderAssigned;
-      if (notifications.jobCompleted !== undefined) updateData["settings.notifications.email.jobUpdates"] = notifications.jobCompleted;
+      /*
+       * Was written to `email.jobUpdates` and read back from
+       * `email.orderUpdates` — two different keys, and `jobUpdates` is not in
+       * the schema at all, so Mongoose dropped it. The toggle could never round
+       * trip. `orderUpdates` is the real field.
+       */
+      if (notifications.jobCompleted !== undefined) updateData["settings.notifications.email.orderUpdates"] = notifications.jobCompleted;
     }
 
     if (capabilities) {
