@@ -5,7 +5,6 @@ import { PartnerOverview } from '../components/partners/PartnerOverview';
 import { PartnerPricing } from '../components/partners/PartnerPricing';
 import { PartnerOrders } from '../components/partners/PartnerOrders';
 import { PartnerSettings } from '../components/partners/PartnerSettings';
-import { EditPartnerModal } from '../components/partners/EditPartnerModal';
 import { useParams } from 'react-router-dom';
 import { apiFetch } from '../utils/api';
 import toast from 'react-hot-toast';
@@ -13,7 +12,6 @@ import type { PartnerDetailsData, PartnerOrderRow, PartnerPricingApi, PartnerSet
 
 export const PartnerDetails = () => {
     const [activeTab, setActiveTab] = useState('Overview');
-    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const { id } = useParams<{ id: string }>();
     const [partner, setPartner] = useState<PartnerDetailsData | null>(null);
     const [pricing, setPricing] = useState<PartnerPricingApi | null>(null);
@@ -91,7 +89,6 @@ export const PartnerDetails = () => {
                                 name={partner.name}
                                 email={partner.email}
                                 status={partner.status}
-                                onEdit={() => setIsEditModalOpen(true)}
                             />
 
                             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -131,6 +128,7 @@ export const PartnerDetails = () => {
                                         <PartnerSettings
                                             partnerId={partner.id}
                                             partnerStatus={partner.status}
+                                            partnerRegions={partner.regions}
                                             settings={settings}
                                             onUpdated={(nextSettings: PartnerSettingsApi, nextStatus?: PartnerDetailsData['status']) => {
                                                 setSettings(nextSettings);
@@ -145,28 +143,6 @@ export const PartnerDetails = () => {
                 </div>
             </DashboardLayout>
 
-            {partner && (
-                <EditPartnerModal
-                    isOpen={isEditModalOpen}
-                    onClose={() => setIsEditModalOpen(false)}
-                    partnerData={{
-                        name: partner.companyName,
-                        email: partner.email,
-                        phone: partner.phone,
-                        region: partner.regions[0] || 'N/A',
-                        status: partner.status,
-                        notes: '',
-                    }}
-                    partnerId={partner.id}
-                    regions={partner.regions}
-                    contactName={partner.contactName}
-                    website={partner.website || ''}
-                    onSaved={(nextPartner: PartnerDetailsData) => {
-                        setPartner(nextPartner);
-                        setIsEditModalOpen(false);
-                    }}
-                />
-            )}
         </>
     );
 };

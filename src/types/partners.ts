@@ -49,7 +49,6 @@ export interface PartnerHeaderProps {
   name: string;
   email: string;
   status: string;
-  onEdit?: () => void;
 }
 
 export interface EditPartnerData {
@@ -59,17 +58,6 @@ export interface EditPartnerData {
   region: string;
   status: string;
   notes?: string;
-}
-
-export interface EditPartnerModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  partnerData: EditPartnerData;
-  partnerId?: string;
-  regions?: string[];
-  contactName?: string;
-  website?: string;
-  onSaved?: (partner: PartnerDetailsData) => void;
 }
 
 export interface Fee {

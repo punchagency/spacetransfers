@@ -1,8 +1,8 @@
-import { FiArrowLeft, FiEdit3 } from 'react-icons/fi';
+import { FiArrowLeft } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 import type { PartnerHeaderProps } from '../../types/partners';
 
-export const PartnerHeader = ({ name, email, status, onEdit }: PartnerHeaderProps) => {
+export const PartnerHeader = ({ name, email, status }: PartnerHeaderProps) => {
     const navigate = useNavigate();
 
     return (
@@ -29,13 +29,6 @@ export const PartnerHeader = ({ name, email, status, onEdit }: PartnerHeaderProp
                     </div>
                     <p className="text-gray-500 text-[16px]">{email}</p>
                 </div>
-                <button
-                    onClick={onEdit}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
-                >
-                    <FiEdit3 className="w-4 h-4" />
-                    <span>Edit Partner</span>
-                </button>
             </div>
         </div>
     );

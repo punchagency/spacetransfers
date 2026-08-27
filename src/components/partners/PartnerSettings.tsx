@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { REGIONS } from '../../utils/regions';
 import { Toggle } from '../common/Toggle';
 import toast from 'react-hot-toast';
 import { apiFetch } from '../../utils/api';
@@ -7,11 +8,13 @@ import type { PartnerSettingsApi } from '../../types/partners';
 export const PartnerSettings = ({
     partnerId,
     partnerStatus,
+    partnerRegions,
     settings,
     onUpdated
 }: {
     partnerId: string;
     partnerStatus: string;
+    partnerRegions?: string[];
     settings: PartnerSettingsApi | null;
     onUpdated: (settings: PartnerSettingsApi, nextStatus?: 'Active' | 'Pending' | 'Suspended' | 'Under Review') => void;
 }) => {
@@ -21,6 +24,15 @@ export const PartnerSettings = ({
     const [jobCompletedEmail, setJobCompletedEmail] = useState(false);
     const [isPartnerActive, setIsPartnerActive] = useState(partnerStatus === 'Active');
     const [autoAccept, setAutoAccept] = useState(true);
+    /**
+     * Service areas live here now, with the other things the platform decides.
+     *
+     * They were the one genuinely admin-owned field on the Edit Partner modal —
+     * routing policy rather than the partner's own information — so removing
+     * that modal meant they needed a home among the controls an operator
+     * already owns: capacity, auto-accept and status.
+     */
+    const [selectedRegions, setSelectedRegions] = useState<string[]>(partnerRegions ?? []);
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -81,6 +93,11 @@ export const PartnerSettings = ({
                 method: 'PATCH',
                 body: JSON.stringify(payload),
             });
+            // Separate endpoint: regions are not part of the settings document.
+            await apiFetch(`/admin/partners/${partnerId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ regions: selectedRegions }),
+            });
             toast.success('Settings saved');
             onUpdated(payload);
         } catch (error: any) {
@@ -90,8 +107,49 @@ export const PartnerSettings = ({
         }
     };
 
+    const toggleRegion = (region: string) =>
+        setSelectedRegions((prev) =>
+            prev.includes(region) ? prev.filter((r) => r !== region) : [...prev, region],
+        );
+
     return (
         <div className="space-y-6">
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 space-y-4">
+                <div>
+                    <h2 className="text-[16px] font-bold text-gray-900">Service Areas</h2>
+                    <p className="text-sm text-gray-500 mt-0.5">
+                        Which regions this partner is offered work from. Assignment tries the
+                        customer&rsquo;s own region first and only falls back to another when
+                        nobody there can take the job.
+                    </p>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {REGIONS.map((region) => {
+                        const selected = selectedRegions.includes(region);
+                        return (
+                            <button
+                                type="button"
+                                key={region}
+                                onClick={() => toggleRegion(region)}
+                                aria-pressed={selected}
+                                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                                    selected
+                                        ? 'bg-blue-600 text-white border-blue-600'
+                                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                                }`}
+                            >
+                                {region}
+                            </button>
+                        );
+                    })}
+                </div>
+                {selectedRegions.length === 0 && (
+                    <p className="text-xs text-amber-700">
+                        With no service area this partner cannot be assigned any work.
+                    </p>
+                )}
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Production Settings Card */}
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 space-y-8">
