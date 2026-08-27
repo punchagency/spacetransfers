@@ -5,7 +5,6 @@ import { apiFetch } from '../../utils/api';
 import { REGIONS } from "../../utils/regions";
 
 
-const FORMATS = ['PNG', 'PDF', 'TIFF', 'JPG'];
 
 const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
@@ -28,10 +27,6 @@ export const AddPartnerModal = ({
   const [stateCode, setStateCode] = useState('');
   const [postalCode, setPostalCode] = useState('');
 
-  const [maxSheetWidth, setMaxSheetWidth] = useState('24');
-  const [maxSheetHeight, setMaxSheetHeight] = useState('19.5');
-  const [formats, setFormats] = useState<string[]>(['PNG', 'PDF', 'TIFF']);
-  const [maxDPI, setMaxDPI] = useState('1200');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -40,37 +35,22 @@ export const AddPartnerModal = ({
     const errors: Record<string, string> = {};
 
     if (!partnerName.trim()) errors.partnerName = 'Partner name is required';
-    if (!contactName.trim()) errors.contactName = 'Contact name is required';
     if (!email.trim()) errors.email = 'Email is required';
     else if (!isValidEmail(email)) errors.email = 'Enter a valid email';
-    if (!phone.trim()) errors.phone = 'Phone is required';
-    if (!street.trim()) errors.street = 'Street is required';
-    if (!city.trim()) errors.city = 'City is required';
     // Two letters, because `getRegionFromState` and the distance centroid both
     // key on the US state code — anything else silently yields no region.
-    if (!/^[A-Z]{2}$/.test(stateCode.trim())) errors.stateCode = 'Two-letter state code, e.g. CA';
-    if (!postalCode.trim()) errors.postalCode = 'Postal code is required';
-    if (regions.length === 0) errors.regions = 'Select at least one service area';
+    if (stateCode.trim() && !/^[A-Z]{2}$/.test(stateCode.trim())) {
+      errors.stateCode = 'Two-letter state code, e.g. CA';
+    }
 
-    const w = Number(maxSheetWidth);
-    const h = Number(maxSheetHeight);
-    const dpi = Number(maxDPI);
 
-    if (!Number.isFinite(w) || w <= 0) errors.maxSheetWidth = 'Width must be a positive number';
-    if (!Number.isFinite(h) || h <= 0) errors.maxSheetHeight = 'Height must be a positive number';
-    if (!Number.isFinite(dpi) || dpi < 72 || dpi > 2400) errors.maxDPI = 'DPI must be between 72 and 2400';
-    if (formats.length === 0) errors.formats = 'Select at least one format';
 
     return { errors, isValid: Object.keys(errors).length === 0 };
   }, [partnerName, contactName, email, phone, street, city, stateCode, postalCode,
-      regions, maxSheetWidth, maxSheetHeight, maxDPI, formats]);
+      regions]);
 
   const toggleRegion = (region: string) => {
     setRegions((prev) => (prev.includes(region) ? prev.filter((r) => r !== region) : [...prev, region]));
-  };
-
-  const toggleFormat = (format: string) => {
-    setFormats((prev) => (prev.includes(format) ? prev.filter((f) => f !== format) : [...prev, format]));
   };
 
   const resetForm = () => {
@@ -83,10 +63,6 @@ export const AddPartnerModal = ({
     setCity('');
     setStateCode('');
     setPostalCode('');
-    setMaxSheetWidth('24');
-    setMaxSheetHeight('19.5');
-    setFormats(['PNG', 'PDF', 'TIFF']);
-    setMaxDPI('1200');
     setTouched({});
   };
 
@@ -103,10 +79,6 @@ export const AddPartnerModal = ({
       email: true,
       phone: true,
       regions: true,
-      maxSheetWidth: true,
-      maxSheetHeight: true,
-      formats: true,
-      maxDPI: true,
     });
 
     if (!validation.isValid) return;
@@ -121,11 +93,6 @@ export const AddPartnerModal = ({
           email: email.trim(),
           phone: phone.trim(),
           regions,
-          capabilities: {
-            maxSheetSizeIn: { width: Number(maxSheetWidth), height: Number(maxSheetHeight) },
-            formats,
-            maxDPI: Number(maxDPI),
-          },
           address: {
             street: street.trim(),
             city: city.trim(),
@@ -161,7 +128,7 @@ export const AddPartnerModal = ({
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
           <div>
             <h2 className="text-lg font-bold text-gray-900">Add New Partner</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Create a fulfilment partner account and configure service areas and capabilities.</p>
+            <p className="text-xs text-gray-500 mt-0.5">The partner fills in the rest themselves once they set their password.</p>
           </div>
           <button
             onClick={handleClose}
@@ -189,7 +156,7 @@ export const AddPartnerModal = ({
 
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-900">
-                Contact Name <span className="text-red-500">*</span>
+                Contact Name
               </label>
               <input
                 value={contactName}
@@ -218,7 +185,7 @@ export const AddPartnerModal = ({
 
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-900">
-                Phone <span className="text-red-500">*</span>
+                Phone
               </label>
               <input
                 value={phone}
@@ -234,7 +201,7 @@ export const AddPartnerModal = ({
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-sm font-bold text-gray-900">
-                Service Areas <span className="text-red-500">*</span>
+                Service Areas
               </label>
               <span className="text-xs text-gray-400">{regions.length} selected</span>
             </div>
@@ -270,7 +237,7 @@ export const AddPartnerModal = ({
             </div>
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-900">
-                Street <span className="text-red-500">*</span>
+                Street
               </label>
               <input
                 value={street}
@@ -284,7 +251,7 @@ export const AddPartnerModal = ({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-1">
                 <label className="text-sm font-bold text-gray-900">
-                  City <span className="text-red-500">*</span>
+                  City
                 </label>
                 <input
                   value={city}
@@ -297,7 +264,7 @@ export const AddPartnerModal = ({
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-bold text-gray-900">
-                  State <span className="text-red-500">*</span>
+                  State
                 </label>
                 <input
                   value={stateCode}
@@ -311,7 +278,7 @@ export const AddPartnerModal = ({
               </div>
               <div className="space-y-1">
                 <label className="text-sm font-bold text-gray-900">
-                  Postal Code <span className="text-red-500">*</span>
+                  Postal Code
                 </label>
                 <input
                   value={postalCode}
@@ -322,78 +289,6 @@ export const AddPartnerModal = ({
                 />
                 {errorFor('postalCode') && <p className="text-xs text-red-600">{errorFor('postalCode')}</p>}
               </div>
-            </div>
-          </div>
-          <div className="border-t border-gray-100 pt-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-gray-900">Fulfillment Capabilities</h3>
-              <p className="text-xs text-gray-400">Used for routing and validation</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                  Max Sheet Width (in)
-                </label>
-                <input
-                  value={maxSheetWidth}
-                  onChange={(e) => setMaxSheetWidth(e.target.value)}
-                  onBlur={() => setTouched((t) => ({ ...t, maxSheetWidth: true }))}
-                  className={`w-full px-4 py-3 bg-gray-50 border rounded-xl text-sm font-medium text-gray-900 outline-none focus:bg-white transition-all ${errorFor('maxSheetWidth') ? 'border-red-300 focus:border-red-400' : 'border-transparent focus:border-blue-500'}`}
-                />
-                {errorFor('maxSheetWidth') && <p className="text-xs text-red-600">{errorFor('maxSheetWidth')}</p>}
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                  Max Sheet Height (in)
-                </label>
-                <input
-                  value={maxSheetHeight}
-                  onChange={(e) => setMaxSheetHeight(e.target.value)}
-                  onBlur={() => setTouched((t) => ({ ...t, maxSheetHeight: true }))}
-                  className={`w-full px-4 py-3 bg-gray-50 border rounded-xl text-sm font-medium text-gray-900 outline-none focus:bg-white transition-all ${errorFor('maxSheetHeight') ? 'border-red-300 focus:border-red-400' : 'border-transparent focus:border-blue-500'}`}
-                />
-                {errorFor('maxSheetHeight') && <p className="text-xs text-red-600">{errorFor('maxSheetHeight')}</p>}
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                  Max Resolution (DPI)
-                </label>
-                <input
-                  value={maxDPI}
-                  onChange={(e) => setMaxDPI(e.target.value)}
-                  onBlur={() => setTouched((t) => ({ ...t, maxDPI: true }))}
-                  className={`w-full px-4 py-3 bg-gray-50 border rounded-xl text-sm font-medium text-gray-900 outline-none focus:bg-white transition-all ${errorFor('maxDPI') ? 'border-red-300 focus:border-red-400' : 'border-transparent focus:border-blue-500'}`}
-                />
-                {errorFor('maxDPI') && <p className="text-xs text-red-600">{errorFor('maxDPI')}</p>}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                  Supported Formats
-                </label>
-                <span className="text-xs text-gray-400">{formats.length} selected</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {FORMATS.map((fmt) => {
-                  const selected = formats.includes(fmt);
-                  return (
-                    <button
-                      type="button"
-                      key={fmt}
-                      onClick={() => toggleFormat(fmt)}
-                      className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${selected ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
-                    >
-                      {fmt}
-                    </button>
-                  );
-                })}
-              </div>
-              {errorFor('formats') && <p className="text-xs text-red-600">{errorFor('formats')}</p>}
             </div>
           </div>
         </div>

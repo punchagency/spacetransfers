@@ -25,6 +25,7 @@ interface GlobalPricing {
   shipping: { standard: number; express: number };
   shippingMarkupPct: number;
   rushSurchargePct: number;
+  partnerDefaults: { baseRatePerSqFt: number; rushPct: number; specialInkFlat: number };
   packaging: { weightPerSqFtLb: number; bands: PackagingBand[] };
   taxRatePct: number;
 }
@@ -37,6 +38,7 @@ const FALLBACK: GlobalPricing = {
   shipping: { standard: 8.99, express: 24.99 },
   shippingMarkupPct: 10,
   rushSurchargePct: 10,
+  partnerDefaults: { baseRatePerSqFt: 2.5, rushPct: 10, specialInkFlat: 5 },
   packaging: {
     weightPerSqFtLb: 0.08,
     bands: [
@@ -70,6 +72,11 @@ export const GeneralSettings = () => {
           },
           shippingMarkupPct: Number(data?.shippingMarkupPct ?? FALLBACK.shippingMarkupPct),
           rushSurchargePct: Number(data?.rushSurchargePct ?? FALLBACK.rushSurchargePct),
+          partnerDefaults: {
+            baseRatePerSqFt: Number(data?.partnerDefaults?.baseRatePerSqFt ?? FALLBACK.partnerDefaults.baseRatePerSqFt),
+            rushPct: Number(data?.partnerDefaults?.rushPct ?? FALLBACK.partnerDefaults.rushPct),
+            specialInkFlat: Number(data?.partnerDefaults?.specialInkFlat ?? FALLBACK.partnerDefaults.specialInkFlat),
+          },
           packaging: {
             weightPerSqFtLb: Number(
               data?.packaging?.weightPerSqFtLb ?? FALLBACK.packaging.weightPerSqFtLb,
@@ -100,6 +107,9 @@ export const GeneralSettings = () => {
       pricing.shipping.express,
       pricing.shippingMarkupPct,
       pricing.rushSurchargePct,
+      pricing.partnerDefaults.baseRatePerSqFt,
+      pricing.partnerDefaults.rushPct,
+      pricing.partnerDefaults.specialInkFlat,
       pricing.packaging.weightPerSqFtLb,
       pricing.taxRatePct,
     ];
@@ -270,6 +280,36 @@ export const GeneralSettings = () => {
             (n) => setPricing((p) => ({ ...p, rushSurchargePct: n })),
             "Added to the subtotal when a customer picks Express Shipping, which puts their job at the front of the partner's queue. Covers the rush the partner is paid — express shipping itself only pays the courier.",
           )}
+
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-5 space-y-5">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">New partner defaults</h3>
+              <p className="text-sm text-gray-500 mt-0.5">
+                What a partner is paid when they are first added. Each partner&rsquo;s own
+                page can override these — this is only the starting point.
+              </p>
+            </div>
+            {numberField(
+              "Partner rate per sq ft ($)",
+              pricing.partnerDefaults.baseRatePerSqFt,
+              (n) => setPricing((p) => ({ ...p, partnerDefaults: { ...p.partnerDefaults, baseRatePerSqFt: n } })),
+              `Your cost. Against the $${pricing.baseRatePerSqFt.toFixed(2)} retail rate above, this leaves $${(pricing.baseRatePerSqFt - pricing.partnerDefaults.baseRatePerSqFt).toFixed(2)} per sq ft before shipping.`,
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {numberField(
+                "Partner rush uplift (%)",
+                pricing.partnerDefaults.rushPct,
+                (n) => setPricing((p) => ({ ...p, partnerDefaults: { ...p.partnerDefaults, rushPct: n } })),
+                "Extra paid to the partner on an urgent job.",
+              )}
+              {numberField(
+                "Special ink fee ($)",
+                pricing.partnerDefaults.specialInkFlat,
+                (n) => setPricing((p) => ({ ...p, partnerDefaults: { ...p.partnerDefaults, specialInkFlat: n } })),
+                "Flat amount added when an adjustment names special ink.",
+              )}
+            </div>
+          </div>
 
           {numberField(
             "Tax Rate (%)",
