@@ -316,7 +316,10 @@ export default function PaymentStep({
                 <div className="font-normal">Express Shipping</div>
               </div>
               <div className="text-sm text-gray-600">
-                Fast delivery with priority handling
+                {/* This promised "priority handling" while nothing set the
+                    order's priority, so the job queued behind everything else.
+                    Express now actually moves it to the front. */}
+                Jumps the print queue, then ships on a faster service
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 Estimated delivery: 2-3 business days

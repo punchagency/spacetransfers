@@ -120,7 +120,8 @@ export default function CheckoutModal({
   const [rates, setRates] = useState<{
     shipping: { standard: number; express: number };
     taxRatePct: number;
-  }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8 });
+    rushSurchargePct: number;
+  }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8, rushSurchargePct: 10 });
 
   useEffect(() => {
     if (!isOpen) return;
@@ -134,6 +135,7 @@ export default function CheckoutModal({
             express: Number(r.shipping.express),
           },
           taxRatePct: Number(r.taxRatePct),
+          rushSurchargePct: Number(r.rushSurchargePct ?? 10),
         });
       })
       .catch(() => {
@@ -148,8 +150,16 @@ export default function CheckoutModal({
   const shippingCost = Number(
     (shipping === "standard" ? rates.shipping.standard : rates.shipping.express).toFixed(2),
   );
-  const tax = Number((subtotal * (rates.taxRatePct / 100)).toFixed(2));
-  const total = Number((subtotal + shippingCost + tax).toFixed(2));
+  /**
+   * Express means the job is rushed through production, not just posted faster —
+   * so it carries a surcharge that pays the partner for jumping the queue. The
+   * express price itself only pays the courier.
+   */
+  const rushSurcharge = Number(
+    (shipping === "express" ? subtotal * (rates.rushSurchargePct / 100) : 0).toFixed(2),
+  );
+  const tax = Number(((subtotal + rushSurcharge) * (rates.taxRatePct / 100)).toFixed(2));
+  const total = Number((subtotal + rushSurcharge + shippingCost + tax).toFixed(2));
 
   const validateCheckout = () => {
     const errors: Record<string, string> = {};
@@ -703,10 +713,29 @@ export default function CheckoutModal({
                             ${subtotal.toFixed(2)}
                           </span>
                         </div>
+                        {rushSurcharge > 0 && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-600">Rush production</span>
+                            <span className="font-medium">
+                              ${rushSurcharge.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-sm">
                           <span className="text-gray-600">Shipping</span>
                           <span className="font-medium">
                             ${shippingCost.toFixed(2)}
+                          </span>
+                        </div>
+                        {/*
+                          Tax was charged and never shown, so Subtotal plus
+                          Shipping did not add up to the Total on screen — the
+                          difference just appeared, unexplained, at checkout.
+                        */}
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Tax</span>
+                          <span className="font-medium">
+                            ${tax.toFixed(2)}
                           </span>
                         </div>
                         <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
