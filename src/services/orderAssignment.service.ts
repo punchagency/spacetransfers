@@ -548,6 +548,19 @@ export interface PredictedOrigin {
   region: string;
   printerName: string;
   /** True when no printer serves the customer's own region and a fallback was used. */
+  /**
+   * True when the likely partner is outside the customer's own region.
+   *
+   * Deliberately internal — not surfaced at checkout. It was considered and
+   * decided against: the shipping quote is already taken from this predicted
+   * origin, so a cross-region order is priced and estimated accordingly, and a
+   * notice would tell the customer about a capacity problem they cannot act on.
+   * It stays as an operational signal (admins are alerted separately when a
+   * cross-region assignment actually happens).
+   *
+   * It is also only a prediction: assignment runs after checkout, so a local
+   * partner may free up, or the predicted one may hit capacity.
+   */
   isFallbackRegion: boolean;
 }
 
