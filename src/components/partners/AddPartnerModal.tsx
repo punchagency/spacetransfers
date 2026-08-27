@@ -46,8 +46,9 @@ export const AddPartnerModal = ({
 
 
     return { errors, isValid: Object.keys(errors).length === 0 };
-  }, [partnerName, contactName, email, phone, street, city, stateCode, postalCode,
-      regions]);
+    // Only these three are validated now: name and email are required, and a
+    // state code, if given, must be a real one.
+  }, [partnerName, email, stateCode]);
 
   const toggleRegion = (region: string) => {
     setRegions((prev) => (prev.includes(region) ? prev.filter((r) => r !== region) : [...prev, region]));

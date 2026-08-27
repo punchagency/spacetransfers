@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { PartnersTable } from '../components/partners/PartnersTable';
 import { FiPlus, FiSend } from 'react-icons/fi';
@@ -22,6 +22,8 @@ export const FulfilmentPartners = () => {
   const [refreshKey, setRefreshKey] = useState(0);
   // Debounced so typing doesn't fire a request per keystroke.
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     const id = window.setTimeout(() => setDebouncedSearch(searchTerm), 300);
@@ -39,29 +41,66 @@ export const FulfilmentPartners = () => {
    */
   const filteredPartners: Partner[] = partners;
 
+  const mapPartner = (p: any): Partner => ({
+    id: String(p.id),
+    name: String(p.name || 'N/A'),
+    email: String(p.email || 'N/A'),
+    regions: Array.isArray(p.regions) ? p.regions : [],
+    status: p.status as Partner['status'],
+    basePrice: String(p.basePrice || '$0.00'),
+    salePrice: String(p.salePrice || '$0.00'),
+    profit: String(p.profit || '$0.00'),
+    orders: String(p.orders ?? p.ordersCompleted ?? '0'),
+  });
+
+  const queryFor = useCallback((cursor?: string | null) => {
+    const params = new URLSearchParams();
+    if (statusFilter !== 'All Status') params.set('status', statusFilter);
+    if (regionFilter !== 'All Regions') params.set('region', regionFilter);
+    if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
+    params.set('limit', '50');
+    if (cursor) params.set('cursor', cursor);
+    return params.toString();
+  }, [statusFilter, regionFilter, debouncedSearch]);
+
+  // Read through a ref inside the effect so the fetch always uses the current
+  // filters without making the effect re-run on an identity change.
+  const queryForRef = useRef(queryFor);
+  queryForRef.current = queryFor;
+
+  /**
+   * The server returns a cursor when more partners exist. The page asked for 50
+   * and threw it away, so at 51 partners the rest simply were not there — no
+   * message, no control, and the table's own pager only paginates what it was
+   * handed.
+   */
+  const loadMorePartners = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await apiFetch(`/admin/partners?${queryFor(nextCursor)}`);
+      const more = (res.partners || []).map(mapPartner);
+      setPartners((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...more.filter((p: Partner) => !seen.has(p.id))];
+      });
+      setNextCursor(res.nextCursor || null);
+    } catch (error: any) {
+      toast.error(error.message || 'Could not load more partners');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => {
     const fetchPartners = async () => {
       setLoading(true);
       try {
-        const params = new URLSearchParams();
-        if (statusFilter !== 'All Status') params.set('status', statusFilter);
-        if (regionFilter !== 'All Regions') params.set('region', regionFilter);
-        if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
-        params.set('limit', '50');
+        const params = new URLSearchParams(queryForRef.current());
 
         const response = await apiFetch(`/admin/partners?${params.toString()}`);
-        const mapped: Partner[] = (response.partners || []).map((p: any) => ({
-          id: String(p.id),
-          name: String(p.name || 'N/A'),
-          email: String(p.email || 'N/A'),
-          regions: Array.isArray(p.regions) ? p.regions : [],
-          status: p.status as Partner['status'],
-          basePrice: String(p.basePrice || '$0.00'),
-          salePrice: String(p.salePrice || '$0.00'),
-          profit: String(p.profit || '$0.00'),
-          orders: String(p.orders ?? p.ordersCompleted ?? '0'),
-        }));
-        setPartners(mapped);
+        setPartners((response.partners || []).map(mapPartner));
+        setNextCursor(response.nextCursor || null);
       } catch (error: any) {
         toast.error(error.message || 'Failed to load partners');
       } finally {
@@ -139,7 +178,20 @@ export const FulfilmentPartners = () => {
             <p className="mt-3 text-gray-500 text-sm">Loading partners...</p>
           </div>
         ) : (
-          <PartnersTable partners={filteredPartners} />
+          <>
+            <PartnersTable partners={filteredPartners} />
+            {nextCursor && (
+              <div className="flex justify-center pt-4">
+                <button
+                  onClick={() => void loadMorePartners()}
+                  disabled={loadingMore}
+                  className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 rounded-lg text-sm font-medium text-gray-700"
+                >
+                  {loadingMore ? 'Loading…' : 'Load more partners'}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

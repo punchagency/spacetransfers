@@ -60,13 +60,19 @@ export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
         { header: "Base Price", key: "basePrice" as keyof Partner, className: "text-[#364153] font-medium" },
         { header: "Sale Price", key: "salePrice" as keyof Partner, className: "text-[#364153] font-medium" },
         { header: "Profit", key: "profit" as keyof Partner, className: "text-[#364153] font-bold" },
-        { header: "Orders", key: "orders" as keyof Partner, className: "text-gray-900 font-medium" },
+        { header: "Completed", key: "orders" as keyof Partner, className: "text-gray-900 font-medium" },
         {
             header: "Action",
+            /*
+             * A span, not a button. It never had an onClick — it only worked
+             * because the click bubbled to the row's navigate handler, so a
+             * stopPropagation above would have killed it silently while it
+             * still looked clickable. The row is the control.
+             */
             render: () => (
-                <button className="text-gray-400 hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
+                <span className="text-gray-400 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
                     View
-                </button>
+                </span>
             )
         },
     ];
