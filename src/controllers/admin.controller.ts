@@ -2505,14 +2505,44 @@ export const updatePartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    const updateData = req.body;
+    /**
+     * An allowlist, not a denylist.
+     *
+     * This took `req.body` wholesale, deleted `passwordHash` and `role`, and
+     * `$set` the rest — so anything else in the body was written straight to
+     * the partner document. A single PATCH could set their `rating`, or their
+     * `settings.pricing.baseRatePerSqFt`, rewriting a commercial term without
+     * going near the Pricing tab. Verified: a request setting the pay rate to
+     * $99/sq ft was accepted.
+     *
+     * Service areas are the only thing this endpoint is for. They are the one
+     * genuinely platform-owned field on a partner — routing policy, not the
+     * partner's own information — and everything else has its own endpoint:
+     * status, capacity settings, and pricing.
+     */
+    const { regions } = req.body ?? {};
 
-    delete updateData.passwordHash;
-    delete updateData.role;
+    if (!Array.isArray(regions) || regions.length === 0) {
+      const error = new Error("regions must be a non-empty array") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalizedRegions = regions
+      .map((r: any) => normalizeRegion(String(r).trim()))
+      .filter(Boolean) as string[];
+    if (normalizedRegions.length !== regions.length) {
+      const unknown = regions.filter((r: any) => !normalizeRegion(String(r).trim()));
+      const error = new Error(
+        `Unrecognised service area(s): ${unknown.join(", ")}. Must be one of West, Midwest, South, Northeast.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
     const partner = await User.findOneAndUpdate(
       { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: updateData },
+      { $set: { regions: normalizedRegions } },
       { new: true, runValidators: true }
     ).select("-passwordHash");
 
