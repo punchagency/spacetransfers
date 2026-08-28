@@ -4,7 +4,7 @@ import { AiEditAbortedError } from "../types";
 /**
  * Runs the operations the app can already do deterministically — background
  * removal (in-browser WASM segmentation) and AI upscaling (server endpoint with
- * its own Replicate → HuggingFace → sharp fallback chain).
+ * sharp on the server).
  *
  * Registered at the highest priority so prompts like "remove the white
  * background" never spend a generative credit on work that has a better,

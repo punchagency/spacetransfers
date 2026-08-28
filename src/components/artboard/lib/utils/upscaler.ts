@@ -9,7 +9,7 @@ export interface UpscaleResult {
 
 /**
  * Sends the image to the server for AI-powered upscaling (Real-ESRGAN via
- * Replicate when configured, otherwise sharp Lanczos3). Returns the new
+ * sharp Lanczos3 with an unsharp mask per pass). Returns the new
  * Cloudinary URL and pixel dimensions. The caller is responsible for
  * preserving all artboard geometry (widthIn, heightIn, posX, posY, rotation).
  */
