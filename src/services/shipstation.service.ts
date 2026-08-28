@@ -162,6 +162,14 @@ export const createShipStationOrder = (params: {
    * mis-declared parcel is billed back by the carrier after the fact.
    */
   parcel?: { weightLb: number; lengthIn: number; widthIn: number; heightIn: number };
+  /**
+   * The assigned partner's own warehouse. Omitted, the HQ default is used.
+   *
+   * ShipStation reports by warehouse, so stamping every order with the HQ one
+   * filed all partner volume under head office. The label already shipped from
+   * the right address — this only fixes what ShipStation's own reports say.
+   */
+  warehouseId?: number | null;
 }): Promise<{ shipStationOrderId: string; orderNumber: string }> =>
   withRetry(
     async () => {
@@ -175,7 +183,10 @@ export const createShipStationOrder = (params: {
         country: normaliseCountry(params.country),
         phone: params.phone || "",
       };
-      const warehouseId = await getDefaultWarehouseId();
+      const warehouseId =
+        typeof params.warehouseId === "number" && Number.isFinite(params.warehouseId)
+          ? params.warehouseId
+          : await getDefaultWarehouseId();
 
       if (!params.parcel) {
         console.warn(
@@ -314,6 +325,18 @@ export const getShipStationRates = (params: {
     "getRates",
   );
 
+/**
+ * Buying a label is the one ShipStation call that spends money, so the guard
+ * lives here rather than at the two call sites.
+ *
+ * `SHIPSTATION_LABELS_ENABLED` was declared in the deployment blueprint and
+ * read by nothing, which meant staging — pointed at the same live ShipStation
+ * account, because there is no sandbox — could buy real postage against the
+ * client's card. Rate quoting, order creation and tracking are all unaffected;
+ * only the purchase is blocked.
+ */
+export const areLabelPurchasesEnabled = (): boolean => env.shipStationLabelsEnabled;
+
 export const createShipStationLabel = (params: {
   shipStationOrderId: string;
   carrierCode?: string;
@@ -335,6 +358,15 @@ export const createShipStationLabel = (params: {
 }> =>
   withRetry(
     async () => {
+      if (!areLabelPurchasesEnabled()) {
+        const error = new Error(
+          "Label purchasing is disabled in this environment (SHIPSTATION_LABELS_ENABLED is not true). " +
+            "ShipStation has no sandbox, so buying a label here would charge the live account.",
+        ) as Error & { statusCode?: number };
+        error.statusCode = 503;
+        throw error;
+      }
+
       // Prefer the caller-supplied shipFrom (printer's business address).
       // Fall back to env-var address if caller didn't provide one.
       const shipFrom = params.shipFrom ?? (env.shipStationFromStreet

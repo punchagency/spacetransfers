@@ -12,7 +12,7 @@ import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
-import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
+import { storeArtwork } from "../services/storage.service.js";
 import { LoginActivity } from "../models/loginActivity.model.js";
 import { Design } from "../models/design.model.js";
 import { AdminNotification } from "../models/adminNotification.model.js";
@@ -759,7 +759,7 @@ export const uploadAdminAvatar = async (req: Request, res: Response, next: NextF
       .webp({ quality: 80 })
       .toBuffer();
 
-    const { url } = await uploadBufferToCloudinary(optimized, "space-transfers/avatars");
+    const { url } = await storeArtwork(optimized, "space-transfers/avatars");
     admin.avatarUrl = url;
     await admin.save();
 
@@ -1081,7 +1081,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
     }
 
     const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
-      .select("settings")
+      .select("settings shipStationWarehouseId")
       .lean();
 
     if (!partner) {
@@ -1108,6 +1108,9 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
       // jobCapacity document came back without it and the toggle defaulted
       // blind.
       jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0, autoAccept: true },
+      // Lives on the user, not in settings — it identifies this partner inside
+      // the client's ShipStation account rather than configuring the platform.
+      shipStationWarehouseId: (partner as any).shipStationWarehouseId ?? null,
       notifications,
       capabilities
     });
@@ -1119,7 +1122,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 export const updatePartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { jobCapacity, notifications, capabilities } = req.body;
+    const { jobCapacity, notifications, capabilities, shipStationWarehouseId } = req.body;
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -1138,6 +1141,27 @@ export const updatePartnerSettings = async (req: Request, res: Response, next: N
        * saved anything: it moved, reported success, and reverted on reload.
        */
       if (jobCapacity.autoAccept !== undefined) updateData["settings.jobCapacity.autoAccept"] = jobCapacity.autoAccept;
+    }
+
+    /**
+     * Null clears it deliberately — a partner whose warehouse was removed in
+     * ShipStation must fall back to HQ rather than keep stamping a dead id.
+     */
+    if (shipStationWarehouseId !== undefined) {
+      const raw = shipStationWarehouseId;
+      if (raw === null || raw === "") {
+        updateData["shipStationWarehouseId"] = null;
+      } else {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n <= 0) {
+          const error = new Error(
+            "ShipStation warehouse ID must be a positive whole number — it is the number in the warehouse's URL",
+          ) as CustomError;
+          error.statusCode = 400;
+          throw error;
+        }
+        updateData["shipStationWarehouseId"] = n;
+      }
     }
 
     if (notifications) {

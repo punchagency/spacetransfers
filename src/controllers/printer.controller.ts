@@ -49,7 +49,7 @@ import {
   createShipStationOrder,
   createShipStationLabel,
 } from "../services/shipstation.service.js";
-import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
+import { storeArtwork } from "../services/storage.service.js";
 import sharp from "sharp";
 import PDFDocument from "pdfkit";
 
@@ -200,13 +200,13 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
         .resize(400, 400, { fit: "cover" })
         .webp({ quality: 80 })
         .toBuffer();
-      const { url } = await uploadBufferToCloudinary(optimizedBuffer, "space-transfers/avatars");
+      const { url } = await storeArtwork(optimizedBuffer, "space-transfers/avatars");
       user.avatarUrl = url;
       await user.save();
       return res.json({ message: "Avatar uploaded and optimized", url });
     }
 
-    const { url } = await uploadBufferToCloudinary(file.buffer, "space-transfers/certifications");
+    const { url } = await storeArtwork(file.buffer, "space-transfers/certifications");
     res.json({ message: "Document uploaded successfully", url });
   } catch (error) {
     next(error);
@@ -2123,7 +2123,9 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
     }));
 
     // Use the printer's business address as the ship-from address.
-    const printer = await User.findById(printerId).select("name companyName phone businessAddress").lean();
+    const printer = await User.findById(printerId)
+      .select("name companyName phone businessAddress shipStationWarehouseId")
+      .lean();
     const bAddr = (printer as any)?.businessAddress;
     const shipFrom = bAddr?.street
       ? {
@@ -2150,6 +2152,9 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
       country: addr.country ?? "US",
       items,
       totalAmount: Number((job as any).pricing?.total ?? 0),
+      // This partner's own warehouse when the client has created one for them;
+      // null falls back to the HQ default inside the service.
+      warehouseId: (printer as any)?.shipStationWarehouseId ?? null,
       // The parcel recorded when the order was placed, so the label declares
       // the same thing the rate was quoted against. Falls back to deriving it
       // for orders that predate the field.

@@ -55,6 +55,19 @@ export interface IUser extends Document {
     registrationNumber?: string;
     foundedDate?: Date;
   };
+  /**
+   * This partner's own warehouse in the client's ShipStation account.
+   *
+   * ShipStation stamps a warehouse on every order and reports against it, so
+   * without one every partner's jobs are filed under the HQ warehouse — the
+   * labels still ship from the right address, but ShipStation's own reporting
+   * shows all volume coming from head office.
+   *
+   * The client creates a warehouse per partner and passes the numeric id; it is
+   * only visible in the ShipStation URL, which is why it is entered by hand
+   * rather than discovered.
+   */
+  shipStationWarehouseId?: number | null;
   businessAddress?: {
     street: string;
     city: string;
@@ -305,6 +318,7 @@ const userSchema = new Schema<IUser>(
       registrationNumber: String,
       foundedDate: Date
     },
+    shipStationWarehouseId: { type: Number, default: null },
     businessAddress: {
       street: String,
       city: String,

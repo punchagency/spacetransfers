@@ -13,7 +13,8 @@ import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import fs from "fs";
 import path from "path";
 import { smartTrimToFile } from "../utils/aiCrop.js";
-import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
+import {  cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
+import { storeArtwork } from "../services/storage.service.js";
 import {
   getGlobalPricing,
   computeTotals as computeOrderTotals,
@@ -109,7 +110,7 @@ const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
 export const materializeAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (Buffer.isBuffer(req.body) && req.body.length > 0) {
-      const { url: hostedUrl } = await uploadBufferToCloudinary(
+      const { url: hostedUrl } = await storeArtwork(
         req.body,
         "space-transfers/edited",
       );
@@ -128,7 +129,7 @@ export const materializeAsset = async (req: Request, res: Response, next: NextFu
     }
 
     const buffer = await fetchImageBuffer(url);
-    const { url: hostedUrl } = await uploadBufferToCloudinary(buffer, "space-transfers/edited");
+    const { url: hostedUrl } = await storeArtwork(buffer, "space-transfers/edited");
     res.json({ url: hostedUrl, materialized: true, bytes: buffer.length });
   } catch (error) {
     next(error);
@@ -189,7 +190,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
 
     const trimmedBuffer = await trimBuffer(sourceBuffer);
 
-    const { url: trimmedUrl } = await uploadBufferToCloudinary(trimmedBuffer, "space-transfers/trimmed");
+    const { url: trimmedUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
 
     const meta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
     const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
@@ -208,15 +209,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
 
 // ── Upscaling constants ───────────────────────────────────────────────────────
 
-const REPLICATE_ESRGAN_MODEL = "nightmareai/real-esrgan";
-const REPLICATE_POLL_INTERVAL_MS = 2_500;
-const REPLICATE_TIMEOUT_MS = 90_000;
-const VALID_REPLICATE_SCALES = [2, 4, 8] as const;
-
-// SwinIR-realworld 4× — best free model on HuggingFace Inference API.
-const HF_SR_MODEL = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr";
-const HF_MODEL_LOAD_TIMEOUT_MS = 60_000; // wait up to 60 s for cold-start
-const MAX_OUTPUT_PX = 8_000;             // prevent runaway output sizes
+const MAX_OUTPUT_PX = 8_000; // prevent runaway output sizes
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -275,7 +268,7 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
  * the pure-sharp fallback gets a stronger pass because interpolation
  * introduces softness that must be compensated.
  */
-// Replicate/HuggingFace scale purely off the requested factor, with no idea
+// A remote upscaler would scale purely off the requested factor, with no idea
 // of the MAX_OUTPUT_PX ceiling the sharp tier already respects — a large
 // `scale` against a sizeable source (e.g. the user enlarging the item a lot
 // before requesting DPI enhancement) can return a multi-hundred-megapixel
@@ -309,97 +302,17 @@ async function applySharpening(
     .toBuffer();
 }
 
-// ── Tier 1: Replicate Real-ESRGAN ────────────────────────────────────────────
-
-async function upscaleWithReplicate(
-  publicUrl: string,
-  scale: number,
-  apiToken: string,
-): Promise<Buffer> {
-  const replicateScale =
-    VALID_REPLICATE_SCALES.find((s) => s >= scale) ?? VALID_REPLICATE_SCALES[VALID_REPLICATE_SCALES.length - 1];
-
-  const createRes = await fetch(
-    `https://api.replicate.com/v1/models/${REPLICATE_ESRGAN_MODEL}/predictions`,
-    {
-      method: "POST",
-      headers: { Authorization: `Token ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ input: { image: publicUrl, scale: replicateScale, face_enhance: false } }),
-    },
-  );
-  if (!createRes.ok) {
-    const body = await createRes.text().catch(() => "");
-    throw new Error(`Replicate ${createRes.status}: ${body.slice(0, 200)}`);
-  }
-
-  let prediction: { id: string; status: string; output?: string; error?: string } =
-    await createRes.json();
-
-  const deadline = Date.now() + REPLICATE_TIMEOUT_MS;
-  while (
-    prediction.status !== "succeeded" &&
-    prediction.status !== "failed" &&
-    prediction.status !== "canceled"
-  ) {
-    if (Date.now() > deadline) throw new Error("Replicate AI upscaling timed out (90 s)");
-    await new Promise((r) => setTimeout(r, REPLICATE_POLL_INTERVAL_MS));
-    const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-      headers: { Authorization: `Token ${apiToken}` },
-    });
-    if (!pollRes.ok) throw new Error(`Replicate poll failed (${pollRes.status})`);
-    prediction = await pollRes.json();
-  }
-
-  if (prediction.status !== "succeeded" || !prediction.output) {
-    throw new Error(`Replicate failed: ${prediction.error ?? "unknown"}`);
-  }
-
-  const imgRes = await fetch(prediction.output);
-  if (!imgRes.ok) throw new Error("Could not download upscaled image from Replicate CDN");
-  return Buffer.from(await imgRes.arrayBuffer());
-}
-
-// ── Tier 2: HuggingFace SwinIR-realworld (free) ───────────────────────────────
-
-async function upscaleWithHuggingFace(
-  sourceBuffer: Buffer,
-  apiToken: string,
-  attempt = 0,
-): Promise<Buffer> {
-  const res = await fetch(
-    `https://api-inference.huggingface.co/models/${HF_SR_MODEL}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/octet-stream",
-        "Accept": "image/png",
-      },
-      body: new Uint8Array(sourceBuffer),
-    },
-  );
-
-  // 503 = model is cold-starting — wait the suggested time, then retry once.
-  if (res.status === 503 && attempt === 0) {
-    let waitMs = 20_000;
-    try {
-      const body: any = await res.json();
-      if (typeof body?.estimated_time === "number") {
-        waitMs = Math.min(body.estimated_time * 1_000 + 3_000, HF_MODEL_LOAD_TIMEOUT_MS);
-      }
-    } catch { /* body not JSON */ }
-    console.log(`[UPSCALE] HuggingFace model loading — waiting ${Math.round(waitMs / 1000)}s`);
-    await new Promise((r) => setTimeout(r, waitMs));
-    return upscaleWithHuggingFace(sourceBuffer, apiToken, 1);
-  }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`HuggingFace ${res.status}: ${body.slice(0, 200)}`);
-  }
-
-  return Buffer.from(await res.arrayBuffer());
-}
+/*
+ * Replicate and HuggingFace upscaling tiers removed.
+ *
+ * Neither is provisioned in production — the deployment blueprint declares only
+ * GEMINI_API_KEY — so both were a paid dependency and a free-tier dependency
+ * that would never have had credentials, falling through to sharp on every
+ * request while looking like a working three-tier chain.
+ *
+ * Sharp is now the whole implementation: local, free, no key, and no image
+ * leaving the server to a third party.
+ */
 
 // ── Tier 3: Sharp multi-pass with unsharp mask (no API key needed) ────────────
 //
@@ -459,51 +372,18 @@ export const upscaleAsset = async (req: Request, res: Response, next: NextFuncti
     const originalWidthPx = originalMeta.width ?? 0;
     const originalHeightPx = originalMeta.height ?? 0;
 
-    let upscaledBuffer: Buffer = undefined as any;
-    let tier = "";
-
-    // Each tier falls through to the next if it errors (billing, quota, cold-start failure, etc.)
-    if (env.replicateApiToken) {
-      try {
-        let publicUrl = url;
-        if (url.startsWith("data:") || url.includes("/uploads/")) {
-          const { url: tempUrl } = await uploadBufferToCloudinary(sourceBuffer, "space-transfers/upscale-input");
-          publicUrl = tempUrl;
-        }
-        upscaledBuffer = await upscaleWithReplicate(publicUrl, scale, env.replicateApiToken);
-        upscaledBuffer = await capOutputPixels(upscaledBuffer, MAX_OUTPUT_PX);
-        upscaledBuffer = await applySharpening(upscaledBuffer, "light");
-        tier = "replicate";
-      } catch (replicateErr: any) {
-        console.warn(`[UPSCALE] Replicate failed (${replicateErr?.message}) — falling back`);
-        env.replicateApiToken = undefined; // suppress on future requests this session
-        // fall through to next tier below
-        upscaledBuffer = undefined as any;
-        tier = "";
-      }
-    }
-
-    if (!upscaledBuffer! && env.hfApiToken) {
-      try {
-        upscaledBuffer = await upscaleWithHuggingFace(sourceBuffer, env.hfApiToken);
-        upscaledBuffer = await capOutputPixels(upscaledBuffer, MAX_OUTPUT_PX);
-        upscaledBuffer = await applySharpening(upscaledBuffer, "light");
-        tier = "huggingface";
-      } catch (hfErr: any) {
-        console.warn(`[UPSCALE] HuggingFace failed (${hfErr?.message}) — falling back to sharp`);
-        upscaledBuffer = undefined as any;
-        tier = "";
-      }
-    }
-
-    if (!upscaledBuffer!) {
-      upscaledBuffer = await upscaleWithSharp(sourceBuffer, originalWidthPx, originalHeightPx, scale);
-      tier = "sharp";
-    }
+    // One implementation, so no tier to choose and nothing to fall through to.
+    const upscaledBuffer = await upscaleWithSharp(
+      sourceBuffer,
+      originalWidthPx,
+      originalHeightPx,
+      scale,
+    );
+    const tier = "sharp";
 
     console.log(`[UPSCALE] ${tier} — ${originalWidthPx}×${originalHeightPx} → scale ${scale}`);
 
-    const { url: upscaledUrl } = await uploadBufferToCloudinary(upscaledBuffer, "space-transfers/upscaled");
+    const { url: upscaledUrl } = await storeArtwork(upscaledBuffer, "space-transfers/upscaled");
     const upscaledMeta = await sharp(upscaledBuffer, { limitInputPixels: false }).metadata();
 
     res.json({
@@ -533,7 +413,7 @@ const AI_EDIT_TIMEOUT_MS = 120_000;
 /**
  * Which optional inputs each model actually declares.
  *
- * Replicate validates the whole prediction against the model's schema and
+ * A remote model would validate the whole prediction against its schema and
  * rejects it with a 422 if it receives a field the model does not declare — so
  * an optional input is only ever sent to a model known to accept it. Anything
  * absent from this table falls back to the conservative profile (prompt +
@@ -787,153 +667,14 @@ export const buildEditRequest = (
   return { instruction: parts.join(". ").replace(/\.\.+/g, "."), model, extraInput };
 };
 
-async function editWithReplicate(
-  publicUrl: string,
-  built: BuiltEditRequest,
-  apiToken: string,
-): Promise<Buffer> {
-  const createRes = await fetch(
-    `https://api.replicate.com/v1/models/${built.model}/predictions`,
-    {
-      method: "POST",
-      headers: { Authorization: `Token ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        input: {
-          input_image: publicUrl,
-          prompt: built.instruction,
-          output_format: "png",
-          safety_tolerance: 2,
-          ...built.extraInput,
-        },
-      }),
-    },
-  );
-  if (!createRes.ok) {
-    const body = await createRes.text().catch(() => "");
-    throw new Error(`Replicate ${createRes.status}: ${body.slice(0, 200)}`);
-  }
-
-  let prediction: { id: string; status: string; output?: string | string[]; error?: string } =
-    await createRes.json();
-
-  const deadline = Date.now() + AI_EDIT_TIMEOUT_MS;
-  while (
-    prediction.status !== "succeeded" &&
-    prediction.status !== "failed" &&
-    prediction.status !== "canceled"
-  ) {
-    if (Date.now() > deadline) throw new Error("The AI edit timed out. Try a simpler prompt.");
-    await new Promise((r) => setTimeout(r, REPLICATE_POLL_INTERVAL_MS));
-    const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-      headers: { Authorization: `Token ${apiToken}` },
-    });
-    if (!pollRes.ok) throw new Error(`Replicate poll failed (${pollRes.status})`);
-    prediction = await pollRes.json();
-  }
-
-  if (prediction.status !== "succeeded" || !prediction.output) {
-    throw new Error(`The model could not complete this edit: ${prediction.error ?? "unknown error"}`);
-  }
-
-  // Some models return a bare URL, others a one-element array.
-  const outputUrl = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
-  const imgRes = await fetch(outputUrl);
-  if (!imgRes.ok) throw new Error("Could not download the edited image");
-  return Buffer.from(await imgRes.arrayBuffer());
-}
-
-/**
- * Cloudflare Workers AI — the free tier of the generative path.
+/*
+ * Replicate and Cloudflare Workers AI editing removed.
  *
- * Deliberately second in the chain, not first. This is SDXL-class img2img: it
- * takes an instruction and a source image but has none of flux-kontext's
- * instruction-following, so a "remove the person on the left" lands as a
- * re-imagining rather than a surgical edit. It exists so a credit lapse
- * degrades the result instead of ending the request.
- *
- * `strength` is the whole story for edit fidelity here. At 1.0 the model
- * effectively ignores the input and paints a new picture from the prompt, which
- * on a customer's artwork is indistinguishable from data loss. Held low so the
- * original survives the round-trip.
+ * Neither has credentials in production — the blueprint declares only
+ * GEMINI_API_KEY — so this was a three-provider chain in which two links could
+ * never fire. Gemini is the implementation, and when its billing is off it says
+ * so plainly rather than appearing to fall back to something.
  */
-const CF_EDIT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-img2img";
-const CF_EDIT_STRENGTH = 0.45;
-
-async function editWithCloudflare(
-  sourceBuffer: Buffer,
-  built: BuiltEditRequest,
-  accountId: string,
-  apiToken: string,
-): Promise<Buffer> {
-  // SD 1.5 was trained at 512px and degrades badly off-ratio; sending a 4000px
-  // gang-sheet asset straight in wastes the request and returns mush.
-  const prepared = await sharp(sourceBuffer, { limitInputPixels: false })
-    .resize(768, 768, { fit: "inside", withoutEnlargement: true })
-    .flatten({ background: "#ffffff" })
-    .png()
-    .toBuffer();
-
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${CF_EDIT_MODEL}`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt: built.instruction,
-        image_b64: prepared.toString("base64"),
-        strength: CF_EDIT_STRENGTH,
-        guidance: 7.5,
-        num_steps: 20,
-      }),
-      signal: AbortSignal.timeout(AI_EDIT_TIMEOUT_MS),
-    },
-  );
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Cloudflare ${response.status}: ${body.slice(0, 200)}`);
-  }
-
-  // Workers AI returns raw image bytes for image models, but some models answer
-  // with the standard JSON envelope and a base64 payload instead. Both are
-  // accepted so the tier doesn't break on a model-side response change.
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    const payload: any = await response.json();
-    const base64 = payload?.result?.image ?? payload?.result?.response;
-    if (!base64 || typeof base64 !== "string") {
-      throw new Error("Cloudflare returned no image");
-    }
-    return Buffer.from(base64, "base64");
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length === 0) throw new Error("Cloudflare returned an empty image");
-  return bytes;
-}
-
-const hasCloudflareEdit = (): boolean =>
-  Boolean(env.cloudflareAccountId && env.cloudflareApiToken);
-
-/**
- * When Replicate last reported it was out of credit.
- *
- * Held as a timestamp rather than by clearing `env.replicateApiToken`, for two
- * reasons. Destroying the token loses the distinction between "never
- * configured" and "configured but unfunded", which are different messages to
- * the customer. And it is permanent for the life of the process — topping up
- * the account would not bring the model back until someone restarted the
- * server, which is a support ticket nobody would connect to a deploy.
- *
- * The retry window is what makes it self-healing: a billing state can change at
- * any moment, so the tier is skipped for a while and then quietly tried again.
- */
-let replicateOutOfCreditAt = 0;
-const REPLICATE_CREDIT_RETRY_MS = 10 * 60_000;
-
-const replicateEditReady = (): boolean =>
-  Boolean(env.replicateApiToken) &&
-  Date.now() - replicateOutOfCreditAt > REPLICATE_CREDIT_RETRY_MS;
 
 /**
  * Readiness probe. The client caches this for the session and uses it to decide
@@ -941,30 +682,21 @@ const replicateEditReady = (): boolean =>
  * guaranteed to 503.
  */
 export const aiEditCapabilities = async (_req: Request, res: Response) => {
-  // Enabled when *any* tier can serve, so the client keeps generative chips
-  // live on the free provider alone. Reporting only Replicate here would grey
-  // the whole feature out the moment credit ran dry, even with Gemini ready.
-  //
-  // Order matches the dispatch order in `aiEditAsset`, so `tiers[0]` is
-  // genuinely the model that will answer the next request.
-  const tiers = [
-    ...(geminiReady() ? [{ provider: "gemini", model: geminiImageModel() }] : []),
-    ...(replicateEditReady() ? [{ provider: "replicate", model: AI_EDIT_MODEL }] : []),
-    ...(hasCloudflareEdit() ? [{ provider: "cloudflare", model: CF_EDIT_MODEL }] : []),
-  ];
+  // One provider now, so the array is a list of one or of none. Kept as an
+  // array because the client reads `tiers[0]` to name the model it is about to
+  // use, and that contract has not changed.
+  const tiers = geminiReady()
+    ? [{ provider: "gemini", model: geminiImageModel() }]
+    : [];
 
   // Lets an operator see *why* the feature is dark without reading logs, and
   // distinguishes the three states that look identical from the client:
   // nothing configured, configured but capped, configured but unfunded.
   const geminiState = geminiStatus();
   const reason =
-    tiers.length > 0
+    tiers.length > 0 || geminiState === "unconfigured" || geminiState === "ready"
       ? undefined
-      : geminiState !== "unconfigured" && geminiState !== "ready"
-      ? geminiState
-      : env.replicateApiToken
-      ? "out_of_credit"
-      : undefined;
+      : geminiState;
 
   res.json({
     enabled: tiers.length > 0,
@@ -1086,7 +818,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return next(Object.assign(new Error("prompt is required"), { statusCode: 400 }));
     }
-    if (!geminiReady() && !replicateEditReady() && !hasCloudflareEdit()) {
+    if (!geminiReady()) {
       // Distinguished so the operator reading logs — and the customer reading
       // the panel — can tell a capped free tier from an unfunded paid one from
       // a server where nothing was ever configured.
@@ -1105,8 +837,6 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
           ? "The image model is handling a lot of requests right now. Try again in a moment." + stillWorks
           : status === "retired"
           ? "The configured image model is no longer available." + stillWorks
-          : env.replicateApiToken
-          ? "The image model is out of credit, so generative edits are paused." + stillWorks
           : "AI editing isn't configured on this server yet.";
 
       const detail = geminiUnavailableReason();
@@ -1125,29 +855,16 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       typeof seed === "number" ? seed : undefined,
     );
 
-    /**
-     * Replicate needs a publicly reachable URL, so data URLs and local
-     * /uploads paths have to be staged to Cloudinary. Deferred behind a lazy
-     * getter rather than done up front: Gemini takes raw bytes and is tried
-     * first, so on the common path this upload — a full round trip of a
-     * print-resolution file — now never happens at all.
+    /*
+     * The lazy Cloudinary staging that lived here went with Replicate.
+     *
+     * It existed only because a remote model needed a publicly reachable URL,
+     * which meant uploading a print-resolution file just to have something to
+     * link to. Gemini takes the bytes directly, so nothing is staged and no
+     * extra copy of a customer's artwork is made as a side effect of an edit.
      */
-    let stagedUrl: string | null = null;
-    const publicSourceUrl = async (): Promise<string> => {
-      if (!url.startsWith("data:") && !url.includes("/uploads/")) return url;
-      if (stagedUrl) return stagedUrl;
-      const { url: tempUrl } = await uploadBufferToCloudinary(
-        sourceBuffer,
-        "space-transfers/ai-edit-input",
-      );
-      stagedUrl = tempUrl;
-      return tempUrl;
-    };
 
-    // Tiered free-first: Gemini's AI Studio key costs nothing and handles the
-    // whole instruction-edit surface, so it leads. The paid tiers sit behind it
-    // and only earn a request when it is capped or fails — a billing lapse or a
-    // spent daily quota degrades the feature instead of breaking it.
+    // Gemini is the whole implementation.
     let editedBuffer: Buffer | undefined;
     let providerUsed = "";
     let modelUsed = built.model;
@@ -1172,50 +889,6 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
-    if (!editedBuffer && replicateEditReady()) {
-      try {
-        editedBuffer = await editWithReplicate(
-          await publicSourceUrl(),
-          built,
-          env.replicateApiToken!,
-        );
-        providerUsed = "replicate";
-        // A success means the account is funded again; clear any earlier mark
-        // so a single recovered request restores the tier immediately.
-        replicateOutOfCreditAt = 0;
-      } catch (replicateErr: any) {
-        const message = String(replicateErr?.message ?? "");
-        console.warn(`[AI-EDIT] Replicate failed (${message}) — falling back`);
-        lastTierError = `Replicate: ${message}`;
-        // Out of credit is a billing state, not a transient error: it fails
-        // identically for every request until someone tops up, so the tier is
-        // parked briefly rather than re-tried on each edit.
-        if (/\b402\b|insufficient credit/i.test(message)) {
-          replicateOutOfCreditAt = Date.now();
-          console.warn(
-            `[AI-EDIT] Replicate out of credit — pausing that tier for ${REPLICATE_CREDIT_RETRY_MS / 60_000} min`,
-          );
-        }
-        editedBuffer = undefined;
-      }
-    }
-
-    if (!editedBuffer && hasCloudflareEdit()) {
-      try {
-        editedBuffer = await editWithCloudflare(
-          sourceBuffer,
-          built,
-          env.cloudflareAccountId!,
-          env.cloudflareApiToken!,
-        );
-        providerUsed = "cloudflare";
-        modelUsed = CF_EDIT_MODEL;
-      } catch (cfErr: any) {
-        console.warn(`[AI-EDIT] Cloudflare failed (${cfErr?.message})`);
-        lastTierError = `Cloudflare: ${cfErr?.message}`;
-        editedBuffer = undefined;
-      }
-    }
 
     if (!editedBuffer) {
       /**
@@ -1259,7 +932,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     // and the item's physical size and DPI survive the edit intact.
     const conformed = await conformToSource(editedBuffer, sourceGeometry);
 
-    const { url: editedUrl } = await uploadBufferToCloudinary(
+    const { url: editedUrl } = await storeArtwork(
       conformed.buffer,
       "space-transfers/ai-edited",
     );
@@ -2511,7 +2184,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     }
 
     // Upload original to Cloudinary.
-    const { url: fileUrl } = await uploadBufferToCloudinary(fileBuffer, "space-transfers/assets");
+    const { url: fileUrl } = await storeArtwork(fileBuffer, "space-transfers/assets");
 
     const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
@@ -2525,7 +2198,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     let trimmedHeightIn: number | undefined;
     try {
       const trimmedBuffer = await trimBuffer(fileBuffer);
-      const { url: tUrl } = await uploadBufferToCloudinary(trimmedBuffer, "space-transfers/trimmed");
+      const { url: tUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
       trimmedUrl = tUrl;
       const trimmedMeta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
       trimmedWidthPx = trimmedMeta.width;

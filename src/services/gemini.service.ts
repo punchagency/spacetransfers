@@ -214,7 +214,7 @@ export const geminiUnavailableReason = (): string | null => {
       return (
         "Gemini image editing has no free-tier allowance on this API key — Google reports a quota limit of 0 for its image models. " +
         "Enable billing on the key's Google Cloud project at https://aistudio.google.com/apikey (image edits are ~$0.04 each), " +
-        "or configure the free Cloudflare Workers AI tier by setting CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+        "Gemini is the only image model configured, so there is nothing to fall back to."
       );
     case "retired":
       return (
