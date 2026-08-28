@@ -28,6 +28,8 @@ export interface PartnerDetailsData {
 }
 
 export interface PartnerSettingsApi {
+  /** Null when this partner has no warehouse of their own; HQ is used instead. */
+  shipStationWarehouseId?: number | null;
   jobCapacity?: { maxConcurrent?: number; dailyMax?: number; autoAccept?: boolean };
   notifications?: { orderAssigned: boolean; jobCompleted: boolean };
   capabilities?: { maxSheetSizeIn: { width: number; height: number }; formats: string[]; maxDPI: number };

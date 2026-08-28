@@ -31,6 +31,15 @@ export const PartnerSettings = ({
      * already owns: capacity, auto-accept and status.
      */
     const [selectedRegions, setSelectedRegions] = useState<string[]>(partnerRegions ?? []);
+    /**
+     * This partner's warehouse in the client's ShipStation account.
+     *
+     * Entered by hand because ShipStation only shows the number in the
+     * warehouse page's URL. Left blank, the partner's orders are filed under
+     * the HQ warehouse — their labels still ship from their own address, but
+     * ShipStation's reporting credits the volume to head office.
+     */
+    const [warehouseId, setWarehouseId] = useState<string>('');
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -40,6 +49,11 @@ export const PartnerSettings = ({
     useEffect(() => {
         if (!settings) return;
         setAutoAccept(settings.jobCapacity?.autoAccept ?? true);
+        setWarehouseId(
+            settings.shipStationWarehouseId === null || settings.shipStationWarehouseId === undefined
+                ? ''
+                : String(settings.shipStationWarehouseId),
+        );
         setOrderAssignedEmail(settings.notifications?.orderAssigned ?? false);
         setJobCompletedEmail(settings.notifications?.jobCompleted ?? false);
     }, [settings]);
@@ -75,7 +89,10 @@ export const PartnerSettings = ({
                 notifications: {
                     orderAssigned: orderAssignedEmail,
                     jobCompleted: jobCompletedEmail
-                }
+                },
+                // Empty clears it, which puts this partner back on the HQ
+                // warehouse rather than leaving a stale id in place.
+                shipStationWarehouseId: warehouseId.trim() === '' ? null : Number(warehouseId.trim()),
             };
             await apiFetch(`/admin/partners/${partnerId}/settings`, {
                 method: 'PATCH',
@@ -151,6 +168,24 @@ export const PartnerSettings = ({
                           override on top of it was a second limit to keep in
                           step for no benefit. No partner had either set.
                         */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-bold text-gray-900">ShipStation warehouse ID</label>
+                            <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={warehouseId}
+                                onChange={(e) => setWarehouseId(e.target.value)}
+                                placeholder="Leave blank to ship under HQ"
+                                className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-xl text-sm font-medium outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                            />
+                            <p className="text-[13px] text-gray-400 font-medium">
+                                The number in the warehouse&rsquo;s ShipStation URL. Without it this
+                                partner&rsquo;s orders are reported under head office — labels still ship
+                                from their own address either way.
+                            </p>
+                        </div>
+
                         {/* Weekend Availability */}
                         <div className="flex items-center justify-between pt-2">
                             <div className="space-y-0.5">
