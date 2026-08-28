@@ -2,20 +2,25 @@ import crypto from "crypto";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { env } from "../config/env.js";
 import sharp from "sharp";
-import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
 
 /**
  * Where a customer's artwork goes.
  *
- * Two backends, chosen by configuration rather than by a flag anyone has to
- * remember. R2 wins when it is fully configured; Cloudinary serves until then,
- * so nothing breaks before the client has finished provisioning.
+ * R2 only. Cloudinary is gone.
  *
- * The difference is not cosmetic. Cloudinary caps an image at 10MB, so every
- * upload runs through `fitUnderCloudinaryLimit` and a print-resolution transfer
- * is downscaled on the way in — the file that gets printed is not the file the
- * customer sent. R2 has no such cap, so on that path the bytes are stored
- * exactly as they arrived. That is the entire reason for the move.
+ * Cloudinary capped an image at 10MB, so every upload was downscaled on the way
+ * in and the file that got printed was not the file the customer sent — which
+ * for a transfer business is the product being quietly degraded at the door.
+ * R2 has no such cap and the bytes are stored exactly as they arrived.
+ *
+ * There is deliberately no fallback. An unconfigured server fails loudly on the
+ * first upload rather than silently storing artwork somewhere nobody intends to
+ * keep it.
+ *
+ * The one thing Cloudinary did that plain storage does not is generate
+ * thumbnails by URL transformation. Every upload therefore writes a second
+ * small object beside the original, following the `-thumb200.webp` convention
+ * the codebase already used for local files.
  */
 
 export type StoredObject = { url: string; publicId: string };
@@ -66,6 +71,47 @@ export const buildObjectKey = (folder: string, contentType?: string): string => 
   return `${safeFolder}/${Date.now()}-${crypto.randomBytes(12).toString("hex")}.${ext}`;
 };
 
+/**
+ * Whether a URL points at artwork this platform stored.
+ *
+ * Used as an input guard, so it matches the configured host rather than merely
+ * checking the string looks like a URL — otherwise any address could be handed
+ * to the server to fetch on a caller's behalf.
+ */
+export const isStoredArtworkUrl = (url: string): boolean => {
+  const candidate = String(url || "");
+  const base = env.r2PublicBaseUrl?.replace(/\/+$/, "");
+  if (base && candidate.startsWith(base + "/")) return true;
+  if (
+    env.r2AccountId &&
+    candidate.startsWith(`https://${env.r2AccountId}.r2.cloudflarestorage.com/`)
+  ) {
+    return true;
+  }
+  return isLegacyCloudinaryUrl(candidate);
+};
+
+/**
+ * Artwork uploaded before the move to R2.
+ *
+ * Nothing writes to Cloudinary any more, but 261 of the 350 assets on record
+ * still point at it. Rejecting those would break every existing design in the
+ * editor, so they stay readable — this is a read-only concession to history,
+ * not a second storage backend.
+ *
+ * These die when the previous developer's Cloudinary account is decommissioned.
+ * Anything worth keeping has to be re-uploaded or migrated before that happens.
+ */
+export const isLegacyCloudinaryUrl = (url: string): boolean =>
+  /^https:\/\/res\.cloudinary\.com\//.test(String(url || ""));
+
+/**
+ * Cloudinary made thumbnails by URL transformation. Kept only for the legacy
+ * URLs above — new artwork gets a real thumbnail object written beside it.
+ */
+export const legacyCloudinaryThumbUrl = (url: string): string =>
+  url.replace("/upload/", "/upload/c_fill,w_200,h_200,q_auto,f_webp/");
+
 /** Public URL for a stored key, honouring a custom domain when one is set. */
 export const publicUrlForKey = (key: string): string => {
   const base = env.r2PublicBaseUrl?.replace(/\/+$/, "");
@@ -108,26 +154,62 @@ export const sniffContentType = async (buffer: Buffer): Promise<string> => {
  * as `application/octet-stream`, which makes a browser download the file
  * instead of displaying it — the preview in the editor would silently break.
  */
+export const THUMB_SUFFIX = "-thumb200.webp";
+
+/** The thumbnail key for an object key — the convention `computeThumbUrl` reads. */
+export const thumbKeyFor = (key: string): string => {
+  const dot = key.lastIndexOf(".");
+  return dot <= key.lastIndexOf("/") ? key + THUMB_SUFFIX : key.slice(0, dot) + THUMB_SUFFIX;
+};
+
 export const storeArtwork = async (
   buffer: Buffer,
   folder: string,
   contentType?: string,
 ): Promise<StoredObject> => {
   if (!isR2Configured()) {
-    // Cloudinary path. `uploadBufferToCloudinary` applies the 10MB downscale
-    // itself, so it is not repeated here — that cap is the reason to move.
-    return uploadBufferToCloudinary(buffer, folder);
+    const error = new Error(
+      "Artwork storage is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, " +
+        "R2_SECRET_ACCESS_KEY and R2_BUCKET.",
+    ) as Error & { statusCode?: number };
+    error.statusCode = 503;
+    throw error;
   }
 
-  const key = buildObjectKey(folder, contentType ?? (await sniffContentType(buffer)));
+  const type = contentType ?? (await sniffContentType(buffer));
+  const key = buildObjectKey(folder, type);
+
   await r2().send(
     new PutObjectCommand({
       Bucket: env.r2Bucket!,
       Key: key,
       Body: buffer,
-      ContentType: contentType ?? (await sniffContentType(buffer)),
+      ContentType: type,
     }),
   );
+
+  /*
+   * The thumbnail is best-effort: a failure here must not lose the artwork that
+   * was just stored successfully. `computeThumbUrl` derives this path without
+   * asking whether it exists, so a missing thumb degrades to a broken preview
+   * rather than a failed upload.
+   */
+  try {
+    const thumb = await sharp(buffer, { limitInputPixels: false })
+      .resize(200, 200, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toBuffer();
+    await r2().send(
+      new PutObjectCommand({
+        Bucket: env.r2Bucket!,
+        Key: thumbKeyFor(key),
+        Body: thumb,
+        ContentType: "image/webp",
+      }),
+    );
+  } catch (e: any) {
+    console.warn(`[STORAGE] thumbnail failed for ${key} — ${e?.message ?? e}`);
+  }
 
   return { url: publicUrlForKey(key), publicId: key };
 };

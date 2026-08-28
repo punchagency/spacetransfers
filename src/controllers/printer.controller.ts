@@ -1101,7 +1101,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       try {
         // Preserve croppedUrl — it holds the trimmedUrl (full-res, server-processed) or
         // a data URL from canvas fallback / AI background removal. Stripping it causes the
-        // export to fall back to the ORIGINAL (untrimmed) Cloudinary URL and resize it into
+        // export to fall back to the ORIGINAL (untrimmed) stored URL and resize it into
         // the trimmed bounding box via fit:"fill", which distorts the image.
         const fullResItems = artboardItems.map((it: any) => ({
           assetId: String(it.assetId || ""),
@@ -1126,7 +1126,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
         //      The canvas output pixel count — always accurate regardless of DB state.
         //      Canvas crop shrinks the image (cropWidth < widthPx), so using widthPx
         //      would produce exportDpi = widthPx/widthIn >> actual, causing upscaling.
-        //   2. trimmedWidthPx from DB (for Cloudinary-trimmed items):
+        //   2. trimmedWidthPx from DB (for server-trimmed items):
         //      The server-trimmed image pixel count. widthIn = trimmedWidthIn so
         //      effectiveDpi = trimmedWidthPx/widthIn is the exact native DPI.
         //   3. widthPx from DB (fallback — original upload, pre-trim):
@@ -1419,7 +1419,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
 
     // Preserve croppedUrl — it is the trimmedUrl (server-processed, full-res) for server-trimmed
     // assets, or a lossless data URL for canvas-cropped / AI bg-removed items. Stripping it
-    // forces the export to use the original (untrimmed) Cloudinary URL and resize it into the
+    // forces the export to use the original (untrimmed) stored URL and resize it into the
     // trimmed bounding box via fit:"fill", which squishes the image and causes visible distortion.
     const fullResItems = artboardItems.map((it: any) => ({
       assetId: it.assetId,

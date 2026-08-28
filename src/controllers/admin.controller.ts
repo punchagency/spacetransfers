@@ -698,7 +698,7 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
     }
     if (avatarUrl !== undefined) {
       // Images are uploaded via POST /admin/profile/upload and stored on
-      // Cloudinary. Accepting a data: URL here would put the whole image back
+      // storage. Accepting a data: URL here would put the whole image back
       // on the user document, which `authenticate` reads on every request.
       if (typeof avatarUrl === "string" && avatarUrl.startsWith("data:")) {
         const error = new Error("Upload images via /admin/profile/upload — an inline data URL cannot be stored.") as CustomError;
@@ -728,7 +728,7 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
  * Avatar upload.
  *
  * Mirrors the printer app's `uploadProfileAsset`: the image is resized, encoded
- * as WebP and stored on Cloudinary, and only the URL is kept on the user.
+ * as WebP and stored in R2, and only the URL is kept on the user.
  *
  * The admin console previously read the file as a base64 `data:` URL and PATCHed
  * that onto `avatarUrl`, so the whole image lived on the user document. That is

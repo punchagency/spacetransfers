@@ -5,11 +5,14 @@ import { env } from "../config/env.js";
 
 /**
  * Artwork storage is the highest-stakes path in the platform: the file that is
- * stored is the file that gets printed. These cover the parts that can be
- * proven without credentials — key construction, URL shape, and the rule that
- * decides which backend serves.
+ * stored is the file that gets printed. R2 is now the only store — Cloudinary,
+ * which capped images at 10MB and downscaled print files on the way in, is
+ * gone.
  *
- * The R2 round trip itself is unproven until the client provisions station 05.
+ * These cover what can be proven without credentials: key construction, URL
+ * shape, the thumbnail convention, and the refusal to store anything when the
+ * bucket is not configured. The R2 round trip itself is unproven until the
+ * client provisions station 05.
  */
 
 describe("object keys", () => {
@@ -72,8 +75,14 @@ describe("which backend serves", () => {
     }
   });
 
-  it("is off in this environment, so Cloudinary still serves and the downscale stays", () => {
+  it("is off in this environment, so uploads fail loudly rather than storing elsewhere", async () => {
     assert.equal(isR2Configured(), false);
+    const { storeArtwork } = await import("../services/storage.service.js");
+    await assert.rejects(
+      () => storeArtwork(Buffer.from("x"), "art"),
+      (e: any) => e?.statusCode === 503 && /R2_ACCOUNT_ID/.test(e.message),
+      "an unconfigured server must refuse, not silently store somewhere unintended",
+    );
   });
 });
 
@@ -104,6 +113,58 @@ describe("public URLs", () => {
       (env as any).r2PublicBaseUrl = saved.base;
       (env as any).r2AccountId = saved.acc;
       (env as any).r2Bucket = saved.b;
+    }
+  });
+});
+
+describe("thumbnails", () => {
+  it("sit beside the original, which is the path computeThumbUrl derives", async () => {
+    const { thumbKeyFor } = await import("../services/storage.service.js");
+    // computeThumbUrl replaces everything from the last dot with this suffix,
+    // so the two must agree exactly or every preview 404s.
+    assert.equal(thumbKeyFor("art/123-abc.png"), "art/123-abc-thumb200.webp");
+    assert.equal(thumbKeyFor("art/123-abc.pdf"), "art/123-abc-thumb200.webp");
+  });
+
+  it("handles a key with no extension rather than truncating the folder", () => {
+    // "art/noext" has its last dot before the last slash, if any at all.
+    return import("../services/storage.service.js").then(({ thumbKeyFor }) => {
+      assert.equal(thumbKeyFor("art/noext"), "art/noext-thumb200.webp");
+    });
+  });
+});
+
+describe("artwork uploaded before the move to R2", () => {
+  /*
+   * 261 of the 350 assets on record point at Cloudinary. Nothing writes there
+   * any more, but rejecting those URLs would break every existing design in the
+   * editor — which is exactly what happened before this was added.
+   */
+  const legacy = "https://res.cloudinary.com/dzgutqnaq/image/upload/v1/space-transfers/assets/x.png";
+
+  it("still accepts a legacy asset URL", async () => {
+    const { isStoredArtworkUrl } = await import("../services/storage.service.js");
+    assert.equal(isStoredArtworkUrl(legacy), true);
+  });
+
+  it("thumbnails legacy assets by transformation, since no thumb object exists for them", async () => {
+    const { legacyCloudinaryThumbUrl } = await import("../services/storage.service.js");
+    assert.match(legacyCloudinaryThumbUrl(legacy), /\/upload\/c_fill,w_200,h_200,q_auto,f_webp\//);
+  });
+
+  it("does not become an open door — the host must match exactly", async () => {
+    const { isStoredArtworkUrl, isLegacyCloudinaryUrl } = await import("../services/storage.service.js");
+    // This guard is what stops an arbitrary address being handed to the server
+    // to fetch, so a prefix match on the wrong side of the dot must fail.
+    for (const bad of [
+      "https://res.cloudinary.com.evil.com/x.png",
+      "https://evil.com/res.cloudinary.com/x.png",
+      "http://res.cloudinary.com/x.png",
+      "https://res-cloudinary.com/x.png",
+      "",
+    ]) {
+      assert.equal(isLegacyCloudinaryUrl(bad), false, bad);
+      assert.equal(isStoredArtworkUrl(bad), false, bad);
     }
   });
 });

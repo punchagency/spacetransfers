@@ -26,10 +26,6 @@ interface Env {
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
   minimumPayoutAmountCents: number;
-  // Cloudinary
-  cloudinaryCloudName: string;
-  cloudinaryApiKey: string;
-  cloudinaryApiSecret: string;
   // ShipStation
   /**
    * Whether this environment may buy real postage.
@@ -44,10 +40,9 @@ interface Env {
   /**
    * Cloudflare R2 — where artwork lives once the client has provisioned it.
    *
-   * Until all four are present the platform keeps using Cloudinary, which caps
-   * an image at 10MB and therefore downscales print files on the way in. R2 has
-   * no such cap, which is the whole reason for moving: the file you store is
-   * the file that gets printed.
+   * All four are required — this is the only artwork store. Cloudinary, which
+   * preceded it, capped an image at 10MB and downscaled print files on the way
+   * in; the file stored was not the file the customer sent.
    */
   r2AccountId?: string;
   r2AccessKeyId?: string;
@@ -125,9 +120,6 @@ export const env: Env = {
   minimumPayoutAmountCents: process.env.MINIMUM_PAYOUT_AMOUNT_CENTS
     ? Number(process.env.MINIMUM_PAYOUT_AMOUNT_CENTS)
     : 1000,
-  cloudinaryCloudName: cleanEnvString(process.env.CLOUDINARY_CLOUD_NAME) || "",
-  cloudinaryApiKey: cleanEnvString(process.env.CLOUDINARY_API_KEY) || "",
-  cloudinaryApiSecret: cleanEnvString(process.env.CLOUDINARY_API_SECRET) || "",
   // ShipStation
   r2AccountId: cleanEnvString(process.env.R2_ACCOUNT_ID),
   r2AccessKeyId: cleanEnvString(process.env.R2_ACCESS_KEY_ID),

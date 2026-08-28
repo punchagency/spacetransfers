@@ -13,8 +13,12 @@ import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import fs from "fs";
 import path from "path";
 import { smartTrimToFile } from "../utils/aiCrop.js";
-import {  cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
-import { storeArtwork } from "../services/storage.service.js";
+import {
+  isLegacyCloudinaryUrl,
+  isStoredArtworkUrl,
+  legacyCloudinaryThumbUrl,
+  storeArtwork,
+} from "../services/storage.service.js";
 import {
   getGlobalPricing,
   computeTotals as computeOrderTotals,
@@ -58,10 +62,19 @@ interface CustomError extends Error {
   statusCode?: number;
 }
 
-// For Cloudinary URLs use URL transformation; for legacy local URLs derive -thumb200.webp path.
+/*
+ * One rule now: the thumbnail sits beside the original under the same name.
+ *
+ * Cloudinary generated these by URL transformation, which plain storage cannot
+ * do, so `storeArtwork` writes a second object at exactly this path on upload.
+ * The convention already existed for local files — R2 follows it, which is why
+ * the Cloudinary branch could go rather than be replaced.
+ */
 const computeThumbUrl = (assetUrl: string | null | undefined): string | null => {
   if (!assetUrl) return null;
-  if (isCloudinaryUrl(assetUrl)) return cloudinaryThumbUrl(assetUrl);
+  // Legacy Cloudinary assets never had a thumb object written beside them, so
+  // they keep using the transformation that produced their thumbnails before.
+  if (isLegacyCloudinaryUrl(assetUrl)) return legacyCloudinaryThumbUrl(assetUrl);
   const lastSlash = assetUrl.lastIndexOf("/");
   const lastDot = assetUrl.lastIndexOf(".");
   if (lastDot <= lastSlash) return null;
@@ -145,10 +158,16 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       throw error;
     }
   
-    // Accept Cloudinary URLs and legacy local /uploads/ URLs.
+    /*
+     * Accept stored artwork and legacy local /uploads/ paths.
+     *
+     * Matching on the R2 host rather than a bare "is it a URL" keeps this a
+     * real check: it is the guard that stops an arbitrary address being handed
+     * to the server to fetch.
+     */
     const isLocal = url.includes("/uploads/");
-    const isCdn = isCloudinaryUrl(url);
-    if (!isLocal && !isCdn) {
+    const isStored = isStoredArtworkUrl(url);
+    if (!isLocal && !isStored) {
       const error = new Error("Invalid asset url") as CustomError;
       error.statusCode = 400;
       throw error;
@@ -272,8 +291,8 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
 // of the MAX_OUTPUT_PX ceiling the sharp tier already respects — a large
 // `scale` against a sizeable source (e.g. the user enlarging the item a lot
 // before requesting DPI enhancement) can return a multi-hundred-megapixel
-// image that blows well past what fitUnderCloudinaryLimit's bounded resize
-// loop can shrink under Cloudinary's 10MB cap. Clamp every AI tier's output
+// image that blows well past what a bounded resize
+// loop can shrink. Clamp the upscaler's output
 // to the same ceiling so all three tiers produce comparably-sized results.
 async function capOutputPixels(buffer: Buffer, maxPx: number): Promise<Buffer> {
   const meta = await sharp(buffer, { limitInputPixels: false }).metadata();
@@ -897,8 +916,8 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
        *
        * The generic sentence this used to return is what made the reported bug
        * so hard to act on: the actual cause (a Gemini key whose image models have
-       * a free-tier quota of exactly 0, behind a Replicate account with no
-       * credit) was fully known here and thrown away. Now the specific reason is
+       * a free-tier quota of exactly 0) was fully known here and thrown away.
+       * Now the specific reason is
        * both logged and attached, so an operator can see the fix and a customer
        * gets a sentence that is true.
        *
@@ -2119,13 +2138,13 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
      *
      * A file whose contents are not really an image — a partly-downloaded or
      * damaged file, which typically still carries its original extension — used
-     * to travel a long way through this handler. It was uploaded to Cloudinary,
+     * to travel a long way through this handler. It was uploaded to storage,
      * its metadata extraction failed into a swallowed `catch`, and the response
      * went back as a **201 with `widthPx: undefined`**. The client then computed
      * `undefined / dpi`, and placed an item on the sheet whose physical size was
      * NaN: no error anywhere, and a gang sheet that cannot be printed.
      *
-     * So this is now a hard 400, and it runs *before* the Cloudinary upload —
+     * So this is now a hard 400, and it runs *before* the upload —
      * there is no reason to spend the round trip and the storage on a file that
      * is about to be rejected.
      *
@@ -2183,14 +2202,14 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
-    // Upload original to Cloudinary.
+    // Store the original, exactly as it arrived.
     const { url: fileUrl } = await storeArtwork(fileBuffer, "space-transfers/assets");
 
     const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
     const heightIn = heightPx && normalizedDpi ? +(heightPx / normalizedDpi).toFixed(4) : undefined;
 
-    // Trim and upload trimmed version to Cloudinary.
+    // Trim and store the trimmed version alongside it.
     let trimmedUrl: string | undefined;
     let trimmedWidthPx: number | undefined;
     let trimmedHeightPx: number | undefined;
@@ -2209,7 +2228,8 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       trimmedUrl = undefined;
     }
 
-    // Cloudinary thumbnail is derived from the URL — no local generation needed.
+    // The thumbnail is written beside the original by storeArtwork, at the
+    // path computeThumbUrl derives — nothing to generate here.
     const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
 
     /**
