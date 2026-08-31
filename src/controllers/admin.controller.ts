@@ -4,6 +4,7 @@ import {
   getRegionFromState,
   normalizeRegion,
   resolveOrderRegion,
+  resolvePartnerRegion,
   resolveRegionInfo
 } from "../utils/region.js";
 import { sendEmail } from "../services/email.service.js";
@@ -2077,8 +2078,18 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       }
     }
 
+    /*
+     * An admin adding a partner IS the approval — they already vouched for them
+     * off-platform. Defaulting to Pending made the invitation a dead end: the
+     * partner set their password from the invite email and then hit "Your
+     * account is pending approval" at sign-in, with no way to fill in the
+     * business details the admin deliberately left for them to complete.
+     *
+     * Partners who sign up on their own still land in Pending (see
+     * `registerUser`) and still need approving — that is the Approvals queue.
+     */
     const allowedStatuses = ["Active", "Pending", "Suspended", "Under Review"];
-    const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Pending";
+    const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Active";
 
     /**
      * A partner created without an address is quietly degraded, not broken —
@@ -2598,14 +2609,37 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
       throw error;
     }
 
+    /*
+     * "Rejected" is deliberately not settable here. It is the outcome of
+     * declining a pending application, not a state to move a real partner into
+     * — that is what Suspended is for. Offering both on one dropdown would make
+     * the difference a matter of which word an admin happened to pick.
+     */
     if (!["Active", "Suspended", "Under Review", "Pending"].includes(status)) {
       const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review, Pending") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
+    /*
+     * And rejection is terminal. A suspension is a pause the network can lift;
+     * a rejection is a declined application, and reinstating one through a
+     * status dropdown would quietly undo an approval decision without ever
+     * passing back through the approvals queue.
+     */
+    const existingPartner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
+      .select("status")
+      .lean();
+    if (existingPartner?.status === "Rejected") {
+      const error = new Error(
+        "This application was rejected and cannot be reinstated. Ask them to register again."
+      ) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+
     const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
+      { _id: partnerIdString, role: UserRoles.PRINTER, status: { $ne: "Rejected" } },
       { $set: { status } },
       { new: true, runValidators: true }
     ).select("-passwordHash");
@@ -2628,19 +2662,34 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
 
 export const listPendingPrinters = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    /*
+     * Location and region come back too. Registration already requires a full
+     * address and geocodes it into a region, but the queue used to show only a
+     * name, an email and a date — so an admin approved a print partner without
+     * seeing where they print from or which region they would serve, which is
+     * the one fact `autoAssignOrder` actually routes on.
+     */
     const printers = await User.find({ role: UserRoles.PRINTER, status: "Pending" })
-      .select("name companyName email phone createdAt")
+      .select("name companyName email phone createdAt regions defaultShippingAddress businessAddress")
       .sort({ createdAt: -1 })
       .lean();
 
-    const formattedPrinters = printers.map(p => ({
-      id: p._id,
-      name: p.name,
-      companyName: p.companyName,
-      email: p.email,
-      phone: p.phone,
-      createdAt: p.createdAt
-    }));
+    const formattedPrinters = printers.map(p => {
+      const address = (p as any).defaultShippingAddress || (p as any).businessAddress || null;
+      return {
+        id: p._id,
+        name: p.name,
+        companyName: p.companyName,
+        email: p.email,
+        phone: p.phone,
+        createdAt: p.createdAt,
+        // Null rather than a guess: geocoding can fail, and registration stores
+        // no region when it does. "Unknown" on screen is honest; a wrong region
+        // would route real work to the wrong side of the country.
+        region: resolvePartnerRegion(p),
+        location: address ? [address.city, address.state].filter(Boolean).join(", ") || null : null
+      };
+    });
 
     res.status(200).json(formattedPrinters);
   } catch (error) {
@@ -2659,15 +2708,31 @@ export const approvePrinter = async (req: Request, res: Response, next: NextFunc
       throw error;
     }
 
+    /*
+     * Scoped to Pending on purpose. Unscoped, this endpoint reinstates ANY
+     * printer: an admin suspends a partner for bad output, and a POST here puts
+     * them straight back into the assignment pool, because `autoAssignOrder`
+     * filters only on status === "Active".
+     *
+     * This queue approves applications. Reinstating a suspended partner is a
+     * different decision and belongs to PATCH /partners/:id/status.
+     */
     const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
+      { _id: partnerIdString, role: UserRoles.PRINTER, status: "Pending" },
       { $set: { status: "Active" } },
       { new: true }
     );
 
     if (!partner) {
-      const error = new Error("Printer not found") as CustomError;
-      error.statusCode = 404;
+      const existing = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
+        .select("status")
+        .lean();
+      const error = new Error(
+        existing
+          ? `This printer is already ${existing.status}, not awaiting approval. Refresh the queue.`
+          : "Printer not found"
+      ) as CustomError;
+      error.statusCode = existing ? 409 : 404;
       throw error;
     }
 
@@ -2702,15 +2767,29 @@ export const rejectPrinter = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
+    /*
+     * Scoped to Pending on purpose, and this is the dangerous direction: without
+     * it, a stale Approvals tab — or a second admin acting on a list loaded a
+     * minute earlier — suspends a partner who is live and mid-print. They then
+     * silently stop receiving work, since assignment only considers Active
+     * partners, and nothing would have reported it.
+     */
     const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: { status: "Suspended" } },
+      { _id: partnerIdString, role: UserRoles.PRINTER, status: "Pending" },
+      { $set: { status: "Rejected" } },
       { new: true }
     );
 
     if (!partner) {
-      const error = new Error("Printer not found") as CustomError;
-      error.statusCode = 404;
+      const existing = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
+        .select("status")
+        .lean();
+      const error = new Error(
+        existing
+          ? `This printer is already ${existing.status}, not awaiting approval. Refresh the queue.`
+          : "Printer not found"
+      ) as CustomError;
+      error.statusCode = existing ? 409 : 404;
       throw error;
     }
 
@@ -2719,7 +2798,7 @@ export const rejectPrinter = async (req: Request, res: Response, next: NextFunct
       priority: "medium",
       title: "Printer rejected",
       message: `${partner.companyName || partner.name} • ${partner.email}`,
-      meta: { partnerId: String(partner._id), status: "Suspended" }
+      meta: { partnerId: String(partner._id), status: "Rejected" }
     }).catch(() => {});
 
     res.status(200).json({

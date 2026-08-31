@@ -567,6 +567,18 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
     throw error;
   }
 
+  /*
+   * Distinct from suspension, and worded to match: a suspension is a pause that
+   * support can lift, so "contact support" is real advice. A rejection is a
+   * declined application, and telling those applicants to contact support about
+   * an account they never had just generates tickets nobody can action.
+   */
+  if (user.status === "Rejected") {
+    const error = new Error("Your partner application was not approved.") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+
   const token = signJwt({ sub: user.id, role: user.role });
 
   return {
@@ -695,6 +707,11 @@ export const loginWithGoogle = async (
   if (user) {
     if (user.status === "Suspended") {
       const error = new Error("Your account has been suspended. Please contact support.") as any;
+      error.statusCode = 403;
+      throw error;
+    }
+    if (user.status === "Rejected") {
+      const error = new Error("Your partner application was not approved.") as any;
       error.statusCode = 403;
       throw error;
     }

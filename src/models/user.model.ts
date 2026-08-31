@@ -244,7 +244,14 @@ const userSchema = new Schema<IUser>(
     ],
     status: {
       type: String,
-      enum: ["Active", "Suspended", "Under Review", "Pending"],
+      /*
+       * "Rejected" is terminal and distinct from "Suspended" on purpose. A
+       * suspension is a pause on a partner the network still wants — it can be
+       * lifted. A rejection is a declined application that was never a partner.
+       * Collapsing the two left declined applicants sitting in the partners
+       * table looking exactly like a working partner paused for cause.
+       */
+      enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected"],
       default: "Active"
     },
     rating: {
