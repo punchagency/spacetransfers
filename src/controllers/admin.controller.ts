@@ -1,6 +1,11 @@
 import { Request, Response, NextFunction } from "express";
 import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
-import { getRegionFromState, normalizeRegion } from "../utils/region.js";
+import {
+  getRegionFromState,
+  normalizeRegion,
+  resolveOrderRegion,
+  resolveRegionInfo
+} from "../utils/region.js";
 import { sendEmail } from "../services/email.service.js";
 import mongoose from "mongoose";
 import fs from "fs";
@@ -50,40 +55,6 @@ interface CustomError extends Error {
   statusCode?: number;
 }
 
-/**
- * The region an order belongs to.
- *
- * The shipping address wins, because it is where the parcel is actually going —
- * and it is what `autoAssignOrder` routes on. This used to prefer
- * `customer.region` and then the customer's *profile* region, falling back to
- * the address only if neither existed, which meant the console and the
- * assignment engine could disagree about the same order.
- *
- * That was not theoretical: an order shipping to California, assigned to a
- * Californian partner, displayed as a cross-region assignment — "expect longer
- * transit and higher shipping cost" — because the customer's profile happened
- * to say Midwest. `orderAssignment.service` already carries the rule in a
- * comment ("customer.region is cosmetic only — do not use it to override the
- * address region"); this is that rule applied here.
- *
- * The profile is kept as a fallback for orders with no usable address, which is
- * better than showing no region at all.
- */
-const resolveOrderRegion = (
-  order: any,
-  userRegionMap?: Map<string, string | null>
-): string | null => {
-  const fromAddress = normalizeRegion(getRegionFromState(order?.shippingAddress?.state));
-  if (fromAddress) return fromAddress;
-
-  const userId = order?.user ? String(order.user) : null;
-  const regionFromUser = userId && userRegionMap ? userRegionMap.get(userId) : null;
-  return (
-    normalizeRegion(order?.customer?.region) ||
-    normalizeRegion(regionFromUser || undefined) ||
-    null
-  );
-};
 
 export const getAdminDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -175,7 +146,7 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     const recentOrdersRaw = await Order.find()
       .sort({ updatedAt: -1 })
       .limit(10)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing");
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress");
 
     const recentUserIds = Array.from(
       new Set(
@@ -1000,7 +971,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       .select("-items.artboardItems")
       .sort({ updatedAt: -1, _id: -1 })
       .limit(pageSize + 1)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing")
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress")
       .lean();
 
     const hasNextPage = orders.length > pageSize;
@@ -1031,6 +1002,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       // Same source as the dashboard and as real payouts — see
       // calculateOrderFinancials above for why the flat rate was wrong.
       const customerCharge = order.pricing?.total || 0;
+      const regionInfo = resolveRegionInfo(order, userRegionMap);
       const derivable = canDerivePartnerEarning(order);
       const profits = derivable
         ? customerCharge -
@@ -1060,13 +1032,13 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         // "#ORD-9CA3" from the ObjectId, which meant the number an admin could
         // see was not the number search would match.
         displayId: (order as any).displayId || null,
-        region: resolveOrderRegion(order, userRegionMap),
+        region: regionInfo.customerRegion,
         // Surfaced so the orders table can badge a fallback assignment rather
         // than the fact being buried in a timeline message.
-        crossRegion: (order as any).crossRegionAssignment
+        crossRegion: regionInfo.crossRegion
           ? {
-              customerRegion: (order as any).crossRegionAssignment.customerRegion,
-              assignedRegion: (order as any).crossRegionAssignment.assignedRegion,
+              customerRegion: regionInfo.customerRegion,
+              assignedRegion: regionInfo.printerRegion,
             }
           : null
       };
@@ -1562,7 +1534,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     }
 
     const order = await Order.findById(orderIdString)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName email regions")
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName email regions defaultShippingAddress businessAddress")
       .lean();
 
     if (!order) {
@@ -1756,21 +1728,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         email: (order.assignedPrinter as unknown as IUser).email
       } : null,
 
-      regionInfo: (() => {
-        const orderCustomerRegion = resolveOrderRegion(order, oneUserRegionMap);
-        const printerDoc = order.assignedPrinter as unknown as IUser | null;
-        const orderPrinterRegion = printerDoc
-          ? normalizeRegion(getRegionFromState((printerDoc.defaultShippingAddress as any)?.state || ""))
-            || normalizeRegion(getRegionFromState((printerDoc as any).businessAddress?.state || ""))
-            || printerDoc.regions?.[0]
-            || null
-          : null;
-        return {
-          customerRegion: orderCustomerRegion,
-          printerRegion: orderPrinterRegion,
-          crossRegion: Boolean(orderCustomerRegion && orderPrinterRegion && orderCustomerRegion !== orderPrinterRegion),
-        };
-      })(),
+      regionInfo: resolveRegionInfo(order, oneUserRegionMap),
 
       preview: {
         designId,
@@ -2190,7 +2148,7 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      * SendGrid first and falls back to SMTP, so this needs credentials, not
      * code. Until they exist it fails and says so; it no longer pretends.
      */
-    const inviteUrl = `${env.printerAppUrl.replace(/\/$/, "")}/auth?inviteToken=${encodeURIComponent(inviteToken)}`;
+    const inviteUrl = `${env.printerAppUrl.replace(/\/$/, "")}/set-password?inviteToken=${encodeURIComponent(inviteToken)}`;
     const invite = await sendEmail({
       to: String(email).trim(),
       subject: "You have been added to Space Transfers",
@@ -3110,7 +3068,7 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
     const orders = await Order.find({
       createdAt: { $gte: startDate },
       status: { $nin: ["CANCELLED", "REJECTED"] }
-    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing");
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress");
 
     const priorOrders = await Order.find({
       createdAt: { $gte: priorStartDate, $lt: priorEndDate },

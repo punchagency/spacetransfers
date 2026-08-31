@@ -442,8 +442,20 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     actorName: selected.printerName
   } as any);
 
-  // Persisted rather than left implicit in the timeline text, so the admin UI
-  // can badge it and the rows can actually be queried.
+  /*
+   * A record of what was true at auto-assign time — NOT current state, and not
+   * what any screen should read.
+   *
+   * The orders table used to badge from this field. Nothing clears it, and only
+   * this path writes it, so it went stale the moment an order was reassigned:
+   * DTF-0239/0240/0241 sat in the console badged "West → Northeast" long after
+   * they were back with a Californian partner, contradicting their own details
+   * page. Both surfaces now derive from `resolveRegionInfo` instead.
+   *
+   * Kept only because it is queryable history — how often the network had to
+   * fall back out of region. `assignmentHistory` carries the same facts per
+   * assignment if this is ever dropped.
+   */
   (order as any).crossRegionAssignment = isCrossRegion
     ? { customerRegion: customerRegion || "Unknown", assignedRegion, at: assignedAt }
     : null;
