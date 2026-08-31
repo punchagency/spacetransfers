@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getApiBaseUrl } from "../utils/api";
 import { getToken } from "../utils/auth";
 import { apiFetch } from "../utils/api";
@@ -103,7 +103,7 @@ const startSse = async ({
   }
 };
 
-export const NotificationsStoreProvider = ({ children }: { children: any }) => {
+export const NotificationsStoreProvider = ({ children }: { children: ReactNode }) => {
   const [records, setRecords] = useState<Record<string, AdminNotificationItem>>({});
   const [ids, setIds] = useState<string[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);

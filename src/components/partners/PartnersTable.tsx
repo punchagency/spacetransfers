@@ -21,7 +21,14 @@ const getStatusStyles = (status: Partner["status"]) => {
     }
 };
 
-export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
+export const PartnersTable = ({
+    partners,
+    error = null,
+}: {
+    partners: Partner[];
+    /** Passed straight through so a failed load is not shown as an empty roster. */
+    error?: string | null;
+}) => {
     const navigate = useNavigate();
 
     const columns = [
@@ -89,6 +96,7 @@ export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
     return (
         <GenericTable
             data={partners}
+            error={error}
             columns={columns}
             showFooterInfo={true}
             footerLabel="partners"

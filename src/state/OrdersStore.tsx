@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import toast from "react-hot-toast";
 import { apiFetch } from "../utils/api";
 import type { Order as OrderRow } from "../data/orders";
 import { mapAdminOrderToRow } from "../utils/orderMappers";
@@ -11,18 +12,28 @@ type OrdersState = {
   loadingList: boolean;
   fetchRecentOrders: (range?: string) => Promise<{ stats: any }>;
   fetchOrdersList: (params?: { status?: string; cursor?: string | null; append?: boolean; search?: string }) => Promise<void>;
+  /**
+   * Set when the last list fetch failed.
+   *
+   * `fetchOrdersList` had no catch — only a `finally` — and every caller invokes
+   * it un-awaited, so a failed load became an unhandled rejection and the orders
+   * table rendered "No data found." with no toast and no error. The console's
+   * most important table failed completely silently.
+   */
+  listError: string | null;
   upsertOrderRow: (actualId: string, patch: Partial<OrderRow>) => void;
 };
 
 const OrdersStoreContext = createContext<OrdersState | null>(null);
 
-export const OrdersStoreProvider = ({ children }: { children: any }) => {
+export const OrdersStoreProvider = ({ children }: { children: ReactNode }) => {
   const [records, setRecords] = useState<Record<string, OrderRow>>({});
   const [recentIds, setRecentIds] = useState<string[]>([]);
   const [listIds, setListIds] = useState<string[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingRecent, setLoadingRecent] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
 
   const upsertMany = useCallback((rows: OrderRow[]) => {
     setRecords((prev) => {
@@ -87,6 +98,14 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
           const sorted = [...rows].sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
           return sorted.slice(0, 5).map((r) => r.actualId || "");
         });
+        setListError(null);
+      } catch (error: any) {
+        const message = error?.message || "Could not load orders";
+        setListError(message);
+        toast.error(message);
+        // Rows from an earlier successful load are kept on an append —
+        // losing them would be a worse outcome than a stale page.
+        if (!append) setListIds([]);
       } finally {
         setLoadingList(false);
       }
@@ -110,6 +129,7 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
     nextCursor,
     loadingRecent,
     loadingList,
+    listError,
     fetchRecentOrders,
     fetchOrdersList,
     upsertOrderRow,

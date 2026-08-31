@@ -20,7 +20,7 @@ export const Orders = () => {
   const [searchTerm, setSearchTerm] = useState('');
   // Debounced so typing doesn't fire a request per keystroke.
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const { ordersList, loadingList, nextCursor, fetchOrdersList } = useOrdersStore();
+  const { ordersList, loadingList, listError, nextCursor, fetchOrdersList } = useOrdersStore();
 
   useEffect(() => {
     fetchOrdersList({ status: activeTab, cursor: null, append: false, search: debouncedSearch });
@@ -94,7 +94,7 @@ export const Orders = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            <OrdersTable orders={ordersList} title="Orders" itemsPerPage={15} />
+            <OrdersTable orders={ordersList} title="Orders" itemsPerPage={15} error={listError} />
             
             {nextCursor && (
               <div className="flex justify-center pt-4">

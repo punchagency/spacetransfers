@@ -20,6 +20,16 @@ interface GenericTableProps<T> {
     sortable?: boolean;
     defaultSortColumnIndex?: number;
     defaultSortDirection?: "asc" | "desc";
+    /**
+     * Set when the rows could not be loaded.
+     *
+     * Without it a failed fetch renders "No data found." — the table asserting
+     * there is nothing to show when in truth it does not know. The toast that
+     * accompanies the failure fades after a few seconds; the false statement
+     * stays on screen. Same failure the approvals queue had, where it showed a
+     * green tick and "All caught up!" over a queue it had never managed to read.
+     */
+    error?: string | null;
 }
 
 export function GenericTable<T>({
@@ -33,6 +43,7 @@ export function GenericTable<T>({
     sortable = false,
     defaultSortColumnIndex = -1,
     defaultSortDirection = "asc",
+    error = null,
 }: GenericTableProps<T>) {
     const [currentPage, setCurrentPage] = useState(1);
     const [sortColumnIndex, setSortColumnIndex] = useState(defaultSortColumnIndex);
@@ -144,9 +155,11 @@ export function GenericTable<T>({
                             <tr>
                                 <td
                                     colSpan={columns.length}
-                                    className="px-6 py-10 text-center text-gray-500 italic"
+                                    className={`px-6 py-10 text-center ${error ? "text-red-600" : "text-gray-500 italic"}`}
                                 >
-                                    No data found.
+                                    {error
+                                        ? `Could not load this table — ${error}`
+                                        : "No data found."}
                                 </td>
                             </tr>
                         )}

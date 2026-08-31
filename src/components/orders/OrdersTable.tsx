@@ -24,8 +24,11 @@ export const OrdersTable = ({
   orders,
   title = "Recent Orders",
   itemsPerPage = 7,
+  error = null,
 }: {
   orders: Order[];
+  /** Passed straight through so a failed load is not shown as an empty table. */
+  error?: string | null;
   title?: string;
   itemsPerPage?: number;
 }) => {
@@ -160,6 +163,7 @@ export const OrdersTable = ({
   return (
     <GenericTable
       data={orders}
+      error={error}
       columns={columns}
       title={title}
       itemsPerPage={itemsPerPage}

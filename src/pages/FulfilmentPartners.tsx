@@ -17,6 +17,7 @@ export const FulfilmentPartners = () => {
   const [regionFilter, setRegionFilter] = useState('All Regions');
   const [partners, setPartners] = useState<Partner[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -99,9 +100,18 @@ export const FulfilmentPartners = () => {
         const response = await apiFetch(`/admin/partners?${params.toString()}`);
         setPartners((response.partners || []).map(mapPartner));
         setNextCursor(response.nextCursor || null);
+        setLoadError(null);
       } catch (error: any) {
-        toast.error(error.message || 'Failed to load partners');
+        const message = error.message || 'Failed to load partners';
+        // Cleared and recorded, so the table reports that it could not load
+        // rather than presenting an empty roster as the truth.
+        setPartners([]);
+        setLoadError(message);
+        toast.error(message);
       } finally {
+        // In `finally`, not in the catch. A splice while adding the error state
+        // swallowed this block, leaving the flag cleared only on failure — so a
+        // successful load spun forever.
         setLoading(false);
       }
     };
@@ -178,7 +188,7 @@ export const FulfilmentPartners = () => {
           </div>
         ) : (
           <>
-            <PartnersTable partners={filteredPartners} />
+            <PartnersTable partners={filteredPartners} error={loadError} />
             {nextCursor && (
               <div className="flex justify-center pt-4">
                 <button
