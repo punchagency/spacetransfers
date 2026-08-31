@@ -12,6 +12,10 @@ const getStatusStyles = (status: Partner["status"]) => {
             return "bg-amber-50 text-amber-600";
         case "Suspended":
             return "bg-red-50 text-red-600";
+        // Grey, not red: a rejected application is closed and needs nothing from
+        // anyone. Red is for a partner who was working and has been stopped.
+        case "Rejected":
+            return "bg-gray-100 text-gray-500";
         default:
             return "bg-gray-50 text-gray-600";
     }

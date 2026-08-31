@@ -106,7 +106,7 @@ export const PartnerOverview = ({
                 <div className="space-y-6">
                     <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-500">Status</span>
-                        <span className={`px-3 py-1 rounded-full text-[12px] font-bold border ${partner.status === 'Active' ? 'bg-green-50 text-green-600 border-green-100' : partner.status === 'Suspended' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>
+                        <span className={`px-3 py-1 rounded-full text-[12px] font-bold border ${partner.status === 'Active' ? 'bg-green-50 text-green-600 border-green-100' : partner.status === 'Suspended' ? 'bg-red-50 text-red-600 border-red-100' : partner.status === 'Rejected' ? 'bg-gray-100 text-gray-500 border-gray-200' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>
                             {partner.status}
                         </span>
                     </div>

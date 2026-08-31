@@ -101,7 +101,6 @@ export const AddPartnerModal = ({
             postalCode: postalCode.trim(),
             country: 'US',
           },
-          status: 'Pending',
         }),
       });
       toast.success('Partner created');

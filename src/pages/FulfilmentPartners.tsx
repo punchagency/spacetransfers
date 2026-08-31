@@ -156,6 +156,7 @@ export const FulfilmentPartners = () => {
             <option>Active</option>
             <option>Pending</option>
             <option>Suspended</option>
+            <option>Rejected</option>
           </SelectInput> 
 
           <SelectInput

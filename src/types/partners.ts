@@ -3,7 +3,7 @@ export interface Partner {
   name: string;
   email: string;
   regions: string[];
-  status: "Active" | "Pending" | "Suspended" | "Under Review";
+  status: "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected";
   ordersInProgress: string;
   orders: string;
 }
@@ -17,7 +17,7 @@ export interface PartnerDetailsData {
   phone: string;
   website?: string;
   regions: string[];
-  status: "Active" | "Pending" | "Suspended" | "Under Review";
+  status: "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected";
   ordersCompleted: number;
   /** Null until the partner has shipped something — not zero, which would read as instant. */
   averageProductionHours?: number | null;
