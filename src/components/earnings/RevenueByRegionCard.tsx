@@ -1,9 +1,4 @@
-import {
-  ComposableMap,
-  Geographies,
-  Geography,
-  Marker,
-} from "react-simple-maps";
+import { currency } from "../../utils/formatters";
 
 export type RevenueByRegionRow = {
   region: string;
@@ -11,79 +6,69 @@ export type RevenueByRegionRow = {
   percentage: number;
 };
 
-export const RevenueByRegionCard = ({
-  rows,
-}: {
-  rows: RevenueByRegionRow[];
-}) => {
-  // Marker locations: [longitude, latitude]
-  const markers: Array<{ coordinates: [number, number] }> = [
-    { coordinates: [-120, 37] }, // West Coast US (California)
-    { coordinates: [-74, 40] }, // East Coast US (Northeast)
-    { coordinates: [100, 0] }, // Southeast Asia (Malay Peninsula/Indonesia)
-    { coordinates: [135, -35] }, // Southern Australia
-  ];
-
-  const geoUrl =
-    "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
-
-  const maxValue = Math.max(1, ...(rows || []).map((r) => Number(r.value) || 0));
-  const displayRows = (rows || []).slice(0, 5);
+/**
+ * Revenue by service region.
+ *
+ * This card used to be built around a world map with four hardcoded markers —
+ * California, the Northeast, Southeast Asia and southern Australia. They were
+ * static: they never read `rows`, so they showed the same four dots whatever the
+ * data said, and two of them implied operations on other continents for a
+ * business that serves fifty US states. It also pulled a world atlas from a CDN
+ * on every render to draw them.
+ *
+ * The list underneath was the only part carrying real numbers, so that is what
+ * the card is now.
+ */
+export const RevenueByRegionCard = ({ rows }: { rows: RevenueByRegionRow[] }) => {
+  const data = rows || [];
+  const maxValue = Math.max(1, ...data.map((r) => Number(r.value) || 0));
+  const total = data.reduce((sum, r) => sum + (Number(r.value) || 0), 0);
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 w-[292px] h-[393px] flex flex-col">
-      <h3 className="text-sm font-semibold text-gray-900 mb-4">
-        Revenue by Region
-      </h3>
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 h-[393px] flex flex-col">
+      <h3 className="text-sm font-semibold text-gray-900">Revenue by region</h3>
+      <p className="text-xs text-gray-500 mt-0.5">Where the orders came from</p>
 
-      {/* World Map with exact styling from image */}
-      <div className="rounded-lg border border-gray-100 p-2 bg-white overflow-hidden">
-        <ComposableMap
-          projectionConfig={{ scale: 80 }}
-          width={260}
-          height={120}
-          style={{ width: "100%", height: "auto" }}
-        >
-          <Geographies geography={geoUrl}>
-            {({ geographies }: { geographies: { rsmKey: string }[] }) =>
-              geographies.map((geo) => (
-                <Geography
-                  key={geo.rsmKey}
-                  geography={geo}
-                  fill="#93B4FF"
-                  stroke="#FFFFFF"
-                  strokeWidth={0.5}
-                />
-              ))
-            }
-          </Geographies>
-          {markers.map((marker, index) => (
-            <Marker key={index} coordinates={marker.coordinates}>
-              <circle r={3} fill="#111827" stroke="#FFFFFF" strokeWidth={1.5} />
-            </Marker>
-          ))}
-        </ComposableMap>
-      </div>
+      {data.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-sm text-gray-400">No revenue in this period</p>
+        </div>
+      ) : (
+        <>
+          <div className="mt-5 space-y-4 flex-1 overflow-y-auto">
+            {data.map((r) => (
+              <div key={r.region}>
+                <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                  <span className="text-sm text-gray-900">{r.region}</span>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {/* Rendered as money. `toLocaleString` on the raw number
+                        printed "586.2" — a currency figure with no symbol and a
+                        missing second decimal place. */}
+                    {currency(r.value)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-600 rounded-full"
+                      style={{ width: `${(Number(r.value) / maxValue) * 100}%` }}
+                    />
+                  </div>
+                  {/* The server computes this share and nothing displayed it. */}
+                  <span className="text-[11px] text-gray-500 w-10 text-right tabular-nums">
+                    {r.percentage}%
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
 
-      <div className="mt-4 space-y-4">
-        {displayRows.length === 0 ? (
-          <div className="text-sm text-gray-400 italic">No region data</div>
-        ) : (
-          displayRows.map((r) => (
-            <div key={r.region}>
-            <div className="text-sm text-gray-900 mb-1">
-              {r.region} <span className="font-semibold">{r.value.toLocaleString()}</span>
-            </div>
-            <div className="h-[2px] bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-blue-600"
-                style={{ width: `${(Number(r.value) / maxValue) * 100}%` }}
-              />
-            </div>
-            </div>
-          ))
-        )}
-      </div>
+          <div className="border-t border-gray-200 pt-3 mt-3 flex items-baseline justify-between">
+            <span className="text-xs text-gray-500">Total</span>
+            <span className="text-sm font-semibold text-gray-900">{currency(total)}</span>
+          </div>
+        </>
+      )}
     </div>
   );
 };
