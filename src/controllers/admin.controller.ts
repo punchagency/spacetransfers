@@ -50,16 +50,37 @@ interface CustomError extends Error {
   statusCode?: number;
 }
 
+/**
+ * The region an order belongs to.
+ *
+ * The shipping address wins, because it is where the parcel is actually going —
+ * and it is what `autoAssignOrder` routes on. This used to prefer
+ * `customer.region` and then the customer's *profile* region, falling back to
+ * the address only if neither existed, which meant the console and the
+ * assignment engine could disagree about the same order.
+ *
+ * That was not theoretical: an order shipping to California, assigned to a
+ * Californian partner, displayed as a cross-region assignment — "expect longer
+ * transit and higher shipping cost" — because the customer's profile happened
+ * to say Midwest. `orderAssignment.service` already carries the rule in a
+ * comment ("customer.region is cosmetic only — do not use it to override the
+ * address region"); this is that rule applied here.
+ *
+ * The profile is kept as a fallback for orders with no usable address, which is
+ * better than showing no region at all.
+ */
 const resolveOrderRegion = (
   order: any,
   userRegionMap?: Map<string, string | null>
 ): string | null => {
+  const fromAddress = normalizeRegion(getRegionFromState(order?.shippingAddress?.state));
+  if (fromAddress) return fromAddress;
+
   const userId = order?.user ? String(order.user) : null;
   const regionFromUser = userId && userRegionMap ? userRegionMap.get(userId) : null;
   return (
     normalizeRegion(order?.customer?.region) ||
     normalizeRegion(regionFromUser || undefined) ||
-    normalizeRegion(getRegionFromState(order?.shippingAddress?.state)) ||
     null
   );
 };
