@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
+import SetPasswordPage from "./pages/SetPasswordPage";
 import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
 import OrderDetails from "./pages/OrderDetails";
@@ -36,6 +37,7 @@ function App() {
       <Routes>
         {/* Public email verification — reachable without a session. */}
         <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/set-password" element={<SetPasswordPage />} />
 
         {/* Public — a signed-in printer is bounced to the dashboard. */}
         <Route element={<PublicOnlyRoute />}>
