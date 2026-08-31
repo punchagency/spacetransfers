@@ -3117,227 +3117,265 @@ export const getOrderTimeline = async (req: Request, res: Response, next: NextFu
   }
 };
 
+/**
+ * What the business made over a window, and what it cost to make it.
+ *
+ * The page this feeds answers four questions and nothing else: how much came in,
+ * how much went out to partners, what is left, and how much of that has actually
+ * been earned. Everything here exists to answer one of those.
+ *
+ * Deliberately NOT reported:
+ *
+ *  - A product table. It grouped line items by `item.name`, and every item in
+ *    this business is a gang sheet, so it was permanently a single row — a
+ *    catalogue breakdown for a catalogue of one, with a product-name search box
+ *    above it.
+ *  - Shipping and tax inside the revenue figure. Shipping is collected and owed
+ *    to a carrier; tax is collected and remitted to a state. Counting either as
+ *    revenue overstates what the business keeps, which is what the old profit
+ *    cards did. They are reported separately, as the pass-through they are.
+ */
 export const getEarningsSummary = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { range = "30d" } = req.query;
+    const rangeKey = String(req.query.range || "30d");
+    const now = new Date();
+
+    const RANGES: Record<
+      string,
+      { label: string; priorLabel: string; buckets: number; days?: number }
+    > = {
+      "7d": { label: "Last 7 days", priorLabel: "Previous 7 days", buckets: 7, days: 7 },
+      "30d": { label: "Last 30 days", priorLabel: "Previous 30 days", buckets: 15, days: 30 },
+      "90d": { label: "Last 90 days", priorLabel: "Previous 90 days", buckets: 13, days: 90 },
+      ytd: { label: "Year to date", priorLabel: "Same period last year", buckets: now.getMonth() + 1 }
+    };
+    const range = RANGES[rangeKey] || RANGES["30d"];
 
     let startDate: Date;
     let priorStartDate: Date;
     let priorEndDate: Date;
-    const now = new Date();
 
-    if (range === "7d") {
-      startDate = new Date(new Date().setDate(now.getDate() - 7));
-      priorStartDate = new Date(new Date().setDate(now.getDate() - 14));
-      priorEndDate = startDate;
-    } else if (range === "90d") {
-      startDate = new Date(new Date().setDate(now.getDate() - 90));
-      priorStartDate = new Date(new Date().setDate(now.getDate() - 180));
-      priorEndDate = startDate;
-    } else if (range === "ytd") {
-      startDate = new Date(new Date().getFullYear(), 0, 1);
-      priorStartDate = new Date(new Date().getFullYear() - 1, 0, 1);
-      priorEndDate = new Date(new Date().getFullYear() - 1, now.getMonth(), now.getDate());
+    if (rangeKey === "ytd") {
+      startDate = new Date(now.getFullYear(), 0, 1);
+      priorStartDate = new Date(now.getFullYear() - 1, 0, 1);
+      priorEndDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
     } else {
-      startDate = new Date(new Date().setDate(now.getDate() - 30));
-      priorStartDate = new Date(new Date().setDate(now.getDate() - 60));
+      const days = range.days as number;
+      startDate = new Date(new Date().setDate(now.getDate() - days));
+      priorStartDate = new Date(new Date().setDate(now.getDate() - days * 2));
       priorEndDate = startDate;
     }
+
+    /*
+     * CANCELLED is the only excluded status. "REJECTED" was also listed here but
+     * no order has ever held it — the enum is PENDING/PROCESSING/PRINTING/
+     * QUALITY_CHECK/SHIPPED/COMPLETED/CANCELLED — so it filtered on a state that
+     * does not exist.
+     */
+    const EXCLUDED_STATUSES = ["CANCELLED"];
+    const populateFields =
+      "companyName regions settings.pricing defaultShippingAddress businessAddress";
 
     const orders = await Order.find({
       createdAt: { $gte: startDate },
-      status: { $nin: ["CANCELLED", "REJECTED"] }
-    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress");
+      status: { $nin: EXCLUDED_STATUSES }
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", populateFields);
 
     const priorOrders = await Order.find({
       createdAt: { $gte: priorStartDate, $lt: priorEndDate },
-      status: { $nin: ["CANCELLED", "REJECTED"] }
-    });
+      status: { $nin: EXCLUDED_STATUSES }
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", populateFields);
 
-    // Cost = what we pay the partner. Use the SAME canonical breakdown as the
-    // order-financials view and the payout system so every screen agrees. Look
-    // up each assigned partner's pricing once.
-    const partnerIds = Array.from(
-      new Set(
-        [...orders, ...priorOrders]
-          .map((o: any) => (o.assignedPrinter?._id ? String(o.assignedPrinter._id) : o.assignedPrinter ? String(o.assignedPrinter) : null))
-          .filter(Boolean) as string[]
-      )
+    // Region attribution falls back to the customer's profile when an order has
+    // no usable shipping address — the same map the orders table builds.
+    const userIds = Array.from(
+      new Set(orders.map((o: any) => (o.user ? String(o.user) : null)).filter(Boolean) as string[])
     );
-    const payRate = await getPartnerPayRate();
-    const partnerDocs = partnerIds.length
-      ? await User.find({ _id: { $in: partnerIds } }).select("_id").lean()
+    const userDocs = userIds.length
+      ? await User.find({ _id: { $in: userIds } }).select("_id regions").lean()
       : [];
-    const partnerPricingMap = new Map<string, any>(
-      // Every partner maps to the same rate now; the map is kept so the payout
-      // draft's shape does not change.
-      partnerDocs.map((p: any) => [String(p._id), payRate])
+    const userRegionMap = new Map<string, string | null>(
+      userDocs.map((u: any) => [String(u._id), Array.isArray(u.regions) ? u.regions[0] || null : null])
     );
 
-    const calcOrderPartnerCost = (o: any): number => {
-      const pid = o.assignedPrinter?._id
-        ? String(o.assignedPrinter._id)
-        : o.assignedPrinter
-          ? String(o.assignedPrinter)
-          : null;
-      const pricing = pid ? partnerPricingMap.get(pid) || {} : {};
-      return computePartnerCostBreakdown({
+    // One rate, from global pricing — the same breakdown the order-financials
+    // view and the payout system use, so no two screens disagree on cost.
+    const payRate = await getPartnerPayRate();
+    const partnerCostOf = (o: any): number =>
+      computePartnerCostBreakdown({
         items: Array.isArray(o.items) ? o.items : [],
-        partnerPricing: pricing,
+        partnerPricing: payRate,
         priority: o.priority,
-        adjustments: o.pricing?.adjustments || [],
+        adjustments: o.pricing?.adjustments || []
       }).subtotal;
-    };
 
-    // Per-item cost approximation for the product-level table (kept aligned to the
-    // canonical default rate so it stays in the same ballpark as the KPI costs).
-    const DEFAULT_RATE_PER_SQFT = 2.5;
-    const calculateItemCost = (item: any) => {
-      const { widthIn, heightIn, quantity = 1 } = item;
-      if (widthIn && heightIn) {
-        const areaSqFt = (widthIn * heightIn) / 144;
-        return areaSqFt * DEFAULT_RATE_PER_SQFT * quantity;
-      }
-      return DEFAULT_RATE_PER_SQFT * quantity;
-    };
-
-    const calculateTotals = (orderList: any[]) => {
+    const totalsFor = (list: any[]) => {
       let revenue = 0;
       let cost = 0;
+      let earned = 0;
+      let earnedOrders = 0;
+      let uncostable = 0;
 
-      orderList.forEach(o => {
-        revenue += (o.pricing?.total || 0);
-        cost += calcOrderPartnerCost(o);
-      });
+      for (const o of list) {
+        const p = o.pricing || {};
+        /*
+         * Everything the customer paid — printing, rush, shipping and tax. This
+         * is money into the company account on the order, which is the figure an
+         * admin reconciles against.
+         *
+         * Note for when tax collection is switched on: tax is collected on
+         * behalf of a state and remitted, so it will inflate both revenue and
+         * margin by the tax line. Every order currently carries $0.00 tax, so
+         * nothing is overstated today.
+         */
+        revenue += p.total || 0;
 
-      return { revenue, cost, profit: revenue - cost };
-    };
-
-    const currentTotals = calculateTotals(orders);
-    const priorTotals = calculateTotals(priorOrders);
-
-    const calculateTrend = (curr: number, prior: number) => {
-      if (prior === 0) return curr > 0 ? 100 : 0;
-      return Number(((curr - prior) / prior * 100).toFixed(1));
-    };
-
-    const regionMap: { [key: string]: number } = {};
-    orders.forEach(o => {
-      const region = (o.assignedPrinter as unknown as IUser)?.regions?.[0] || "Unknown";
-      regionMap[region] = (regionMap[region] || 0) + (o.pricing?.total || 0);
-    });
-    const revenueByRegion = Object.entries(regionMap).map(([region, value]) => ({
-      region,
-      value: Number(value.toFixed(0)),
-      percentage: Number(((value / (currentTotals.revenue || 1)) * 100).toFixed(0))
-    })).sort((a, b) => b.value - a.value);
-
-    const productMap: { [key: string]: any } = {};
-    orders.forEach(o => {
-      o.items.forEach((item: any) => {
-        const key = item.name || "Custom Print";
-        if (!productMap[key]) {
-          productMap[key] = {
-            name: key,
-            quantity: 0,
-            totalRevenue: 0,
-            totalCost: 0
-          };
+        /*
+         * An order with no sheet dimensions yields no derivable partner cost.
+         * Treating that as zero would report its whole price as margin — the
+         * same invention the orders table now renders as "—".
+         */
+        if (!canDerivePartnerEarning(o)) {
+          uncostable += 1;
+          continue;
         }
-        productMap[key].quantity += (item.quantity || 1);
-        productMap[key].totalRevenue += (item.subtotal || 0);
-        productMap[key].totalCost += calculateItemCost(item);
-      });
-    });
 
-    const products = Object.values(productMap).map(p => {
-      const profit = p.totalRevenue - p.totalCost;
-      const finalPrice = p.totalRevenue / (p.quantity || 1);
-      const profitMargin = (profit / (p.totalRevenue || 1)) * 100;
-      const baseCost = p.totalCost / (p.quantity || 1);
-      const markup = ((finalPrice - baseCost) / (baseCost || 1)) * 100;
+        const c = partnerCostOf(o);
+        cost += c;
+
+        /*
+         * Realized margin: the same subtraction, restricted to orders that have
+         * actually shipped. Everything else is a forecast, because an order can
+         * still be cancelled or re-costed before it leaves a partner.
+         */
+        if (isPartnerEarningRealized(o)) {
+          earned += (p.total || 0) - c;
+          earnedOrders += 1;
+        }
+      }
 
       return {
-        name: p.name,
-        baseCost: Number(baseCost.toFixed(2)),
-        markup: Number(markup.toFixed(1)),
-        quantity: p.quantity,
-        finalPrice: Number(finalPrice.toFixed(2)),
-        totalCost: Number(p.totalCost.toFixed(2)),
-        totalRevenue: Number(p.totalRevenue.toFixed(2)),
-        profit: Number(profit.toFixed(2)),
-        profitMargin: Number(profitMargin.toFixed(2))
+        revenue,
+        cost,
+        margin: revenue - cost,
+        earned,
+        earnedOrders,
+        uncostable
       };
-    });
-
-    const getTimeLabel = (date: Date) => {
-      if (range === "7d") return date.toLocaleDateString("en-US", { weekday: "short" });
-      if (range === "ytd") return date.toLocaleDateString("en-US", { month: "short" });
-      return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     };
 
-    const currentPointsMap: { [key: string]: number } = {};
-    const priorPointsMap: { [key: string]: number } = {};
+    const current = totalsFor(orders);
+    const prior = totalsFor(priorOrders);
 
-    orders.forEach(o => {
-      const label = getTimeLabel(o.createdAt);
-      currentPointsMap[label] = (currentPointsMap[label] || 0) + (o.pricing?.total || 0);
-    });
+    /*
+     * A trend against an empty prior window is not a trend. This used to return
+     * a flat 100, so a first-ever order rendered "+100%" as though it had
+     * doubled something.
+     */
+    const trendFor = (curr: number, prev: number) =>
+      prev === 0
+        ? { trendPct: null as number | null, comparable: false, priorAmount: 0 }
+        : {
+            trendPct: Number((((curr - prev) / Math.abs(prev)) * 100).toFixed(1)),
+            comparable: true,
+            priorAmount: Number(prev.toFixed(2))
+          };
 
-    priorOrders.forEach(o => {
-      const label = getTimeLabel(o.createdAt);
-      priorPointsMap[label] = (priorPointsMap[label] || 0) + (o.pricing?.total || 0);
-    });
-
-    const labels: string[] = [];
-    let tempDate = new Date(startDate);
-    const endChartDate = new Date(now);
-    
-    while (tempDate <= endChartDate) {
-      labels.push(getTimeLabel(tempDate));
-      if (range === "7d") {
-        tempDate.setDate(tempDate.getDate() + 1);
-      } else if (range === "90d") {
-        tempDate.setDate(tempDate.getDate() + 7); 
-      } else if (range === "ytd") {
-        tempDate.setMonth(tempDate.getMonth() + 1);
-      } else {
-        tempDate.setDate(tempDate.getDate() + 2); 
-      }
+    // ── Revenue by region ────────────────────────────────────────────────────
+    /*
+     * Attributed to the CUSTOMER's region — where the demand is — not to the
+     * assigned partner's first served region, which is what this used. Those
+     * differ on any cross-region job, so revenue was credited to whichever
+     * region printed it rather than the one that bought it.
+     */
+    const regionMap: Record<string, number> = {};
+    for (const o of orders) {
+      const region = resolveOrderRegion(o, userRegionMap) || "Unknown";
+      regionMap[region] = (regionMap[region] || 0) + ((o.pricing?.total as number) || 0);
     }
+    const regionTotal = Object.values(regionMap).reduce((a, b) => a + b, 0);
+    const byRegion = Object.entries(regionMap)
+      .map(([region, value]) => ({
+        region,
+        value: Number(value.toFixed(2)),
+        percentage: regionTotal > 0 ? Number(((value / regionTotal) * 100).toFixed(1)) : 0
+      }))
+      .sort((a, b) => b.value - a.value);
 
-    const chartPoints = labels.map(label => ({
-      label,
-      current: Number((currentPointsMap[label] || 0).toFixed(0)),
-      previous: Number((priorPointsMap[label] || 0).toFixed(0))
+    // ── Revenue over time ────────────────────────────────────────────────────
+    /*
+     * Index-aligned buckets.
+     *
+     * Labels were previously generated by stepping the window (every 2 days on
+     * 30d) while orders were bucketed by an exact formatted date string, so an
+     * order on a skipped day matched no label and vanished — with every live
+     * order on 18 August the chart drew a flat zero under a card reading $586.
+     * The comparison series was worse: prior orders were keyed by their own
+     * absolute dates, and "Jul 19" can never equal "Aug 19", so `previous` was
+     * empty on every point of every range except 7d, where weekday names collide
+     * by coincidence.
+     *
+     * Both windows are now cut into the same number of slots and each order is
+     * placed by its offset from its own window start.
+     */
+    const bucketCount = Math.max(1, range.buckets);
+    const bucketMs = (now.getTime() - startDate.getTime()) / bucketCount;
+    const priorBucketMs = (priorEndDate.getTime() - priorStartDate.getTime()) / bucketCount;
+
+    const currentBuckets = new Array(bucketCount).fill(0);
+    const priorBuckets = new Array(bucketCount).fill(0);
+
+    const placeInto = (buckets: number[], windowStart: Date, slotMs: number, when: Date, amount: number) => {
+      if (slotMs <= 0) return;
+      const idx = Math.floor((when.getTime() - windowStart.getTime()) / slotMs);
+      // Clamped so an order on the closing edge counts in the last slot rather
+      // than being written to an unreachable index and disappearing.
+      buckets[Math.min(Math.max(idx, 0), buckets.length - 1)] += amount;
+    };
+
+    const revenueOf = (o: any) => (o.pricing?.total || 0) as number;
+    for (const o of orders) placeInto(currentBuckets, startDate, bucketMs, o.createdAt as Date, revenueOf(o));
+    for (const o of priorOrders) placeInto(priorBuckets, priorStartDate, priorBucketMs, o.createdAt as Date, revenueOf(o));
+
+    const labelFor = (index: number) => {
+      const at = new Date(startDate.getTime() + index * bucketMs);
+      return rangeKey === "ytd"
+        ? at.toLocaleDateString("en-US", { month: "short" })
+        : at.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    };
+
+    const points = currentBuckets.map((value, i) => ({
+      label: labelFor(i),
+      current: Number(value.toFixed(2)),
+      previous: Number(priorBuckets[i].toFixed(2))
     }));
 
     res.json({
+      period: {
+        range: rangeKey,
+        label: range.label,
+        priorLabel: range.priorLabel,
+        orderCount: orders.length
+      },
       kpis: {
-        totalProfits: { 
-          value: Number(currentTotals.profit.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.profit, priorTotals.profit) 
+        revenue: { value: Number(current.revenue.toFixed(2)), ...trendFor(current.revenue, prior.revenue) },
+        partnerCost: { value: Number(current.cost.toFixed(2)), ...trendFor(current.cost, prior.cost) },
+        margin: {
+          value: Number(current.margin.toFixed(2)),
+          pct: current.revenue > 0 ? Number(((current.margin / current.revenue) * 100).toFixed(1)) : 0,
+          ...trendFor(current.margin, prior.margin)
         },
-        totalCosts: { 
-          value: Number(currentTotals.cost.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.cost, priorTotals.cost) 
-        },
-        profitEarned: { 
-          value: Number(currentTotals.profit.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.profit, priorTotals.profit) 
-        },
-        totalRevenue: { 
-          value: Number(currentTotals.revenue.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.revenue, priorTotals.revenue) 
+        // Distinct from margin, which is the point: it is only earned once the
+        // order has shipped.
+        earned: {
+          value: Number(current.earned.toFixed(2)),
+          orderCount: current.earnedOrders,
+          ...trendFor(current.earned, prior.earned)
         }
       },
-      revenueChart: {
-        currentTotal: Number(currentTotals.revenue.toFixed(0)),
-        previousTotal: Number(priorTotals.revenue.toFixed(0)),
-        points: chartPoints
-      },
-      revenueByRegion,
-      products
+      uncostableOrders: current.uncostable,
+      chart: { points },
+      byRegion
     });
   } catch (error) {
     next(error);
