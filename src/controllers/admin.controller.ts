@@ -312,8 +312,7 @@ export const getAdminNotificationSettings = async (req: Request, res: Response, 
         orderUpdates: typeof emailPrefs.orderUpdates === "boolean" ? emailPrefs.orderUpdates : true,
         partnerActivity: typeof emailPrefs.partnerActivity === "boolean" ? emailPrefs.partnerActivity : true,
         systemAlerts: typeof emailPrefs.systemAlerts === "boolean" ? emailPrefs.systemAlerts : true
-      },
-      sms: {}
+      }
     });
   } catch (error) {
     next(error);
@@ -358,7 +357,7 @@ export const updateAdminNotificationSettings = async (req: Request, res: Respons
     admin.markModified("settings.notifications");
     await admin.save();
 
-    res.status(200).json({ email: nextPrefs, sms: {} });
+    res.status(200).json({ email: nextPrefs });
   } catch (error) {
     next(error);
   }
@@ -945,38 +944,94 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       extraFilters.push({ $or: searchOr });
     }
 
-    // Keyset cursor — format: "${updatedAt.getTime()}_${_id}"
-    // updatedAt is bumped on every write (save, updateOne with explicit $set), so it's the
-    // single reliable sort key for "most recently touched first".
+    /*
+     * Unassigned orders come first, then everything else, each block ordered
+     * most-recently-touched first.
+     *
+     * An unassigned order is the only kind that needs an admin to act, so it is
+     * what the table should open on. Sorting the fetched page in the browser
+     * would not achieve it: with keyset pagination an unassigned order sitting
+     * on page three stays on page three, which is exactly where nobody looks.
+     *
+     * MongoDB cannot sort a `find()` on a computed flag, and sorting on
+     * `assignedPrinter` itself would group the assigned block by partner
+     * ObjectId instead of by recency. So the two blocks are paged explicitly —
+     * same filters, same populate — and the cursor records which block it left
+     * off in.
+     *
+     * Cursor: "${block}_${updatedAt.getTime()}_${_id}", block being "u"
+     * (unassigned) or "a" (assigned). updatedAt is bumped on every write, so it
+     * remains the reliable within-block sort key.
+     */
+    const UNASSIGNED: any = { assignedPrinter: null };
+    const ASSIGNED: any = { assignedPrinter: { $ne: null } };
+
+    let cursorBlock: "u" | "a" = "u";
+    let cursorFilter: any = null;
+
     if (cursor && typeof cursor === "string" && cursor.includes("_")) {
-      const underscoreIdx = cursor.lastIndexOf("_");
-      const cursorTsStr = cursor.slice(0, underscoreIdx);
-      const cursorId = cursor.slice(underscoreIdx + 1);
-      const cursorTs = Number(cursorTsStr);
-      if (Number.isFinite(cursorTs) && mongoose.Types.ObjectId.isValid(cursorId)) {
+      const parts = cursor.split("_");
+      // A two-part cursor predates unassigned-first ordering; treated as the
+      // assigned block, which is where the old flat ordering effectively sat.
+      const [blockRaw, tsRaw, idRaw] =
+        parts.length >= 3 ? parts : ["a", parts[0], parts[1]];
+      const cursorTs = Number(tsRaw);
+      if (
+        (blockRaw === "u" || blockRaw === "a") &&
+        Number.isFinite(cursorTs) &&
+        mongoose.Types.ObjectId.isValid(idRaw)
+      ) {
+        cursorBlock = blockRaw;
         const cursorDate = new Date(cursorTs);
-        const cursorObjId = new mongoose.Types.ObjectId(cursorId);
-        extraFilters.push({
+        const cursorObjId = new mongoose.Types.ObjectId(idRaw);
+        cursorFilter = {
           $or: [
             { updatedAt: { $lt: cursorDate } },
             { updatedAt: cursorDate, _id: { $lt: cursorObjId } },
           ],
-        });
+        };
       }
     }
 
-    const finalQuery = extraFilters.length === 0 ? query : { ...query, $and: extraFilters };
-
     const pageSize = parseInt(limit as string);
-    const orders = await Order.find(finalQuery)
-      .select("-items.artboardItems")
-      .sort({ updatedAt: -1, _id: -1 })
-      .limit(pageSize + 1)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress")
-      .lean();
+
+    const buildQuery = (block: any, withCursor: boolean) => {
+      const filters = [...extraFilters, block];
+      if (withCursor && cursorFilter) filters.push(cursorFilter);
+      return { ...query, $and: filters };
+    };
+
+    const fetchBlock = (block: any, withCursor: boolean, take: number) =>
+      Order.find(buildQuery(block, withCursor))
+        .select("-items.artboardItems")
+        .sort({ updatedAt: -1, _id: -1 })
+        .limit(take)
+        .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress")
+        .lean();
+
+    // One extra row tells us whether another page exists, without a count().
+    let orders: any[] = [];
+
+    if (cursorBlock === "u") {
+      orders = await fetchBlock(UNASSIGNED, true, pageSize + 1);
+      if (orders.length <= pageSize) {
+        // The unassigned block is exhausted, so top the page up from the start
+        // of the assigned block.
+        const remaining = pageSize + 1 - orders.length;
+        const assigned = await fetchBlock(ASSIGNED, false, remaining);
+        if (assigned.length > 0) orders = [...orders, ...assigned];
+      }
+    } else {
+      orders = await fetchBlock(ASSIGNED, true, pageSize + 1);
+    }
 
     const hasNextPage = orders.length > pageSize;
     const results = hasNextPage ? orders.slice(0, pageSize) : orders;
+
+    // The block the final returned row belongs to is what the next cursor must
+    // continue from — not necessarily the block the request started in.
+    const lastRow: any = results[results.length - 1];
+    const lastRowBlock: "u" | "a" = lastRow && lastRow.assignedPrinter ? "a" : "u";
 
     const userIds = Array.from(
       new Set(
@@ -1049,7 +1104,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     if (hasNextPage) {
       const lastOrder = results[results.length - 1];
       const lastUpdatedAt = (lastOrder as any).updatedAt ?? lastOrder.createdAt;
-      nextCursor = `${new Date(lastUpdatedAt).getTime()}_${lastOrder._id}`;
+      nextCursor = `${lastRowBlock}_${new Date(lastUpdatedAt).getTime()}_${lastOrder._id}`;
     }
 
     res.status(200).json({
