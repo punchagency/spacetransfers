@@ -477,6 +477,17 @@ orderSchema.index({ displayId: 1 }, { unique: true, sparse: true });
 orderSchema.index({ assignedPrinter: 1, createdAt: -1 });
 orderSchema.index({ returnedAt: -1, createdAt: -1 });
 orderSchema.index({ updatedAt: -1, _id: -1 });
+/*
+ * Serves the unassigned-first orders list, which pages the unassigned and
+ * assigned blocks separately and sorts each by recency.
+ *
+ * Without it the unassigned block is a blocking in-memory SORT: the planner
+ * picks `assignedPrinter_1_createdAt_-1` for the filter, then re-sorts by
+ * updatedAt in memory. Fine at three orders, slow at thousands, and a hard
+ * failure past MongoDB's 32 MB sort ceiling — the list would simply stop
+ * returning, which is the worst way for it to break.
+ */
+orderSchema.index({ assignedPrinter: 1, updatedAt: -1, _id: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 

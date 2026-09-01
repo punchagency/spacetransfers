@@ -6,8 +6,22 @@ import sharp from "sharp";
 import mongoose from "mongoose";
 import apiRouter from "./routes/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
+import { env } from "./config/env.js";
 
 const app = express();
+
+/*
+ * One proxy hop — Render's load balancer sits in front of this.
+ *
+ * Required for the auth rate limits to key on the caller rather than on the
+ * proxy. Without it every request carries the balancer's address, so the first
+ * ten sign-in attempts from anywhere would lock out everybody.
+ *
+ * Deliberately `1`, not `true`: trusting the whole chain lets a caller forge
+ * `X-Forwarded-For` and hand themselves a fresh bucket per request, which is
+ * worse than no limiting at all because it looks like it works.
+ */
+app.set("trust proxy", 1);
 
 app.use(cors({ exposedHeaders: ["Content-Disposition"] }));
 /**
@@ -83,6 +97,70 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // never end up in the request logs.
 const redactUrl = (url: string) => url.replace(/([?&]token=)[^&]+/gi, "$1REDACTED");
 
+/**
+ * Response bodies are logged in development only.
+ *
+ * They used to be logged everywhere, which put working credentials into stdout:
+ * a successful `/auth/login` or `/auth/register` writes its JWT, and every order
+ * response writes the customer's name, email and address. On a hosted platform
+ * stdout is captured and retained, so a log reader held live sessions for as
+ * long as those tokens were valid.
+ *
+ * The status line — method, URL, status, duration — is what actually helps in
+ * production, and it carries nothing sensitive.
+ */
+const LOG_RESPONSE_BODIES = env.nodeEnv === "development";
+
+/**
+ * Anything that is a credential, or identifies a person, in the shapes this API
+ * returns. Redaction is by key name and applied at every depth, because these
+ * appear nested — `user.email`, `order.customer.email` — as often as at the top.
+ */
+const SENSITIVE_KEYS = new Set([
+  "token",
+  "accessToken",
+  "refreshToken",
+  "clientSecret",
+  "client_secret",
+  "password",
+  "passwordHash",
+  "newPassword",
+  "currentPassword",
+  "resetPasswordTokenHash",
+  "inviteToken",
+  "secret",
+  "apiKey",
+  "authorization",
+  "email",
+  "phone",
+]);
+
+const redactBody = (value: unknown, depth = 0): unknown => {
+  if (depth > 6 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redactBody(v, depth + 1));
+
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = SENSITIVE_KEYS.has(key) ? "[REDACTED]" : redactBody(val, depth + 1);
+  }
+  return out;
+};
+
+/**
+ * Last line of defence, applied to the rendered string.
+ *
+ * Key-based redaction only works on a body we can walk. A handler that sends a
+ * pre-serialized string, or a shape nobody anticipated, would slip past it — and
+ * the thing being missed is a live credential, so it is worth catching by shape
+ * as well as by name.
+ */
+const redactText = (text: string): string =>
+  text
+    // JWTs: three base64url segments. The signature is what makes it usable, so
+    // the head is left visible for correlating a log line with a session.
+    .replace(/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g, "eyJ…[REDACTED_JWT]")
+    .replace(/\b(sk_live|sk_test|rk_live|whsec)_[A-Za-z0-9]{8,}/g, "$1_[REDACTED]");
+
 // Request Logger (Professional logging for debugging)
 app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
@@ -91,14 +169,29 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const originalSend = res.send;
   const originalJson = res.json;
 
-  // Intercept response body for logging errors or important responses
+  /*
+   * Capture the response body for logging — the object, not its serialization.
+   *
+   * `res.json()` serializes and then calls `res.send()` with the resulting
+   * string, so a naive pair of overrides runs both and the string version wins.
+   * That defeated redaction outright: the logger tested `typeof body === object`
+   * to decide whether to walk and redact it, saw a string, and printed the raw
+   * JSON — tokens included.
+   *
+   * `res.json` therefore claims the slot and `res.send` only fills it if nothing
+   * has.
+   */
   res.send = function (body?: any): Response {
-    res.locals.responseBody = body;
+    if (!res.locals.responseBodyCaptured) {
+      res.locals.responseBody = body;
+      res.locals.responseBodyCaptured = true;
+    }
     return originalSend.apply(this, arguments as any);
   };
 
   res.json = function (body?: any): Response {
     res.locals.responseBody = body;
+    res.locals.responseBodyCaptured = true;
     return originalJson.apply(this, arguments as any);
   };
 
@@ -110,12 +203,17 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     
     console.log(`${logColor}[${new Date().toISOString()}] ${req.method} ${redactUrl(req.url)} ${status} ${duration}ms${resetColor}`);
     
-    // Log response body for BOTH success and error (limited to 500 chars for success to avoid clutter)
+    // Bodies in development only, and redacted even there — a local log is still
+    // a file, and these are still real credentials.
     const bodyToLog = res.locals.responseBody;
-    if (bodyToLog) {
+    if (LOG_RESPONSE_BODIES && bodyToLog) {
       let formattedBody: string;
       try {
-        formattedBody = typeof bodyToLog === 'object' ? JSON.stringify(bodyToLog, null, 2) : String(bodyToLog);
+        formattedBody =
+          typeof bodyToLog === 'object'
+            ? JSON.stringify(redactBody(bodyToLog), null, 2)
+            : String(bodyToLog);
+        formattedBody = redactText(formattedBody);
       } catch (e) {
         formattedBody = '[Circular/Unserializable]';
       }

@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
  import { Request, Response, NextFunction } from "express";
 import { Order } from "../models/order.model.js";
 import { UserRole } from "../models/user.model.js";
@@ -19,13 +20,19 @@ export const getRecentOrders = async (req: Request, res: Response, next: NextFun
     const parsedLimit = Math.min(parseInt(limit as string, 10) || 10, 50);
     const query: any = {};
 
-    // 1. Authorization & Scoping
+    /*
+     * Scoping. The route requires a session now, so there is no anonymous
+     * branch: this used to serve unauthenticated callers a feed of real orders —
+     * customer names, item names, totals and timing — and no client ever asked
+     * for it.
+     */
     if (!req.user) {
-      // Guest Scenario: Public Recent Activity Feed
-      // For privacy, we only show public-friendly data
-      // Maybe only show orders that are COMPLETED or processing
-      query.status = { $in: ["PROCESSING", "PRINTING", "SHIPPED", "COMPLETED"] };
-    } else if (req.user.role === UserRole.ADMIN) {
+      const error = new Error("Authentication required") as any;
+      error.statusCode = 401;
+      throw error;
+    }
+
+    if (req.user.role === UserRole.ADMIN) {
       // Admin: See everything
       if (status) query.status = status;
     } else if (req.user.role === UserRole.PRINTER) {
@@ -38,9 +45,19 @@ export const getRecentOrders = async (req: Request, res: Response, next: NextFun
       if (status) query.status = status;
     }
 
-    // 2. Cursor-based Pagination for performance
+    /*
+     * Cursor pagination. Validated before it reaches the query: an id that is
+     * not an ObjectId made Mongoose throw a CastError, which the error handler
+     * returned verbatim — `Cast to ObjectId failed … for model "Order"` — so a
+     * malformed query string answered 500 and named our schema to the caller.
+     */
     if (cursor) {
-      query._id = { $lt: cursor };
+      if (!mongoose.Types.ObjectId.isValid(String(cursor))) {
+        const error = new Error("Invalid cursor") as any;
+        error.statusCode = 400;
+        throw error;
+      }
+      query._id = { $lt: new mongoose.Types.ObjectId(String(cursor)) };
     }
 
     // 3. Execution
