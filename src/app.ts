@@ -23,7 +23,49 @@ const app = express();
  */
 app.set("trust proxy", 1);
 
-app.use(cors({ exposedHeaders: ["Content-Disposition"] }));
+/**
+ * Origins allowed to call this API from a browser.
+ *
+ * `cors()` was called with no `origin`, which defaults to `*` — every site on
+ * the internet could script requests against this API and read the replies. The
+ * three front ends are known and configured, so the list is exactly those.
+ *
+ * Localhost is allowed in development only, on any port, because the three dev
+ * servers move ports whenever one is already taken.
+ */
+const allowedOrigins = new Set(
+  [env.appUrl, env.printerAppUrl, env.adminAppUrl]
+    .filter(Boolean)
+    .map((url) => url.replace(/\/$/, "")),
+);
+
+const isLocalhost = (origin: string) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+
+app.use(
+  cors({
+    exposedHeaders: ["Content-Disposition"],
+    origin(origin, callback) {
+      /*
+       * No Origin header at all: curl, server-to-server calls, and the
+       * ShipStation webhook. CORS is a browser control and does not apply to
+       * these — rejecting them here would break the webhook while stopping
+       * nothing, since anything that can forge an Origin can also omit it.
+       */
+      if (!origin) return callback(null, true);
+
+      const normalized = origin.replace(/\/$/, "");
+      if (allowedOrigins.has(normalized)) return callback(null, true);
+      if (env.nodeEnv !== "production" && isLocalhost(normalized)) return callback(null, true);
+
+      // Logged, because the likeliest cause is a real front end deployed to a
+      // URL nobody added here — and the browser-side symptom of that is an
+      // opaque network error that names nothing.
+      console.warn(`[CORS] blocked origin: ${origin}`);
+      return callback(null, false);
+    },
+  }),
+);
 /**
  * Body limits, scoped by what each route legitimately carries.
  *
