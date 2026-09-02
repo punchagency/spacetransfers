@@ -3,9 +3,11 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { HiOutlineLockClosed } from "react-icons/hi";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import { BsArrowRight } from "react-icons/bs";
+import { FaCheck } from "react-icons/fa";
 import toast from "react-hot-toast";
 import { AuthBanner } from "../components/auth/AuthBanner";
 import { apiFetch } from "../utils/api";
+import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload } from "../utils/legal";
 
 /**
  * Where an invitation lands.
@@ -35,11 +37,27 @@ const SetPasswordPage = () => {
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);
   const [saving, setSaving] = useState(false);
+  /*
+   * Consent, collected only on an invitation.
+   *
+   * A partner who signs up accepts the terms on the form. A partner an admin
+   * adds arrives straight here and was previously working the moment they chose
+   * a password, having never been shown them — so half the partner base had no
+   * acceptance record at all. A forgotten-password reset belongs to someone who
+   * already accepted, and is not asked again.
+   */
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [contentResponsibilityAccepted, setContentResponsibilityAccepted] = useState(false);
 
   const tooShort = password.length > 0 && password.length < MIN_LENGTH;
   const mismatch = confirm.length > 0 && password !== confirm;
+  const consentGiven = !isInvite || (termsAccepted && contentResponsibilityAccepted);
   const canSubmit =
-    password.length >= MIN_LENGTH && password === confirm && !saving && Boolean(token);
+    password.length >= MIN_LENGTH &&
+    password === confirm &&
+    consentGiven &&
+    !saving &&
+    Boolean(token);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,7 +66,21 @@ const SetPasswordPage = () => {
     try {
       await apiFetch("/auth/reset-password", {
         method: "POST",
-        body: JSON.stringify({ token, newPassword: password }),
+        body: JSON.stringify({
+          token,
+          newPassword: password,
+          // Sent only when this screen collected it. The server ignores it for
+          // an account that already has a record, and requires it for one that
+          // does not — so the decision does not rest on the client.
+          ...(isInvite
+            ? {
+                legalAcceptance: buildLegalAcceptancePayload(
+                  termsAccepted,
+                  contentResponsibilityAccepted,
+                ),
+              }
+            : {}),
+        }),
       });
       /*
        * Deliberately not signed in automatically. The endpoint returns a
@@ -157,6 +189,51 @@ const SetPasswordPage = () => {
                   <p className="text-xs text-red-600 mt-1.5">Both passwords must match.</p>
                 )}
               </div>
+
+              {isInvite && (
+                <div className="space-y-2.5 pt-1">
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTermsAccepted((v) => !v)}
+                      className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
+                        termsAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
+                      }`}
+                    >
+                      {termsAccepted && <FaCheck className="text-white text-[9px]" />}
+                    </button>
+                    <label
+                      onClick={() => setTermsAccepted((v) => !v)}
+                      className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
+                    >
+                      I have read and agree to the{" "}
+                      <a href={LEGAL_DOCUMENTS.terms.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.terms.title}</a>{" "}
+                      and{" "}
+                      <a href={LEGAL_DOCUMENTS.privacy.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.privacy.title}</a>
+                    </label>
+                  </div>
+
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setContentResponsibilityAccepted((v) => !v)}
+                      className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
+                        contentResponsibilityAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
+                      }`}
+                    >
+                      {contentResponsibilityAccepted && <FaCheck className="text-white text-[9px]" />}
+                    </button>
+                    <label
+                      onClick={() => setContentResponsibilityAccepted((v) => !v)}
+                      className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
+                    >
+                      I accept the{" "}
+                      <a href={LEGAL_DOCUMENTS.contentPolicy.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.contentPolicy.title}</a>{" "}
+                      and am solely responsible for the content uploaded through this account
+                    </label>
+                  </div>
+                </div>
+              )}
 
               <button
                 type="submit"
