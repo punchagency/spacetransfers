@@ -51,6 +51,7 @@ import { exportGangsheetPng24,
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { isValidEmail, resolveAddress } from "../utils/accountFields.js";
+import { changePartnerStatus } from "../services/partnerStatus.service.js";
 import { computeAssignmentDeadlineFor, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
 interface CustomError extends Error {
@@ -2218,6 +2219,22 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
        */
       resetPasswordTokenHash: inviteTokenHash,
       resetPasswordExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      /*
+       * Opens the trail, recording that this partner exists because an admin
+       * added them rather than because they applied — which is also why they
+       * start Active rather than Pending.
+       */
+      statusHistory: [
+        {
+          from: null,
+          to: resolvedStatus,
+          reason: "Added by an admin",
+          at: new Date(),
+          byId: req.user?.id || null,
+          byName: req.user?.name || req.user?.email || null,
+          notified: false,
+        },
+      ],
       ...(partnerAddress
         ? { businessAddress: partnerAddress, defaultShippingAddress: partnerAddress }
         : {}),
@@ -2549,6 +2566,25 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       companyName: partner.companyName || partner.name,
       contactName: partner.name,
       status: partner.status,
+      /*
+       * Why the partner is in the state they are in.
+       *
+       * A suspended or rejected partner used to show a status and nothing else,
+       * so the reason existed only in whatever the admin remembered. Newest
+       * first, capped — the detail page wants the recent decisions, not an
+       * unbounded log.
+       */
+      statusHistory: [...(((partner as any).statusHistory || []) as any[])]
+        .reverse()
+        .slice(0, 20)
+        .map((h) => ({
+          from: h.from || null,
+          to: h.to,
+          reason: h.reason || null,
+          at: h.at,
+          by: h.byName || null,
+          notified: h.notified === true,
+        })),
       regions: partner.regions || [],
       detectedRegion,
       ordersCompleted,
@@ -2701,7 +2737,7 @@ export const updatePartner = async (req: Request, res: Response, next: NextFunct
 export const updatePartnerStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { status } = req.body;
+    const { status, reason } = req.body;
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -2733,27 +2769,47 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
       .lean();
     if (existingPartner?.status === "Rejected") {
       const error = new Error(
-        "This application was rejected and cannot be reinstated. Ask them to register again."
+        "This application was rejected and cannot be reinstated here. They can re-apply from the partner sign-up page, which starts a fresh application."
       ) as CustomError;
       error.statusCode = 409;
       throw error;
     }
 
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER, status: { $ne: "Rejected" } },
-      { $set: { status } },
-      { new: true, runValidators: true }
-    ).select("-passwordHash");
+    /*
+     * Suspension needs a reason for the same reason rejection does: it stops a
+     * working partner from receiving any work and locks them out, and it used to
+     * happen through a toggle that recorded nothing and told them nothing. They
+     * would simply find themselves unable to sign in.
+     *
+     * Reinstating does not require one — restoring someone needs no
+     * justification to the person being restored.
+     */
+    if (status === "Suspended" && (typeof reason !== "string" || reason.trim().length < 3)) {
+      const error = new Error("A reason is required when suspending a partner") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
-    if (!partner) {
+    const result = await changePartnerStatus({
+      partnerId: partnerIdString,
+      to: status,
+      reason: typeof reason === "string" ? reason : null,
+      // Anything but Rejected, which the check above already refuses.
+      expectedFrom: ["Active", "Suspended", "Under Review", "Pending"],
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email },
+    });
+
+    if (!result) {
       const error = new Error("Partner not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     res.status(200).json({
-      id: partner._id,
-      status: partner.status,
+      id: result.partner._id,
+      status: result.partner.status,
+      notified: result.notified,
+      notifyError: result.notifyError,
       updated: true
     });
   } catch (error) {
@@ -2771,12 +2827,55 @@ export const listPendingPrinters = async (req: Request, res: Response, next: Nex
      * the one fact `autoAssignOrder` actually routes on.
      */
     const printers = await User.find({ role: UserRoles.PRINTER, status: "Pending" })
-      .select("name companyName email phone createdAt regions defaultShippingAddress businessAddress")
+      .select("name companyName email phone createdAt regions defaultShippingAddress businessAddress statusHistory")
       .sort({ createdAt: -1 })
       .lean();
 
+    /*
+     * Who else is already registered at each of these addresses.
+     *
+     * Sharing one is not itself wrong — industrial units and co-working
+     * buildings hold several businesses — so this does not block a signup. But
+     * it is the shape both duplicate registration and rejection-evasion take,
+     * and the approval screen is the one moment a person is deciding about this
+     * applicant. Three accounts for the same company already sit at one address
+     * in this database, all approved, because nothing ever surfaced it.
+     *
+     * Fetched in one query keyed by street and postcode rather than per row.
+     */
+    const addressKey = (a: any) =>
+      a && a.street && a.postalCode
+        ? `${String(a.street).trim().toLowerCase()}|${String(a.postalCode).trim().toLowerCase()}`
+        : null;
+
+    const pendingKeys = printers
+      .map((p: any) => addressKey(p.defaultShippingAddress || p.businessAddress))
+      .filter(Boolean) as string[];
+
+    const neighboursByKey = new Map<string, Array<{ companyName: string; status: string }>>();
+    if (pendingKeys.length > 0) {
+      const others = await User.find({
+        role: UserRoles.PRINTER,
+        _id: { $nin: printers.map((p: any) => p._id) },
+      })
+        .select("companyName name status defaultShippingAddress businessAddress")
+        .lean();
+
+      for (const other of others as any[]) {
+        const key = addressKey(other.defaultShippingAddress || other.businessAddress);
+        if (!key || !pendingKeys.includes(key)) continue;
+        const list = neighboursByKey.get(key) || [];
+        list.push({
+          companyName: other.companyName || other.name || "Unnamed partner",
+          status: other.status || "Unknown",
+        });
+        neighboursByKey.set(key, list);
+      }
+    }
+
     const formattedPrinters = printers.map(p => {
       const address = (p as any).defaultShippingAddress || (p as any).businessAddress || null;
+      const key = addressKey(address);
       return {
         id: p._id,
         name: p.name,
@@ -2788,7 +2887,25 @@ export const listPendingPrinters = async (req: Request, res: Response, next: Nex
         // no region when it does. "Unknown" on screen is honest; a wrong region
         // would route real work to the wrong side of the country.
         region: resolvePartnerRegion(p),
-        location: address ? [address.city, address.state].filter(Boolean).join(", ") || null : null
+        location: address ? [address.city, address.state].filter(Boolean).join(", ") || null : null,
+        /** Other partners at the same street and postcode. Empty when none. */
+        sameAddressPartners: (key && neighboursByKey.get(key)) || [],
+        /*
+         * A previous rejection of this same account, now that a declined
+         * applicant can re-apply with the address they used before. Without it
+         * a re-application is indistinguishable from a first one, and the
+         * approver repeats a decision someone already made.
+         */
+        priorRejection: (() => {
+          const history = ((p as any).statusHistory || []) as any[];
+          const last = [...history].reverse().find((h) => h.to === "Rejected");
+          if (!last) return null;
+          return {
+            at: last.at,
+            reason: last.reason || null,
+            by: last.byName || null,
+          };
+        })()
       };
     });
 
@@ -2801,6 +2918,7 @@ export const listPendingPrinters = async (req: Request, res: Response, next: Nex
 export const approvePrinter = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
+    const { reason } = req.body || {};
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -2810,21 +2928,20 @@ export const approvePrinter = async (req: Request, res: Response, next: NextFunc
     }
 
     /*
-     * Scoped to Pending on purpose. Unscoped, this endpoint reinstates ANY
-     * printer: an admin suspends a partner for bad output, and a POST here puts
-     * them straight back into the assignment pool, because `autoAssignOrder`
-     * filters only on status === "Active".
-     *
-     * This queue approves applications. Reinstating a suspended partner is a
-     * different decision and belongs to PATCH /partners/:id/status.
+     * Scoped to Pending, and routed through `changePartnerStatus` so the
+     * approval is recorded and the partner is actually told. This used to flip
+     * the status and log a fake "[EMAIL MOCK] Activation email sent" that no
+     * code ever backed with a real send.
      */
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER, status: "Pending" },
-      { $set: { status: "Active" } },
-      { new: true }
-    );
+    const result = await changePartnerStatus({
+      partnerId: partnerIdString,
+      to: "Active",
+      reason: typeof reason === "string" ? reason : null,
+      expectedFrom: "Pending",
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email },
+    });
 
-    if (!partner) {
+    if (!result) {
       const existing = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
         .select("status")
         .lean();
@@ -2837,19 +2954,11 @@ export const approvePrinter = async (req: Request, res: Response, next: NextFunc
       throw error;
     }
 
-    console.log(`[EMAIL MOCK] Activation email sent to ${partner.email}`);
-
-    notifyAllAdmins({
-      category: "partners",
-      priority: "medium",
-      title: "Printer approved",
-      message: `${partner.companyName || partner.name} • ${partner.email}`,
-      meta: { partnerId: String(partner._id), status: "Active" }
-    }).catch(() => {});
-
     res.status(200).json({
-      id: partner._id,
-      status: partner.status,
+      id: result.partner._id,
+      status: result.partner.status,
+      notified: result.notified,
+      notifyError: result.notifyError,
       message: "Printer approved successfully"
     });
   } catch (error) {
@@ -2860,6 +2969,7 @@ export const approvePrinter = async (req: Request, res: Response, next: NextFunc
 export const rejectPrinter = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
+    const { reason } = req.body || {};
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -2869,19 +2979,27 @@ export const rejectPrinter = async (req: Request, res: Response, next: NextFunct
     }
 
     /*
-     * Scoped to Pending on purpose, and this is the dangerous direction: without
-     * it, a stale Approvals tab — or a second admin acting on a list loaded a
-     * minute earlier — suspends a partner who is live and mid-print. They then
-     * silently stop receiving work, since assignment only considers Active
-     * partners, and nothing would have reported it.
+     * A reason is required. Rejection is permanent and the applicant may come
+     * back months later under a different email — the approver facing that
+     * second application needs to know whether the first was turned down for
+     * print quality or because a colleague had already signed up. Previously
+     * nothing was recorded at all.
      */
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER, status: "Pending" },
-      { $set: { status: "Rejected" } },
-      { new: true }
-    );
+    if (typeof reason !== "string" || reason.trim().length < 3) {
+      const error = new Error("A reason is required when rejecting an application") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
-    if (!partner) {
+    const result = await changePartnerStatus({
+      partnerId: partnerIdString,
+      to: "Rejected",
+      reason,
+      expectedFrom: "Pending",
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email },
+    });
+
+    if (!result) {
       const existing = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
         .select("status")
         .lean();
@@ -2894,17 +3012,11 @@ export const rejectPrinter = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    notifyAllAdmins({
-      category: "partners",
-      priority: "medium",
-      title: "Printer rejected",
-      message: `${partner.companyName || partner.name} • ${partner.email}`,
-      meta: { partnerId: String(partner._id), status: "Rejected" }
-    }).catch(() => {});
-
     res.status(200).json({
-      id: partner._id,
-      status: partner.status,
+      id: result.partner._id,
+      status: result.partner.status,
+      notified: result.notified,
+      notifyError: result.notifyError,
       message: "Printer registration rejected"
     });
   } catch (error) {

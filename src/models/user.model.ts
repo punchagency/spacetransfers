@@ -177,6 +177,15 @@ export interface IUser extends Document {
   // getRegionFromState / geocoding. Stored so queries can filter by region without
   // recomputing it live on every request.
   detectedRegion?: "West" | "Midwest" | "South" | "Northeast" | null;
+  statusHistory?: Array<{
+    from?: string | null;
+    to: string;
+    reason?: string | null;
+    at?: Date;
+    byId?: any;
+    byName?: string | null;
+    notified?: boolean;
+  }>;
   availabilityStatus?: "open" | "paused" | "stopped";
   // True when the partner was automatically paused because they reached their
   // maximum active job limit. Distinguishes a capacity auto-pause from a manual
@@ -254,6 +263,32 @@ const userSchema = new Schema<IUser>(
       enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected"],
       default: "Active"
     },
+
+    /*
+     * Every status change, with the reason and who made it.
+     *
+     * Rejecting or suspending a partner is consequential and was previously a
+     * one-click, unexplained, permanent act: the only trace was the status field
+     * itself. Nothing recorded why, who decided, or when — so a partner
+     * re-applying months later met an approver with no way to know whether the
+     * last rejection was about print quality or a duplicate signup.
+     *
+     * One trail for all of them rather than a `rejectionReason` beside a
+     * `suspensionReason`, so a new status cannot arrive without somewhere to
+     * explain itself.
+     */
+    statusHistory: [
+      {
+        from: { type: String, default: null },
+        to: { type: String, required: true },
+        reason: { type: String, default: null },
+        at: { type: Date, default: Date.now },
+        byId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+        byName: { type: String, default: null },
+        /** Whether the partner was successfully told. */
+        notified: { type: Boolean, default: false },
+      },
+    ],
     rating: {
       type: Number,
       default: 5.0,

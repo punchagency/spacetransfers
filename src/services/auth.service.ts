@@ -115,7 +115,23 @@ export const registerUser = async ({
   }
 
   const existing = await User.findOne({ email });
-  if (existing) {
+  /*
+   * A rejected applicant may re-apply with the same address.
+   *
+   * The account still holds the email, so "Email already in use" turned a
+   * declined application into a permanent ban on that address — which is not
+   * what rejection is meant to mean, and left the only route back as inventing
+   * a second mailbox. Re-applying resets the existing record to Pending with
+   * the new details, and `statusHistory` carries the previous rejection and its
+   * reason into the queue, so the approver sees the history rather than a
+   * stranger.
+   *
+   * Only from Rejected. Every other status still refuses: a Pending applicant
+   * re-submitting would silently overwrite their own application, and allowing
+   * it against an Active partner would be account takeover.
+   */
+  const isReapplication = existing && existing.status === "Rejected" && existing.role === UserRoles.PRINTER;
+  if (existing && !isReapplication) {
     const error = new Error("Email already in use") as any;
     error.statusCode = 400;
     throw error;
@@ -174,13 +190,30 @@ export const registerUser = async ({
     }
   }
 
+  const initialStatus = resolvedRole === UserRoles.PRINTER ? "Pending" : "Active";
   const userPayload: any = {
     name,
     email,
     passwordHash,
     role: resolvedRole,
-    status: resolvedRole === UserRoles.PRINTER ? "Pending" : "Active",
-    legalAcceptance: acceptanceRecord
+    status: initialStatus,
+    legalAcceptance: acceptanceRecord,
+    /*
+     * The trail starts at creation, so a partner's history is complete rather
+     * than beginning at whatever happened to them first. Without it the record
+     * reads as though they appeared already Pending.
+     */
+    statusHistory: [
+      {
+        from: null,
+        to: initialStatus,
+        reason: "Signed up",
+        at: new Date(),
+        byId: null,
+        byName: null,
+        notified: false,
+      },
+    ]
   };
 
   if (companyName) userPayload.companyName = companyName;
@@ -247,7 +280,42 @@ export const registerUser = async ({
     }
   }
 
-  const user = await User.create(userPayload);
+  let user;
+  if (isReapplication && existing) {
+    /*
+     * Updated in place rather than deleted and recreated, so the prior
+     * rejection stays attached to the same record. A fresh document would look
+     * to the approver exactly like a first-time applicant.
+     */
+    /*
+     * The prior history is captured before the merge and restored after it.
+     *
+     * `userPayload` carries its own opening `statusHistory` entry for a brand
+     * new account, so assigning it wholesale overwrote the record this whole
+     * branch exists to preserve — the earlier rejection vanished, and the queue
+     * showed a re-application as a first-time applicant.
+     */
+    const priorHistory = [...(((existing as any).statusHistory || []) as any[])];
+    Object.assign(existing, userPayload);
+    (existing as any).statusHistory = [
+      ...priorHistory,
+      {
+        from: "Rejected",
+        to: "Pending",
+        reason: "Re-applied after rejection",
+        at: new Date(),
+        byId: null,
+        byName: null,
+        notified: false,
+      },
+    ];
+    // A previous rejection must not carry over as a live reset token.
+    (existing as any).resetPasswordTokenHash = null;
+    (existing as any).resetPasswordExpiresAt = null;
+    user = await existing.save();
+  } else {
+    user = await User.create(userPayload);
+  }
 
   const isPending = user.status === "Pending";
   const token = isPending ? "" : signJwt({ sub: user.id, role: user.role });
