@@ -34,6 +34,9 @@ const REGION_BY_STATE: Record<string, string> = {
   NH:"Northeast",MA:"Northeast",RI:"Northeast",CT:"Northeast",NJ:"Northeast",
 };
 
+/** Matches the server's minimum, so the form and the API agree. */
+const MIN_PASSWORD_LENGTH = 8;
+
 const REGION_COLORS: Record<string, string> = {
   West:      "bg-blue-50 text-blue-700 border-blue-200",
   Midwest:   "bg-amber-50 text-amber-700 border-amber-200",
@@ -71,6 +74,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
     useState(false);
   const [isLoading, setIsLoading]         = useState(false);
   const [sendingReset, setSendingReset]   = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   // Region detection state
   const [detectedRegion, setDetectedRegion]   = useState<string | null>(null);
@@ -154,7 +158,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
   const resetForm = () => {
     setFullName(""); setCompanyName(""); setPhone(""); setWebsite("");
     setStreet(""); setCity(""); setStateProv(""); setPostalCode("");
-    setCountry("United States"); setEmail(""); setPassword("");
+    setCountry("United States"); setEmail(""); setPassword(""); setConfirmPassword("");
     setTermsAccepted(false); setDetectedRegion(null);
     setRegionValidated(false); setNonUSWarning(false);
     /*
@@ -229,6 +233,22 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
         }
         if (nonUSWarning) {
           toast.error("Only US addresses are supported at this time.");
+          setIsLoading(false);
+          return;
+        }
+        /*
+         * Checked here rather than left to the server, which never sees the
+         * second field: a typo in a password nobody can read back would create
+         * an account whose owner cannot sign into it, and — until SendGrid is
+         * configured — cannot recover it either.
+         */
+        if (password.length < MIN_PASSWORD_LENGTH) {
+          toast.error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+          setIsLoading(false);
+          return;
+        }
+        if (password !== confirmPassword) {
+          toast.error("Both passwords must match.");
           setIsLoading(false);
           return;
         }
@@ -486,6 +506,11 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 {showPassword ? <HiOutlineEyeOff className="text-lg" /> : <HiOutlineEye className="text-lg" />}
               </button>
             </div>
+            {!isSignIn && password.length > 0 && password.length < MIN_PASSWORD_LENGTH && (
+              <p className="text-xs text-red-600 ml-1">
+                Must be at least {MIN_PASSWORD_LENGTH} characters.
+              </p>
+            )}
             {isSignIn && (
               <div className="flex justify-end pt-0.5">
                 <button
@@ -499,6 +524,29 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
               </div>
             )}
           </div>
+
+          {/* Confirm password — sign-up only. */}
+          {!isSignIn && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 ml-1 block">Confirm password</label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <HiOutlineLockClosed className="text-slate-400 text-lg" />
+                </div>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="Type it again"
+                  className="w-full pl-11 pr-11 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
+                />
+              </div>
+              {confirmPassword.length > 0 && password !== confirmPassword && (
+                <p className="text-xs text-red-600 ml-1">Both passwords must match.</p>
+              )}
+            </div>
+          )}
 
           {/* Legal acknowledgements. Both are required by the server. */}
           {!isSignIn && (
@@ -549,9 +597,30 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           {/* Submit */}
           <button
             type="submit"
-            disabled={isLoading || (!isSignIn && !(termsAccepted && contentResponsibilityAccepted))}
+            /*
+             * Sign-up also waits on a password that is long enough and typed
+             * the same twice. The submit handler re-checks both — this only
+             * stops the button looking available before it can succeed.
+             */
+            disabled={
+              isLoading ||
+              (!isSignIn &&
+                !(
+                  termsAccepted &&
+                  contentResponsibilityAccepted &&
+                  password.length >= MIN_PASSWORD_LENGTH &&
+                  password === confirmPassword
+                ))
+            }
             className={`w-full py-3 px-4 rounded-xl text-white font-semibold shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 transition-all transform active:scale-[0.98] ${
-              isLoading || (!isSignIn && !(termsAccepted && contentResponsibilityAccepted))
+              isLoading ||
+              (!isSignIn &&
+                !(
+                  termsAccepted &&
+                  contentResponsibilityAccepted &&
+                  password.length >= MIN_PASSWORD_LENGTH &&
+                  password === confirmPassword
+                ))
                 ? "bg-blue-400 cursor-not-allowed opacity-70"
                 : "bg-[#3B82F6] hover:bg-blue-600"
             }`}
