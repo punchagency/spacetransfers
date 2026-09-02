@@ -50,6 +50,7 @@ import { exportGangsheetPng24,
 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import { isValidEmail, resolveAddress } from "../utils/accountFields.js";
 import { computeAssignmentDeadlineFor, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
 interface CustomError extends Error {
@@ -2072,7 +2073,8 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      *
      * A form is a convenience, not a boundary. This is the boundary.
      */
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email).trim())) {
+    // The shared validator, so this rule and public registration's cannot drift.
+    if (!isValidEmail(String(email).trim())) {
       const error = new Error("A valid email address is required") as CustomError;
       error.statusCode = 400;
       throw error;
@@ -2161,15 +2163,42 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      * Stored in both fields because both are read: `businessAddress` for the
      * label, `defaultShippingAddress` for region and distance.
      */
-    const partnerAddress = address && typeof address === "object"
+    /*
+     * Geocoded through the same resolver self-signup uses.
+     *
+     * This used to store the address exactly as typed, while signup normalised
+     * it through Census and recorded coordinates and a `detectedRegion`. Two
+     * partners at the same address therefore held different records: one with
+     * "SAN FRANCISCO" and a region on their profile, one with "San Francisco"
+     * and a blank one — and `detectedRegion` is read on the partner detail page
+     * and on the partner's own profile screen.
+     */
+    const resolvedPartnerAddress =
+      address && typeof address === "object"
+        ? await resolveAddress({
+            street: String(address.street || "").trim(),
+            city: String(address.city || "").trim(),
+            state: String(address.state || "").trim().toUpperCase(),
+            postalCode: String(address.postalCode || "").trim(),
+            country: String(address.country || "US").trim(),
+          })
+        : null;
+
+    const partnerAddress = resolvedPartnerAddress
       ? {
-          street: String(address.street || "").trim(),
-          city: String(address.city || "").trim(),
-          state: String(address.state || "").trim().toUpperCase(),
-          postalCode: String(address.postalCode || "").trim(),
-          country: String(address.country || "US").trim(),
+          ...resolvedPartnerAddress.address,
+          ...(resolvedPartnerAddress.coordinates
+            ? { coordinates: resolvedPartnerAddress.coordinates }
+            : {}),
         }
       : null;
+
+    /*
+     * The admin picks service areas explicitly, so those stay authoritative.
+     * `detectedRegion` records what the address itself resolves to, which is a
+     * different fact and the one both profile screens display.
+     */
+    const partnerDetectedRegion = resolvedPartnerAddress?.region ?? null;
 
     const newPartner = new User({
       name: resolvedContactName,
@@ -2192,6 +2221,7 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       ...(partnerAddress
         ? { businessAddress: partnerAddress, defaultShippingAddress: partnerAddress }
         : {}),
+      ...(partnerDetectedRegion ? { detectedRegion: partnerDetectedRegion } : {}),
       settings: {
         /*
          * No per-partner pricing is written. Every partner is paid at the one
@@ -2242,7 +2272,23 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
 
     res.status(201).json({
       id: newPartner._id,
-      status: newPartner.status
+      status: newPartner.status,
+      /*
+       * Whether the invitation actually reached them, and the link itself when
+       * it did not.
+       *
+       * A failed send was written to the server log and nowhere else: the
+       * console showed "Partner created", the admin had no idea the email had
+       * not gone out, and the link existed only inside an email that was never
+       * sent — so the partner could never set a password and nothing on screen
+       * said why. The URL is returned only on failure, so it is there exactly
+       * when someone needs to pass it on by hand and not in the ordinary case.
+       */
+      invite: {
+        sent: invite.sent === true,
+        reason: invite.sent ? undefined : invite.error || "no email transport configured",
+        url: invite.sent ? undefined : inviteUrl,
+      },
     });
   } catch (error) {
     next(error);

@@ -100,7 +100,7 @@ export const env: Env = {
   jwtSecret: cleanEnvString(process.env.JWT_SECRET) || "change-me",
   jwtExpiresIn: cleanJwtExpiresIn(process.env.JWT_EXPIRES_IN),
   appUrl: cleanEnvString(process.env.APP_URL) || `http://localhost:${cleanEnvString(process.env.PORT) ? Number(cleanEnvString(process.env.PORT)) : 4000}`,
-  printerAppUrl: cleanEnvString(process.env.PRINTER_APP_URL) || "http://localhost:5173",
+  printerAppUrl: cleanEnvString(process.env.PRINTER_APP_URL) || "http://localhost:5175",
   // Needed for the CORS allowlist. The console had no configured origin at all,
   // which is part of why CORS was left open to everything.
   adminAppUrl: cleanEnvString(process.env.ADMIN_APP_URL) || "http://localhost:5174",

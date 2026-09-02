@@ -1,7 +1,8 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
 import { buildLegalAcceptance, type LegalAcceptanceInput, type LegalAcceptanceRecord } from "../config/legal.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
-import { geocodeAddress, isUSCountry } from "../utils/geocoding.js";
+import { isUSCountry } from "../utils/geocoding.js";
+import { isValidEmail, resolveAddress } from "../utils/accountFields.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
@@ -100,6 +101,19 @@ export const registerUser = async ({
   // check and every other validation.
   const acceptanceRecord = buildLegalAcceptance(legalAcceptance, legalContext || {});
 
+  /*
+   * Format checked here, using the same rule the console's create-partner path
+   * has always applied. Public registration had none at all: "not-an-email",
+   * "no-at-sign.com" and "spaces in@email.com" each produced a working account
+   * that could never receive verification, an invitation or a reset — so it was
+   * unreachable the moment its password was forgotten.
+   */
+  if (!isValidEmail(email)) {
+    const error = new Error("A valid email address is required") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
   const existing = await User.findOne({ email });
   if (existing) {
     const error = new Error("Email already in use") as any;
@@ -180,40 +194,31 @@ export const registerUser = async ({
   let addressCoordinates: { lat: number; lng: number } | undefined;
 
   if (address) {
-    // Attempt Census geocoding for accurate region + coordinate storage
-    let geocoded = null;
-    try {
-      geocoded = await geocodeAddress({
-        street:  address.street,
-        city:    address.city,
-        state:   address.state,
-        zip:     address.postalCode,
-        country: address.country,
-      });
-    } catch {
-      // Non-fatal — fall back to state-based detection below
-    }
-
-    if (geocoded) {
-      address = {
-        street:     geocoded.street     || address.street,
-        city:       geocoded.city       || address.city,
-        state:      geocoded.state      || address.state,
-        postalCode: geocoded.zip        || address.postalCode,
-        country:    address.country,
-      };
-      addressCoordinates = { lat: geocoded.lat, lng: geocoded.lng };
-      resolvedRegion =
-        normalizeRegion(getRegionFromState(geocoded.state)) ??
-        getRegionFromCoords(geocoded.lat, geocoded.lng);
-    } else {
-      resolvedRegion = normalizeRegion(getRegionFromState(address.state));
-    }
+    // Shared with the console's create-partner path, so both produce the same
+    // normalised address, coordinates and region rather than two versions of it.
+    const resolved = await resolveAddress(address);
+    address = resolved.address;
+    addressCoordinates = resolved.coordinates;
+    resolvedRegion = resolved.region;
 
     console.log(
       `[region-assign] role=${resolvedRole} state=${address.state} ` +
-      `region=${resolvedRegion ?? "null"} geocoded=${!!geocoded}`
+      `region=${resolvedRegion ?? "null"} geocoded=${resolved.geocoded}`
     );
+
+    /*
+     * A print partner with no region is invisible to assignment, which filters
+     * on exactly that — so the account would sit approved and never receive a
+     * single job, with nothing anywhere reporting why. An unresolvable address
+     * is refused at the door instead, naming the fields to check.
+     */
+    if (resolvedRole === UserRoles.PRINTER && !resolvedRegion) {
+      const error = new Error(
+        "We could not determine a service region from that address. Please check the state and postal code.",
+      ) as any;
+      error.statusCode = 400;
+      throw error;
+    }
   } else {
     // No address provided — only accept a region hint if it normalizes cleanly.
     // Never default to "West": an unknown region is better than a wrong one.
@@ -824,10 +829,19 @@ export const loginWithGoogle = async (
 
 export const resetPassword = async ({
   token,
-  newPassword
+  newPassword,
+  legalAcceptance,
+  legalContext
 }: {
   token: string;
   newPassword: string;
+  /**
+   * Required only for an account that has never accepted anything — in practice
+   * a partner an admin invited, who reaches this screen without ever having seen
+   * the terms. An ordinary password recovery does not ask again.
+   */
+  legalAcceptance?: LegalAcceptanceInput;
+  legalContext?: { ip?: string; userAgent?: string };
 }): Promise<void> => {
   /*
    * Checked before anything uses them. The types say `string`, but these arrive
@@ -858,6 +872,22 @@ export const resetPassword = async ({
     const error = new Error("Invalid or expired reset token") as any;
     error.statusCode = 400;
     throw error;
+  }
+
+  /*
+   * Consent is captured here for anyone who has none.
+   *
+   * A partner who signs up accepts the terms on the form. A partner an admin
+   * adds never saw them: the invitation goes straight to this screen, and they
+   * were working the moment they chose a password. That left two classes of
+   * partner, one with a full acceptance record and one with nothing at all —
+   * and no way to show the second had agreed to anything.
+   *
+   * Keyed on the stored record rather than on which token the client used, so a
+   * caller cannot skip it by relabelling the parameter.
+   */
+  if (!(user as any).legalAcceptance) {
+    (user as any).legalAcceptance = buildLegalAcceptance(legalAcceptance, legalContext || {});
   }
 
   user.passwordHash = await hashPassword(newPassword);

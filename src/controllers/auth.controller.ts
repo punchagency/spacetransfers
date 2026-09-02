@@ -179,8 +179,18 @@ export const forgotPassword = async (req: Request, res: Response, next: NextFunc
 
 export const resetPasswordController = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { token, newPassword } = req.body;
-    await resetPassword({ token, newPassword });
+    const { token, newPassword, legalAcceptance } = req.body;
+    await resetPassword({
+      token,
+      newPassword,
+      legalAcceptance,
+      // Same audit context registration records, so an acceptance captured on
+      // an invitation is as evidenced as one captured on the signup form.
+      legalContext: {
+        ip: req.ip,
+        userAgent: req.get("user-agent") || undefined,
+      },
+    });
     res.json({ message: "Password has been reset successfully." });
   } catch (error) {
     next(error);
