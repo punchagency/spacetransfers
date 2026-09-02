@@ -130,7 +130,21 @@ export const registerUser = async ({
    * re-submitting would silently overwrite their own application, and allowing
    * it against an Active partner would be account takeover.
    */
-  const isReapplication = existing && existing.status === "Rejected" && existing.role === UserRoles.PRINTER;
+  /*
+   * Both sides must be a partner application.
+   *
+   * Checking only the stored role let a rejected printer re-register as a
+   * customer: the payload's `role: CUSTOMER` was merged straight onto their
+   * record, silently converting the account and carrying the partner status
+   * history onto a customer. Requiring the incoming role to match keeps
+   * re-application to what it is for, and anything else gets the ordinary
+   * "email already in use".
+   */
+  const isReapplication =
+    existing &&
+    existing.status === "Rejected" &&
+    existing.role === UserRoles.PRINTER &&
+    role === UserRoles.PRINTER;
   if (existing && !isReapplication) {
     const error = new Error("Email already in use") as any;
     error.statusCode = 400;

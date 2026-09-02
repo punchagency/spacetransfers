@@ -142,8 +142,30 @@ export const changePartnerStatus = async ({
   const partnerName = String((before as any).companyName || before.name || "there");
   const message = MESSAGES[to];
 
-  // Sent before the record is written, so what we store reflects what actually
-  // happened rather than what we intended.
+  /*
+   * The change is made durable first, then the partner is told.
+   *
+   * Sending first meant that if the save afterwards failed, someone had already
+   * been emailed "your account has been suspended" about a suspension that
+   * never happened. This ordering can only fail the other way — a change that
+   * stuck but was not announced — which is recoverable and is recorded as
+   * `notified: false` rather than being lost.
+   */
+  before.status = to as any;
+  (before as any).statusHistory = [
+    ...((before as any).statusHistory || []),
+    {
+      from,
+      to,
+      reason: reason?.trim() || null,
+      at: new Date(),
+      byId: actor?.id || null,
+      byName: actor?.name || null,
+      notified: false,
+    },
+  ];
+  await before.save();
+
   let notified = false;
   let notifyError: string | null = null;
   if (message.notifyPartner) {
@@ -155,27 +177,19 @@ export const changePartnerStatus = async ({
 
     notified = result.sent === true;
     notifyError = result.sent ? null : result.error || "no email transport configured";
-    if (!notified) {
+
+    if (notified) {
+      // Recorded after the fact, since the send is what decides it. A failure
+      // to write this flag under-reports delivery, which is the safe direction.
+      const history = (before as any).statusHistory;
+      history[history.length - 1].notified = true;
+      await before.save().catch(() => {});
+    } else {
       console.error(
         `[PARTNER_STATUS] ${before.email} moved ${from} -> ${to} but could not be told: ${notifyError}`,
       );
     }
   }
-
-  before.status = to as any;
-  (before as any).statusHistory = [
-    ...((before as any).statusHistory || []),
-    {
-      from,
-      to,
-      reason: reason?.trim() || null,
-      at: new Date(),
-      byId: actor?.id || null,
-      byName: actor?.name || null,
-      notified,
-    },
-  ];
-  await before.save();
 
   notifyAllAdmins({
     category: "partners",
