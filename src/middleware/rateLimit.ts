@@ -66,3 +66,20 @@ export const passwordResetLimiter = rateLimit({
   skip,
   message: message(60),
 });
+
+/**
+ * Unauthenticated reads that hit the database.
+ *
+ * Generous, because these are ordinary page loads rather than credential
+ * attempts, but bounded: the endpoint is reachable by anyone and every call is
+ * a query. The response is cached server-side too, so this is the second of two
+ * limits rather than the only one.
+ */
+export const publicReadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many requests. Please try again shortly." },
+});
