@@ -70,6 +70,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
   const [contentResponsibilityAccepted, setContentResponsibilityAccepted] =
     useState(false);
   const [isLoading, setIsLoading]         = useState(false);
+  const [sendingReset, setSendingReset]   = useState(false);
 
   // Region detection state
   const [detectedRegion, setDetectedRegion]   = useState<string | null>(null);
@@ -156,6 +157,49 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
     setCountry("United States"); setEmail(""); setPassword("");
     setTermsAccepted(false); setDetectedRegion(null);
     setRegionValidated(false); setNonUSWarning(false);
+    /*
+     * Cleared with the rest of the form.
+     *
+     * Every mode toggle called `setTermsAccepted(false)` and `resetForm()` but
+     * nothing reset this one, so ticking it, switching to sign-in and switching
+     * back left it still ticked on a blank form. Consent that survives a reset
+     * is precisely what the acceptance record exists to rule out — the user
+     * would not have seen the statement they were recorded as agreeing to.
+     */
+    setContentResponsibilityAccepted(false);
+  };
+
+  /**
+   * Starts a password reset.
+   *
+   * There was no way to reach this from the printer app at all: the endpoint and
+   * the set-password screen both existed, but nothing linked to them, so a
+   * partner who forgot their password had no route back into their account.
+   */
+  const handleForgotPassword = async () => {
+    const address = email.trim();
+    if (!address) {
+      toast.error("Enter your email address first, then choose 'Forgot password'.");
+      return;
+    }
+
+    setSendingReset(true);
+    try {
+      await apiFetch("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email: address }),
+      });
+      /*
+       * Deliberately the same message whether or not the address is registered.
+       * The server answers identically for both, and saying "no such account"
+       * here would turn this form into a way to test which emails exist.
+       */
+      toast.success("If that email has an account, a reset link is on its way.");
+    } catch (error: any) {
+      toast.error(error?.message || "Could not start a password reset");
+    } finally {
+      setSendingReset(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -431,7 +475,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="demo123"
+                placeholder="Your password"
                 className="w-full pl-11 pr-11 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
               />
               <button
@@ -442,6 +486,18 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 {showPassword ? <HiOutlineEyeOff className="text-lg" /> : <HiOutlineEye className="text-lg" />}
               </button>
             </div>
+            {isSignIn && (
+              <div className="flex justify-end pt-0.5">
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={sendingReset}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {sendingReset ? "Sending…" : "Forgot password?"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Legal acknowledgements. Both are required by the server. */}
