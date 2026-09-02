@@ -614,9 +614,30 @@ export const requestPasswordReset = async (email: string): Promise<{ resetToken?
   user.resetPasswordExpiresAt = new Date(Date.now() + 1000 * 60 * 15);
   await user.save();
 
-  const resetUrl = `${env.appUrl.replace(/\/$/, "")}/?resetToken=${encodeURIComponent(
-    rawToken
-  )}&email=${encodeURIComponent(user.email)}`;
+  /*
+   * The link goes to the app the account actually belongs to.
+   *
+   * This was always built from `env.appUrl` — the customer store — whoever
+   * asked. A print partner resetting their password was emailed a link into the
+   * storefront, where the token does work, but they end up signed into the wrong
+   * application and nowhere near the portal they were trying to reach.
+   *
+   * Admins have no reset screen anywhere yet, so they are sent to the console
+   * root rather than to a storefront that is not theirs; that page cannot
+   * complete the reset, and building it is still outstanding.
+   */
+  const resetUrl = (() => {
+    const trim = (u: string) => u.replace(/\/$/, "");
+    const token = encodeURIComponent(rawToken);
+
+    if (user.role === UserRoles.PRINTER) {
+      return `${trim(env.printerAppUrl)}/set-password?resetToken=${token}`;
+    }
+    if (user.role === UserRoles.ADMIN) {
+      return `${trim(env.adminAppUrl)}/?resetToken=${token}`;
+    }
+    return `${trim(env.appUrl)}/?resetToken=${token}&email=${encodeURIComponent(user.email)}`;
+  })();
 
   const hasSmtp =
     Boolean(env.smtpHost) &&
@@ -626,7 +647,8 @@ export const requestPasswordReset = async (email: string): Promise<{ resetToken?
     Boolean(env.smtpFrom);
 
   if (hasSmtp) {
-    const transporter = nodemailer.createTransport({
+    try {
+      const transporter = nodemailer.createTransport({
       host: env.smtpHost,
       port: env.smtpPort!,
       secure: env.smtpSecure ?? env.smtpPort === 465,
@@ -654,11 +676,28 @@ export const requestPasswordReset = async (email: string): Promise<{ resetToken?
           </p>
         </div>
       `
-    });
-
-    return {};
+      });
+    } catch (error: any) {
+      /*
+       * A delivery failure must not fail the request.
+       *
+       * The token is already saved by this point, so an SMTP error answered 500
+       * on an operation that had in fact succeeded. Worse, it answered 500 only
+       * for addresses that exist — an unknown address returns early without
+       * sending — so the status code alone told a caller which emails were
+       * registered, on an endpoint that takes an arbitrary address.
+       */
+      console.error(
+        `[PASSWORD_RESET] token issued but the email could not be sent to ${user.email}: ${error?.message}`,
+      );
+    }
   }
 
+  /*
+   * Outside production the raw token is returned so the flow can be exercised
+   * without a working mailbox — including when the send above failed, which is
+   * the state every environment is in until SendGrid is configured.
+   */
   if (env.nodeEnv !== "production") {
     return { resetToken: rawToken };
   }
@@ -790,7 +829,19 @@ export const resetPassword = async ({
   token: string;
   newPassword: string;
 }): Promise<void> => {
-  if (newPassword.length < 8) {
+  /*
+   * Checked before anything uses them. The types say `string`, but these arrive
+   * straight from a JSON body and TypeScript cannot enforce that at the edge —
+   * a request omitting `token` reached `createHash().update(undefined)`, which
+   * throws a TypeError and answered 500 on what is plainly a bad request.
+   */
+  if (typeof token !== "string" || token.trim().length === 0) {
+    const error = new Error("A reset token is required") as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
     const error = new Error("Password must be at least 8 characters long") as any;
     error.statusCode = 400;
     throw error;
