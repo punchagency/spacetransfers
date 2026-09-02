@@ -109,6 +109,29 @@ export const PartnerOverview = ({
                         <span className={`px-3 py-1 rounded-full text-[12px] font-bold border ${partner.status === 'Active' ? 'bg-green-50 text-green-600 border-green-100' : partner.status === 'Suspended' ? 'bg-red-50 text-red-600 border-red-100' : partner.status === 'Rejected' ? 'bg-gray-100 text-gray-500 border-gray-200' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>
                             {partner.status}
                         </span>
+                        {(() => {
+                          /*
+                           * Why they are in this state. Only shown when the
+                           * latest change carried a reason — an approval or a
+                           * reinstatement needs no explanation, and printing
+                           * "(no reason)" beside every partner would train
+                           * people to stop reading it.
+                           */
+                          const latest = partner.statusHistory?.[0];
+                          if (!latest?.reason) return null;
+                          return (
+                            <span
+                              className="block text-[11px] text-gray-500 mt-1.5 max-w-xs"
+                              title={`${latest.from || "—"} → ${latest.to}${latest.by ? ` by ${latest.by}` : ""}${latest.notified ? "" : " · partner was not emailed"}`}
+                            >
+                              {latest.reason}
+                              {latest.by ? ` — ${latest.by}` : ""}
+                              {latest.notified === false && (
+                                <span className="text-amber-700"> · not emailed</span>
+                              )}
+                            </span>
+                          );
+                        })()}
                     </div>
                 </div>
             </div>

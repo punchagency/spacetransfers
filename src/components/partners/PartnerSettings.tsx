@@ -41,6 +41,13 @@ export const PartnerSettings = ({
      */
     const [warehouseId, setWarehouseId] = useState<string>('');
     const [isSaving, setIsSaving] = useState(false);
+    /*
+     * A suspension in progress. The server requires a reason, and a bare toggle
+     * cannot collect one — so flipping it off opens this rather than acting
+     * immediately. Reinstating needs no justification and still applies at once.
+     */
+    const [suspending, setSuspending] = useState(false);
+    const [suspendReason, setSuspendReason] = useState('');
 
     useEffect(() => {
         setIsPartnerActive(partnerStatus === 'Active');
@@ -58,15 +65,28 @@ export const PartnerSettings = ({
         setJobCompletedEmail(settings.notifications?.jobCompleted ?? false);
     }, [settings]);
 
-    const persistStatus = async (nextActive: boolean) => {
+    const persistStatus = async (nextActive: boolean, reason?: string) => {
         setIsSaving(true);
         try {
             const nextStatus = nextActive ? 'Active' : 'Suspended';
             const res = await apiFetch(`/admin/partners/${partnerId}/status`, {
                 method: 'PATCH',
-                body: JSON.stringify({ status: nextStatus }),
+                body: JSON.stringify({ status: nextStatus, reason }),
             });
-            toast.success('Partner status updated');
+            /*
+             * Suspension stops all work reaching them and locks them out, so
+             * whether the message arrived is part of the outcome. This used to
+             * report a flat "Partner status updated" for a change the partner
+             * was never told about at all.
+             */
+            if (res?.notified === false) {
+                toast.error(
+                    `Status updated, but the partner could not be emailed (${res.notifyError}).`,
+                    { duration: 10000 },
+                );
+            } else {
+                toast.success(nextActive ? 'Partner reinstated and notified' : 'Partner suspended and notified');
+            }
             if (settings) onUpdated(settings, res.status);
         } catch (error: any) {
             toast.error(error.message || 'Failed to update status');
@@ -208,7 +228,19 @@ export const PartnerSettings = ({
                                 <label className="text-sm font-bold text-gray-900">Activate/Deactivate Partner</label>
                                 <p className="text-[13px] text-gray-400 font-medium">Control whether this partner can receive orders</p>
                             </div>
-                            <Toggle enabled={isPartnerActive} setEnabled={(v) => { setIsPartnerActive(v); void persistStatus(v); }} />
+                            <Toggle
+                                enabled={isPartnerActive}
+                                setEnabled={(v) => {
+                                    if (!v) {
+                                        // Suspending: ask why before anything changes.
+                                        setSuspendReason('');
+                                        setSuspending(true);
+                                        return;
+                                    }
+                                    setIsPartnerActive(true);
+                                    void persistStatus(true);
+                                }}
+                            />
                         </div>
 
                         <div className="flex items-center justify-between">
@@ -240,6 +272,57 @@ export const PartnerSettings = ({
                     Save Settings
                 </button>
             </div>
+
+            {suspending && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                    <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
+                        <div className="p-6">
+                            <h3 className="text-lg font-bold text-gray-900">Suspend this partner?</h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                                They stop receiving new work immediately and cannot sign in. The
+                                reason below is emailed to them, and a suspension can be lifted
+                                again from this same toggle.
+                            </p>
+
+                            <label className="block text-sm font-medium text-gray-700 mt-4">Reason</label>
+                            <textarea
+                                value={suspendReason}
+                                onChange={(e) => setSuspendReason(e.target.value)}
+                                rows={4}
+                                autoFocus
+                                placeholder="e.g. Repeated late fulfilment on assigned jobs"
+                                className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                            />
+                            <p className="text-xs text-gray-400 mt-1">
+                                Written to the partner, so keep it something you are happy for
+                                them to read.
+                            </p>
+                        </div>
+
+                        <div className="px-6 py-4 border-t border-gray-100 flex gap-3">
+                            <button
+                                onClick={() => { setSuspending(false); setSuspendReason(''); }}
+                                disabled={isSaving}
+                                className="flex-1 py-2.5 px-4 bg-white border border-gray-200 rounded-xl text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={async () => {
+                                    setIsPartnerActive(false);
+                                    setSuspending(false);
+                                    await persistStatus(false, suspendReason.trim());
+                                    setSuspendReason('');
+                                }}
+                                disabled={isSaving || suspendReason.trim().length < 3}
+                                className="flex-1 py-2.5 px-4 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                Suspend partner
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

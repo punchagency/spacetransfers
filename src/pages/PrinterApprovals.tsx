@@ -15,6 +15,20 @@ interface PendingPrinter {
   // region rather than guessing one.
   region: string | null;
   location: string | null;
+  /**
+   * Other partners already registered at the same street and postcode.
+   *
+   * Not a blocker — several businesses can share a building — but it is the
+   * shape duplicate registration and rejection-evasion both take, and this is
+   * the screen where someone decides about this applicant.
+   */
+  sameAddressPartners: Array<{ companyName: string; status: string }>;
+  /**
+   * Set when this same account was rejected before and has re-applied. A
+   * declined applicant can re-apply with the address they used originally, so
+   * without this a second application looks exactly like a first one.
+   */
+  priorRejection: { at: string; reason: string | null; by: string | null } | null;
 }
 
 export const PrinterApprovals = () => {
@@ -29,6 +43,13 @@ export const PrinterApprovals = () => {
    */
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  /*
+   * The rejection being composed. A reason is required by the server, so this
+   * replaces the `window.confirm` that used to be the whole interaction — a
+   * yes/no box cannot collect one, and rejection is permanent.
+   */
+  const [rejecting, setRejecting] = useState<PendingPrinter | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
 
   const fetchPendingPrinters = async () => {
     try {
@@ -59,8 +80,15 @@ export const PrinterApprovals = () => {
     if (busyId) return;
     setBusyId(id);
     try {
-      await apiFetch(`/admin/partners/${id}/approve`, { method: 'POST' });
-      toast.success('Printer approved successfully');
+      const result = await apiFetch(`/admin/partners/${id}/approve`, { method: 'POST' });
+      if (result?.notified === false) {
+        toast.error(
+          `Approved, but the partner could not be emailed (${result.notifyError}). They do not know they can sign in.`,
+          { duration: 10000 },
+        );
+      } else {
+        toast.success('Printer approved and notified');
+      }
       setPendingPrinters(prev => prev.filter(p => p.id !== id));
     } catch (error: any) {
       toast.error(error.message || 'Failed to approve printer');
@@ -72,14 +100,28 @@ export const PrinterApprovals = () => {
     }
   };
 
-  const handleReject = async (id: string) => {
-    if (busyId) return;
-    if (!window.confirm('Are you sure you want to reject this printer?')) return;
+  const handleReject = async () => {
+    if (!rejecting || busyId) return;
+    const id = rejecting.id;
     setBusyId(id);
     try {
-      await apiFetch(`/admin/partners/${id}/reject`, { method: 'POST' });
-      toast.success('Printer registration rejected');
+      const result = await apiFetch(`/admin/partners/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: rejectReason.trim() }),
+      });
+      // Whether they were actually told is part of the outcome, not a detail —
+      // a rejection nobody receives leaves someone waiting indefinitely.
+      if (result?.notified === false) {
+        toast.error(
+          `Rejected, but the partner could not be emailed (${result.notifyError}). They have not been told.`,
+          { duration: 10000 },
+        );
+      } else {
+        toast.success('Application rejected and the partner notified');
+      }
       setPendingPrinters(prev => prev.filter(p => p.id !== id));
+      setRejecting(null);
+      setRejectReason('');
     } catch (error: any) {
       toast.error(error.message || 'Failed to reject printer');
       fetchPendingPrinters();
@@ -167,6 +209,29 @@ export const PrinterApprovals = () => {
                           <FiMapPin size={12} />
                           {printer.location || 'No address on file'}
                         </div>
+                        {printer.priorRejection && (
+                          <div className="mt-1 text-[11px] text-red-700">
+                            Previously rejected
+                            {printer.priorRejection.at
+                              ? ` on ${new Date(printer.priorRejection.at).toLocaleDateString()}`
+                              : ''}
+                            {printer.priorRejection.by ? ` by ${printer.priorRejection.by}` : ''}
+                            {printer.priorRejection.reason ? `: "${printer.priorRejection.reason}"` : ''}
+                          </div>
+                        )}
+                        {printer.sameAddressPartners?.length > 0 && (
+                          <div
+                            className="mt-1 text-[11px] text-amber-700"
+                            title={printer.sameAddressPartners
+                              .map((p) => `${p.companyName} (${p.status})`)
+                              .join('\n')}
+                          >
+                            Also at this address:{' '}
+                            {printer.sameAddressPartners
+                              .map((p) => `${p.companyName} (${p.status})`)
+                              .join(', ')}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-1 text-sm text-gray-500">
@@ -184,7 +249,7 @@ export const PrinterApprovals = () => {
                             <FiCheck /> {busyId === printer.id ? 'Approving…' : 'Approve'}
                           </button>
                           <button
-                            onClick={() => handleReject(printer.id)}
+                            onClick={() => { setRejecting(printer); setRejectReason(''); }}
                             disabled={busyId !== null}
                             className="inline-flex items-center gap-1 bg-white border border-red-200 text-red-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           >
@@ -200,6 +265,55 @@ export const PrinterApprovals = () => {
           )}
         </div>
       </div>
+      {rejecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
+            <div className="p-6">
+              <h3 className="text-lg font-bold text-gray-900">
+                Reject {rejecting.companyName}?
+              </h3>
+              <p className="text-sm text-gray-500 mt-1">
+                This is permanent — a rejected application cannot be reinstated. They
+                will be emailed the reason below, and it is shown to whoever reviews
+                them if they apply again.
+              </p>
+
+              <label className="block text-sm font-medium text-gray-700 mt-4">
+                Reason
+              </label>
+              <textarea
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                rows={4}
+                autoFocus
+                placeholder="e.g. Could not verify the business address"
+                className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-400 mt-1">
+                Written to the applicant, so keep it something you are happy for them
+                to read.
+              </p>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 flex gap-3">
+              <button
+                onClick={() => { setRejecting(null); setRejectReason(''); }}
+                disabled={busyId !== null}
+                className="flex-1 py-2.5 px-4 bg-white border border-gray-200 rounded-xl text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleReject}
+                disabled={busyId !== null || rejectReason.trim().length < 3}
+                className="flex-1 py-2.5 px-4 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {busyId ? 'Rejecting…' : 'Reject application'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 };

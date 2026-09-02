@@ -25,6 +25,20 @@ export interface PartnerDetailsData {
   onTimeDeliveryRate?: number | null;
   performanceSampleSize?: number;
   rating: number;
+  /**
+   * Recent status changes, newest first, with the reason and who made it.
+   *
+   * A suspended or rejected partner used to display a status and nothing else,
+   * leaving the reason wherever the admin who decided it happened to remember.
+   */
+  statusHistory?: Array<{
+    from: string | null;
+    to: string;
+    reason: string | null;
+    at: string;
+    by: string | null;
+    notified: boolean;
+  }>;
 }
 
 export interface PartnerSettingsApi {
