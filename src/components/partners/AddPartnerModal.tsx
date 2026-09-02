@@ -29,6 +29,13 @@ export const AddPartnerModal = ({
 
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  /*
+   * Shown only when the invitation could not be emailed. It is the single copy
+   * of that link — the database stores a hash of the token, never the token —
+   * so if this is dismissed without being passed on, the partner needs a fresh
+   * invitation.
+   */
+  const [inviteFallbackUrl, setInviteFallbackUrl] = useState<string | null>(null);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
   const validation = useMemo(() => {
@@ -70,6 +77,13 @@ export const AddPartnerModal = ({
   const handleClose = () => {
     if (isSubmitting) return;
     resetForm();
+    /*
+     * Cleared on close, not in `resetForm` — that runs immediately after a
+     * successful create, and clearing there would wipe the link before it was
+     * ever shown. Clearing here stops a previous partner's invitation appearing
+     * above a blank form the next time the modal opens.
+     */
+    setInviteFallbackUrl(null);
     onClose();
   };
 
@@ -86,7 +100,7 @@ export const AddPartnerModal = ({
 
     setIsSubmitting(true);
     try {
-      await apiFetch('/admin/partners', {
+      const created = await apiFetch('/admin/partners', {
         method: 'POST',
         body: JSON.stringify({
           partnerName: partnerName.trim(),
@@ -103,7 +117,28 @@ export const AddPartnerModal = ({
           },
         }),
       });
-      toast.success('Partner created');
+
+      /*
+       * Whether the invitation reached them decides whether this partner can do
+       * anything at all: the link in that email is the only way they can set a
+       * password. A failed send used to appear nowhere but the server log, so
+       * "Partner created" was shown for an account nobody could ever sign into.
+       */
+      if (created?.invite && created.invite.sent === false) {
+        toast.error(
+          `Partner created, but the invitation email could not be sent (${created.invite.reason}). ` +
+            `They cannot set a password until they receive their link.`,
+          { duration: 12000 },
+        );
+        if (created.invite.url) {
+          // Surfaced so it can be passed on by hand while email is down. It is
+          // the only copy — nothing stores the link, only its hash.
+          setInviteFallbackUrl(created.invite.url);
+        }
+      } else {
+        toast.success('Partner created — invitation sent');
+      }
+
       resetForm();
       onCreated();
     } catch (error: any) {
@@ -292,6 +327,31 @@ export const AddPartnerModal = ({
             </div>
           </div>
         </div>
+
+        {inviteFallbackUrl && (
+          <div className="px-6 pt-4 shrink-0">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-semibold text-gray-900">Send this link to the partner</p>
+              <p className="text-xs text-gray-600 mt-1">
+                The invitation email could not be delivered. This is the only copy of the link —
+                the database stores a hash of it, never the link itself — and it expires in 7 days.
+              </p>
+              <code className="mt-2 block w-full break-all rounded-lg bg-white border border-amber-200 px-3 py-2 text-[11px] text-gray-800">
+                {inviteFallbackUrl}
+              </code>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(inviteFallbackUrl);
+                  toast.success('Link copied');
+                }}
+                className="mt-2 text-xs font-semibold text-blue-600 hover:text-blue-700"
+              >
+                Copy link
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="px-6 py-4 border-t border-gray-100 flex gap-3 shrink-0">
           <button
