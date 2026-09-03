@@ -35,7 +35,9 @@ export const AuthForm = () => {
     try {
       const response = await apiFetch("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email: email.trim(), password }),
+        // The console signs in to the admin account on this address, which may
+        // not be the only account it holds.
+        body: JSON.stringify({ email: email.trim(), password, role: "ADMIN" }),
       });
 
       if (response?.user?.role !== "ADMIN") {

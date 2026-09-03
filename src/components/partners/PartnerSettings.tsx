@@ -210,7 +210,18 @@ export const PartnerSettings = ({
                         <div className="flex items-center justify-between pt-2">
                             <div className="space-y-0.5">
                                 <label className="text-sm font-bold text-gray-900">Auto-Accept Jobs</label>
-                                <p className="text-[13px] text-gray-400 font-medium">Automatically accept assigned jobs</p>
+                                {/*
+                                  * Says what turning it off actually does. It is
+                                  * one of five gates in `orderAssignment`, and
+                                  * the only one an admin can flip here — off
+                                  * means the partner is passed over by automatic
+                                  * assignment altogether, which "automatically
+                                  * accept assigned jobs" did not convey.
+                                  */}
+                                <p className="text-[13px] text-gray-400 font-medium">
+                                    When off, this partner is skipped by automatic assignment and can
+                                    only be given work by hand
+                                </p>
                             </div>
                             <Toggle enabled={autoAccept} setEnabled={setAutoAccept} />
                         </div>
@@ -227,6 +238,19 @@ export const PartnerSettings = ({
                             <div className="space-y-0.5">
                                 <label className="text-sm font-bold text-gray-900">Activate/Deactivate Partner</label>
                                 <p className="text-[13px] text-gray-400 font-medium">Control whether this partner can receive orders</p>
+                                {/*
+                                  * Called out because this one toggle does not
+                                  * wait for Save Settings — it suspends or
+                                  * reinstates on the spot, and emails the
+                                  * partner. The three below it are ordinary form
+                                  * fields that only persist when saved, and
+                                  * having both behaviours on one panel with no
+                                  * indication is how someone flips this by
+                                  * accident.
+                                  */}
+                                <p className="text-[12px] text-amber-700 font-medium">
+                                    Applies immediately — does not wait for Save Settings
+                                </p>
                             </div>
                             <Toggle
                                 enabled={isPartnerActive}
