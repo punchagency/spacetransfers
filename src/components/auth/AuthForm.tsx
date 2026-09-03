@@ -37,6 +37,19 @@ const REGION_BY_STATE: Record<string, string> = {
 /** Matches the server's minimum, so the form and the API agree. */
 const MIN_PASSWORD_LENGTH = 8;
 
+/**
+ * Mirrors `isValidPhone` in the server's `utils/accountFields.ts`. Kept in sync
+ * by hand rather than shared, since this app cannot import server code — if
+ * the server's rule changes, this one needs updating alongside it.
+ */
+const isValidPhone = (phone: string): boolean => {
+  const trimmed = phone.trim();
+  if (!trimmed) return false;
+  if (!/^[+()\d\s.-]+$/.test(trimmed)) return false;
+  const digits = trimmed.replace(/\D/g, "");
+  return digits.length >= 7 && digits.length <= 15;
+};
+
 const REGION_COLORS: Record<string, string> = {
   West:      "bg-blue-50 text-blue-700 border-blue-200",
   Midwest:   "bg-amber-50 text-amber-700 border-amber-200",
@@ -232,6 +245,18 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
       } else {
         if (!fullName || !companyName || !email || !password || !phone || !street || !city || !stateProv || !postalCode || !country) {
           toast.error("Please fill in all fields");
+          setIsLoading(false);
+          return;
+        }
+        /*
+         * Shape checked, not just presence — mirrors `isValidPhone` on the
+         * server. Only truthiness was ever tested here, so "1" or "abc" passed
+         * straight through and became a print partner's stored contact
+         * number, which is the number an admin or a customer calls when a job
+         * goes wrong.
+         */
+        if (!isValidPhone(phone)) {
+          toast.error("Enter a valid phone number.");
           setIsLoading(false);
           return;
         }
