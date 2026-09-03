@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { User } from "../models/user.model.js";
+import { isValidPhone } from "../utils/accountFields.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
@@ -1009,7 +1010,19 @@ export const updateAccount = async (req: Request, res: Response, next: NextFunct
 
     if (name) user.name = name;
     if (companyName) user.companyName = companyName;
-    if (phone) user.phone = phone;
+    /*
+     * Shape checked when supplied. Presence was the only test — `if (phone)` —
+     * so a customer could set their contact number to "1" or "abc" with no
+     * error, and that is the number used to reach them about their own order.
+     */
+    if (phone) {
+      if (!isValidPhone(String(phone))) {
+        const error = new Error("Enter a valid phone number") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      user.phone = phone;
+    }
 
     if (defaultShippingAddress && typeof defaultShippingAddress === "object") {
       // Merge onto existing address so partial updates (e.g. just postalCode) don't wipe other fields.
@@ -1204,6 +1217,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       error.statusCode = 400;
       throw error;
     }
+
 
     if (!shippingMethod) {
       const error = new Error("shippingMethod is required") as CustomError;
@@ -1441,6 +1455,21 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     // auto-assignment. Returns null for non-US / unknown state codes; never defaults to "West".
     const stateBasedRegion = getRegionFromState(shippingAddress?.state);
     const stateCoord = getLatLngFromState(shippingAddress?.state);
+
+    /*
+     * Shape checked here, on the field that actually lands: `customer.phone`
+     * is what the store submits and what the schema stores — the shipping
+     * address has no phone field at all, so a check placed there would
+     * validate a value the database silently discards. Nothing validated this
+     * before, so "1" or "abc" would have been stored as the number used to
+     * reach a customer about their own order. Optional, as it always was —
+     * only checked when supplied.
+     */
+    if (customer?.phone && !isValidPhone(String(customer.phone))) {
+      const error = new Error("Enter a valid phone number") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
     // customer.region field is cosmetic only — do not use it to override the address region.
     const normalizedCustomer = {

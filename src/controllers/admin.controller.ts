@@ -50,7 +50,7 @@ import { exportGangsheetPng24,
 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
-import { isValidEmail, resolveAddress } from "../utils/accountFields.js";
+import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
 import { changePartnerStatus } from "../services/partnerStatus.service.js";
 import { computeAssignmentDeadlineFor, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
@@ -2083,6 +2083,17 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
     // The shared validator, so this rule and public registration's cannot drift.
     if (!isValidEmail(String(email).trim())) {
       const error = new Error("A valid email address is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    /*
+     * Same shape check as public signup. This endpoint required phone to be
+     * present but never checked what was in it, so "1" or "abc" created a
+     * partner with an unreachable contact number.
+     */
+    if (typeof phone === "string" && phone.trim() && !isValidPhone(phone)) {
+      const error = new Error("Enter a valid phone number") as CustomError;
       error.statusCode = 400;
       throw error;
     }

@@ -100,3 +100,32 @@ export const resolveAddress = async (input: RawAddress): Promise<ResolvedAddress
     geocoded: false,
   };
 };
+
+/**
+ * Whether a phone number is at least shaped like one.
+ *
+ * Only presence was ever checked — `if (!phone)` — on both the public signup
+ * and the console's create-partner path, so "1", "abc" and "555" all passed
+ * and were stored as a print partner's contact number. That number is what an
+ * admin or a customer calls when a job goes wrong.
+ *
+ * Deliberately loose on format: it accepts digits, spaces, hyphens,
+ * parentheses, a leading "+", and dots, and does not enforce a country code
+ * or a fixed length — partners are expected to be US-based today but nothing
+ * else here assumes that, and rejecting real international formats would be
+ * its own failure. What it rejects is the number having too few actual digits
+ * to be reachable, or containing letters, which is the shape a placeholder
+ * takes ("abc", "n/a", "asdf").
+ */
+export const isValidPhone = (phone: unknown): boolean => {
+  if (typeof phone !== "string") return false;
+  const trimmed = phone.trim();
+  if (!trimmed) return false;
+
+  // Only the characters a real phone number can contain.
+  if (!/^[+()\d\s.-]+$/.test(trimmed)) return false;
+
+  const digits = trimmed.replace(/\D/g, "");
+  // 7 covers a bare local number; 15 is the longest E.164 number possible.
+  return digits.length >= 7 && digits.length <= 15;
+};

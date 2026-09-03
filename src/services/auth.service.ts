@@ -2,7 +2,7 @@ import { User, UserRoles, UserRole } from "../models/user.model.js";
 import { buildLegalAcceptance, type LegalAcceptanceInput, type LegalAcceptanceRecord } from "../config/legal.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { isUSCountry } from "../utils/geocoding.js";
-import { isValidEmail, resolveAddress } from "../utils/accountFields.js";
+import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
@@ -197,6 +197,17 @@ export const registerUser = async ({
     }
     if (!phone) {
       const error = new Error("Phone Number is required for Printer registration") as any;
+      error.statusCode = 400;
+      throw error;
+    }
+    /*
+     * Shape checked, not just presence. This only tested truthiness, so "1",
+     * "abc" and "555" all registered a print partner with an unreachable
+     * contact number — the one an admin or a customer calls when a job goes
+     * wrong.
+     */
+    if (!isValidPhone(phone)) {
+      const error = new Error("Enter a valid phone number") as any;
       error.statusCode = 400;
       throw error;
     }
