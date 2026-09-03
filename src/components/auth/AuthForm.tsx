@@ -191,7 +191,9 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
     try {
       await apiFetch("/auth/forgot-password", {
         method: "POST",
-        body: JSON.stringify({ email: address }),
+        // Scoped, so a partner's reset never mints a token for their admin or
+        // customer account instead.
+        body: JSON.stringify({ email: address, role: "PRINTER" }),
       });
       /*
        * Deliberately the same message whether or not the address is registered.
@@ -213,7 +215,9 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
       if (isSignIn) {
         const response = await apiFetch("/auth/login", {
           method: "POST",
-          body: JSON.stringify({ email, password }),
+          // Says which of this address's accounts we mean: one email can now
+          // hold a partner, a customer and an admin account independently.
+          body: JSON.stringify({ email, password, role: "PRINTER" }),
         });
         if (response.user.role !== "PRINTER") {
           throw new Error("Access denied. Printer account required.");
