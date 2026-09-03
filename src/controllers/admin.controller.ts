@@ -2587,6 +2587,26 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
         })),
       regions: partner.regions || [],
       detectedRegion,
+      /*
+       * Where they print from. The detail page rendered a hardcoded "N/A" here
+       * and the endpoint never sent an address at all, so a partner who gave a
+       * full address at signup was shown as having none — on the same screen
+       * that decides whether they can be routed work.
+       *
+       * `businessAddress` first: that is the ship-from on a label. It falls back
+       * to the shipping address, which is what signup fills in.
+       */
+      address: (() => {
+        const a = (partner as any).businessAddress || (partner as any).defaultShippingAddress || null;
+        if (!a) return null;
+        return {
+          street: a.street || null,
+          city: a.city || null,
+          state: a.state || null,
+          postalCode: a.postalCode || null,
+          country: a.country || null,
+        };
+      })(),
       ordersCompleted,
       averageProductionHours,
       onTimeDeliveryRate,
