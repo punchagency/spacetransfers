@@ -53,6 +53,15 @@ export const PartnerDetails = () => {
                         typeof p.onTimeDeliveryRate === 'number' ? p.onTimeDeliveryRate : null,
                     performanceSampleSize: Number(p.performanceSampleSize || 0),
                     rating: Number(p.rating || 5.0),
+                    /*
+                     * Both of these were returned by the API and dropped here.
+                     * This mapper is built field by field, so anything not
+                     * named is silently discarded — the overview showed a
+                     * hardcoded "N/A" address and never rendered the status
+                     * reason, because neither ever arrived.
+                     */
+                    address: p.address ?? null,
+                    statusHistory: Array.isArray(p.statusHistory) ? p.statusHistory : [],
                 });
 
                 setSettings(settingsRes);

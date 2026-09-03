@@ -31,6 +31,14 @@ export interface PartnerDetailsData {
    * A suspended or rejected partner used to display a status and nothing else,
    * leaving the reason wherever the admin who decided it happened to remember.
    */
+  /** Where they print from. Null when no address was ever captured. */
+  address?: {
+    street: string | null;
+    city: string | null;
+    state: string | null;
+    postalCode: string | null;
+    country: string | null;
+  } | null;
   statusHistory?: Array<{
     from: string | null;
     to: string;

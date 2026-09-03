@@ -67,7 +67,33 @@ export const PartnerOverview = ({
                         </div>
                         <div>
                             <p className="text-[12px] text-gray-400 font-medium">Address</p>
-                            <p className="text-sm font-semibold text-gray-400 italic">N/A</p>
+                            {(() => {
+                              /*
+                               * This was the literal string "N/A", never wired
+                               * to anything — so a partner who supplied a full
+                               * address at signup was shown as having none.
+                               */
+                              const a = partner.address;
+                              const lines = a
+                                ? [a.street, [a.city, a.state].filter(Boolean).join(", "), a.postalCode]
+                                    .filter((part) => part && String(part).trim())
+                                : [];
+                              if (lines.length === 0) {
+                                return (
+                                  <p
+                                    className="text-sm font-semibold text-amber-700"
+                                    title="Without an address we cannot work out a shipping origin, and their labels declare the wrong one."
+                                  >
+                                    No address on file
+                                  </p>
+                                );
+                              }
+                              return (
+                                <p className="text-sm font-semibold text-gray-900">
+                                  {lines.join(" · ")}
+                                </p>
+                              );
+                            })()}
                         </div>
                     </div>
 
