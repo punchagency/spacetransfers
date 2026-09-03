@@ -478,6 +478,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
                 placeholder="demo@spacetransfers.com"
                 className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
               />
@@ -495,6 +496,14 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                /*
+                 * Tells the browser which field this is, which is what makes it
+                 * offer a generated password on sign-up and the saved one on
+                 * sign-in. Without it the confirm field — which does declare
+                 * itself — got the suggestion and the real password field did
+                 * not, so the offer appeared on the wrong box.
+                 */
+                autoComplete={isSignIn ? "current-password" : "new-password"}
                 placeholder="Your password"
                 className="w-full pl-11 pr-11 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
               />
