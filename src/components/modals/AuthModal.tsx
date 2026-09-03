@@ -245,10 +245,27 @@ export default function AuthModal({
       }
 
       const payload = view === "login"
-        ? { email: formData.email, password: formData.password }
+        ? {
+            email: formData.email,
+            password: formData.password,
+            /*
+             * Says which of this address's accounts we mean. One email can now
+             * hold a customer, a partner and an admin account independently, so
+             * signing in without naming a role would be ambiguous for anyone
+             * who has more than one.
+             */
+            role: "CUSTOMER",
+          }
         : {
             ...formData,
-            role: "customer",
+            /*
+             * Upper case, matching the server's enum. This was "customer",
+             * which matched nothing — registration fell through to its CUSTOMER
+             * default and produced the right account by accident. Now that the
+             * role decides which account an address may hold, relying on that
+             * accident is not safe.
+             */
+            role: "CUSTOMER",
             // Sub-account creation goes to a different endpoint that neither
             // expects nor records this.
             ...(requiresLegalAcceptance
