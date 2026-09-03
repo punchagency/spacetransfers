@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, Fragment } from "react";
 import { gsap } from "gsap";
 import { MdClose, MdCheckCircle, MdArrowBack } from "react-icons/md";
+import { isValidPhone } from "../../lib/utils/validators";
 import CartStep from "../checkout/CartStep";
 import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
@@ -179,6 +180,18 @@ export default function CheckoutModal({
     const email = String(formData.email || "").trim();
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       errors.email = "Enter a valid email address";
+    }
+
+    /*
+     * Shape checked, not just presence — the same gap email had until the line
+     * above was written. `req("phone", ...)` only ever tested truthiness, so
+     * "1" or "abc" passed straight through and became the number on a real
+     * order, which is what a partner or the store calls when a shipment needs
+     * attention.
+     */
+    const phone = String(formData.phone || "").trim();
+    if (phone && !isValidPhone(phone)) {
+      errors.phone = "Enter a valid phone number";
     }
 
     setCheckoutErrors(errors);
