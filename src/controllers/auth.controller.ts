@@ -83,8 +83,10 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
 
 export const login = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, password } = req.body;
-    const result = await loginUser({ email, password });
+    // `role` says which of this address's accounts is meant — one address can
+    // now hold one per role, and each app knows its own.
+    const { email, password, role } = req.body;
+    const result = await loginUser({ email, password, role });
     const userId = String(result.user.id);
 
     // Log the successful sign-in for the Security → Login Activity view.
@@ -131,7 +133,16 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     try {
       const email = req.body?.email;
       if (email) {
-        const existing = await User.findOne({ email: String(email).toLowerCase().trim() }).select("_id role");
+        /*
+         * Scoped to the role that was being signed into, so a failed partner
+         * sign-in is recorded against the partner account rather than whichever
+         * account on that address happened to be found first — which would also
+         * have alerted the wrong admin.
+         */
+        const attemptedRole = req.body?.role;
+        const existing = attemptedRole
+          ? await User.findOne({ email: String(email).toLowerCase().trim(), role: attemptedRole }).select("_id role")
+          : await User.findOne({ email: String(email).toLowerCase().trim() }).select("_id role");
         if (existing) {
           const userId = String(existing._id);
           recordLoginActivity({ req, userId, status: "failed" }).catch(() => {});
@@ -167,7 +178,7 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
 export const forgotPassword = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email } = req.body;
-    const result = await requestPasswordReset(email);
+    const result = await requestPasswordReset(email, req.body?.role);
     res.json({
       message: "If an account exists for that email, a reset link has been sent.",
       ...result

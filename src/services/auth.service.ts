@@ -114,7 +114,23 @@ export const registerUser = async ({
     throw error;
   }
 
-  const existing = await User.findOne({ email });
+  const SELF_REGISTERABLE_ROLES: UserRole[] = [UserRoles.CUSTOMER, UserRoles.PRINTER];
+  if (role && !SELF_REGISTERABLE_ROLES.includes(role)) {
+    const error = new Error("That account type cannot be created through registration.") as any;
+    error.statusCode = 403;
+    throw error;
+  }
+  const resolvedRole = role && SELF_REGISTERABLE_ROLES.includes(role) ? role : UserRoles.CUSTOMER;
+
+  /*
+   * Scoped to the role being registered.
+   *
+   * Uniqueness is on the pair now, so the same address may hold one account of
+   * each kind — an admin who also runs a print shop, a partner who also buys.
+   * Checking the address alone made the first account someone created a
+   * permanent claim on it.
+   */
+  const existing = await User.findOne({ email, role: resolvedRole });
   /*
    * A rejected applicant may re-apply with the same address.
    *
@@ -144,7 +160,7 @@ export const registerUser = async ({
     existing &&
     existing.status === "Rejected" &&
     existing.role === UserRoles.PRINTER &&
-    role === UserRoles.PRINTER;
+    resolvedRole === UserRoles.PRINTER;
   if (existing && !isReapplication) {
     const error = new Error("Email already in use") as any;
     error.statusCode = 400;
@@ -171,13 +187,6 @@ export const registerUser = async ({
    * Silently downgrading instead would create a CUSTOMER for someone who asked
    * for an ADMIN and believes they got one — an error is the honest answer.
    */
-  const SELF_REGISTERABLE_ROLES: UserRole[] = [UserRoles.CUSTOMER, UserRoles.PRINTER];
-  if (role && !SELF_REGISTERABLE_ROLES.includes(role)) {
-    const error = new Error("That account type cannot be created through registration.") as any;
-    error.statusCode = 403;
-    throw error;
-  }
-  const resolvedRole = role && SELF_REGISTERABLE_ROLES.includes(role) ? role : UserRoles.CUSTOMER;
 
   // Validate required fields based on role
   if (resolvedRole === UserRoles.PRINTER) {
@@ -509,7 +518,9 @@ export const createSubAccount = async (parentId: string, subAccountData: Registe
     throw error;
   }
 
-  const existing = await User.findOne({ email: subAccountData.email });
+  // Sub-accounts are always CUSTOMER, so the clash that matters is another
+  // customer on this address.
+  const existing = await User.findOne({ email: subAccountData.email, role: UserRoles.CUSTOMER });
   if (existing) {
     const error = new Error("Email already in use") as any;
     error.statusCode = 400;
@@ -621,9 +632,40 @@ export const switchSubAccount = async (currentUserId: string, targetUserId: stri
   };
 };
 
-export const loginUser = async ({ email, password }: Partial<RegisterParams>): Promise<AuthResponse> => {
-  const user = await User.findOne({ email });
+export const loginUser = async ({
+  email,
+  password,
+  role,
+}: Partial<RegisterParams>): Promise<AuthResponse> => {
+  /*
+   * One address can now hold an account per role, so signing in has to say which
+   * one. Each app knows: the printer portal sends PRINTER, the console ADMIN,
+   * the store CUSTOMER.
+   *
+   * Without a role we fall back to the single account on that address — which
+   * keeps every existing caller working, and only fails when it genuinely cannot
+   * be resolved. Answering with whichever account happened to be found first
+   * would sign someone into the wrong side of the platform.
+   */
+  const candidates = await User.find({ email }).limit(5);
+
+  let user: any = null;
+  if (role) {
+    user = candidates.find((c: any) => c.role === role) || null;
+  } else if (candidates.length === 1) {
+    user = candidates[0];
+  } else if (candidates.length > 1) {
+    const error = new Error(
+      "This email has more than one account. Please sign in from the app you are trying to reach.",
+    ) as any;
+    error.statusCode = 400;
+    throw error;
+  }
+
   if (!user) {
+    // Deliberately the same message as a wrong password: distinguishing "no
+    // such account for this role" would let anyone map which addresses hold
+    // which kinds of account.
     const error = new Error("Invalid credentials") as any;
     error.statusCode = 401;
     throw error;
@@ -687,8 +729,27 @@ export const loginUser = async ({ email, password }: Partial<RegisterParams>): P
   };
 };
 
-export const requestPasswordReset = async (email: string): Promise<{ resetToken?: string }> => {
-  const user = await User.findOne({ email: email.toLowerCase().trim() });
+export const requestPasswordReset = async (
+  email: string,
+  role?: UserRole,
+): Promise<{ resetToken?: string }> => {
+  /*
+   * Scoped to the app that asked, now that one address can hold several
+   * accounts. Resetting by address alone would let a partner's "forgot
+   * password" mint a token for that person's admin account instead — and the
+   * link is emailed straight to them, so it would silently hand over the wrong
+   * one.
+   *
+   * Without a role we fall back to the single account, which keeps the
+   * behaviour for addresses that only have one.
+   */
+  const normalized = email.toLowerCase().trim();
+  const user = role
+    ? await User.findOne({ email: normalized, role })
+    : await (async () => {
+        const found = await User.find({ email: normalized }).limit(2);
+        return found.length === 1 ? found[0] : null;
+      })();
 
   if (!user) {
     return {};
@@ -826,7 +887,10 @@ export const loginWithGoogle = async (
   // silently link to a non-customer account and the resulting JWT would carry
   // a non-CUSTOMER role, triggering 403s on every /api/customer/* route.
   let user = await User.findOne({ googleId }) as any;
-  if (!user) user = await User.findOne({ email: normalizedEmail }) as any;
+  // Customer-scoped: this path only ever creates or signs in CUSTOMER accounts,
+  // so an unscoped lookup could now return that person's partner or admin
+  // account and refuse them for having "a different role".
+  if (!user) user = await User.findOne({ email: normalizedEmail, role: UserRoles.CUSTOMER }) as any;
 
   let isNew = false;
 

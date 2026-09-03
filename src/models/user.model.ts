@@ -216,7 +216,6 @@ const userSchema = new Schema<IUser>(
     email: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
       trim: true
     },
@@ -535,6 +534,20 @@ const userSchema = new Schema<IUser>(
 // Partial unique index on googleId: only enforced when the field is a non-null
 // string (i.e., an actual Google account ID). This lets every non-Google user
 // keep googleId === null without colliding with each other on the unique key.
+/*
+ * One address may hold one account of each kind, not one account in total.
+ *
+ * `email` alone was unique, so a person who administered the platform could not
+ * also sign up as a print partner, and a partner could not shop as a customer —
+ * the same human needed a second mailbox per role. Scoping uniqueness to the
+ * pair keeps the real constraint (no two partner accounts on one address) while
+ * dropping the accidental one.
+ *
+ * Every lookup by email is now role-scoped to match; `loginUser` resolves the
+ * role from the app making the request.
+ */
+userSchema.index({ email: 1, role: 1 }, { unique: true });
+
 userSchema.index(
   { googleId: 1 },
   { unique: true, partialFilterExpression: { googleId: { $type: "string" } } },

@@ -677,7 +677,8 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
         error.statusCode = 400;
         throw error;
       }
-      const existing = await User.findOne({ email: nextEmail, _id: { $ne: admin._id } }).select("_id");
+      // Scoped to admins: another role holding this address is no longer a clash.
+      const existing = await User.findOne({ email: nextEmail, role: UserRoles.ADMIN, _id: { $ne: admin._id } }).select("_id");
       if (existing) {
         const error = new Error("Email already in use") as CustomError;
         error.statusCode = 409;
@@ -2036,7 +2037,12 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      * completeness is checked.
      */
 
-    const existingUser = await User.findOne({ email });
+    /*
+     * Scoped to partners. One address may hold an account per role now, so an
+     * admin adding a print partner must not be blocked because that person also
+     * shops on the store — which is exactly the case an unscoped check refused.
+     */
+    const existingUser = await User.findOne({ email, role: UserRoles.PRINTER });
     if (existingUser) {
       const error = new Error("Partner with this email already exists") as CustomError;
       error.statusCode = 409;
