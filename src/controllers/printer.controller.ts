@@ -10,6 +10,7 @@ import { Settings } from "../models/settings.model.js";
 import { PrinterNotification } from "../models/printerNotification.model.js";
 import { addPrinterNotificationClient, publishPrinterNotificationEvent, removePrinterNotificationClient } from "../services/printerNotificationsHub.js";
 import { broadcastToAllAdmins } from "../services/adminNotificationsHub.js";
+import { changePartnerAvailability } from "../services/partnerAvailability.service.js";
 import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
@@ -3663,6 +3664,7 @@ export const getAvailabilityStatus = async (req: Request, res: Response, next: N
       return res.json({
         availabilityStatus: sync.availabilityStatus,
         capacityLocked: sync.capacityLocked,
+        capacityPaused: sync.capacityPaused,
         activeJobs: sync.activeJobs,
         maxJobs: sync.maxJobs,
       });
@@ -3674,6 +3676,7 @@ export const getAvailabilityStatus = async (req: Request, res: Response, next: N
     res.json({
       availabilityStatus: (user as any).availabilityStatus ?? "open",
       capacityLocked: false,
+      capacityPaused: false,
       activeJobs: 0,
       maxJobs: null,
     });
@@ -3686,52 +3689,34 @@ export const updateAvailabilityStatus = async (req: Request, res: Response, next
     if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
 
     const { status } = req.body as { status?: string };
-    const valid = ["open", "paused", "stopped"] as const;
+    const valid = ["open", "paused"] as const;
     if (!status || !valid.includes(status as any)) {
-      const e = new Error("status must be one of: open, paused, stopped") as any;
+      const e = new Error("status must be one of: open, paused") as any;
       e.statusCode = 400;
       throw e;
     }
 
-    const user = await User.findById(printerId).select("settings.jobCapacity capacityPaused").lean();
-    if (!user) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
-
-    const settings = await getAssignmentSettings();
-    const maxJobs = getEffectiveMaxConcurrent(user as any, settings);
-    const activeJobs = await countActiveJobs(String(printerId));
-    const atCapacity = maxJobs != null && activeJobs >= maxJobs;
-
-    // Block manually switching back to Open while at maximum capacity. A 409 keeps
-    // the session alive and surfaces a clear reason to the printer.
-    if (status === "open" && atCapacity) {
-      return res.status(409).json({
-        code: "AT_MAX_CAPACITY",
-        message:
-          `You're at your maximum of ${maxJobs} active ${maxJobs === 1 ? "job" : "jobs"}. ` +
-          `You'll be set back to Open automatically once your active job count drops below ${maxJobs}.`,
-        availabilityStatus: "paused",
-        capacityLocked: true,
-        activeJobs,
-        maxJobs,
-      });
-    }
-
-    // A manual status change is an explicit override, so clear the capacity-pause
-    // flag — the system won't later auto-reopen a partner who paused themselves.
-    await User.updateOne(
-      { _id: new mongoose.Types.ObjectId(printerId) },
-      { $set: { availabilityStatus: status, capacityPaused: false } }
-    );
-
-    // Keep the admin dashboard's partner list in sync in real time.
-    broadcastToAllAdmins("partner.availability_changed", {
+    /*
+     * Routed through the shared service so a partner pausing themselves reaches
+     * the admin console and their own other sessions. This used to update the
+     * row and broadcast to admins who had no handler for it, and push nothing
+     * back to the partner — so a change made in one tab left every other tab
+     * showing a stale pill until refresh.
+     */
+    const result = await changePartnerAvailability({
       partnerId: String(printerId),
-      availabilityStatus: status,
-      capacityLocked: false,
-      activeJobs,
-      maxJobs,
+      to: status as "open" | "paused",
+      actor: { id: String(printerId), name: (req.user as any)?.name || null, kind: "partner" },
     });
 
-    res.json({ availabilityStatus: status, capacityLocked: false, activeJobs, maxJobs });
+    if (!result) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
+
+    res.json({
+      availabilityStatus: result.availabilityStatus,
+      capacityLocked: result.capacityLocked,
+      capacityPaused: result.capacityPaused,
+      activeJobs: result.activeJobs,
+      maxJobs: result.maxJobs,
+    });
   } catch (error) { next(error); }
 };

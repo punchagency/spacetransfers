@@ -186,7 +186,7 @@ export interface IUser extends Document {
     byName?: string | null;
     notified?: boolean;
   }>;
-  availabilityStatus?: "open" | "paused" | "stopped";
+  availabilityStatus?: "open" | "paused";
   // True when the partner was automatically paused because they reached their
   // maximum active job limit. Distinguishes a capacity auto-pause from a manual
   // pause so auto-recovery only re-opens partners the system paused itself, and
@@ -499,7 +499,15 @@ const userSchema = new Schema<IUser>(
     },
     availabilityStatus: {
       type: String,
-      enum: ["open", "paused", "stopped"],
+      /*
+       * Two states, not three. "Stopped" was offered alongside "Paused" and did
+       * exactly the same thing: one gate reads this field and it only asks
+       * whether the value is "open", and a manual change to either cleared
+       * `capacityPaused` identically. The dropdown promised a difference
+       * ("temporarily not accepting" vs "offline") that no code honoured, so it
+       * was a choice with no consequence.
+       */
+      enum: ["open", "paused"],
       default: "open",
     },
     capacityPaused: {

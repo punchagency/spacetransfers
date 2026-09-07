@@ -52,6 +52,7 @@ import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
 import { changePartnerStatus } from "../services/partnerStatus.service.js";
+import { changePartnerAvailability } from "../services/partnerAvailability.service.js";
 import { computeAssignmentDeadlineFor, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
 interface CustomError extends Error {
@@ -2418,6 +2419,7 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
           email: 1,
           status: 1,
           availabilityStatus: 1,
+          capacityPaused: 1,
           regions: 1,
           rating: 1,
           ordersCompleted: 1,
@@ -2455,6 +2457,10 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
       email: p.email,
       status: p.status,
       availabilityStatus: p.availabilityStatus ?? "open",
+      // Carried alongside it so the console can distinguish a partner who
+      // paused themselves from one the capacity monitor paused — the first
+      // needs a conversation, the second clears itself.
+      capacityPaused: Boolean(p.capacityPaused),
       regions: p.regions || [],
       rating: p.rating || 5.0,
       ordersCompleted: p.ordersCompleted,
@@ -2583,6 +2589,14 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       companyName: partner.companyName || partner.name,
       contactName: partner.name,
       status: partner.status,
+      /*
+       * Operational availability, distinct from account status above. The
+       * console rendered neither this nor the live broadcast the server was
+       * already sending, so a partner who paused themselves looked fully
+       * available to the admin deciding where to route work.
+       */
+      availabilityStatus: (partner as any).availabilityStatus ?? "open",
+      capacityPaused: Boolean((partner as any).capacityPaused),
       /*
        * Why the partner is in the state they are in.
        *
@@ -2765,6 +2779,69 @@ export const updatePartner = async (req: Request, res: Response, next: NextFunct
     res.status(200).json({
       id: partner._id,
       updated: true
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * An admin setting a partner's availability.
+ *
+ * Distinct from `updatePartnerStatus`: that is an account judgement that blocks
+ * sign-in, this is operational — whether the partner is currently taking work.
+ * An admin needs it to pull someone out of rotation without suspending them,
+ * for instance while a quality issue is being discussed.
+ *
+ * Unlike the partner's own endpoint, an admin may reopen someone who is at
+ * capacity: that is a deliberate act by a person who can see the whole network,
+ * not a partner accidentally over-committing themselves.
+ */
+export const updatePartnerAvailability = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { partnerId } = req.params;
+    const { status, reason } = req.body || {};
+
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : (partnerId as string);
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (status !== "open" && status !== "paused") {
+      const error = new Error("status must be one of: open, paused") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const result = await changePartnerAvailability({
+      partnerId: partnerIdString,
+      to: status,
+      reason: typeof reason === "string" ? reason : null,
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email, kind: "admin" },
+    });
+
+    if (!result) {
+      const error = new Error("Partner not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({
+      partnerId: partnerIdString,
+      availabilityStatus: result.availabilityStatus,
+      capacityLocked: result.capacityLocked,
+      // Always false after a manual change — the console reads it to decide
+      // whether to label the pill "at capacity", and an absent field there
+      // would quietly become `false` by accident rather than by fact.
+      capacityPaused: result.capacityPaused,
+      activeJobs: result.activeJobs,
+      maxJobs: result.maxJobs,
+      // Whether the partner's in-app notification was created, so the console
+      // can say plainly if they were not told.
+      notified: result.partnerNotified,
+      notifyError: result.partnerNotifyError,
     });
   } catch (error) {
     next(error);

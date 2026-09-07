@@ -18,7 +18,8 @@ import {
   getPartnerOrders, 
   getPartnerSettings, 
   updatePartnerSettings, 
-  updatePartnerStatus, 
+  updatePartnerStatus,
+  updatePartnerAvailability, 
   createPartner, 
   updatePartner, 
   getEarningsSummary, 
@@ -92,6 +93,7 @@ router.get("/partners/:partnerId/orders", getPartnerOrders);
 router.get("/partners/:partnerId/settings", getPartnerSettings);
 router.patch("/partners/:partnerId/settings", updatePartnerSettings);
 router.patch("/partners/:partnerId/status", updatePartnerStatus);
+router.patch("/partners/:partnerId/availability", updatePartnerAvailability);
 router.patch("/partners/:partnerId", updatePartner);
 router.get("/earnings/summary", getEarningsSummary);  
 

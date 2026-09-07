@@ -146,7 +146,7 @@ export type CapacityTransition = "paused" | "reopened" | "clear_flag" | null;
 
 export interface CapacityDecision {
   transition: CapacityTransition;
-  availabilityStatus: "open" | "paused" | "stopped";
+  availabilityStatus: "open" | "paused";
   capacityPaused: boolean;
 }
 
@@ -160,10 +160,9 @@ export interface CapacityDecision {
  *  • Below the limit while capacity-paused & currently Paused → auto-reopen.
  *  • Below the limit, capacity-paused, but no longer Paused   → just clear the flag.
  *  • Manual pause (capacityPaused = false) is never auto-reopened.
- *  • "stopped" is never touched.
  */
 export const decideCapacityTransition = (input: {
-  availabilityStatus: "open" | "paused" | "stopped";
+  availabilityStatus: "open" | "paused";
   capacityPaused: boolean;
   activeJobs: number;
   maxJobs: number | null;
@@ -195,8 +194,17 @@ export type CapacitySyncResult = {
   printerId: string;
   activeJobs: number;
   maxJobs: number | null;
-  availabilityStatus: "open" | "paused" | "stopped";
+  availabilityStatus: "open" | "paused";
+  /**
+   * At or over the job limit right now, so the partner cannot switch themselves
+   * back to Open. Independent of *why* they are paused.
+   */
   capacityLocked: boolean;
+  /**
+   * The system paused them, and will reopen them by itself once their load
+   * drops. False for a pause a person chose — which is never auto-reopened.
+   */
+  capacityPaused: boolean;
   changed: boolean;
   transition: "paused" | "reopened" | null;
 };
@@ -210,7 +218,7 @@ export type CapacitySyncResult = {
  *    notify, and broadcast.
  *
  * A manual pause (capacityPaused = false) is never auto-reopened, and a
- * "stopped" partner is left untouched. Best-effort: notification / broadcast
+ * Best-effort: notification / broadcast
  * failures never throw.
  */
 export const syncPartnerCapacity = async (
@@ -226,7 +234,7 @@ export const syncPartnerCapacity = async (
   const settings = preloadedSettings ?? (await getAssignmentSettings());
   const maxJobs = getEffectiveMaxConcurrent(partner as any, settings);
   const activeJobs = await countActiveJobs(id);
-  const currentStatus = ((partner as any).availabilityStatus ?? "open") as "open" | "paused" | "stopped";
+  const currentStatus = ((partner as any).availabilityStatus ?? "open") as "open" | "paused";
   const wasCapacityPaused = Boolean((partner as any).capacityPaused);
 
   const decision = decideCapacityTransition({
@@ -248,13 +256,24 @@ export const syncPartnerCapacity = async (
     await partner.save();
   }
 
-  const capacityLocked = Boolean((partner as any).capacityPaused);
+  /*
+   * These are two different facts and were reported as one.
+   *
+   * `capacityLocked` was `capacityPaused`, so a partner who paused *themselves*
+   * while at their limit was told they could switch back to Open — the server
+   * then answered 409. And the badge read the same flag to say "paused
+   * automatically, you'll reopen automatically", which for a manual pause was
+   * simply untrue: the monitor only auto-reopens a pause it made itself.
+   */
+  const capacityPaused = Boolean((partner as any).capacityPaused);
+  const capacityLocked = isAtCapacity(activeJobs, maxJobs);
   const result: CapacitySyncResult = {
     printerId: id,
     activeJobs,
     maxJobs,
     availabilityStatus: newStatus,
     capacityLocked,
+    capacityPaused,
     changed,
     transition,
   };
@@ -265,12 +284,14 @@ export const syncPartnerCapacity = async (
       partnerId: id,
       availabilityStatus: newStatus,
       capacityLocked,
+      capacityPaused,
       activeJobs,
       maxJobs,
     });
     publishPrinterNotificationEvent(id, "availability.changed", {
       availabilityStatus: newStatus,
       capacityLocked,
+      capacityPaused,
       activeJobs,
       maxJobs,
       reason: transition === "paused" ? "capacity_reached" : "capacity_recovered",

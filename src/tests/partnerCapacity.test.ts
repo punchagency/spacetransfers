@@ -162,27 +162,33 @@ describe("decideCapacityTransition — auto-recover below max", () => {
     assert.equal(d.availabilityStatus, "paused");
   });
 
-  it("clears a stale capacity flag without reopening when no longer paused", () => {
+  /*
+   * "Stopped" used to be a third state here. It behaved identically to Paused
+   * everywhere that mattered, so it was collapsed away — these two cases now
+   * cover the same shapes using the states that remain. Open is the one that
+   * can legitimately still carry a stale capacity flag.
+   */
+  it("clears a stale capacity flag without reopening an already-open partner", () => {
     const d = decideCapacityTransition({
-      availabilityStatus: "stopped",
+      availabilityStatus: "open",
       capacityPaused: true,
       activeJobs: 1,
       maxJobs: 10,
     });
     assert.equal(d.transition, "clear_flag");
-    assert.equal(d.availabilityStatus, "stopped");
+    assert.equal(d.availabilityStatus, "open");
     assert.equal(d.capacityPaused, false);
   });
 
-  it("never touches a 'stopped' partner who is below the limit and not capacity-paused", () => {
+  it("leaves a manually paused partner alone when below the limit", () => {
     const d = decideCapacityTransition({
-      availabilityStatus: "stopped",
+      availabilityStatus: "paused",
       capacityPaused: false,
       activeJobs: 0,
       maxJobs: 10,
     });
     assert.equal(d.transition, null);
-    assert.equal(d.availabilityStatus, "stopped");
+    assert.equal(d.availabilityStatus, "paused");
   });
 });
 
