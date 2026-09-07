@@ -14,7 +14,6 @@ import { changePartnerAvailability } from "../services/partnerAvailability.servi
 import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
-import { isPrinterAvailableAt } from "../utils/businessHours.js";
 import { resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
@@ -51,6 +50,8 @@ import {
   createShipStationLabel,
 } from "../services/shipstation.service.js";
 import { storeArtwork } from "../services/storage.service.js";
+import { isValidPhone } from "../utils/accountFields.js";
+import { computePartnerPerformance } from "../services/partnerPerformance.service.js";
 import sharp from "sharp";
 import PDFDocument from "pdfkit";
 
@@ -668,15 +669,16 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
       throw error;
     }
 
-    // Business hours enforcement for ACCEPT
-    if (action === "ACCEPT") {
-      const printer = await User.findById(printerId).select("settings.businessHours settings.jobCapacity name companyName email").lean();
-      if (printer && !isPrinterAvailableAt(printer)) {
-        const error = new Error("Action not allowed outside your configured business hours") as CustomError;
-        error.statusCode = 403;
-        throw error;
-      }
-    }
+    /*
+     * The business-hours block on ACCEPT is gone.
+     *
+     * This refused a partner permission to accept a job that had already been
+     * assigned to them — 403, "Action not allowed outside your configured
+     * business hours" — while that job's SLA clock kept running. A partner with
+     * Mon-Wed hours could not accept work on a Thursday at all. And the check
+     * ran on the server's clock, not theirs, so the window was wrong for anyone
+     * outside the server's timezone. Pausing is how a partner declines work.
+     */
 
     let nextStatus: any;
     switch (action) {
@@ -3163,8 +3165,25 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
-    // Real-time job count
-    const totalJobs = await Order.countDocuments({ assignedPrinter: printerId });
+    /*
+     * Cancelled and rejected orders excluded. This counted every order ever
+     * pointed at the partner, so work that was pulled back or that they turned
+     * down still inflated their "Total Jobs" — a number they are judged on.
+     */
+    const totalJobs = await Order.countDocuments({
+      assignedPrinter: printerId,
+      status: { $nin: ["CANCELLED", "REJECTED"] },
+    });
+
+    /*
+     * The real figures, from the same service the admin's partner page reads.
+     *
+     * `user.performance` was returned here before. Nothing in the server ever
+     * writes it — it is {0, 0, 0} on every partner — and the Profile page
+     * rendered those zeros as "< 2 hours" response time and "Top 10%". A
+     * partner was being shown invented statistics about their own business.
+     */
+    const performance = await computePartnerPerformance(String(printerId));
 
     // Fallback for address synchronization
     const businessAddress: any = user.businessAddress?.street 
@@ -3201,10 +3220,13 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
       },
       certifications: user.certifications || [],
       badges: user.badges || [],
-      performance: user.performance || {
-        completionRate: 0,
-        responseTime: 0,
-        customerRating: user.rating || 0
+      // Nulls where there is no sample yet, so the client can say "no completed
+      // jobs yet" instead of printing a zero that reads as a bad score.
+      performance: {
+        averageProductionHours: performance.averageProductionHours,
+        onTimeDeliveryRate: performance.onTimeDeliveryRate,
+        sampleSize: performance.sampleSize,
+        rating: typeof user.rating === "number" ? user.rating : null,
       }
     });
   } catch (error) {
@@ -3233,18 +3255,76 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    if (name) user.name = name;
-    if (businessName) user.companyName = businessName;
-    if (phone) user.phone = phone;
-    if (website) user.website = website;
+    /*
+     * Keyed on `undefined`, not on truthiness.
+     *
+     * `if (website)` meant an empty string was skipped, so a partner who
+     * mistyped their website could never remove it — the field was
+     * write-once-then-permanent. Same for name and phone. `undefined` means
+     * "not sent"; an empty string is a deliberate clear.
+     */
+    if (typeof name === "string" && name.trim()) user.name = name.trim();
+    if (typeof businessName === "string" && businessName.trim()) user.companyName = businessName.trim();
+
+    if (phone !== undefined) {
+      const trimmed = String(phone ?? "").trim();
+      /*
+       * The same rule signup and the storefront enforce, from the shared
+       * validator. This endpoint accepted anything, so a partner could sign up
+       * with a valid number and then replace it with "asdf" — and their phone
+       * is what goes on the shipping label.
+       */
+      if (trimmed && !isValidPhone(trimmed)) {
+        const error = new Error("Enter a valid phone number") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      user.phone = trimmed;
+    }
+
+    if (website !== undefined) user.website = String(website ?? "").trim();
     
     if (businessDetails) {
       user.businessDetails = { ...user.businessDetails, ...businessDetails };
     }
     
+    const regionBefore = Array.isArray(user.regions) ? user.regions[0] ?? null : null;
+
     if (businessAddress) {
-      // Merge new fields onto the existing address first
-      const merged = { ...(user.businessAddress as any || {}), ...businessAddress };
+      /*
+       * Merged field by field, not by spreading the stored subdocument.
+       *
+       * `{ ...user.businessAddress }` on a Mongoose subdocument copies
+       * `coordinates` across as an own key holding `undefined`, and the save
+       * then fails casting undefined to an Object:
+       *
+       *   ValidationError: businessAddress.coordinates: Cast to Object failed
+       *   for value "undefined" at path "businessAddress.coordinates"
+       *
+       * So *every* attempt to change a business address answered 500. Nobody
+       * had noticed because no client sends one — but a partner's address sets
+       * their region and the shipping origin on their labels, so this is the
+       * update that matters most.
+       */
+      const existing = (user.businessAddress as any) ?? {};
+      const pick = (next: unknown, current: unknown) =>
+        next === undefined ? current : next === null || next === "" ? "" : String(next).trim();
+
+      const merged: any = {
+        street: pick(businessAddress.street, existing.street),
+        city: pick(businessAddress.city, existing.city),
+        state: pick(businessAddress.state, existing.state),
+        postalCode: pick(businessAddress.postalCode, existing.postalCode),
+        country: pick(businessAddress.country, existing.country),
+        // Any edit invalidates a previous verification — it is no longer the
+        // address that was checked.
+        verified: false,
+      };
+      // Only carried when it actually exists; assigning undefined is the bug above.
+      if (existing.coordinates?.lat != null && existing.coordinates?.lng != null) {
+        merged.coordinates = { lat: existing.coordinates.lat, lng: existing.coordinates.lng };
+      }
+
       user.businessAddress = merged;
 
       // Re-geocode and recalculate region whenever the address changes
@@ -3295,11 +3375,112 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
       }
     }
 
-    if (certifications) {
-      user.certifications = certifications;
+    if (certifications !== undefined) {
+      /*
+       * Validated here, not only in the browser.
+       *
+       * These went straight onto the document, so a bad date reached Mongoose
+       * and came back as an unhandled ValidationError — a 500 and a generic
+       * "Something went wrong" for what is a form mistake. The console
+       * validates the same three fields; this is the half that was missing.
+       */
+      if (!Array.isArray(certifications)) {
+        const error = new Error("Certifications must be a list") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const cleaned = certifications.map((c: any, i: number) => {
+        const name = String(c?.name ?? "").trim();
+        const authority = String(c?.authority ?? "").trim();
+        if (!name || !authority) {
+          const error = new Error(
+            `Certification ${i + 1} needs both a name and an issuing authority`,
+          ) as CustomError;
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const parseDate = (value: unknown, label: string, required: boolean) => {
+          if (value === undefined || value === null || value === "") {
+            if (!required) return undefined;
+            const error = new Error(`Certification ${i + 1} needs a ${label}`) as CustomError;
+            error.statusCode = 400;
+            throw error;
+          }
+          const d = new Date(value as string);
+          if (Number.isNaN(d.getTime())) {
+            const error = new Error(`Certification ${i + 1} has an invalid ${label}`) as CustomError;
+            error.statusCode = 400;
+            throw error;
+          }
+          return d;
+        };
+
+        const date = parseDate(c?.date, "issue date", true)!;
+        const expiryDate = parseDate(c?.expiryDate, "expiry date", false);
+        if (expiryDate && expiryDate < date) {
+          const error = new Error(
+            `Certification ${i + 1} expires before it was issued`,
+          ) as CustomError;
+          error.statusCode = 400;
+          throw error;
+        }
+
+        return {
+          name,
+          authority,
+          date,
+          expiryDate,
+          verificationCode: c?.verificationCode ? String(c.verificationCode).trim() : undefined,
+          documentUrl: c?.documentUrl ? String(c.documentUrl).trim() : undefined,
+        };
+      });
+
+      user.certifications = cleaned as any;
     }
 
     await user.save();
+
+    /*
+     * A partner moving premises changes which region they serve, and therefore
+     * which orders can be routed to them and what origin their labels declare.
+     * That used to happen silently. Admins are told, for the same reason they
+     * are told about an availability change — it alters who work can go to.
+     */
+    const regionAfter = Array.isArray(user.regions) ? user.regions[0] ?? null : null;
+
+    /*
+     * Push the change to every open admin console.
+     *
+     * A partner's company name, phone, website, address and region are all
+     * shown on the admin's partner pages, and all of them are now editable by
+     * the partner. Without this an admin reading a partner's details could be
+     * looking at an address they no longer print from — the console had no way
+     * to learn the record had moved under it.
+     */
+    broadcastToAllAdmins("partner.profile_updated", {
+      partnerId: String(user._id),
+      name: user.companyName || user.name,
+      contactName: user.name,
+      phone: user.phone || null,
+      website: user.website || null,
+      regions: user.regions || [],
+      regionChanged: Boolean(businessAddress) && regionAfter !== regionBefore,
+    });
+
+    if (businessAddress && regionAfter !== regionBefore) {
+      notifyAllAdmins({
+        category: "partners",
+        priority: "medium",
+        title: "Partner changed their service region",
+        message:
+          `${user.companyName || user.name} updated their business address, moving them from ` +
+          `${regionBefore || "no region"} to ${regionAfter || "no region"}. Orders are routed by region, ` +
+          `so this changes what they can be assigned.`,
+        meta: { partnerId: String(user._id), regionBefore, regionAfter },
+      }).catch(() => {});
+    }
 
     res.json({
       message: "Profile updated successfully",

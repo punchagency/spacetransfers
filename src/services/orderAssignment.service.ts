@@ -9,7 +9,6 @@ import {
 } from "../utils/region.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
-import { isPrinterAvailableAt } from "../utils/businessHours.js";
 import { computeAssignmentDeadlineFor } from "../utils/assignmentDeadline.js";
 import {
   ACTIVE_ORDER_STATUSES,
@@ -275,7 +274,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
   const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
     .select(
-      "name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours availabilityStatus"
+      "name companyName email regions rating defaultShippingAddress settings.jobCapacity availabilityStatus"
     )
     .lean();
 
@@ -308,9 +307,25 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
       const hasConcurrentCapacity = !isAtCapacity(activeCount, maxConcurrent);
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
-      const withinBusinessHours = isPrinterAvailableAt(p, now);
       const acceptingOrders = !p.availabilityStatus || p.availabilityStatus === "open";
-      const available = acceptingOrders && autoAccept && hasConcurrentCapacity && hasDailyCapacity && withinBusinessHours;
+      /*
+       * Business hours removed as a gate.
+       *
+       * It answered the same question as Pause — "am I taking work right now" —
+       * but did it on a recurring schedule nobody could see: it was invisible in
+       * the admin console, so a partner silently dropped out of assignment with
+       * no way for anyone to work out why.
+       *
+       * It was also wrong. `isPrinterAvailableAt` compared against the SERVER's
+       * clock (`at.getHours()`) and no partner has a timezone stored, so across
+       * four US regions "9am-5pm" meant nine-to-five wherever the server happens
+       * to run. On a UTC host that is 1am-9am for a West-region partner.
+       *
+       * Printing is batch work — a job assigned overnight is picked up in the
+       * morning — so delaying assignment bought nothing and cost the order time
+       * against its SLA. Pause is the control: explicit, notified, admin-visible.
+       */
+      const available = acceptingOrders && autoAccept && hasConcurrentCapacity && hasDailyCapacity;
 
       return {
         printerId,

@@ -19,6 +19,7 @@ import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
 import { storeArtwork } from "../services/storage.service.js";
+import { computePartnerPerformance } from "../services/partnerPerformance.service.js";
 import { LoginActivity } from "../models/loginActivity.model.js";
 import { Design } from "../models/design.model.js";
 import { AdminNotification } from "../models/adminNotification.model.js";
@@ -2515,67 +2516,14 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       status: "COMPLETED"
     });
 
-    /**
-     * Average production time and on-time rate, derived rather than displayed
-     * as "N/A".
-     *
-     * Both were hard-coded placeholders in the component. The data to compute
-     * them has been there all along: `assignedAt` is when the partner got the
-     * job, the timeline records when it reached SHIPPED, and
-     * `assignmentDeadline` is what they were given. Nothing needed collecting —
-     * only reading.
-     *
-     * Measured to SHIPPED rather than COMPLETED because COMPLETED is set by
-     * delivery confirmation from the carrier, which is not the partner's doing.
+    /*
+     * Moved to `partnerPerformance.service`. The partner's own Profile page
+     * showed invented figures for these same two ideas — a stored
+     * `user.performance` object nothing ever writes — so both sides read one
+     * computation now.
      */
-    const shippedOrders = await Order.find({
-      assignedPrinter: partnerIdString,
-      status: { $in: ["SHIPPED", "COMPLETED"] },
-      assignedAt: { $ne: null },
-    })
-      .select("assignedAt assignmentDeadline statusTimeline")
-      .lean();
-
-    const shippedAtOf = (o: any): Date | null => {
-      const entries = Array.isArray(o.statusTimeline) ? o.statusTimeline : [];
-      for (let i = entries.length - 1; i >= 0; i--) {
-        if (String(entries[i]?.status || "").toUpperCase() === "SHIPPED") {
-          const t = new Date(entries[i].time);
-          return Number.isNaN(t.getTime()) ? null : t;
-        }
-      }
-      return null;
-    };
-
-    const durationsMs: number[] = [];
-    let onTime = 0;
-    let deadlineKnown = 0;
-    for (const o of shippedOrders) {
-      const shippedAt = shippedAtOf(o);
-      if (!shippedAt) continue;
-      const assignedAt = new Date((o as any).assignedAt);
-      if (Number.isNaN(assignedAt.getTime())) continue;
-
-      const ms = shippedAt.getTime() - assignedAt.getTime();
-      // A negative span means the timeline and the assignment stamp disagree —
-      // usually a reassignment. Counting it would drag the average below zero.
-      if (ms >= 0) durationsMs.push(ms);
-
-      const deadline = (o as any).assignmentDeadline ? new Date((o as any).assignmentDeadline) : null;
-      if (deadline && !Number.isNaN(deadline.getTime())) {
-        deadlineKnown += 1;
-        if (shippedAt <= deadline) onTime += 1;
-      }
-    }
-
-    // Null, not zero: no finished jobs is "nothing to measure yet", and a 0%
-    // on-time rate would read as a partner who never delivers on time.
-    const averageProductionHours = durationsMs.length
-      ? Number((durationsMs.reduce((a, b) => a + b, 0) / durationsMs.length / 3600000).toFixed(1))
-      : null;
-    const onTimeDeliveryRate = deadlineKnown
-      ? Number(((onTime / deadlineKnown) * 100).toFixed(1))
-      : null;
+    const { averageProductionHours, onTimeDeliveryRate, sampleSize: performanceSamples } =
+      await computePartnerPerformance(partnerIdString);
 
     const detectedRegion =
       (partner as any).detectedRegion ||
@@ -2643,7 +2591,7 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       onTimeDeliveryRate,
       // Measured against how many finished jobs, so the console can say "from
       // 3 orders" rather than presenting one data point as a track record.
-      performanceSampleSize: durationsMs.length,
+      performanceSampleSize: performanceSamples,
       rating: partner.rating || 5.0,
       email: partner.email,
       phone: partner.phone || "N/A",
