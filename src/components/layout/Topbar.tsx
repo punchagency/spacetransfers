@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AiOutlineSearch } from "react-icons/ai";
 import { GoBell } from "react-icons/go";
 import { UserMenu } from "../common/UserMenu";
-import { PortalSearch } from "../common/PortalSearch";
 import { AvailabilityStatusBadge } from "../common/AvailabilityStatusBadge";
 import {
   useNotificationsStore,
@@ -23,25 +23,13 @@ export const Topbar = () => {
     markAllRead,
   } = useNotificationsStore();
 
-  const [searchOpen, setSearchOpen] = useState(false);
   const [open, setOpen] = useState(false);
-
-  // ⌘K / Ctrl+K opens the portal search
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setSearchOpen(true);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
   const [q, setQ] = useState("");
   const [category, setCategory] = useState<PrinterNotificationCategory | "all">("all");
   const [priority, setPriority] = useState<PrinterNotificationPriority | "all">("all");
   const [unreadOnly, setUnreadOnly] = useState(true);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -89,6 +77,22 @@ export const Topbar = () => {
     return "bg-gray-400";
   };
 
+  /**
+   * Where a notification points, or null if it points nowhere.
+   *
+   * The server sets `meta.orderId` at nearly every call site — 52 of the 55
+   * notifications in the database carry one — so most of these can take the
+   * partner straight to the job they are about. The row was already styled
+   * `cursor-pointer` with a hover state but had no handler at all, so it looked
+   * clickable and did nothing. The admin console has done this since it was
+   * built; this is the same behaviour.
+   */
+  const targetFor = (n: { meta?: Record<string, unknown> | null }): string | null => {
+    const meta = (n.meta || {}) as Record<string, unknown>;
+    if (meta.orderId) return `/orders/${String(meta.orderId)}`;
+    return null;
+  };
+
   const categoryLabel = (c: PrinterNotificationCategory) => {
     if (c === "jobs") return "Jobs";
     if (c === "orders") return "Orders";
@@ -97,19 +101,7 @@ export const Topbar = () => {
 
   return (
     <>
-      <PortalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200">
-        <button
-          onClick={() => setSearchOpen(true)}
-          className="flex items-center gap-3 w-full max-w-xl border border-gray-200 rounded-xl px-4 py-2 hover:border-blue-400 transition-colors group text-left"
-        >
-          <AiOutlineSearch className="w-4 h-4 text-gray-400 group-hover:text-blue-500 transition-colors flex-shrink-0" />
-          <span className="text-sm text-gray-400 flex-1">Search portal</span>
-          <kbd className="hidden sm:flex items-center gap-0.5 text-[11px] font-mono text-gray-300">
-            <span>⌘</span><span>K</span>
-          </kbd>
-        </button>
-
+      <header className="flex items-center justify-end px-6 py-4 bg-white border-b border-gray-200">
       <div className="flex items-center gap-3">
         <AvailabilityStatusBadge />
         <div className="relative" ref={wrapperRef}>
@@ -200,10 +192,22 @@ export const Topbar = () => {
                   <div className="p-6 text-sm text-gray-500">No notifications</div>
                 ) : (
                   <div className="divide-y divide-gray-100">
-                    {filtered.map((n) => (
+                    {filtered.map((n) => {
+                      const target = targetFor(n);
+                      return (
                       <div
                         key={n.id}
-                        className={`p-4 hover:bg-gray-50 cursor-pointer ${!n.readAt ? "bg-blue-50/30" : ""}`}
+                        onClick={target ? () => { setOpen(false); navigate(target); } : undefined}
+                        role={target ? "link" : undefined}
+                        tabIndex={target ? 0 : undefined}
+                        onKeyDown={target ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setOpen(false);
+                            navigate(target);
+                          }
+                        } : undefined}
+                        className={`p-4 hover:bg-gray-50 ${target ? "cursor-pointer focus:outline-none focus:bg-gray-50" : ""} ${!n.readAt ? "bg-blue-50/30" : ""}`}
                       >
                         <div className="flex items-start gap-3">
                           <div className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${priorityDot(n.priority)}`} />
@@ -218,7 +222,7 @@ export const Topbar = () => {
                                 {categoryLabel(n.category)} • {n.priority.toUpperCase()}
                               </div>
                               <button
-                                onClick={() => void markRead(n.id, !n.readAt)}
+                                onClick={(e) => { e.stopPropagation(); void markRead(n.id, !n.readAt); }}
                                 className="text-[11px] font-semibold text-blue-600 hover:text-blue-700"
                               >
                                 {n.readAt ? "Mark unread" : "Mark read"}
@@ -227,7 +231,8 @@ export const Topbar = () => {
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

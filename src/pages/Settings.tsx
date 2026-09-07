@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import SettingsHeader from "../components/settings/SettingsHeader";
 import BusinessHoursSection from "../components/settings/BusinessHoursSection";
-import JobCapacitySection from "../components/settings/JobCapacitySection";
 import NotificationsSection from "../components/settings/NotificationsSection";
 import PayoutSettingsSection from "../components/settings/PayoutSettingsSection";
 import { apiFetch } from "../utils/api";
@@ -37,10 +36,14 @@ const Settings = () => {
             <BusinessHoursSection initialData={settingsData} />
           </div>
 
-          <div id="job-capacity">
-            <JobCapacitySection autoAcceptInitial={settingsData?.jobCapacity?.autoAccept !== false} />
-          </div>
-
+          {/*
+            Job Capacity / Auto-Accept was removed. It did one thing — take you
+            out of automatic assignment — which is exactly what the Paused pill
+            in the top bar does, and that one tells the admin, records why, and
+            syncs both portals. Two switches for one outcome meant your Settings
+            page could read "Auto-Accept ON" while you were Paused and taking
+            nothing. Pause is the switch now.
+          */}
           <div id="notifications">
             <NotificationsSection
               initialPrefs={settingsData?.notifications?.email ?? null}
