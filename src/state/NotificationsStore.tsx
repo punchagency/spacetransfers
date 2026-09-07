@@ -18,6 +18,18 @@ export type AdminNotificationItem = {
   createdAt: string;
 };
 
+/**
+ * A raw admin-stream event.
+ *
+ * The admin stream carries more than notifications — `partner.availability_changed`
+ * and `order.returned_to_queue` are pushed down it too. Both were broadcast by
+ * the server and dropped on the floor here, because this store only ever looked
+ * for `notification.*` and nothing else could reach the socket: the connection
+ * is owned by this provider, and a page opening its own would mean a second SSE
+ * connection per admin per tab.
+ */
+export type AdminStreamHandler = (event: string, data: any) => void;
+
 type ListResponse = {
   notifications: AdminNotificationItem[];
   unreadCount: number;
@@ -34,6 +46,13 @@ type NotificationsState = {
   loadMore: () => Promise<void>;
   markRead: (id: string, read: boolean) => Promise<void>;
   markAllRead: () => Promise<void>;
+  /**
+   * Listen to the raw admin stream. Returns an unsubscribe function.
+   *
+   * Handlers are held in a ref, so subscribing never re-runs the connection
+   * effect — a page mounting must not tear down and re-open the stream.
+   */
+  subscribeToStream: (handler: AdminStreamHandler) => () => void;
 };
 
 const NotificationsStoreContext = createContext<NotificationsState | null>(null);
@@ -112,6 +131,14 @@ export const NotificationsStoreProvider = ({ children }: { children: ReactNode }
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastQuery, setLastQuery] = useState<{ status?: string; category?: string; priority?: string; q?: string }>({});
   const abortRef = useRef<AbortController | null>(null);
+  const streamSubscribersRef = useRef<Set<AdminStreamHandler>>(new Set());
+
+  const subscribeToStream = useCallback((handler: AdminStreamHandler) => {
+    streamSubscribersRef.current.add(handler);
+    return () => {
+      streamSubscribersRef.current.delete(handler);
+    };
+  }, []);
 
   const upsertMany = useCallback((rows: AdminNotificationItem[]) => {
     setRecords((prev) => {
@@ -245,6 +272,17 @@ export const NotificationsStoreProvider = ({ children }: { children: ReactNode }
     };
 
     const handleEvent = (event: string, data: any) => {
+      // Fan out first and to every event: the notification branches below
+      // return early, and a subscriber that only sees the leftovers would miss
+      // the ones this store handles.
+      for (const handler of streamSubscribersRef.current) {
+        try {
+          handler(event, data);
+        } catch {
+          // One bad subscriber must not stop the others, or the stream.
+        }
+      }
+
       {
         if (event === "notification.created" && data && data.id) {
           const n: AdminNotificationItem = {
@@ -295,6 +333,7 @@ export const NotificationsStoreProvider = ({ children }: { children: ReactNode }
     loadMore,
     markRead,
     markAllRead,
+    subscribeToStream,
   };
 
   return <NotificationsStoreContext.Provider value={value}>{children}</NotificationsStoreContext.Provider>;

@@ -21,7 +21,6 @@ export const PartnerSettings = ({
     const [orderAssignedEmail, setOrderAssignedEmail] = useState(false);
     const [jobCompletedEmail, setJobCompletedEmail] = useState(false);
     const [isPartnerActive, setIsPartnerActive] = useState(partnerStatus === 'Active');
-    const [autoAccept, setAutoAccept] = useState(true);
     /**
      * Service areas live here now, with the other things the platform decides.
      *
@@ -55,7 +54,6 @@ export const PartnerSettings = ({
 
     useEffect(() => {
         if (!settings) return;
-        setAutoAccept(settings.jobCapacity?.autoAccept ?? true);
         setWarehouseId(
             settings.shipStationWarehouseId === null || settings.shipStationWarehouseId === undefined
                 ? ''
@@ -100,12 +98,12 @@ export const PartnerSettings = ({
         setIsSaving(true);
         try {
             const payload: PartnerSettingsApi = {
-                jobCapacity: {
-                    // Only auto-accept is set here now. The two capacity limits
-                    // were removed from the UI, and omitting them leaves any
-                    // stored value untouched rather than zeroing it.
-                    autoAccept
-                },
+                /*
+                 * No `jobCapacity`. The server only writes the keys it is sent,
+                 * so leaving it out is what stops this panel from overwriting a
+                 * partner's own Auto-Accept choice. The two capacity limits were
+                 * already gone from this UI for the same reason.
+                 */
                 notifications: {
                     orderAssigned: orderAssignedEmail,
                     jobCompleted: jobCompletedEmail
@@ -176,9 +174,16 @@ export const PartnerSettings = ({
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Production Settings Card */}
+                {/*
+                  Titled "Shipping" rather than "Production Settings": the two
+                  production fields were removed as duplicates of the global
+                  limit, Auto-Accept has now gone the same way, and what is left
+                  is one ShipStation field. A card promising production settings
+                  and holding a warehouse id sends people looking for controls
+                  that are not there.
+                */}
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 space-y-8">
-                    <h2 className="text-[16px] font-bold text-gray-900">Production Settings</h2>
+                    <h2 className="text-[16px] font-bold text-gray-900">Shipping</h2>
 
                     <div className="space-y-6">
                         {/*
@@ -206,25 +211,16 @@ export const PartnerSettings = ({
                             </p>
                         </div>
 
-                        {/* Weekend Availability */}
-                        <div className="flex items-center justify-between pt-2">
-                            <div className="space-y-0.5">
-                                <label className="text-sm font-bold text-gray-900">Auto-Accept Jobs</label>
-                                {/*
-                                  * Says what turning it off actually does. It is
-                                  * one of five gates in `orderAssignment`, and
-                                  * the only one an admin can flip here — off
-                                  * means the partner is passed over by automatic
-                                  * assignment altogether, which "automatically
-                                  * accept assigned jobs" did not convey.
-                                  */}
-                                <p className="text-[13px] text-gray-400 font-medium">
-                                    When off, this partner is skipped by automatic assignment and can
-                                    only be given work by hand
-                                </p>
-                            </div>
-                            <Toggle enabled={autoAccept} setEnabled={setAutoAccept} />
-                        </div>
+                        {/*
+                          Auto-Accept was shown here, read-only, after it was
+                          found overwriting the partner's own choice on every
+                          save. It is gone from both portals now: it did the
+                          same job as Pause — remove the partner from automatic
+                          assignment — without telling anyone, recording a
+                          reason, or syncing. Pause, on the Overview tab, is the
+                          one switch. Every partner is stored `true`, so nothing
+                          changed about who receives work.
+                        */}
                     </div>
                 </div>
 

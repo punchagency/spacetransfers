@@ -4,9 +4,19 @@ export interface Partner {
   email: string;
   regions: string[];
   status: "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected";
+  /**
+   * Whether the partner is currently taking work, as distinct from whether
+   * their account is in good standing. A partner can be Active and Paused at
+   * the same time — the account is fine, they just are not accepting jobs.
+   */
+  availabilityStatus: AvailabilityStatus;
+  /** True when the capacity monitor paused them, not a person. */
+  capacityPaused?: boolean;
   ordersInProgress: string;
   orders: string;
 }
+
+export type AvailabilityStatus = "open" | "paused";
 
 export interface PartnerDetailsData {
   id: string;
@@ -25,6 +35,9 @@ export interface PartnerDetailsData {
   onTimeDeliveryRate?: number | null;
   performanceSampleSize?: number;
   rating: number;
+  availabilityStatus: AvailabilityStatus;
+  /** True when the system paused them for hitting their job limit, not a person. */
+  capacityPaused?: boolean;
   /**
    * Recent status changes, newest first, with the reason and who made it.
    *

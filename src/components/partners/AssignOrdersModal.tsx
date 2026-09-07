@@ -4,12 +4,23 @@ import toast from 'react-hot-toast';
 import { apiFetch } from '../../utils/api';
 import { formatOrderNumber } from '../../utils/orderNumber';
 import { formatOrderStatus } from '../../utils/orderStatus';
+import { useNotificationsStore } from '../../state/NotificationsStore';
+import type { AvailabilityStatus } from '../../types/partners';
 
 type PartnerOption = {
   id: string;
   name: string;
   regions: string[];
   status: string;
+  /**
+   * Whether they are currently taking work. Auto-assignment already skips a
+   * paused partner; a manual assignment from here deliberately still goes
+   * through, because an admin overriding is the point of assigning by hand.
+   * It was invisible, though — so the override was being made by someone who
+   * did not know they were making one.
+   */
+  availabilityStatus: AvailabilityStatus;
+  capacityPaused: boolean;
 };
 
 const ORDERS_PAGE_SIZE = 50;
@@ -47,6 +58,7 @@ export const AssignOrdersModal = ({
 
   const titleId = useMemo(() => `assign-orders-title-${Math.random().toString(16).slice(2)}`, []);
   const partnerSelectRef = useRef<HTMLSelectElement | null>(null);
+  const { subscribeToStream } = useNotificationsStore();
 
   const mapOrder = (o: any): OrderRow => ({
     id: String(o.id),
@@ -82,6 +94,8 @@ export const AssignOrdersModal = ({
           name: String(p.name || 'N/A'),
           regions: Array.isArray(p.regions) ? p.regions : [],
           status: String(p.status || 'N/A'),
+          availabilityStatus: p.availabilityStatus === 'paused' ? 'paused' : 'open',
+          capacityPaused: Boolean(p.capacityPaused),
         }));
 
         setPartners(mappedPartners);
@@ -100,6 +114,31 @@ export const AssignOrdersModal = ({
 
     fetchData();
   }, [isOpen]);
+
+  /*
+   * This list is fetched once when the modal opens and can sit on screen while
+   * an admin works through a batch — long enough for a partner to pause
+   * themselves in the middle of it.
+   */
+  useEffect(
+    () =>
+      subscribeToStream((event, data) => {
+        if (event !== 'partner.availability_changed' || !data?.partnerId) return;
+        const partnerId = String(data.partnerId);
+        setPartners((prev) =>
+          prev.map((p) =>
+            p.id === partnerId
+              ? {
+                  ...p,
+                  availabilityStatus: data.availabilityStatus === 'paused' ? 'paused' : 'open',
+                  capacityPaused: Boolean(data.capacityPaused),
+                }
+              : p,
+          ),
+        );
+      }),
+    [subscribeToStream],
+  );
 
   const loadMoreOrders = async () => {
     if (!nextCursor || loadingMore) return;
@@ -145,6 +184,7 @@ export const AssignOrdersModal = ({
     });
   }, [search, unassignedOrders]);
 
+  const selectedPartner = partners.find((p) => p.id === selectedPartnerId) || null;
   const selectedCount = selectedOrderIds.size;
   const canAssign = selectedPartnerId && selectedCount > 0 && !loading && !assigning;
 
@@ -323,9 +363,17 @@ export const AssignOrdersModal = ({
                 {partners.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}{p.regions.length > 0 ? ` (${p.regions.join(', ')})` : ''}
+                    {p.availabilityStatus === 'paused' ? ' — Paused' : ''}
                   </option>
                 ))}
               </select>
+              {selectedPartner?.availabilityStatus === 'paused' && (
+                <p className="text-[12px] text-amber-700 font-medium pt-1">
+                  {selectedPartner.capacityPaused
+                    ? 'This partner is at their maximum active jobs, so assignment will be refused until one finishes.'
+                    : 'This partner is paused and is not taking auto-assigned work. Assigning by hand overrides that.'}
+                </p>
+              )}
             </div>
 
           </div>

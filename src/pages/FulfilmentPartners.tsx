@@ -9,6 +9,7 @@ import { apiFetch } from '../utils/api';
 import toast from 'react-hot-toast';
 import { AddPartnerModal } from '../components/partners/AddPartnerModal';
 import { AssignOrdersModal } from '../components/partners/AssignOrdersModal';
+import { useNotificationsStore } from '../state/NotificationsStore';
 import { REGIONS } from "../utils/regions";
 
 export const FulfilmentPartners = () => {
@@ -25,11 +26,44 @@ export const FulfilmentPartners = () => {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const { subscribeToStream } = useNotificationsStore();
 
   useEffect(() => {
     const id = window.setTimeout(() => setDebouncedSearch(searchTerm), 300);
     return () => window.clearTimeout(id);
   }, [searchTerm]);
+
+  /**
+   * Live availability, from the admin stream this console already holds open.
+   *
+   * The server has broadcast `partner.availability_changed` all along — from a
+   * partner's own pill, from the capacity monitor, and now from this console —
+   * and nothing listened. A partner pausing themselves left this table showing
+   * Open until someone reloaded, which is the one moment the roster is being
+   * read to decide who gets work.
+   *
+   * The row is patched rather than refetched: a refetch would fight whatever
+   * filter and cursor page the admin is currently on.
+   */
+  useEffect(
+    () =>
+      subscribeToStream((event, data) => {
+        if (event !== 'partner.availability_changed' || !data?.partnerId) return;
+        const partnerId = String(data.partnerId);
+        setPartners((prev) =>
+          prev.map((p) =>
+            p.id === partnerId
+              ? {
+                  ...p,
+                  availabilityStatus: data.availabilityStatus === 'paused' ? 'paused' : 'open',
+                  capacityPaused: Boolean(data.capacityPaused),
+                }
+              : p,
+          ),
+        );
+      }),
+    [subscribeToStream],
+  );
 
   /**
    * The server already applied search, status and region — this list is the
@@ -48,6 +82,9 @@ export const FulfilmentPartners = () => {
     email: String(p.email || 'N/A'),
     regions: Array.isArray(p.regions) ? p.regions : [],
     status: p.status as Partner['status'],
+    // Returned by the API all along; the console just never read it.
+    availabilityStatus: p.availabilityStatus === 'paused' ? 'paused' : 'open',
+    capacityPaused: Boolean(p.capacityPaused),
     ordersInProgress: String(p.ordersInProgress ?? '0'),
     orders: String(p.orders ?? p.ordersCompleted ?? '0'),
   });

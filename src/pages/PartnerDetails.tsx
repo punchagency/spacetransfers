@@ -6,6 +6,7 @@ import { PartnerOrders } from '../components/partners/PartnerOrders';
 import { PartnerSettings } from '../components/partners/PartnerSettings';
 import { useParams } from 'react-router-dom';
 import { apiFetch } from '../utils/api';
+import { useNotificationsStore } from '../state/NotificationsStore';
 import toast from 'react-hot-toast';
 import type { PartnerDetailsData, PartnerOrderRow, PartnerSettingsApi } from '../types/partners';
 
@@ -16,6 +17,7 @@ export const PartnerDetails = () => {
     const [settings, setSettings] = useState<PartnerSettingsApi | null>(null);
     const [orders, setOrders] = useState<PartnerOrderRow[]>([]);
     const [loading, setLoading] = useState(true);
+    const { subscribeToStream } = useNotificationsStore();
     /*
      * No Pricing tab. There is one rate for the whole network, set in
      * Settings -> General, so a per-partner pricing screen would have been an
@@ -53,6 +55,8 @@ export const PartnerDetails = () => {
                         typeof p.onTimeDeliveryRate === 'number' ? p.onTimeDeliveryRate : null,
                     performanceSampleSize: Number(p.performanceSampleSize || 0),
                     rating: Number(p.rating || 5.0),
+                    availabilityStatus: p.availabilityStatus === 'paused' ? 'paused' : 'open',
+                    capacityPaused: Boolean(p.capacityPaused),
                     /*
                      * Both of these were returned by the API and dropped here.
                      * This mapper is built field by field, so anything not
@@ -85,6 +89,29 @@ export const PartnerDetails = () => {
 
         fetchAll();
     }, [id]);
+
+    /*
+     * Keeps this page truthful while it is open. The partner can pause
+     * themselves from their own portal, and the capacity monitor can pause them
+     * without anyone touching either console — both reach here now.
+     */
+    useEffect(
+        () =>
+            subscribeToStream((event, data) => {
+                if (event !== 'partner.availability_changed' || !data?.partnerId) return;
+                if (!id || String(data.partnerId) !== String(id)) return;
+                setPartner((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              availabilityStatus: data.availabilityStatus === 'paused' ? 'paused' : 'open',
+                              capacityPaused: Boolean(data.capacityPaused),
+                          }
+                        : prev,
+                );
+            }),
+        [id, subscribeToStream],
+    );
 
     return (
         <>
@@ -129,7 +156,14 @@ export const PartnerDetails = () => {
 
                                 <div className="p-6">
                                     {activeTab === 'Overview' && (
-                                        <PartnerOverview partner={partner} />
+                                        <PartnerOverview
+                                            partner={partner}
+                                            onAvailabilityChanged={(availabilityStatus, capacityPaused) =>
+                                                setPartner((prev) =>
+                                                    prev ? { ...prev, availabilityStatus, capacityPaused } : prev,
+                                                )
+                                            }
+                                        />
                                     )}
                                     {activeTab === 'Orders' && (
                                         <PartnerOrders partnerId={partner.id} orders={orders} onUpdated={setOrders} />

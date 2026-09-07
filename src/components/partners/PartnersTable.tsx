@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { GenericTable } from "../common/GenericTable";
+import { AvailabilityBadge } from "./AvailabilityBadge";
 import type { Partner } from "../../types/partners";
 
 const getStatusStyles = (status: Partner["status"]) => {
@@ -59,13 +60,29 @@ export const PartnersTable = ({
         {
             header: "Status",
             render: (partner: Partner) => (
-                <span
-                    className={`px-3 py-1 rounded-full text-[11px] font-semibold ${getStatusStyles(
-                        partner.status
-                    )}`}
-                >
-                    {partner.status}
-                </span>
+                <div className="flex flex-col items-start gap-1.5">
+                    <span
+                        className={`px-3 py-1 rounded-full text-[11px] font-semibold ${getStatusStyles(
+                            partner.status
+                        )}`}
+                    >
+                        {partner.status}
+                    </span>
+                    {/*
+                      Only for Active partners. Availability decides whether
+                      auto-assignment will route work to them, and for a
+                      Pending, Suspended or Rejected partner it decides
+                      nothing — showing a green "Open" beside "Suspended"
+                      would say they are taking work when they cannot.
+                    */}
+                    {partner.status === "Active" && (
+                        <AvailabilityBadge
+                            status={partner.availabilityStatus}
+                            capacityPaused={partner.capacityPaused}
+                            size="sm"
+                        />
+                    )}
+                </div>
             )
         },
         /*

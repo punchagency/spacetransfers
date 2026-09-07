@@ -1,11 +1,61 @@
+import { useState } from 'react';
+import toast from 'react-hot-toast';
 import { FiBriefcase, FiMail, FiPhone, FiMapPin, FiGlobe } from 'react-icons/fi';
-import type { PartnerDetailsData } from '../../types/partners';
+import { AvailabilityBadge } from './AvailabilityBadge';
+import { apiFetch } from '../../utils/api';
+import type { AvailabilityStatus, PartnerDetailsData } from '../../types/partners';
 
 export const PartnerOverview = ({
     partner,
+    onAvailabilityChanged,
 }: {
     partner: PartnerDetailsData;
+    /** Lifted so the page keeps one copy of the partner rather than two. */
+    onAvailabilityChanged?: (status: AvailabilityStatus, capacityPaused: boolean) => void;
 }) => {
+    /*
+     * Pausing asks why first, the same way suspending does on the Settings tab
+     * — the reason is what the partner is told, and a control that silently
+     * takes someone out of rotation leaves them guessing why work stopped.
+     * Reopening needs no explanation, so it applies straight away.
+     */
+    const [pausing, setPausing] = useState(false);
+    const [pauseReason, setPauseReason] = useState('');
+    const [savingAvailability, setSavingAvailability] = useState(false);
+
+    const setAvailability = async (next: AvailabilityStatus, reason?: string) => {
+        setSavingAvailability(true);
+        try {
+            const res = await apiFetch(`/admin/partners/${partner.id}/availability`, {
+                method: 'PATCH',
+                body: JSON.stringify({ status: next, reason: reason?.trim() || undefined }),
+            });
+            onAvailabilityChanged?.(
+                res.availabilityStatus === 'paused' ? 'paused' : 'open',
+                Boolean(res.capacityPaused),
+            );
+            /*
+             * The server reports whether the partner's in-app notification was
+             * actually created. Saying "partner notified" when they were not is
+             * how an admin ends up believing a conversation happened.
+             */
+            if (res.notified) {
+                toast.success(
+                    next === 'paused' ? 'Partner paused and notified' : 'Partner set to Open and notified',
+                );
+            } else {
+                toast.success(
+                    `${next === 'paused' ? 'Partner paused' : 'Partner set to Open'} — not notified (${res.notifyError || 'notification not delivered'})`,
+                    { duration: 6000 },
+                );
+            }
+        } catch (error: any) {
+            toast.error(error.message || 'Failed to update availability');
+        } finally {
+            setSavingAvailability(false);
+        }
+    };
+
     /*
      * Capacity, supported sheet sizes, shipping carriers and supported formats
      * were removed from this page. None of them affected anything: nothing
@@ -159,6 +209,97 @@ export const PartnerOverview = ({
                           );
                         })()}
                     </div>
+
+                    {/*
+                      Availability, beside account status because the two are
+                      constantly confused and mean different things: Status
+                      decides whether they may work at all, this decides whether
+                      the assigner is currently routing to them. Shown only for
+                      an Active partner — for anyone else it decides nothing.
+                    */}
+                    {partner.status === 'Active' && (
+                        <div className="pt-4 border-t border-gray-100 space-y-3">
+                            <div className="flex justify-between items-center gap-3">
+                                <div>
+                                    <span className="text-sm font-medium text-gray-500">Availability</span>
+                                    <p className="text-[11px] text-gray-400 mt-0.5">
+                                        {partner.availabilityStatus === 'paused'
+                                            ? 'Not receiving auto-assigned orders'
+                                            : 'Receiving auto-assigned orders'}
+                                    </p>
+                                </div>
+                                <AvailabilityBadge
+                                    status={partner.availabilityStatus}
+                                    capacityPaused={partner.capacityPaused}
+                                />
+                            </div>
+
+                            {partner.availabilityStatus === 'paused' && partner.capacityPaused && (
+                                <p className="text-[11px] text-amber-700">
+                                    Paused by the capacity monitor, not by a person. It clears itself once
+                                    one of their active jobs finishes.
+                                </p>
+                            )}
+
+                            {!pausing ? (
+                                <button
+                                    type="button"
+                                    disabled={savingAvailability}
+                                    onClick={() => {
+                                        if (partner.availabilityStatus === 'paused') {
+                                            void setAvailability('open');
+                                            return;
+                                        }
+                                        setPauseReason('');
+                                        setPausing(true);
+                                    }}
+                                    className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-xs font-bold text-gray-700 transition-colors disabled:opacity-60"
+                                >
+                                    {savingAvailability
+                                        ? 'Saving…'
+                                        : partner.availabilityStatus === 'paused'
+                                          ? 'Set back to Open'
+                                          : 'Pause this partner'}
+                                </button>
+                            ) : (
+                                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                                    <p className="text-[11px] text-gray-700 leading-relaxed">
+                                        They stop receiving auto-assigned orders. Jobs already assigned to
+                                        them are unaffected, and their account stays Active. The reason
+                                        below is sent to them.
+                                    </p>
+                                    <textarea
+                                        value={pauseReason}
+                                        onChange={(e) => setPauseReason(e.target.value)}
+                                        rows={2}
+                                        placeholder="Why are you pausing them? (optional)"
+                                        className="w-full px-3 py-2 rounded-lg border border-amber-200 bg-white text-xs text-gray-900 outline-none focus:border-amber-400"
+                                    />
+                                    <div className="flex gap-2 justify-end">
+                                        <button
+                                            type="button"
+                                            onClick={() => { setPausing(false); setPauseReason(''); }}
+                                            className="px-3 py-1.5 rounded-lg text-xs font-bold text-gray-600 hover:bg-white transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            type="button"
+                                            disabled={savingAvailability}
+                                            onClick={async () => {
+                                                await setAvailability('paused', pauseReason);
+                                                setPausing(false);
+                                                setPauseReason('');
+                                            }}
+                                            className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors disabled:opacity-60"
+                                        >
+                                            {savingAvailability ? 'Pausing…' : 'Pause partner'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 
