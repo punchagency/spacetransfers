@@ -11,7 +11,6 @@ import {
 } from "react-icons/fi";
 import { PrinterProfile } from "../../types/profile";
 import { apiFetch } from "../../utils/api";
-import { formatDate } from "../../utils/datetime";
 import { isValidPhone } from "../../utils/validators";
 import { toast } from "react-hot-toast";
 
@@ -428,26 +427,11 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
         </div>
       </div>
 
-      {profile?.badges?.length > 0 && (
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-base font-semibold text-gray-900">
-              Badges & Achievements
-            </h3>
-          </div>
-          <div className="flex flex-wrap gap-4">
-            {profile.badges.map((badge, index) => (
-              <div key={index} className="flex items-center gap-3 px-4 py-2 rounded-xl bg-blue-50 border border-blue-100 text-blue-700">
-                <span className="text-lg">{badge.icon}</span>
-                <div>
-                  <div className="text-sm font-bold">{badge.name}</div>
-                  <div className="text-[10px] opacity-75">Earned {formatDate(badge.dateEarned)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/*
+        "Badges & Achievements" removed. No code path anywhere awarded one — the
+        array was empty on every partner and there was no way to fill it — so
+        this rendered nothing, forever, while implying a scheme that existed.
+      */}
     </div>
   );
 };

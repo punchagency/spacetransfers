@@ -1,4 +1,3 @@
-export type AuthMode = "signIn" | "signUp";
 
 export interface AuthBannerProps {
   isSignIn: boolean;

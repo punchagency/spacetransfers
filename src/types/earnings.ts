@@ -16,10 +16,3 @@ export interface EarningsJob {
 
 export type EarningsTimeFilter = "Today" | "This Week" | "This Month" | "All Time";
 
-export interface EarningsStatCard {
-  title: string;
-  value: string;
-  trend: string;
-  isPositive?: boolean;
-  isWarning?: boolean;
-}

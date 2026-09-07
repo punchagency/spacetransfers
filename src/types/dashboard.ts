@@ -1,9 +1,3 @@
-export interface DashboardStatCard {
-  label: string;
-  value: string;
-  trend: string;
-  trendUp: boolean;
-}
 
 export type DashboardJobStatus =
   | "Urgent"

@@ -38,11 +38,6 @@ export interface PrinterProfile {
     verificationCode?: string;
     documentUrl?: string;
   }[];
-  badges: {
-    name: string;
-    icon: string;
-    dateEarned: string;
-  }[];
   /**
    * Derived from this partner's own orders, not stored.
    *
