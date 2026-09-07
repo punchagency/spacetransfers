@@ -44,6 +44,8 @@ export interface PartnerDetailsData {
    * A suspended or rejected partner used to display a status and nothing else,
    * leaving the reason wherever the admin who decided it happened to remember.
    */
+  /** Sole Proprietorship / Partnership / Corporation / LLC, as the partner declared it. */
+  businessType?: string | null;
   /** Where they print from. Null when no address was ever captured. */
   address?: {
     street: string | null;
@@ -66,8 +68,11 @@ export interface PartnerSettingsApi {
   /** Null when this partner has no warehouse of their own; HQ is used instead. */
   shipStationWarehouseId?: number | null;
   jobCapacity?: { maxConcurrent?: number; dailyMax?: number; autoAccept?: boolean };
-  notifications?: { orderAssigned: boolean; jobCompleted: boolean };
-  capabilities?: { maxSheetSizeIn: { width: number; height: number }; formats: string[]; maxDPI: number };
+  /*
+   * `notifications` was here. A partner's notification preferences are theirs;
+   * the console neither reads nor writes them now, and the endpoint no longer
+   * returns them.
+   */
 }
 
 export interface PartnerOrderRow {
@@ -83,28 +88,5 @@ export interface PartnerHeaderProps {
   name: string;
   email: string;
   status: string;
-}
-
-export interface EditPartnerData {
-  name: string;
-  email: string;
-  phone: string;
-  region: string;
-  status: string;
-  notes?: string;
-}
-
-export interface Fee {
-  id: number;
-  name: string;
-  value: string;
-}
-
-export interface PricingData {
-  basePrintPrice: string;
-  baseShippingPrice: string;
-  extraFees: Fee[];
-  markupType: string;
-  markupAmount: string;
 }
 

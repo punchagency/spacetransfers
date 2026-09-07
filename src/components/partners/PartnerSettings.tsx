@@ -18,8 +18,6 @@ export const PartnerSettings = ({
     settings: PartnerSettingsApi | null;
     onUpdated: (settings: PartnerSettingsApi, nextStatus?: 'Active' | 'Pending' | 'Suspended' | 'Under Review') => void;
 }) => {
-    const [orderAssignedEmail, setOrderAssignedEmail] = useState(false);
-    const [jobCompletedEmail, setJobCompletedEmail] = useState(false);
     const [isPartnerActive, setIsPartnerActive] = useState(partnerStatus === 'Active');
     /**
      * Service areas live here now, with the other things the platform decides.
@@ -59,8 +57,6 @@ export const PartnerSettings = ({
                 ? ''
                 : String(settings.shipStationWarehouseId),
         );
-        setOrderAssignedEmail(settings.notifications?.orderAssigned ?? false);
-        setJobCompletedEmail(settings.notifications?.jobCompleted ?? false);
     }, [settings]);
 
     const persistStatus = async (nextActive: boolean, reason?: string) => {
@@ -104,10 +100,6 @@ export const PartnerSettings = ({
                  * partner's own Auto-Accept choice. The two capacity limits were
                  * already gone from this UI for the same reason.
                  */
-                notifications: {
-                    orderAssigned: orderAssignedEmail,
-                    jobCompleted: jobCompletedEmail
-                },
                 // Empty clears it, which puts this partner back on the HQ
                 // warehouse rather than leaving a stale id in place.
                 shipStationWarehouseId: warehouseId.trim() === '' ? null : Number(warehouseId.trim()),
@@ -263,21 +255,19 @@ export const PartnerSettings = ({
                             />
                         </div>
 
-                        <div className="flex items-center justify-between">
-                            <div className="space-y-0.5">
-                                <label className="text-sm font-bold text-gray-900">Email: Order Assigned</label>
-                                <p className="text-[13px] text-gray-400 font-medium">Notify partner when a new job is assigned</p>
-                            </div>
-                            <Toggle enabled={orderAssignedEmail} setEnabled={setOrderAssignedEmail} />
-                        </div>
+                        {/*
+                          "Email: Order Assigned" and "Email: Job Updates" were
+                          removed. They wrote the partner's OWN notification
+                          preferences — the same switches they control from their
+                          Settings page — from another person's account.
 
-                        <div className="flex items-center justify-between">
-                            <div className="space-y-0.5">
-                                <label className="text-sm font-bold text-gray-900">Email: Job Updates</label>
-                                <p className="text-[13px] text-gray-400 font-medium">Notify partner when job updates occur</p>
-                            </div>
-                            <Toggle enabled={jobCompletedEmail} setEnabled={setJobCompletedEmail} />
-                        </div>
+                          And they did more than their labels said: `notifyPrinter`
+                          skips the in-app notification too when a preference is
+                          off, so turning off "Email: Order Assigned" here stopped
+                          the partner being told about a new job at all, in-app
+                          included. An admin could silence a partner's job alerts
+                          without either of them realising.
+                        */}
                     </div>
                 </div>
             </div>

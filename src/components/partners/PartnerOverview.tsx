@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import toast from 'react-hot-toast';
-import { FiBriefcase, FiMail, FiPhone, FiMapPin, FiGlobe, FiUser } from 'react-icons/fi';
+import { FiBriefcase, FiMail, FiPhone, FiMapPin, FiGlobe, FiUser, FiFileText } from 'react-icons/fi';
 import { AvailabilityBadge } from './AvailabilityBadge';
 import { apiFetch } from '../../utils/api';
 import type { AvailabilityStatus, PartnerDetailsData } from '../../types/partners';
@@ -88,6 +88,33 @@ export const PartnerOverview = ({
                         <div>
                             <p className="text-[12px] text-gray-400 font-medium">Business Name</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.companyName}</p>
+                        </div>
+                    </div>
+
+                    {/*
+                      A field in its own right, not a subtitle under the name.
+                      How a partner is incorporated bears on who we contract
+                      with and who gets paid, it is set on every partner, and it
+                      is one of the first things you check on a partner you do
+                      not recognise. Certifications, further down, are optional
+                      and not required for approval.
+                    */}
+                    <div className="flex gap-4">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                            <FiFileText className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <p className="text-[12px] text-gray-400 font-medium">Business Type</p>
+                            {partner.businessType ? (
+                                <p className="text-sm font-semibold text-gray-900">{partner.businessType}</p>
+                            ) : (
+                                <p
+                                    className="text-sm font-semibold text-gray-400"
+                                    title="The partner has not set this on their own profile."
+                                >
+                                    Not provided
+                                </p>
+                            )}
                         </div>
                     </div>
 
@@ -365,6 +392,7 @@ export const PartnerOverview = ({
                     </div>
                 </div>
             </div>
+
             </div>
         </div>
     );

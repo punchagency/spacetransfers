@@ -41,6 +41,7 @@ export const PartnerDetails = () => {
                           website: p.website,
                           regions: Array.isArray(p.regions) ? p.regions : [],
                           address: p.address ?? null,
+                          businessType: p.businessType ?? null,
                       }
                     : prev,
             );
@@ -90,6 +91,7 @@ export const PartnerDetails = () => {
                      * reason, because neither ever arrived.
                      */
                     address: p.address ?? null,
+                    businessType: p.businessType ?? null,
                     statusHistory: Array.isArray(p.statusHistory) ? p.statusHistory : [],
                 });
 

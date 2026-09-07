@@ -26,9 +26,6 @@ const CONFIG: Record<AvailabilityStatus, { label: string; className: string; dot
   },
 };
 
-export const availabilityLabel = (status: AvailabilityStatus, capacityPaused?: boolean) =>
-  status === 'paused' && capacityPaused ? 'Paused (at capacity)' : CONFIG[status].label;
-
 export const AvailabilityBadge = ({
   status,
   capacityPaused = false,
