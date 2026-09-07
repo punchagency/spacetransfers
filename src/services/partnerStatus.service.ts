@@ -59,7 +59,7 @@ const MESSAGES: Record<PartnerStatus, StatusMessage> = {
       <p style="margin:0 0 16px 0;">
         <a href="${signInUrl}" style="display:inline-block;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:10px;">Sign in</a>
       </p>
-      <p style="margin:0;font-size:12px;color:#6b7280;">Please make sure your business address, service areas and printing capabilities are complete — we route work using them.</p>
+      <p style="margin:0;font-size:12px;color:#6b7280;">Please make sure your business address is correct — we route work by region, so it decides which orders reach you.</p>
     `,
   },
   Rejected: {

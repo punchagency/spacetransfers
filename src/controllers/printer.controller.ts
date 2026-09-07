@@ -3219,7 +3219,6 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
         verified: (businessAddress as any).verified || false
       },
       certifications: user.certifications || [],
-      badges: user.badges || [],
       // Nulls where there is no sample yet, so the client can say "no completed
       // jobs yet" instead of printing a zero that reads as a bad score.
       performance: {
@@ -3514,18 +3513,7 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
 
     const settings = user.settings || {};
 
-    const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
-
     res.json({
-      businessHours: settings.businessHours || { 
-        monday: { ...defaultHours, isOpen: true }, 
-        tuesday: { ...defaultHours, isOpen: true }, 
-        wednesday: defaultHours, 
-        thursday: defaultHours, 
-        friday: defaultHours, 
-        saturday: defaultHours, 
-        sunday: defaultHours 
-      },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
       notifications: {
         email: {
@@ -3533,15 +3521,7 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
           orderUpdates:   settings.notifications?.email?.orderUpdates   ?? true,
           payoutAlerts:   settings.notifications?.email?.payoutAlerts   ?? true,
           accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
-          systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-      },
-      printingCapabilities: settings.printingCapabilities || {
-        maxSheetSizeIn: { width: 24, height: 19.5 },
-        supportedInks: ["CMYK", "White", "Neon", "Metallic"],
-        supportedFilms: ["Hot Peel", "Cold Peel", "Super Cold Peel"],
-        supportedFormats: ["PNG", "PDF", "TIFF"],
-        maxResolutionDPI: 1200,
       },
     });
   } catch (error) {
@@ -3579,18 +3559,7 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
     await user.save();
 
     const settings = user.settings || {};
-    const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
-
     res.json({
-      businessHours: settings.businessHours || { 
-        monday: { ...defaultHours, isOpen: true }, 
-        tuesday: { ...defaultHours, isOpen: true }, 
-        wednesday: defaultHours, 
-        thursday: defaultHours, 
-        friday: defaultHours, 
-        saturday: defaultHours,  
-        sunday: defaultHours 
-      },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
       notifications: {
         email: {
@@ -3598,15 +3567,7 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
           orderUpdates:   settings.notifications?.email?.orderUpdates   ?? true,
           payoutAlerts:   settings.notifications?.email?.payoutAlerts   ?? true,
           accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
-          systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-      },
-      printingCapabilities: settings.printingCapabilities || {
-        maxSheetSizeIn: { width: 24, height: 19.5 },
-        supportedInks: ["CMYK", "White", "Neon", "Metallic"],
-        supportedFilms: ["Hot Peel", "Cold Peel", "Super Cold Peel"],
-        supportedFormats: ["PNG", "PDF", "TIFF"],
-        maxResolutionDPI: 1200,
       },
     });
   } catch (error) {

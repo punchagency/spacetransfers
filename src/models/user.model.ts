@@ -85,26 +85,16 @@ export interface IUser extends Document {
     verificationCode?: string;
     documentUrl?: string;
   }[];
-  badges?: {
-    name: string;
-    icon: string;
-    dateEarned: Date;
-  }[];
-  performance?: {
-    completionRate: number;
-    responseTime: number; // in minutes
-    customerRating: number;
-  };
+    /*
+     * `badges` and `performance` removed.
+     *
+     * Neither was ever written by any code path: badges was empty on every
+     * partner with no way to award one, and performance was {0, 0, 0} on all of
+     * them while the Profile page dressed those zeros up as "< 2 hours response
+     * time" and "Top 10%". Real production time and on-time rate are derived
+     * from orders in `partnerPerformance.service`, which both consoles read.
+     */
   settings: {
-    businessHours?: {
-      monday?: { isOpen: boolean; start: string; end: string };
-      tuesday?: { isOpen: boolean; start: string; end: string };
-      wednesday?: { isOpen: boolean; start: string; end: string };
-      thursday?: { isOpen: boolean; start: string; end: string };
-      friday?: { isOpen: boolean; start: string; end: string };
-      saturday?: { isOpen: boolean; start: string; end: string };
-      sunday?: { isOpen: boolean; start: string; end: string };
-    };
     jobCapacity?: {
       maxConcurrent?: number;
       dailyMax?: number;
@@ -131,13 +121,6 @@ export interface IUser extends Document {
     paymentMethod?: {
       type?: "stripe_connect";
       stripeConnectAccountId?: string;
-    };
-    printingCapabilities?: {
-      maxSheetSizeIn?: { width: number; height: number };
-      supportedInks?: string[];
-      supportedFilms?: string[];
-      supportedFormats?: string[];
-      maxResolutionDPI?: number;
     };
     pricing?: {
       baseRatePerSqFt: number;
@@ -382,18 +365,6 @@ const userSchema = new Schema<IUser>(
         documentUrl: String
       }
     ],
-    badges: [
-      {
-        name: String,
-        icon: String,
-        dateEarned: { type: Date, default: Date.now }
-      }
-    ],
-    performance: {
-      completionRate: { type: Number, default: 0 },
-      responseTime: { type: Number, default: 0 },
-      customerRating: { type: Number, default: 0 }
-    },
     settings: {
       /*
        * `profile` (bio, gender, dateOfBirth, nationalId, taxId) removed.
@@ -404,15 +375,21 @@ const userSchema = new Schema<IUser>(
        * Date of birth and national ID are the ones worth naming: storing staff
        * identity documents with no purpose is a liability, not a feature.
        */
-      businessHours: {
-        monday: { isOpen: Boolean, start: String, end: String },
-        tuesday: { isOpen: Boolean, start: String, end: String },
-        wednesday: { isOpen: Boolean, start: String, end: String },
-        thursday: { isOpen: Boolean, start: String, end: String },
-        friday: { isOpen: Boolean, start: String, end: String },
-        saturday: { isOpen: Boolean, start: String, end: String },
-        sunday: { isOpen: Boolean, start: String, end: String }
-      },
+      /*
+       * `businessHours` and `printingCapabilities` were removed from this
+       * schema.
+       *
+       * Business hours gated auto-assignment and separately refused a partner
+       * permission to accept a job already assigned to them (403) while that
+       * job's SLA clock kept running. The check compared against the SERVER's
+       * clock and no partner has a timezone stored, so "9-5" meant nine to five
+       * wherever the server happened to run. Pause answers "am I taking work"
+       * explicitly, visibly to admins, and with a notification.
+       *
+       * Printing capabilities (max sheet size, inks, films, formats, DPI) were
+       * consulted by no assignment or pricing decision, and both editors for
+       * them had already been removed as decorative.
+       */
       jobCapacity: {
         maxConcurrent: Number,
         dailyMax: Number,
@@ -433,13 +410,6 @@ const userSchema = new Schema<IUser>(
       paymentMethod: {
         type: { type: String, enum: ["stripe_connect"] },
         stripeConnectAccountId: String,
-      },
-      printingCapabilities: {
-        maxSheetSizeIn: { width: Number, height: Number },
-        supportedInks: [String],
-        supportedFilms: [String],
-        supportedFormats: [String],
-        maxResolutionDPI: Number
       },
       pricing: {
         /*

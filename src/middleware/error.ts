@@ -50,6 +50,40 @@ export const errorHandler = (err: CustomError, req: Request, res: Response, next
     return;
   }
 
+  /**
+   * An error from a third-party SDK, not from us.
+   *
+   * These carry their own `statusCode`, so they fell through the branch below
+   * and were returned verbatim — with the upstream's status as if it were ours.
+   *
+   * Stripe with an unset key answers 401 "Invalid API Key provided:
+   * sk_test_*******lder". That reached the browser as a 401, and every client's
+   * `apiFetch` reads a 401 as a dead session: pressing "Connect Stripe account"
+   * called `clearAuth()` and **signed the partner out**, while their token was
+   * still perfectly valid. It also handed the caller a fragment of our API key
+   * and the name of the service that rejected it.
+   *
+   * An upstream refusing *our* credentials is our misconfiguration, so it is a
+   * 502. The detail goes to the log, where it is the thing an operator needs.
+   */
+  const asAny = err as any;
+  const isUpstreamSdkError =
+    typeof asAny?.type === "string" && asAny.type.startsWith("Stripe") ||
+    typeof asAny?.rawType === "string" ||
+    Boolean(asAny?.raw && typeof asAny.raw === "object" && "message" in asAny.raw) ||
+    (err?.constructor?.name ?? "").startsWith("Stripe");
+
+  if (isUpstreamSdkError) {
+    console.error(
+      `[UPSTREAM] ${req.method} ${req.originalUrl} — ${asAny.type || err.name}: ${rawMessage}`,
+    );
+    res.status(502).json({
+      message:
+        "A payment service we rely on rejected the request. This is a configuration problem on our side, not with your account — please try again shortly.",
+    });
+    return;
+  }
+
   /*
    * An error carrying a statusCode was raised deliberately, and its message was
    * written to be read by whoever made the request. Anything else reached here

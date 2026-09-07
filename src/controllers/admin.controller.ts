@@ -1146,17 +1146,6 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 
     const settings = partner.settings || {};
 
-    const notifications = {
-      orderAssigned: settings.notifications?.email?.newJobs || false,
-      jobCompleted: settings.notifications?.email?.orderUpdates || false
-    };
-
-    const capabilities = {
-      maxSheetSizeIn: settings.printingCapabilities?.maxSheetSizeIn || { width: 0, height: 0 },
-      formats: settings.printingCapabilities?.supportedFormats || [],
-      maxDPI: settings.printingCapabilities?.maxResolutionDPI || 0
-    };
-
     res.status(200).json({
       // autoAccept was missing from this fallback, so a partner with no
       // jobCapacity document came back without it and the toggle defaulted
@@ -1165,8 +1154,13 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
       // Lives on the user, not in settings — it identifies this partner inside
       // the client's ShipStation account rather than configuring the platform.
       shipStationWarehouseId: (partner as any).shipStationWarehouseId ?? null,
-      notifications,
-      capabilities
+      /*
+       * `notifications` and `capabilities` are no longer returned. The console
+       * does not render either: notification preferences belong to the partner,
+       * and printing capabilities (sheet size, inks, films, DPI) are read by
+       * nothing in the platform — no assignment or pricing decision consults
+       * them.
+       */
     });
   } catch (error) {
     next(error);
@@ -1176,7 +1170,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 export const updatePartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { jobCapacity, notifications, capabilities, shipStationWarehouseId } = req.body;
+    const { jobCapacity, shipStationWarehouseId } = req.body;
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -1218,22 +1212,16 @@ export const updatePartnerSettings = async (req: Request, res: Response, next: N
       }
     }
 
-    if (notifications) {
-      if (notifications.orderAssigned !== undefined) updateData["settings.notifications.email.newJobs"] = notifications.orderAssigned;
-      /*
-       * Was written to `email.jobUpdates` and read back from
-       * `email.orderUpdates` — two different keys, and `jobUpdates` is not in
-       * the schema at all, so Mongoose dropped it. The toggle could never round
-       * trip. `orderUpdates` is the real field.
-       */
-      if (notifications.jobCompleted !== undefined) updateData["settings.notifications.email.orderUpdates"] = notifications.jobCompleted;
-    }
-
-    if (capabilities) {
-      if (capabilities.maxDPI !== undefined) updateData["settings.printingCapabilities.maxResolutionDPI"] = capabilities.maxDPI;
-      if (capabilities.maxSheetSizeIn !== undefined) updateData["settings.printingCapabilities.maxSheetSizeIn"] = capabilities.maxSheetSizeIn;
-      if (capabilities.formats !== undefined) updateData["settings.printingCapabilities.supportedFormats"] = capabilities.formats;
-    }
+    /*
+     * An admin can no longer write a partner's notification preferences.
+     *
+     * These set `settings.notifications.email.*` — the very switches the partner
+     * owns on their own Settings page. Worse, `notifyPrinter` skips the in-app
+     * notification as well as the email when a preference is off, so an admin
+     * turning off "Email: Order Assigned" stopped the partner learning about new
+     * jobs entirely. Removed rather than guarded: there is no occasion on which
+     * one account should be silencing another's alerts.
+     */
 
     const partner = await User.findOneAndUpdate(
       { _id: partnerIdString, role: UserRoles.PRINTER },
@@ -2003,7 +1991,6 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       email,
       phone,
       regions,
-      capabilities,
       address,
       status
     } = req.body;
@@ -2032,7 +2019,7 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
     /*
      * Name and email are the whole requirement.
      *
-     * Everything else — phone, address, service areas, capabilities — is the
+     * Everything else — phone, address, service areas — is the
      * partner's own information, and they know it better than whoever is typing
      * the form. They fill it in after they set their password. Nothing can be
      * assigned to them before an admin approves them anyway, which is where
@@ -2130,26 +2117,6 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       }
       if (!String(address.city || "").trim() || !String(address.postalCode || "").trim()) {
         const error = new Error("Business address needs a city and a postal code") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-    }
-
-    if (capabilities) {
-      const { width, height } = capabilities.maxSheetSizeIn || {};
-      const positive = (n: any) => Number.isFinite(Number(n)) && Number(n) > 0;
-      if (capabilities.maxSheetSizeIn && !(positive(width) && positive(height))) {
-        const error = new Error("Maximum sheet size must be positive") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-      if (capabilities.maxDPI !== undefined && !positive(capabilities.maxDPI)) {
-        const error = new Error("Maximum DPI must be a positive number") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-      if (capabilities.formats !== undefined && (!Array.isArray(capabilities.formats) || capabilities.formats.length === 0)) {
-        const error = new Error("At least one supported file format is required") as CustomError;
         error.statusCode = 400;
         throw error;
       }
@@ -2265,11 +2232,12 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
          * `getPartnerPayRate`. A copy stored here would be a second source of
          * truth free to drift from it.
          */
-        printingCapabilities: {
-          maxSheetSizeIn: capabilities?.maxSheetSizeIn || { width: 24, height: 19.5 },
-          supportedFormats: capabilities?.formats || ["PNG", "PDF", "TIFF"],
-          maxResolutionDPI: capabilities?.maxDPI || 1200
-        }
+        /*
+         * `printingCapabilities` is no longer seeded. Nothing in the platform
+         * reads sheet size, formats or DPI — no assignment or pricing decision
+         * consults them — and both editors for them have been removed, so these
+         * were defaults nobody could change and nothing would use.
+         */
       }
     });
 
@@ -2289,9 +2257,9 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
         <p>${resolvedCompanyName} has been added to Space Transfers as a print partner.</p>
         <p>Set your password to get started — the link is valid for 7 days:</p>
         <p><a href="${inviteUrl}">Set your password</a></p>
-        <p>Once you are in, please complete your business address, service areas and
-        printing capabilities. We cannot send you work until those are filled in and
-        your account has been approved.</p>
+        <p>Once you are in, please check that your business address is correct — we
+          route work by region, so it decides which orders reach you. We cannot send you
+          work until your account has been approved.</p>
       `,
     }).catch((e: any) => ({ sent: false, messageId: null, error: e?.message || "send failed" }));
 
@@ -2595,7 +2563,17 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       rating: partner.rating || 5.0,
       email: partner.email,
       phone: partner.phone || "N/A",
-      website: partner.website || "N/A"
+      website: partner.website || "N/A",
+      /*
+       * How the partner is incorporated. Collected on their own Profile and
+       * previously never sent here, so the console showed the business name
+       * with no indication of what kind of business it was.
+       *
+       * Certifications are deliberately not returned. They are the partner's
+       * own record, nothing in the platform reads them, and an admin does not
+       * need them to make any decision this console offers.
+       */
+      businessType: (partner as any).businessDetails?.businessType || null
     });
   } catch (error) {
     next(error);

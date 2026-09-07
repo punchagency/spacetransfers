@@ -10,6 +10,8 @@ import {
   processPayoutTransfer,
   getNextFridayDate,
   MINIMUM_PAYOUT_AMOUNT_CENTS,
+  assertStripeConfigured,
+  isStripeConfigured
 } from "../services/stripe.service.js";
 import { env } from "../config/env.js";
 import mongoose from "mongoose";
@@ -49,6 +51,10 @@ export const createStripeConnectAccount = async (
   next: NextFunction
 ) => {
   try {
+    // Checked before any Stripe call, so an unset key is reported as "not set
+    // up yet" instead of arriving as an upstream 401.
+    assertStripeConfigured();
+
     const printerId = req.user?.id;
     const printer = await User.findById(printerId);
     if (!printer) {
@@ -65,7 +71,12 @@ export const createStripeConnectAccount = async (
       await printer.save();
     }
 
-    const printerUrl = env.printerAppUrl || "http://localhost:5174";
+    /*
+     * 5175, not 5174. The fallback pointed at the ADMIN app, so with
+     * PRINTER_APP_URL unset a partner finishing Stripe onboarding was returned
+     * to a console they cannot sign in to.
+     */
+    const printerUrl = env.printerAppUrl || "http://localhost:5175";
     const url = await createConnectAccountLink(
       accountId,
       `${printerUrl}/settings?stripe=refresh`,
@@ -101,8 +112,15 @@ export const getStripeConnectStatus = async (
         payoutsEnabled: false,
         accountId: null,
         details: null,
+        // So the page can say why the button will not work, rather than
+        // offering it and failing on click.
+        configured: isStripeConfigured(),
       });
     }
+
+    // A partner who connected while Stripe was configured must not have their
+    // status reported as broken if the key is later removed.
+    assertStripeConfigured();
 
     const account = await getConnectAccount(printer.stripeConnectAccountId);
     const onboarded =
