@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import toast from 'react-hot-toast';
-import { FiBriefcase, FiMail, FiPhone, FiMapPin, FiGlobe } from 'react-icons/fi';
+import { FiBriefcase, FiMail, FiPhone, FiMapPin, FiGlobe, FiUser } from 'react-icons/fi';
 import { AvailabilityBadge } from './AvailabilityBadge';
 import { apiFetch } from '../../utils/api';
 import type { AvailabilityStatus, PartnerDetailsData } from '../../types/partners';
@@ -88,6 +88,22 @@ export const PartnerOverview = ({
                         <div>
                             <p className="text-[12px] text-gray-400 font-medium">Business Name</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.companyName}</p>
+                        </div>
+                    </div>
+
+                    {/*
+                      The person, as distinct from the business. The partner can
+                      edit this from their own profile and it was rendered
+                      nowhere here — an admin ringing a partner had the company
+                      name and no idea who they were asking for.
+                    */}
+                    <div className="flex gap-4">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                            <FiUser className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <p className="text-[12px] text-gray-400 font-medium">Contact Name</p>
+                            <p className="text-sm font-semibold text-gray-900">{partner.contactName || 'N/A'}</p>
                         </div>
                     </div>
 

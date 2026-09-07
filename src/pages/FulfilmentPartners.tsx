@@ -45,6 +45,31 @@ export const FulfilmentPartners = () => {
    * The row is patched rather than refetched: a refetch would fight whatever
    * filter and cursor page the admin is currently on.
    */
+  /*
+   * Name and regions are both partner-editable now, and both are columns here.
+   * Patched in place rather than refetched so the admin's current filter and
+   * cursor page survive.
+   */
+  useEffect(
+    () =>
+      subscribeToStream((event, data) => {
+        if (event !== 'partner.profile_updated' || !data?.partnerId) return;
+        const partnerId = String(data.partnerId);
+        setPartners((prev) =>
+          prev.map((p) =>
+            p.id === partnerId
+              ? {
+                  ...p,
+                  name: data.name ? String(data.name) : p.name,
+                  regions: Array.isArray(data.regions) ? data.regions : p.regions,
+                }
+              : p,
+          ),
+        );
+      }),
+    [subscribeToStream],
+  );
+
   useEffect(
     () =>
       subscribeToStream((event, data) => {

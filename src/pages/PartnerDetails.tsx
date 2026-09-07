@@ -1,5 +1,5 @@
 import { DashboardLayout } from '../components/layout/DashboardLayout';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { PartnerHeader } from '../components/partners/PartnerHeader';
 import { PartnerOverview } from '../components/partners/PartnerOverview';
 import { PartnerOrders } from '../components/partners/PartnerOrders';
@@ -24,6 +24,31 @@ export const PartnerDetails = () => {
      * editor for a value that no longer varies by partner.
      */
     const tabs = ['Overview', 'Orders', 'Settings'];
+
+    // Hoisted out of the mount effect so the live subscriber below can re-run it.
+    const fetchPartner = useCallback(async () => {
+        if (!id) return;
+        try {
+            const p = await apiFetch(`/admin/partners/${id}`);
+            setPartner((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          name: String(p.name),
+                          companyName: String(p.companyName || p.name),
+                          contactName: String(p.contactName || p.name),
+                          phone: String(p.phone || 'N/A'),
+                          website: p.website,
+                          regions: Array.isArray(p.regions) ? p.regions : [],
+                          address: p.address ?? null,
+                      }
+                    : prev,
+            );
+        } catch {
+            // A failed refresh leaves the last known good record on screen
+            // rather than blanking a page the admin is reading.
+        }
+    }, [id]);
 
     useEffect(() => {
         const fetchAll = async () => {
@@ -95,6 +120,22 @@ export const PartnerDetails = () => {
      * themselves from their own portal, and the capacity monitor can pause them
      * without anyone touching either console — both reach here now.
      */
+    /*
+     * A partner editing their own profile — company name, phone, website,
+     * address, and the region that follows from it — lands here live. Refetched
+     * rather than patched: an address change moves several fields at once, and
+     * the region is derived server-side.
+     */
+    useEffect(
+        () =>
+            subscribeToStream((event, data) => {
+                if (event !== 'partner.profile_updated' || !data?.partnerId) return;
+                if (!id || String(data.partnerId) !== String(id)) return;
+                void fetchPartner();
+            }),
+        [id, subscribeToStream, fetchPartner],
+    );
+
     useEffect(
         () =>
             subscribeToStream((event, data) => {
