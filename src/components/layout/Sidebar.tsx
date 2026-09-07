@@ -1,11 +1,12 @@
+import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   AiOutlineDollar,
   AiOutlineUser,
   AiOutlineSetting,
 } from "react-icons/ai";
-import { FiHome, FiUser } from "react-icons/fi";
-import { useProfileStore } from "../../state/ProfileStore";
+import { FiHome } from "react-icons/fi";
+import { fetchAvailability } from "../../utils/availability";
 const nav = [
   { label: "Home", icon: FiHome, path: "/dashboard" },
   { label: "Jobs & Orders", iconSrc: "/menu.svg", path: "/orders" },
@@ -18,10 +19,95 @@ const bottomNav = [
   { label: "Settings", icon: AiOutlineSetting, path: "/settings" },
 ];
 
+/**
+ * How much work the partner is currently carrying.
+ *
+ * Replaces an avatar and a name that sat directly beneath nav items already
+ * labelled Profile and Settings, and repeated what the top bar shows. This is
+ * the number that decides whether more work reaches them: at the limit the
+ * capacity monitor pauses them, and auto-assignment skips them until a job
+ * finishes. It was visible nowhere in this app.
+ *
+ * No new endpoint — `GET /printer/availability` already returns both figures,
+ * and it self-heals the capacity state on read. The same `st:availability_changed`
+ * event the status pill listens to keeps this in step, so pausing in another
+ * tab, an admin change, or hitting the limit all land here without a refresh.
+ */
+const CapacityFooter = () => {
+  const [activeJobs, setActiveJobs] = useState<number | null>(null);
+  const [maxJobs, setMaxJobs] = useState<number | null>(null);
+  const [status, setStatus] = useState<"open" | "paused">("open");
+  const [capacityPaused, setCapacityPaused] = useState(false);
+
+  const apply = (r: any) => {
+    if (!r) return;
+    if (typeof r.activeJobs === "number") setActiveJobs(r.activeJobs);
+    setMaxJobs(typeof r.maxJobs === "number" ? r.maxJobs : null);
+    if (r.availabilityStatus === "paused" || r.availabilityStatus === "open") setStatus(r.availabilityStatus);
+    setCapacityPaused(Boolean(r.capacityPaused));
+  };
+
+  useEffect(() => {
+    // Shared with the status pill: the endpoint reconciles capacity on read and
+    // can notify, so it must not be called twice for one page load.
+    void fetchAvailability().then(apply);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: Event) => apply((e as CustomEvent).detail || {});
+    window.addEventListener("st:availability_changed", handler);
+    return () => window.removeEventListener("st:availability_changed", handler);
+  }, []);
+
+  // Nothing is claimed until the first read lands — an empty bar reading "0"
+  // would say they are idle when it only means the request has not returned.
+  if (activeJobs === null) {
+    return (
+      <div className="mt-auto px-4 py-4 border-t border-gray-100">
+        <div className="h-2 rounded-full bg-gray-100 animate-pulse" />
+      </div>
+    );
+  }
+
+  const atCapacity = maxJobs != null && activeJobs >= maxJobs;
+  const pct = maxJobs && maxJobs > 0 ? Math.min(100, Math.round((activeJobs / maxJobs) * 100)) : 0;
+
+  return (
+    <div className="mt-auto px-4 py-4 border-t border-gray-100">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Active jobs</span>
+        <span className={`text-sm font-bold ${atCapacity ? "text-amber-600" : "text-gray-900"}`}>
+          {activeJobs}
+          {maxJobs != null && <span className="text-gray-400 font-semibold"> / {maxJobs}</span>}
+        </span>
+      </div>
+
+      {/* Only drawn when there is a limit to draw against. */}
+      {maxJobs != null && (
+        <div className="mt-2 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-500 ${atCapacity ? "bg-amber-500" : "bg-blue-500"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+
+      <p className="mt-2 text-[11px] text-gray-400 leading-snug">
+        {status === "paused"
+          ? capacityPaused
+            ? "At capacity — you'll reopen automatically once a job finishes"
+            : "Paused — not receiving new auto-assigned jobs"
+          : atCapacity
+            ? "At your limit — no new jobs will be auto-assigned"
+            : "Accepting new jobs"}
+      </p>
+    </div>
+  );
+};
+
 export const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { name, avatarUrl } = useProfileStore();
 
   return (
     <aside className="w-65 bg-white border-r border-gray-200 h-full flex flex-col py-2">
@@ -80,26 +166,8 @@ export const Sidebar = () => {
         ))}
       </div>
 
-      <div className="mt-auto px-4 py-4 border-t border-gray-100">
-        <div className="flex items-center gap-3">
-          {avatarUrl ? (
-            <img
-              src={avatarUrl}
-              alt={name}
-              className="w-10 h-10 rounded-full object-cover flex-shrink-0"
-            />
-          ) : (
-            <div className="w-10 h-10 rounded-full bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0">
-              <FiUser className="w-5 h-5 text-gray-400" />
-            </div>
-          )}
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-gray-900 truncate">
-              {name || "Printer"}
-            </div>
-          </div>
-        </div>
-      </div>
+      <CapacityFooter />
+
     </aside>
   );
 };

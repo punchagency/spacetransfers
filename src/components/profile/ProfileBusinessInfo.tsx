@@ -8,7 +8,6 @@ import {
   FiExternalLink,
   FiFileText,
   FiGlobe,
-  FiHash,
   FiPlus,
   FiTrash2,
   FiUpload,
@@ -48,7 +47,6 @@ const buildFormFromProfile = (profile: PrinterProfile) => ({
   website: profile.website && profile.website !== "N/A" ? profile.website : "",
   businessDetails: {
     businessType: profile.businessDetails?.businessType || "",
-    registrationNumber: profile.businessDetails?.registrationNumber || "",
   },
   certifications: (profile.certifications || []).map((c) => ({
     name: c.name || "",
@@ -292,31 +290,16 @@ export const ProfileBusinessInfo = ({ profile, onUpdate }: ProfileBusinessInfoPr
             }
           />
 
-          <Field
-            label="Registration Number"
-            icon={<FiHash className="w-4 h-4" />}
-            editing={isEditing}
-            displayValue={profile.businessDetails?.registrationNumber || (
-              <span className="text-gray-400">Not provided</span>
-            )}
-            input={
-              <input
-                type="text"
-                value={formData.businessDetails.registrationNumber}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    businessDetails: {
-                      ...formData.businessDetails,
-                      registrationNumber: e.target.value,
-                    },
-                  })
-                }
-                placeholder="e.g. RC-1234567"
-                className={inputClass(false)}
-              />
-            }
-          />
+          {/*
+            Registration Number removed.
+
+            An unverified free-text box that no code path read — null on every
+            partner, surfaced nowhere in the admin console, and validated by
+            nothing. Stripe Connect already collects verified tax identity
+            during payout onboarding, which is what a 1099 actually needs, so
+            this was an unchecked duplicate of something handled properly
+            elsewhere. The schema field and its stored values are untouched.
+          */}
         </div>
       </div>
 

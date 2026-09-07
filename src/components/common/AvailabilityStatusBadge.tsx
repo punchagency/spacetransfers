@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { useProfileStore, type AvailabilityStatus } from "../../state/ProfileStore";
 import { apiFetch } from "../../utils/api";
+import { fetchAvailability } from "../../utils/availability";
 
 /* ── Keyframe animations injected once ─────────────────────────────────── */
 const STYLE_ID = "availability-badge-styles";
@@ -73,7 +74,8 @@ export const AvailabilityStatusBadge = () => {
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    apiFetch("/printer/availability")
+    // Shared with the sidebar's capacity meter — see `fetchAvailability`.
+    fetchAvailability()
       .then((r: any) => {
         if (r?.availabilityStatus) setAvailabilityStatus(r.availabilityStatus as AvailabilityStatus);
         setCapacityLocked(Boolean(r?.capacityLocked));
@@ -153,7 +155,7 @@ export const AvailabilityStatusBadge = () => {
       toast.error(err?.message || "Failed to update status");
       // Re-sync from the server (authoritative) — e.g. an Open switch rejected
       // with 409 because the partner is at capacity.
-      apiFetch("/printer/availability")
+      fetchAvailability()
         .then((r: any) => {
           if (r?.availabilityStatus) setAvailabilityStatus(r.availabilityStatus as AvailabilityStatus);
           setCapacityLocked(Boolean(r?.capacityLocked));
