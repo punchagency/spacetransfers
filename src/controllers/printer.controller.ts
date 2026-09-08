@@ -1,8 +1,13 @@
 import { Request, Response, NextFunction } from "express";
-import { PRINTER_STATUS_LABEL, printerStatusLabel } from "../utils/orderStatusLabels.js";
+import {
+  PRINTER_STATUS_LABEL,
+  printerStatusLabel,
+  statusesForPrinterLabel,
+} from "../utils/orderStatusLabels.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { getGlobalPricing, getPartnerPayRate, totalBillableSqFt } from "../services/pricing.service.js";
 import { Order } from "../models/order.model.js";
+import { Payout } from "../models/payout.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { User } from "../models/user.model.js";
@@ -35,6 +40,13 @@ import {
 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import {
+  calculateOrderPartnerEarning,
+  getOrderPartnerCostBreakdown,
+  canDerivePartnerEarning,
+  isPartnerEarningRealized,
+  getOrderCompletionDate,
+} from "../services/partnerEarnings.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
 import {
   syncPartnerCapacity,
@@ -42,6 +54,7 @@ import {
   getAssignmentSettings,
   getEffectiveMaxConcurrent,
   countActiveJobs,
+  ACTIVE_ORDER_STATUSES,
 } from "../services/partnerCapacity.service.js";
 import {
   triggerShipStationWorkflow,
@@ -215,103 +228,93 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
   }
 };
 
-const calcEarning = (order: any): number => {
-  const items: any[] = Array.isArray(order.items) ? order.items : [];
-  const fromItems = items.reduce((s: number, item: any) => {
-    const sub = typeof item.subtotal === "number"
-      ? item.subtotal
-      : (typeof item.unitPrice === "number" ? item.unitPrice * (item.quantity || 1) : 0);
-    return s + sub;
-  }, 0);
-  if (fromItems > 0) return fromItems;
-  return typeof order.pricing?.subtotal === "number"
-    ? order.pricing.subtotal
-    : (typeof order.pricing?.total === "number" ? order.pricing.total : 0);
-};
+/*
+ * The local `calcEarning` is gone. It summed item subtotals — the price the
+ * CUSTOMER paid — and was copied verbatim into the payout controller as well.
+ * Nine call sites showed a partner the platform's revenue as their own earnings,
+ * overstated by the whole margin. `partnerEarnings.service` is the single
+ * definition now.
+ */
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
 
-    const now = new Date();
-    const todayStart = new Date(now);
+    const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const yesterdayStart = new Date(todayStart);
-    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-    const yesterdayEnd = new Date(todayStart);
-    yesterdayEnd.setMilliseconds(-1);
+    // One resolution of the network-wide partner rate for the whole request.
+    const partnerRate = await getPartnerPayRate();
+    const sumEarnings = (orders: any[]) =>
+      Math.round(orders.reduce((s, o) => s + calculateOrderPartnerEarning(o, partnerRate), 0) * 100) / 100;
 
-    const printerOrders = await Order.find({
+    /*
+     * "Completed today" is keyed on when the order actually reached SHIPPED,
+     * read from `statusTimeline` — not on `updatedAt`, which this used before.
+     * Any edit to an old order bumps `updatedAt`, so a month-old job being
+     * touched made it count as completed today and inflated both the count and
+     * the day's earnings. `partnerPerformance` already reads the timeline for
+     * exactly this reason.
+     */
+    const finishedOrders = await Order.find({
       assignedPrinter: printerId,
-      updatedAt: { $gte: yesterdayStart }
+      status: { $in: ["SHIPPED", "COMPLETED"] },
     })
-      .select("displayId status updatedAt createdAt items pricing priority customer")
+      .select("items pricing priority statusTimeline updatedAt")
       .lean();
 
-    const todayCompleted = printerOrders.filter(o =>
-      (o.status === "COMPLETED" || o.status === "SHIPPED") && o.updatedAt >= todayStart
-    );
-    const todayEarnings = todayCompleted.reduce((sum, o) => sum + calcEarning(o), 0);
-
-    const yesterdayCompleted = printerOrders.filter(o =>
-      (o.status === "COMPLETED" || o.status === "SHIPPED") &&
-      o.updatedAt >= yesterdayStart && o.updatedAt <= yesterdayEnd
-    );
-    const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + calcEarning(o), 0);
-
-    const completedTodayCount = todayCompleted.length;
-    const completedYesterdayCount = yesterdayCompleted.length;
-
-    const totalPendingCount = await Order.countDocuments({ assignedPrinter: printerId, status: "PENDING" });
-    const yesterdayPendingCount = await Order.countDocuments({
-      assignedPrinter: printerId,
-      status: "PENDING",
-      createdAt: { $lt: todayStart }
+    const finishedToday = finishedOrders.filter((o) => {
+      const at = getOrderCompletionDate(o);
+      return at !== null && at >= todayStart;
     });
 
-    // Total revenue = all earnings except cancelled/rejected — matches payout summary totalEarnings
-    const [allActiveOrders, allActiveBeforeToday] = await Promise.all([
-      Order.find({
+    const todayEarnings = sumEarnings(finishedToday);
+
+    /*
+     * Every order still owed or already paid, at the partner's rate. Named
+     * "Total Earned", not "Total Revenue": revenue is what the company takes,
+     * and this is a partner's own page.
+     */
+    const allActiveOrders = await Order.find({
+      assignedPrinter: printerId,
+      status: { $nin: ["CANCELLED"] },
+    })
+      .select("items pricing priority")
+      .lean();
+    const totalEarned = sumEarnings(allActiveOrders);
+
+    // Counted, not derived from the capped list below.
+    const [totalPendingCount, assignedTotal, urgentTotal] = await Promise.all([
+      Order.countDocuments({ assignedPrinter: printerId, status: "PENDING" }),
+      Order.countDocuments({ assignedPrinter: printerId, status: { $in: ACTIVE_ORDER_STATUSES as any } }),
+      Order.countDocuments({
         assignedPrinter: printerId,
-        status: { $nin: ["CANCELLED", "REJECTED"] },
-      })
-        .select("items pricing")
-        .lean(),
-      Order.find({
-        assignedPrinter: printerId,
-        status: { $nin: ["CANCELLED", "REJECTED"] },
-        updatedAt: { $lt: todayStart },
-      })
-        .select("items pricing")
-        .lean(),
+        priority: "URGENT",
+        status: { $in: ["PENDING", "PROCESSING"] },
+      }),
     ]);
 
-    const totalRevenue = allActiveOrders.reduce((sum, o) => sum + calcEarning(o), 0);
-    const totalRevenueBeforeToday = allActiveBeforeToday.reduce((sum, o) => sum + calcEarning(o), 0);
+    const ASSIGNED_LIMIT = 12;
+    const URGENT_LIMIT = 5;
 
-    const getTrend = (current: number, previous: number) => {
-      if (!previous || previous === 0) return { trend: "0%", trendUp: true };
-      const diff = ((current - previous) / previous) * 100;
-      const prefix = diff > 0 ? "+" : "";
-      return {
-        trend: `${prefix}${Math.round(diff)}%`,
-        trendUp: diff >= 0
-      };
-    };
-
-    const earningsTrend = getTrend(todayEarnings, yesterdayEarnings);
-    const completedTrend = getTrend(completedTodayCount, completedYesterdayCount);
-    const revenueTrend = getTrend(totalRevenue, totalRevenueBeforeToday);
-
-    const activeAssignedJobs = await Order.find({
-      assignedPrinter: printerId,
-      status: { $in: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] }
-    })
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(12)
-      .lean();
+    // The shared constant, not a second hand-written copy — the sidebar capacity
+    // meter counts the same set and they must not drift apart.
+    /*
+     * Urgent first, then newest.
+     *
+     * Sorted by `createdAt` alone, an urgent job that had been waiting longest
+     * sorted last and fell off the end of the capped list — so the banner could
+     * say "you have 3 urgent jobs" above a table showing none of them. Mongo has
+     * no ordering on an arbitrary string, so priority is projected to a number
+     * to sort on.
+     */
+    const activeAssignedJobs = await Order.aggregate([
+      { $match: { assignedPrinter: new mongoose.Types.ObjectId(String(printerId)), status: { $in: ACTIVE_ORDER_STATUSES as any } } },
+      { $addFields: { _urgentFirst: { $cond: [{ $eq: ["$priority", "URGENT"] }, 0, 1] } } },
+      { $sort: { _urgentFirst: 1, createdAt: -1, _id: -1 } },
+      { $limit: ASSIGNED_LIMIT },
+    ]);
 
     // One shared map — see `utils/orderStatusLabels`.
     const mapStatus = printerStatusLabel;
@@ -326,55 +329,81 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: mapStatus(String(job.status || "")),
       isUrgent: String(job.priority || "").toUpperCase() === "URGENT",
-      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null
+      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
     }));
 
-    const urgentJobs = await Order.find({ 
+    const urgentJobs = await Order.find({
       assignedPrinter: printerId,
       priority: "URGENT",
-      status: { $in: ["PENDING", "PROCESSING"] }
-    }).select("displayId customer items createdAt assignedAt assignmentDeadline priority status").sort({ createdAt: 1 }).limit(5);
+      status: { $in: ["PENDING", "PROCESSING"] },
+    })
+      .select("displayId customer items createdAt assignedAt assignmentDeadline priority status")
+      .sort({ createdAt: 1 })
+      .limit(URGENT_LIMIT)
+      .lean();
 
-    const formattedUrgentJobs = urgentJobs.map(job => ({
-      id: job.id,
-      displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
-      customerName: `${job.customer.firstName} ${job.customer.lastName}`,
-      order: `${job.items.length} Items`,
+    const formattedUrgentJobs = urgentJobs.map((job: any) => ({
+      id: String(job._id),
+      displayId: job?.displayId ? String(job.displayId) : null,
+      customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
+      order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
       deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
-      assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
+      assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: "Urgent",
       isUrgent: true,
-      createdAt: job.createdAt.toISOString()
+      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
     }));
 
-    const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const fmtMoney = (n: number) =>
+      `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+    /*
+     * No trends. All four were "vs yesterday" and none of them measured that:
+     * the revenue one compared a lifetime total against itself before today (so
+     * it could only ever rise), the pending one was a raw count with a baseline
+     * of "orders created before today", and a zero baseline returned "0%" — which
+     * the page rendered in green as "no change" when it meant "nothing to
+     * compare". `trendUp` was computed here and ignored by the client entirely.
+     *
+     * Each card carries a `note` instead: a plain statement of what the number
+     * covers, which is what the trend line was pretending to be.
+     */
     res.json({
       cards: [
         {
           label: "Today's Earnings",
           value: fmtMoney(todayEarnings),
-          ...earningsTrend
+          note: finishedToday.length
+            ? `From ${finishedToday.length} job${finishedToday.length === 1 ? "" : "s"} shipped today`
+            : "No jobs shipped yet today",
         },
         {
-          label: "Completed Orders",
-          value: completedTodayCount.toLocaleString(),
-          ...completedTrend
+          label: "Completed Today",
+          value: finishedToday.length.toLocaleString(),
+          note: "Jobs you shipped today",
         },
         {
           label: "Pending Orders",
           value: totalPendingCount.toLocaleString(),
-          trend: `${totalPendingCount - yesterdayPendingCount > 0 ? "+" : ""}${totalPendingCount - yesterdayPendingCount}`,
-          trendUp: totalPendingCount <= yesterdayPendingCount
+          note: totalPendingCount ? "Awaiting your acceptance" : "Nothing waiting on you",
         },
         {
-          label: "Total Revenue",
-          value: fmtMoney(totalRevenue),
-          ...revenueTrend
-        }
+          label: "Total Earned",
+          value: fmtMoney(totalEarned),
+          note: `Across ${allActiveOrders.length} job${allActiveOrders.length === 1 ? "" : "s"}, paid and unpaid`,
+        },
       ],
       urgentJobs: formattedUrgentJobs,
-      assignedJobs
+      assignedJobs,
+      /*
+       * The true totals. The lists above are capped for the page, and the client
+       * used to render `assignedJobs.length` as "you have N jobs assigned" — so
+       * past the cap it quietly under-reported a partner's own workload.
+       */
+      assignedTotal,
+      urgentTotal,
+      assignedShown: assignedJobs.length,
+      urgentShown: formattedUrgentJobs.length,
     });
   } catch (error) {
     next(error);
@@ -2299,22 +2328,16 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
 
     const query: any = { assignedPrinter: printerId };
 
-    const statusMap: { [key: string]: any } = {
-      "Pending Review": "PENDING",
-      "In Progress - Printing": ["PROCESSING", "PRINTING"],
-      "Print Shipping Label": ["QUALITY_CHECK"],
-      "Order Shipped": ["SHIPPED"],
-      "Completed": ["COMPLETED"],
-      "Cancelled": ["CANCELLED"]
-    };
-
-    if (status && statusMap[status as string]) {
-      const backendStatus = statusMap[status as string];
-      if (Array.isArray(backendStatus)) {
-        query.status = { $in: backendStatus };
-      } else {
-        query.status = backendStatus;
-      }
+    /*
+     * The shared vocabulary, not a second copy. This map had PROCESSING under
+     * "In Progress - Printing" while `PRINTER_STATUS_LABEL` puts it under
+     * "Pending Review" — on purpose, because a partner has not started a
+     * PROCESSING job. So one job read two different ways depending on which page
+     * you were on, and this page told them it was on the press.
+     */
+    const requestedStatuses = statusesForPrinterLabel(status);
+    if (requestedStatuses) {
+      query.status = { $in: requestedStatuses };
     }
 
     if (typeof q === "string" && q.trim()) {
@@ -2375,8 +2398,11 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const statusDescription = (label: string) => {
       if (label === "Pending Review") return "Review artwork and accept this job";
       if (label === "In Progress - Printing") return "Currently printing";
-      if (label === "Print Shipping Label") return "Label being generated via ShipStation";
-      if (label === "Completed") return "Job completed successfully";
+      if (label === "Print Shipping Label") return "Ready to ship — print the label";
+      // "Order Shipped" had no case and fell through to an empty string, so the
+      // one status a partner most wants confirmed said nothing.
+      if (label === "Order Shipped") return "On its way to the customer";
+      if (label === "Completed") return "Delivered and complete";
       if (label === "Cancelled") return "This job has been cancelled";
       return "";
     };
@@ -2385,7 +2411,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const pageOrders = hasNextPage ? orders.slice(0, pageSize) : orders;
 
     const formattedOrders = pageOrders.map((order) => {
-      const firstItem = order.items[0] || {};
+      const firstItem = (Array.isArray(order.items) ? order.items[0] : null) || ({} as any);
       const sheetSize = (firstItem.widthIn && firstItem.heightIn)
         ? `${firstItem.widthIn}x${firstItem.heightIn}`
         : "N/A";
@@ -2394,13 +2420,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         ? `${order.shippingAddress.city}, ${order.shippingAddress.state}`
         : "N/A";
 
-      let displayStatus: any = order.status;
-      for (const [label, val] of Object.entries(statusMap)) {
-        if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
-          displayStatus = label;
-          break;
-        }
-      }
+      const displayStatus = printerStatusLabel(order.status);
 
       const thumbnail = typeof firstItem.previewImage === "string" && firstItem.previewImage
         ? firstItem.previewImage
@@ -2414,7 +2434,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         id: orderId,
         actualId: orderId,
         displayId: (order as any)?.displayId ? String((order as any).displayId) : null,
-        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        customerName: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "—",
         sheetSize,
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
         location,
@@ -2424,7 +2444,6 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         assignedAt: (order as any).assignedAt ? new Date((order as any).assignedAt).toISOString() : null,
         createdAt: order.createdAt ? new Date(order.createdAt).toISOString() : null,
         isUrgent: order.priority === "URGENT",
-        hasWarning: false,
         statusDescription: statusDescription(displayStatus),
         thumbnail,
       };
@@ -2516,19 +2535,27 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
     // Use the same cost formula the admin sees: printer's configured rate applied to sheet dimensions.
     // The partner sees the same rate everyone is paid; they do not set it.
     const partnerPricing = await getPartnerPayRate();
-    const breakdown = computePartnerCostBreakdown({
-      items: Array.isArray((job as any).items) ? (job as any).items : [],
-      partnerPricing,
-      priority: (job as any).priority,
-      adjustments: (job as any)?.pricing?.adjustments || [],
-    });
-    const earning = breakdown.subtotal > 0 ? breakdown.subtotal : roundMoney(calcEarning(job));
+    // Same single definition — see `partnerEarnings.service`.
+    const breakdown = getOrderPartnerCostBreakdown(job, partnerPricing);
+    const earning = roundMoney(breakdown.subtotal);
+    // Whether a cost can be derived at all: an order whose items carry no
+    // printable dimensions has an unknown payout, not a zero one.
+    const earningDerivable = canDerivePartnerEarning(job);
 
     res.json({
       id: String((job as any)._id),
       orderId: (job as any)?.displayId ? String((job as any).displayId) : String((job as any)._id),
       displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       status: String((job as any).status),
+      /*
+       * The label, decided here. The page carried its OWN fourth copy of the
+       * status vocabulary which disagreed with the shared map twice — it called
+       * a PROCESSING job "In Progress - Printing" (the shared map says Pending
+       * Review, because the partner has not started it) and COMPLETED
+       * "Delivered". So one order read differently on Home, on Jobs & Orders,
+       * and on its own detail page.
+       */
+      statusLabel: printerStatusLabel((job as any).status),
       priority: String((job as any).priority || "NORMAL"),
       createdAt: (job as any).createdAt,
       updatedAt: (job as any).updatedAt,
@@ -2557,24 +2584,39 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         actorId: t.actorId || null,
         actorName: t.actorName ?? null
       })),
+      /*
+       * `payment.status` used to answer "secured" for every order that was not
+       * cancelled. Nothing on the order records whether the customer's payment
+       * actually succeeded — `payment` holds a method and an unverified
+       * `paymentIntentId` and no captured flag — so "Payment secured" was a
+       * reassurance the server had no basis for. A partner is paid by the
+       * platform regardless of the customer's card, so it was never their
+       * question to begin with; only the method is reported now.
+       */
       payment: {
         method: (job as any).payment?.method || null,
-        status: String((job as any).status || "").toUpperCase() === "CANCELLED" ? "cancelled" : "secured"
       },
+      /*
+       * The real breakdown, not three hardcoded zeros. `rushFee` was reported as
+       * 0 while the rush pay was folded into the total — so an urgent job paid
+       * a surcharge the partner could see in the sum and not in the line, and
+       * the admin's order page named a rush fee this page denied. `tax` and
+       * `commission` were likewise flat zeros dressed as a calculation.
+       */
       pricing: {
-        subtotal: earning,
+        base: roundMoney(breakdown.base),
+        rushFee: roundMoney(breakdown.rushFee),
+        specialInkFee: roundMoney(breakdown.specialInkFee),
         partnerCost: earning,
-        rushFee: 0,
-        shippingCost: null,
-        tax: 0,
         total: earning,
-        currency
+        currency,
       },
       earnings: {
-        gross: earning,
-        commission: 0,
         net: earning,
-        currency
+        // Partners are paid once a job ships, so before that this is a forecast.
+        realized: isPartnerEarningRealized(job),
+        derivable: earningDerivable,
+        currency,
       },
       warnings: { hasWarning },
       // Shipping & ShipStation fields — needed by the printer app to show tracking info
@@ -2618,14 +2660,26 @@ export const getPrinterOrdersSummary = async (req: Request, res: Response, next:
       Order.countDocuments({
         assignedPrinter: printerId,
         priority: "URGENT",
-        status: { $in: ["PENDING", "PROCESSING", "PRINTING"] }
+        // The same "still live" set the capacity meter and Home use.
+        status: { $in: ACTIVE_ORDER_STATUSES as any },
       })
     ]);
 
     const byStatus = new Map<string, number>(counts.map((c: any) => [String(c._id), Number(c.count || 0)]));
-    const pendingReview = (byStatus.get("PENDING") || 0);
-    const inProgress = (byStatus.get("PROCESSING") || 0) + (byStatus.get("PRINTING") || 0);
-    const ready = (byStatus.get("QUALITY_CHECK") || 0);
+
+    /*
+     * Grouped by the same labels the list and every other surface use, so a tab
+     * count and the rows under it can never describe different sets. PROCESSING
+     * counted as "In Progress" here while the shared vocabulary calls it Pending
+     * Review — so the Pending tab under-counted and In Progress over-counted, by
+     * exactly the jobs a partner had been given and not yet started.
+     */
+    const countFor = (label: string) =>
+      (statusesForPrinterLabel(label) || []).reduce((sum, st) => sum + (byStatus.get(st) || 0), 0);
+
+    const pendingReview = countFor("Pending Review");
+    const inProgress = countFor("In Progress - Printing");
+    const ready = countFor("Print Shipping Label");
     const shipped = (byStatus.get("SHIPPED") || 0);
     const completed = (byStatus.get("COMPLETED") || 0);
     const cancelled = (byStatus.get("CANCELLED") || 0);
@@ -3024,130 +3078,131 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
   }
 };
 
-export const getEarningsSummary = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const printerId = req.user?.id;
-    const { range = "30d" } = req.query;
-
-    let startDate: Date;
-    const now = new Date();
-    if (range === "7d") {
-      startDate = new Date(now.setDate(now.getDate() - 7));
-    } else if (range === "all") {
-      startDate = new Date(0);
-    } else {
-      startDate = new Date(now.setDate(now.getDate() - 30));
-    }
-
-    const orders = await Order.find({
-      assignedPrinter: printerId,
-      status: { $nin: ["CANCELLED", "REJECTED"] },
-      createdAt: { $gte: startDate }
-    }).select("items pricing status createdAt").lean();
-
-    let revenue = 0;
-    let paidOut = 0;
-    let pending = 0;
-
-    const dailyRevenue: { [key: string]: number } = {};
-
-    orders.forEach(order => {
-      const amount = calcEarning(order);
-      revenue += amount;
-
-      if (["COMPLETED", "SHIPPED"].includes(String(order.status))) {
-        paidOut += amount;
-      } else {
-        pending += amount;
-      }
-
-      const dateKey = new Date(order.createdAt).toISOString().split("T")[0];
-      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
-    });
-
-    const points: { date: string, revenue: number }[] = [];
-    const dateRange = range === "all" ? 30 : (range === "7d" ? 7 : 30);
-    
-    const tempDate = new Date();
-    for (let i = 0; i < dateRange; i++) {
-      const d = new Date(tempDate);
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      points.push({
-        date: key,
-        revenue: dailyRevenue[key] || 0
-      });
-    }
-    points.reverse();
-
-    res.json({
-      totals: {
-        revenue,
-        paidOut,
-        pending
-      },
-      trend: {
-        period: range,
-        points
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+/*
+ * `getEarningsSummary` was removed from the printer controller.
+ *
+ * No client ever called `/printer/earnings/summary` — the Earnings page reads
+ * `/payouts/printer/summary` for its cards and `/printer/earnings/jobs` for its
+ * table. It also computed with the old customer-price `calcEarning`, so had
+ * anything started calling it, it would have disagreed with both. The admin
+ * controller keeps its own `getEarningsSummary`, which is live and is what
+ * `earningsChartBuckets.test.ts` pins.
+ */
 
 export const listEarningsJobs = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
     const { range = "all", status } = req.query;
 
-    const query: any = { assignedPrinter: printerId };
-    const now = new Date();
-    if (range === "today") {
-      const start = new Date(now);
-      start.setHours(0, 0, 0, 0);
-      query.updatedAt = { $gte: start };
-    } else if (range === "7d") {
-      query.updatedAt = { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) };
-    } else if (range === "30d") {
-      query.updatedAt = { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
-    }
+    const partnerPricing = await getPartnerPayRate();
 
-    if (status === "Paid") {
-      query.status = { $in: ["SHIPPED", "COMPLETED"] };
-    } else if (status === "Pending") {
-      query.status = { $nin: ["SHIPPED", "COMPLETED", "CANCELLED", "REJECTED"] };
-    } else {
-      query.status = { $nin: ["CANCELLED", "REJECTED"] };
-    }
-
-    const orders = await Order.find(query)
-      .select("displayId items pricing status updatedAt customer")
-      .sort({ updatedAt: -1 })
+    /*
+     * Which of this partner's orders are already committed to a payout, and at
+     * what stage. "Paid" used to mean nothing more than SHIPPED — so with no
+     * payouts in existence at all, every shipped job displayed as Paid to a
+     * partner who had never been paid a penny.
+     */
+    const payouts = await Payout.find({
+      printerId: new mongoose.Types.ObjectId(String(printerId)),
+    })
+      .select("orderIds status")
       .lean();
 
-    const jobs = orders.map(order => {
-      const items: any[] = Array.isArray((order as any).items) ? (order as any).items : [];
+    const paidOrderIds = new Set<string>();
+    const scheduledOrderIds = new Set<string>();
+    for (const p of payouts as any[]) {
+      const ids = (p.orderIds || []).map((id: any) => String(id));
+      if (p.status === "paid") ids.forEach((id: string) => paidOrderIds.add(id));
+      else if (["pending_review", "approved", "processing"].includes(String(p.status))) {
+        ids.forEach((id: string) => scheduledOrderIds.add(id));
+      }
+    }
 
-      const earning = calcEarning(order);
+    const query: any = { assignedPrinter: printerId, status: { $nin: ["CANCELLED"] } };
 
-      const isPaid = ["SHIPPED", "COMPLETED"].includes(String(order.status));
+    const orders = await Order.find(query)
+      .select("displayId items pricing priority status statusTimeline updatedAt createdAt customer")
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .lean();
 
+    const FINISHED = ["SHIPPED", "COMPLETED"];
+
+    const rows = orders.map((order: any) => {
+      const id = String(order._id);
+      const isFinished = FINISHED.includes(String(order.status));
+
+      /*
+       * Four states that line up with the four summary cards above the table,
+       * so the rows add up to the totals instead of describing something else:
+       *   Pending   — not shipped yet, so not earned yet
+       *   Available — shipped, not yet in a payout (this is Available Balance)
+       *   Scheduled — in a payout that is being reviewed or processed
+       *   Paid      — in a payout that actually paid out
+       */
+      let payoutStatus: "Paid" | "Scheduled" | "Available" | "Pending";
+      if (paidOrderIds.has(id)) payoutStatus = "Paid";
+      else if (scheduledOrderIds.has(id)) payoutStatus = "Scheduled";
+      else if (isFinished) payoutStatus = "Available";
+      else payoutStatus = "Pending";
+
+      // The real completion moment from the timeline, not `updatedAt` — which
+      // any later edit bumps, and which is not a completion date at all for a
+      // job that has not shipped.
+      const completedAt = isFinished ? getOrderCompletionDate(order) : null;
+
+      const items: any[] = Array.isArray(order.items) ? order.items : [];
       const firstName = items[0]?.name || items[0]?.type || "Print Job";
-      const detailsTitle = items.length > 1 ? `${firstName} +${items.length - 1} more` : firstName;
-      const detailsSub = `${items.reduce((s: number, i: any) => s + (i.quantity || 1), 0)} item(s)`;
 
       return {
-        id: (order as any).displayId || String((order as any)._id),
-        customer: `${(order as any).customer?.firstName || ""} ${(order as any).customer?.lastName || ""}`.trim() || "—",
-        details: { title: detailsTitle, sub: detailsSub },
-        earning: Number(earning.toFixed(2)),
-        completed: new Date((order as any).updatedAt).toISOString().split("T")[0],
-        status: isPaid ? "Paid" : "Pending",
+        // Both: the real id so a row can link to the job, and the human number.
+        id,
+        displayId: order.displayId ? String(order.displayId) : null,
+        customer:
+          `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "—",
+        details: {
+          title: items.length > 1 ? `${firstName} +${items.length - 1} more` : firstName,
+          sub: `${items.reduce((s: number, i: any) => s + (i.quantity || 1), 0)} item(s)`,
+        },
+        // The partner's rate, the same figure Home and the payout summary use.
+        earning: calculateOrderPartnerEarning(order, partnerPricing),
+        completedAt: completedAt ? completedAt.toISOString() : null,
+        status: payoutStatus,
+        orderStatus: printerStatusLabel(String(order.status || "")),
       };
     });
 
-    res.json({ jobs });
+    /*
+     * Ranges filter on when a job was COMPLETED, not on `updatedAt`. "Today"
+     * meant "touched today" before, so editing a note on an old job pulled it
+     * into today's earnings. Unfinished jobs have no completion date and so sit
+     * outside every dated range, which is correct — they have earned nothing yet.
+     */
+    const now = Date.now();
+    const windowMs =
+      range === "today" ? null : range === "7d" ? 7 * 864e5 : range === "30d" ? 30 * 864e5 : null;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    let filtered = rows;
+    if (range === "today") {
+      filtered = rows.filter((r) => r.completedAt && new Date(r.completedAt) >= todayStart);
+    } else if (windowMs) {
+      filtered = rows.filter((r) => r.completedAt && now - new Date(r.completedAt).getTime() <= windowMs);
+    }
+
+    if (status === "Paid") filtered = filtered.filter((r) => r.status === "Paid");
+    else if (status === "Pending") filtered = filtered.filter((r) => r.status === "Pending");
+    else if (status === "Available") filtered = filtered.filter((r) => r.status === "Available");
+    else if (status === "Scheduled") filtered = filtered.filter((r) => r.status === "Scheduled");
+
+    res.json({
+      jobs: filtered,
+      // So the table's own total can be shown without the client re-deriving it
+      // from formatted strings.
+      total: Math.round(filtered.reduce((s, r) => s + r.earning, 0) * 100) / 100,
+      count: filtered.length,
+    });
   } catch (error) {
     next(error);
   }

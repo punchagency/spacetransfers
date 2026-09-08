@@ -30,3 +30,24 @@ export const PRINTER_STATUS_LABEL: Record<string, string> = {
 
 export const printerStatusLabel = (status: unknown): string =>
   PRINTER_STATUS_LABEL[String(status || "").toUpperCase()] || "Pending Review";
+
+/**
+ * The inverse: which stored statuses each partner-facing label covers.
+ *
+ * Derived from the map above rather than written out again. The printer job
+ * list kept its own copy and had `PROCESSING` under "In Progress - Printing" —
+ * so a job a partner had not touched read "Pending Review" on Home and "In
+ * Progress - Printing" on Jobs & Orders, and the tab counts followed the second
+ * one. That is the exact defect the shared map exists to prevent, still live on
+ * one page.
+ */
+export const PRINTER_LABEL_STATUSES: Record<string, string[]> = Object.entries(
+  PRINTER_STATUS_LABEL,
+).reduce<Record<string, string[]>>((acc, [status, label]) => {
+  (acc[label] ||= []).push(status);
+  return acc;
+}, {});
+
+/** The stored statuses behind a partner-facing label, or null if unrecognised. */
+export const statusesForPrinterLabel = (label: unknown): string[] | null =>
+  PRINTER_LABEL_STATUSES[String(label || "")] ?? null;

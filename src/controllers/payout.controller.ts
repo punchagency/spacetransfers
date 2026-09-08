@@ -14,10 +14,12 @@ import {
   isStripeConfigured
 } from "../services/stripe.service.js";
 import { env } from "../config/env.js";
+import { getPartnerPayRate } from "../services/pricing.service.js";
 import mongoose from "mongoose";
 import {
   getEligibleJobsForPrinter,
   RESERVING_PAYOUT_STATUSES,
+  calculateOrderPartnerEarning
 } from "../services/partnerEarnings.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import type { IPayout, PayoutStatus } from "../models/payout.model.js";
@@ -183,20 +185,21 @@ export const getPrinterPayoutSummary = async (
       },
     }).lean();
 
-    const calcEarning = (order: any): number => {
-      const items: any[] = Array.isArray(order.items) ? order.items : [];
-      const fromItems = items.reduce((s: number, item: any) => {
-        const sub = typeof item.subtotal === "number"
-          ? item.subtotal
-          : (typeof item.unitPrice === "number" ? item.unitPrice * (item.quantity || 1) : 0);
-        return s + sub;
-      }, 0);
-      if (fromItems > 0) return fromItems;
-      // Fall back to stored pricing subtotal if items lack prices
-      return typeof order.pricing?.subtotal === "number"
-        ? order.pricing.subtotal
-        : (typeof order.pricing?.total === "number" ? order.pricing.total : 0);
-    };
+    /*
+     * The partner's rate, not the customer's price.
+     *
+     * A verbatim copy of the dashboard's `calcEarning` lived here and summed
+     * item subtotals — what the CUSTOMER paid. Partners are paid
+     * `partnerDefaults.baseRatePerSqFt` (2.50) against a customer rate of 3.50,
+     * so every figure on this summary was inflated by the whole platform margin:
+     * $559.23 shown against $399.51 owed on the staging data.
+     *
+     * Payout *creation* was never affected — it goes through
+     * `getEligibleJobsForPrinter` — so no money was ever paid wrong. But a
+     * partner was shown a balance that would not have matched their transfer.
+     */
+    const partnerPricing = await getPartnerPayRate();
+    const calcEarning = (order: any): number => calculateOrderPartnerEarning(order, partnerPricing);
 
     const totalEarnings = [...completedOrders, ...pendingOrders].reduce(
       (s, o) => s + calcEarning(o),
@@ -235,6 +238,9 @@ export const getPrinterPayoutSummary = async (
       pendingEarnings: Number(pendingEarnings.toFixed(2)),
       paidOutAmount: Number(paidOutAmount.toFixed(2)),
       nextScheduledPayoutDate: nextPayoutDate.toISOString(),
+      // Whether payouts can run at all, as distinct from whether THIS partner
+      // has connected. The page promised automatic weekly payouts regardless.
+      stripeConfigured: isStripeConfigured(),
       stripeConnected: !!printer.stripeConnectAccountId,
       stripeOnboarded: !!printer.stripeConnectOnboarded,
       payoutsEnabled: printer.payoutsEnabled !== false,

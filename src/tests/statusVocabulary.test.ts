@@ -1,7 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Order } from "../models/order.model.js";
-import { PRINTER_STATUS_LABEL, printerStatusLabel } from "../utils/orderStatusLabels.js";
+import {
+  PRINTER_STATUS_LABEL,
+  printerStatusLabel,
+  PRINTER_LABEL_STATUSES,
+  statusesForPrinterLabel,
+} from "../utils/orderStatusLabels.js";
 
 /**
  * One order could be described differently on every surface. The words differ
@@ -92,5 +97,42 @@ describe("customer-facing filter", () => {
 
   it("folds production detail into one bucket", () => {
     assert.deepEqual(customerFilter.processing, ["PROCESSING", "PRINTING", "QUALITY_CHECK"]);
+  });
+});
+
+/**
+ * The Jobs & Orders page kept a second copy of this vocabulary, and the copy
+ * disagreed: it filed PROCESSING under "In Progress - Printing" while the shared
+ * map files it under "Pending Review". One job therefore read two different ways
+ * depending on which page a partner was looking at, and the tab counts followed
+ * the wrong one — under-counting Pending and over-counting In Progress by
+ * exactly the jobs they had been given and not started.
+ */
+describe("partner label groups", () => {
+  it("round-trips: every status is reachable from its own label", () => {
+    for (const [status, label] of Object.entries(PRINTER_STATUS_LABEL)) {
+      const group = statusesForPrinterLabel(label);
+      assert.ok(group, `${label} has no status group`);
+      assert.ok(group!.includes(status), `${status} is not reachable from "${label}"`);
+    }
+  });
+
+  it("keeps an untouched job out of the printing group", () => {
+    // The whole point of the shared map: a partner has not started a PROCESSING
+    // job, so it must not be filed under, or counted as, printing.
+    assert.ok(!PRINTER_LABEL_STATUSES["In Progress - Printing"].includes("PROCESSING"));
+    assert.ok(PRINTER_LABEL_STATUSES["Pending Review"].includes("PROCESSING"));
+  });
+
+  it("groups partition the statuses — none missing, none counted twice", () => {
+    const flat = Object.values(PRINTER_LABEL_STATUSES).flat();
+    assert.equal(new Set(flat).size, flat.length, "a status appears in two groups, so tabs double-count");
+    assert.equal(new Set(flat).size, Object.keys(PRINTER_STATUS_LABEL).length);
+  });
+
+  it("returns null for a label nobody defined, rather than an empty filter", () => {
+    // An unrecognised filter must not silently become "match everything".
+    assert.equal(statusesForPrinterLabel("Nonsense"), null);
+    assert.equal(statusesForPrinterLabel(undefined), null);
   });
 });

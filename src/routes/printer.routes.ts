@@ -28,7 +28,6 @@ import {
   reprintShippingLabel,
   updateJobTracking,
   getOrderSummary,
-  getEarningsSummary,
   listEarningsJobs,
   getPrinterProfile,
   updatePrinterProfile,
@@ -82,7 +81,6 @@ router.patch("/print-queue/:jobId/status", updateJobStatus);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);
-router.get("/earnings/summary", getEarningsSummary);
 
 router.get("/availability", getAvailabilityStatus);
 router.patch("/availability", updateAvailabilityStatus);
