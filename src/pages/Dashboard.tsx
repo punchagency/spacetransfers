@@ -19,12 +19,24 @@ interface DashboardCard {
   value: string;
   /** What the figure covers, in place of the "vs yesterday" trend that measured nothing. */
   note: string;
+  /** Whether this card follows the period control, or is current-state. */
+  scoped: boolean;
 }
+
+/** The same four periods the admin dashboard offers, so the two compare. */
+const RANGES = [
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
+  { value: "ytd", label: "Year to date" },
+] as const;
+
+type Range = (typeof RANGES)[number]["value"];
 
 // Map API card labels to icons and accent colours, matching Earnings card style.
 const CARD_META: Record<string, { icon: React.ElementType; color: string }> = {
-  "Today's Earnings": { icon: TbCurrencyDollar,        color: "bg-blue-50 text-blue-600"   },
-  "Completed Today":  { icon: FiCheckCircle,           color: "bg-green-50 text-green-600" },
+  "Earnings":         { icon: TbCurrencyDollar,        color: "bg-blue-50 text-blue-600"   },
+  "Jobs Completed":   { icon: FiCheckCircle,           color: "bg-green-50 text-green-600" },
   "Pending Orders":   { icon: MdOutlinePendingActions, color: "bg-orange-50 text-orange-600" },
   // "Total Earned", not "Total Revenue" — revenue is what the company takes;
   // this is the partner's own page and their own money.
@@ -52,6 +64,7 @@ const Dashboard = () => {
   const [assignedTotal, setAssignedTotal] = useState(0);
   const [urgentTotal, setUrgentTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [range, setRange] = useState<Range>("30d");
 
   /*
    * The same name the top bar shows. This read `name` while `UserMenu` reads
@@ -74,8 +87,8 @@ const Dashboard = () => {
     }
   }, [storeName]);
 
-  const fetchData = useCallback(async () => {
-    const r = await apiFetch("/printer/dashboard/stats");
+  const fetchData = useCallback(async (forRange: Range) => {
+    const r = await apiFetch(`/printer/dashboard/stats?range=${forRange}`);
 
     setCards(
       Array.isArray(r?.cards)
@@ -83,6 +96,7 @@ const Dashboard = () => {
             label: String(c.label || ""),
             value: String(c.value || ""),
             note: String(c.note || ""),
+            scoped: c.scoped !== false,
           }))
         : [],
     );
@@ -98,22 +112,22 @@ const Dashboard = () => {
      * empty table with nothing saying so — a partner would read "$0.00 earned,
      * no jobs" as fact rather than as a request that never returned.
      */
-    fetchData()
+    fetchData(range)
       .catch((e: any) => setLoadError(e?.message || "Could not load your dashboard"))
       .finally(() => setLoading(false));
-  }, [fetchData]);
+  }, [fetchData, range]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await fetchData();
+      await fetchData(range);
     } catch (e: any) {
       setLoadError(e?.message || "Could not refresh your dashboard");
       toast.error(e?.message || "Could not refresh your dashboard");
     } finally {
       setRefreshing(false);
     }
-  }, [fetchData]);
+  }, [fetchData, range]);
 
   const columns = [
     {
@@ -172,6 +186,18 @@ const Dashboard = () => {
             assigned to you{urgentTotal ? ` • ${urgentTotal} urgent` : ""}.
           </p>
         </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={range}
+            onChange={(e) => setRange(e.target.value as Range)}
+            disabled={loading}
+            aria-label="Reporting period"
+            className="px-3 py-2 bg-white border border-gray-200 text-gray-700 font-medium rounded-2xl text-sm outline-none focus:border-blue-500 disabled:opacity-60"
+          >
+            {RANGES.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
         <button
           onClick={handleRefresh}
           disabled={refreshing || loading}
@@ -180,6 +206,7 @@ const Dashboard = () => {
         >
           <FiRefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
         </button>
+        </div>
       </div>
 
       {/* Counts the true total, not the five the list is capped to. */}
@@ -220,7 +247,16 @@ const Dashboard = () => {
                   </div>
                   <div>
                     <span className="text-3xl font-bold text-gray-900 tracking-tight">{card.value}</span>
-                    {card.note && <p className="text-xs mt-1 text-gray-400">{card.note}</p>}
+                    {card.note && (
+                      <p className="text-xs mt-1 text-gray-400">
+                        {card.note}
+                        {/* Set apart so the period control is never ambiguous:
+                            two of these four are current-state, not period figures. */}
+                        {!card.scoped && (
+                          <span className="ml-1 text-gray-300">· not filtered by period</span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
               );

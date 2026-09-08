@@ -28,5 +28,11 @@ export interface EarningsJob {
   orderStatus: string;
 }
 
-export type EarningsTimeFilter = "Today" | "This Week" | "This Month" | "All Time";
+export type EarningsTimeFilter =
+  | "Today"
+  | "This Week"
+  | "This Month"
+  // Calendar year to date, the same window the dashboard's YTD uses.
+  | "This Year"
+  | "All Time";
 

@@ -16,6 +16,7 @@ import { GenericTable } from "../components/common/GenericTable";
 import { JobEarningsModal } from "../components/earnings/JobEarningsModal";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { apiFetch, getApiBaseUrl } from "../utils/api";
+import { getToken } from "../utils/auth";
 import type { EarningsJob, EarningsJobStatus, EarningsTimeFilter } from "../types/earnings";
 
 interface PayoutSummary {
@@ -35,10 +36,11 @@ const RANGE_MAP: Record<EarningsTimeFilter, string> = {
   Today: "today",
   "This Week": "7d",
   "This Month": "30d",
+  "This Year": "ytd",
   "All Time": "all",
 };
 
-const TIME_FILTERS: EarningsTimeFilter[] = ["Today", "This Week", "This Month", "All Time"];
+const TIME_FILTERS: EarningsTimeFilter[] = ["Today", "This Week", "This Month", "This Year", "All Time"];
 
 const formatCurrency = (n: number) =>
   `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -130,16 +132,29 @@ const Earnings = () => {
   const handleExport = async () => {
     setExporting(true);
     try {
-      const token = localStorage.getItem("printer_token");
-      const res = await fetch(`${getApiBaseUrl()}/payouts/printer/export`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) throw new Error("Export failed");
+      /*
+       * The earnings on screen, not payout history. This button sits above the
+       * earnings table and named its file `earnings-export.csv`, but called the
+       * payout-history endpoint — a row per Stripe payout. With no payouts yet
+       * it downloaded a header row and nothing else.
+       *
+       * The range follows the filter, so the file matches what is displayed.
+       */
+      const res = await fetch(
+        `${getApiBaseUrl()}/printer/earnings/export?range=${RANGE_MAP[timeFilter]}`,
+        { headers: { ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}) } },
+      );
+      if (!res.ok) {
+        // Surface what the server said rather than a blanket "Export failed".
+        let msg = "Export failed";
+        try { msg = (await res.json())?.message || msg; } catch { /* not JSON */ }
+        throw new Error(msg);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `earnings-export-${Date.now()}.csv`;
+      a.download = `earnings-${RANGE_MAP[timeFilter]}-${new Date().toISOString().split("T")[0]}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
