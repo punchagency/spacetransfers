@@ -29,6 +29,7 @@ import {
   updateJobTracking,
   getOrderSummary,
   listEarningsJobs,
+  exportEarningsCsv,
   getPrinterProfile,
   updatePrinterProfile,
   getPrinterSettings,
@@ -81,6 +82,7 @@ router.patch("/print-queue/:jobId/status", updateJobStatus);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);
+router.get("/earnings/export", exportEarningsCsv);
 
 router.get("/availability", getAvailabilityStatus);
 router.patch("/availability", updateAvailabilityStatus);

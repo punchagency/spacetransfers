@@ -205,30 +205,43 @@ export const getPrinterPayoutSummary = async (
       (s, o) => s + calcEarning(o),
       0
     );
-    const paidOutAmount = completedOrders.reduce(
-      (s, o) => s + calcEarning(o),
-      0
-    );
     const pendingEarnings = pendingOrders.reduce(
       (s, o) => s + calcEarning(o),
       0
     );
 
-    // Available balance = completed orders not yet in a paid payout
-    const alreadyPaidPayouts = await Payout.find({
-      printerId,
-      status: { $in: ["processing", "paid"] },
-    }).lean();
-    const alreadyPaidOrderIds = new Set(
-      alreadyPaidPayouts.flatMap((p) => p.orderIds.map((id) => id.toString()))
-    );
-    const availableOrders = completedOrders.filter(
-      (o) => !alreadyPaidOrderIds.has(o._id.toString())
-    );
-    const availableBalance = availableOrders.reduce(
-      (s, o) => s + calcEarning(o),
-      0
-    );
+    /*
+     * The four cards must partition the money, and they did not.
+     *
+     * `paidOutAmount` summed every SHIPPED/COMPLETED order — treating "shipped"
+     * as "paid" — while `availableBalance` summed the same orders minus those in
+     * a payout. With no payouts in existence that made Paid Out and Available
+     * Balance the identical figure over the identical orders, so the row of
+     * cards counted the same money twice and told a partner they had been paid
+     * $61.12 they had never received. The Earnings table, which reads real
+     * payout records, said $0.00 directly underneath.
+     *
+     * Paid = in a payout that actually paid. Scheduled = in one on its way.
+     * Available = shipped and not yet committed to either.
+     */
+    const payouts = await Payout.find({ printerId }).select("orderIds status").lean();
+    const paidIds = new Set<string>();
+    const committedIds = new Set<string>();
+    for (const p of payouts as any[]) {
+      const ids = (p.orderIds || []).map((id: any) => String(id));
+      if (p.status === "paid") ids.forEach((id: string) => paidIds.add(id));
+      if (["pending_review", "approved", "processing", "paid"].includes(String(p.status))) {
+        ids.forEach((id: string) => committedIds.add(id));
+      }
+    }
+
+    const paidOutAmount = completedOrders
+      .filter((o) => paidIds.has(o._id.toString()))
+      .reduce((s, o) => s + calcEarning(o), 0);
+
+    const availableBalance = completedOrders
+      .filter((o) => !committedIds.has(o._id.toString()))
+      .reduce((s, o) => s + calcEarning(o), 0);
 
     const nextPayoutDate = getNextFridayDate();
 

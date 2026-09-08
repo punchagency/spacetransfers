@@ -241,8 +241,31 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
 
-    const todayStart = new Date();
+    /*
+     * The same four periods the admin dashboard offers, so the two consoles
+     * report over comparable windows. Two of the four cards are current-state
+     * (what is waiting on you, what you have earned in total) and deliberately
+     * do NOT follow the period — each says so in its own note, which is what
+     * stops the control being ambiguous.
+     */
+    const RANGES: Record<string, number | "ytd"> = { "7d": 7, "30d": 30, "90d": 90, ytd: "ytd" };
+    const rangeKey = typeof req.query.range === "string" && req.query.range in RANGES
+      ? String(req.query.range)
+      : "30d";
+
+    const now = new Date();
+    const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
+
+    let periodStart: Date;
+    if (rangeKey === "ytd") {
+      periodStart = new Date(now.getFullYear(), 0, 1);
+    } else {
+      periodStart = new Date(todayStart);
+      periodStart.setDate(periodStart.getDate() - (Number(RANGES[rangeKey]) - 1));
+    }
+    const periodLabel =
+      rangeKey === "ytd" ? "year to date" : `the last ${RANGES[rangeKey]} days`;
 
     // One resolution of the network-wide partner rate for the whole request.
     const partnerRate = await getPartnerPayRate();
@@ -264,12 +287,12 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       .select("items pricing priority statusTimeline updatedAt")
       .lean();
 
-    const finishedToday = finishedOrders.filter((o) => {
+    const finishedInPeriod = finishedOrders.filter((o) => {
       const at = getOrderCompletionDate(o);
-      return at !== null && at >= todayStart;
+      return at !== null && at >= periodStart;
     });
 
-    const todayEarnings = sumEarnings(finishedToday);
+    const periodEarnings = sumEarnings(finishedInPeriod);
 
     /*
      * Every order still owed or already paid, at the partner's rate. Named
@@ -371,26 +394,32 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     res.json({
       cards: [
         {
-          label: "Today's Earnings",
-          value: fmtMoney(todayEarnings),
-          note: finishedToday.length
-            ? `From ${finishedToday.length} job${finishedToday.length === 1 ? "" : "s"} shipped today`
-            : "No jobs shipped yet today",
+          label: "Earnings",
+          value: fmtMoney(periodEarnings),
+          note: finishedInPeriod.length
+            ? `From ${finishedInPeriod.length} job${finishedInPeriod.length === 1 ? "" : "s"} shipped in ${periodLabel}`
+            : `No jobs shipped in ${periodLabel}`,
+          scoped: true,
         },
         {
-          label: "Completed Today",
-          value: finishedToday.length.toLocaleString(),
-          note: "Jobs you shipped today",
+          label: "Jobs Completed",
+          value: finishedInPeriod.length.toLocaleString(),
+          note: `Shipped in ${periodLabel}`,
+          scoped: true,
         },
         {
+          // Current state, not a period figure — it is what is waiting on them
+          // right now, and saying "in the last 30 days" would be nonsense.
           label: "Pending Orders",
           value: totalPendingCount.toLocaleString(),
-          note: totalPendingCount ? "Awaiting your acceptance" : "Nothing waiting on you",
+          note: totalPendingCount ? "Awaiting your acceptance now" : "Nothing waiting on you",
+          scoped: false,
         },
         {
           label: "Total Earned",
           value: fmtMoney(totalEarned),
-          note: `Across ${allActiveOrders.length} job${allActiveOrders.length === 1 ? "" : "s"}, paid and unpaid`,
+          note: `All time, across ${allActiveOrders.length} job${allActiveOrders.length === 1 ? "" : "s"}`,
+          scoped: false,
         },
       ],
       urgentJobs: formattedUrgentJobs,
@@ -404,6 +433,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       urgentTotal,
       assignedShown: assignedJobs.length,
       urgentShown: formattedUrgentJobs.length,
+      period: { range: rangeKey, label: periodLabel },
     });
   } catch (error) {
     next(error);
@@ -2814,15 +2844,13 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
       });
     }
 
-    const statusLabelMap: Record<string, string> = {
-      PENDING: "Pending Review",
-      PRINTING: "In Progress - Printing",
-      QUALITY_CHECK: "Print Shipping Label",
-      SHIPPED: "Confirmed for Pickup",
-      COMPLETED: "Completed",
-      CANCELLED: "Cancelled",
-    };
-    const statusLabel = statusLabelMap[next] || next;
+    /*
+     * The shared map again. This copy called SHIPPED "Confirmed for Pickup" and
+     * had no entry for PROCESSING at all — so the notification a partner
+     * received named the new status differently from every screen they could
+     * open to look at it.
+     */
+    const statusLabel = printerStatusLabel(next);
     notifyPrinter({
       printerId: String(printerId),
       category: "jobs",
@@ -3047,22 +3075,9 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
       throw error;
     }
 
-    const statusMap: { [key: string]: any } = {
-      "Pending Review": "PENDING",
-      "In Progress - Printing": ["PROCESSING", "PRINTING"],
-      "Print Shipping Label": ["QUALITY_CHECK"],
-      "Order Shipped": ["SHIPPED"],
-      "Completed": ["COMPLETED"],
-      "Cancelled": ["CANCELLED"]
-    };
-
-    let displayStatus: any = order.status;
-    for (const [label, val] of Object.entries(statusMap)) {
-      if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
-        displayStatus = label;
-        break;
-      }
-    }
+    // The shared map. This held its own copy with PROCESSING under
+    // "In Progress - Printing" — the same disagreement the job list had.
+    const displayStatus = printerStatusLabel(order.status);
 
     res.json({
       id: order.id,
@@ -3089,10 +3104,19 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
  * `earningsChartBuckets.test.ts` pins.
  */
 
-export const listEarningsJobs = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const printerId = req.user?.id;
-    const { range = "all", status } = req.query;
+/**
+ * The rows behind the earnings table, shared with the CSV export so the file a
+ * partner downloads is the table they are looking at.
+ *
+ * The Export button sat above this table, named its file `earnings-export.csv`,
+ * and called the PAYOUT-history endpoint — which returns a row per Stripe
+ * payout. With no payouts in existence it downloaded a header and nothing else.
+ */
+const buildEarningsRows = async (
+  printerId: string,
+  range: unknown,
+  status: unknown,
+) => {
 
     const partnerPricing = await getPartnerPayRate();
 
@@ -3118,7 +3142,7 @@ export const listEarningsJobs = async (req: Request, res: Response, next: NextFu
       }
     }
 
-    const query: any = { assignedPrinter: printerId, status: { $nin: ["CANCELLED"] } };
+  const query: any = { assignedPrinter: printerId, status: { $nin: ["CANCELLED"] } };
 
     const orders = await Order.find(query)
       .select("displayId items pricing priority status statusTimeline updatedAt createdAt customer")
@@ -3179,14 +3203,19 @@ export const listEarningsJobs = async (req: Request, res: Response, next: NextFu
      * outside every dated range, which is correct — they have earned nothing yet.
      */
     const now = Date.now();
-    const windowMs =
-      range === "today" ? null : range === "7d" ? 7 * 864e5 : range === "30d" ? 30 * 864e5 : null;
+    const windowMs = range === "7d" ? 7 * 864e5 : range === "30d" ? 30 * 864e5 : null;
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
     let filtered = rows;
     if (range === "today") {
       filtered = rows.filter((r) => r.completedAt && new Date(r.completedAt) >= todayStart);
+    } else if (range === "ytd") {
+      // Calendar year to date — the same window the dashboard's YTD uses, so
+      // the two pages answer the same question the same way. Not a rolling
+      // 365 days, which would disagree with it every day but 1 January.
+      const yearStart = new Date(new Date().getFullYear(), 0, 1);
+      filtered = rows.filter((r) => r.completedAt && new Date(r.completedAt) >= yearStart);
     } else if (windowMs) {
       filtered = rows.filter((r) => r.completedAt && now - new Date(r.completedAt).getTime() <= windowMs);
     }
@@ -3196,13 +3225,60 @@ export const listEarningsJobs = async (req: Request, res: Response, next: NextFu
     else if (status === "Available") filtered = filtered.filter((r) => r.status === "Available");
     else if (status === "Scheduled") filtered = filtered.filter((r) => r.status === "Scheduled");
 
-    res.json({
-      jobs: filtered,
-      // So the table's own total can be shown without the client re-deriving it
-      // from formatted strings.
-      total: Math.round(filtered.reduce((s, r) => s + r.earning, 0) * 100) / 100,
-      count: filtered.length,
-    });
+  return {
+    jobs: filtered,
+    // So the table's own total can be shown without the client re-deriving it
+    // from formatted strings.
+    total: Math.round(filtered.reduce((s, r) => s + r.earning, 0) * 100) / 100,
+    count: filtered.length,
+  };
+};
+
+export const listEarningsJobs = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await buildEarningsRows(String(req.user?.id), req.query.range ?? "all", req.query.status));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The same rows, as a CSV. */
+export const exportEarningsCsv = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobs, total } = await buildEarningsRows(
+      String(req.user?.id),
+      req.query.range ?? "all",
+      req.query.status,
+    );
+
+    // Quoted and internally-escaped: customer names carry commas and quotes,
+    // and an unescaped one shifts every later column on that row.
+    const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = [
+      ["Order", "Customer", "Job", "Items", "Completed", "Job status", "Payout status", "Your earning"]
+        .map(cell)
+        .join(","),
+      ...jobs.map((j: any) =>
+        [
+          j.displayId || j.id,
+          j.customer,
+          j.details.title,
+          j.details.sub,
+          j.completedAt ? new Date(j.completedAt).toISOString().split("T")[0] : "",
+          j.orderStatus,
+          j.status,
+          j.earning.toFixed(2),
+        ].map(cell).join(","),
+      ),
+      ["", "", "", "", "", "", "Total", total.toFixed(2)].map(cell).join(","),
+    ].join("\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="earnings-${new Date().toISOString().split("T")[0]}.csv"`,
+    );
+    res.send(csv);
   } catch (error) {
     next(error);
   }
