@@ -19,6 +19,8 @@ type Overview = {
   orderId: string;
   displayId?: string | null;
   status: string;
+  /** The partner-facing label, decided server-side by `printerStatusLabel`. */
+  statusLabel?: string | null;
   priority: string;
   createdAt: string;
   assignedAt?: string | null;
@@ -30,9 +32,10 @@ type Overview = {
   notes: string;
   timeline: { status: string; time: string; message?: string | null }[];
   faceThumbnail?: string | null;
-  pricing?: { subtotal: number | null; partnerCost?: number | null; rushFee: number; shippingCost: number | null; tax: number | null; total: number; currency: string };
-  earnings?: { gross: number; net: number; currency: string; commission?: number };
-  payment?: { method: string | null; status: string };
+  pricing?: { base?: number | null; rushFee?: number | null; specialInkFee?: number | null; partnerCost?: number | null; total: number; currency: string };
+  /** `realized` is false until the job ships — partners are paid on shipment. `derivable` is false when the items carry no printable dimensions to cost. */
+  earnings?: { net: number; currency: string; realized?: boolean; derivable?: boolean };
+  payment?: { method: string | null };
   trackingNumber?: string | null;
   carrier?: string | null;
   trackingUrl?: string | null;
@@ -47,16 +50,17 @@ const formatMoney = (amount: number | null | undefined, currency: string) => {
 
 const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
 
-const statusLabelFromBackend = (s: string) => {
-  const v = String(s || "").toUpperCase();
-  if (v === "PENDING") return "Pending Review";
-  if (v === "PROCESSING" || v === "PRINTING") return "In Progress - Printing";
-  if (v === "QUALITY_CHECK") return "Print Shipping Label";
-  if (v === "SHIPPED") return "Order Shipped";
-  if (v === "COMPLETED") return "Delivered";
-  if (v === "CANCELLED") return "Cancelled";
-  return "Pending Review";
-};
+/*
+ * The status label comes from the server now.
+ *
+ * This page kept its own copy of the vocabulary and it disagreed with the
+ * shared map twice: PROCESSING read "In Progress - Printing" (the shared map
+ * says Pending Review — the partner has not started it) and COMPLETED read
+ * "Delivered". So one order was described three different ways across Home,
+ * Jobs & Orders and its own detail page. `printerStatusLabel` decides, once.
+ */
+const labelOf = (o: { statusLabel?: string | null; status?: string } | null) =>
+  o?.statusLabel || "Pending Review";
 
 const statusForRadio = (label: string) => {
   if (label === "Pending Review") return "Pending Review";
@@ -114,7 +118,7 @@ export default function OrderDetailsPage() {
 
   const selectedStatus = useMemo(() => {
     if (!overview) return "Pending Review";
-    return statusForRadio(statusLabelFromBackend(overview.status));
+    return statusForRadio(labelOf(overview));
   }, [overview]);
 
   // Rank of the current backend status — radio options below this rank are locked.
@@ -254,10 +258,21 @@ export default function OrderDetailsPage() {
 
   const currency = overview?.pricing?.currency || "USD";
 
-  const paymentSummary = useMemo(() => {
-    const pricing = overview?.pricing;
+  /*
+   * One breakdown. "Payment Summary" and "Your Earnings" were two cards showing
+   * the same number under two labels — "Base price" and "Estimated payout" —
+   * and the first sat under a "Payment secured" badge the server invented for
+   * every order. Rush pay was inside the total and reported as a separate zero.
+   */
+  const earningsBreakdown = useMemo(() => {
+    const p = overview?.pricing;
     return {
-      base: roundMoney(Number(pricing?.partnerCost ?? 0)),
+      base: roundMoney(Number(p?.base ?? p?.partnerCost ?? 0)),
+      rushFee: roundMoney(Number(p?.rushFee ?? 0)),
+      specialInkFee: roundMoney(Number(p?.specialInkFee ?? 0)),
+      total: roundMoney(Number(overview?.earnings?.net ?? p?.partnerCost ?? 0)),
+      realized: Boolean(overview?.earnings?.realized),
+      derivable: overview?.earnings?.derivable !== false,
     };
   }, [overview]);
 
@@ -490,7 +505,7 @@ export default function OrderDetailsPage() {
                     customer: overview.customer.name,
                     sheetSize: overview.specs.sheetSize,
                     orderDescription: `${overview.specs.itemsCount} Items`,
-                    status: statusLabelFromBackend(overview.status) as any,
+                    status: labelOf(overview) as any,
                     deadline: overview.deadline || "",
                     createdAt: overview.createdAt,
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
@@ -504,7 +519,7 @@ export default function OrderDetailsPage() {
                     customer: overview.customer.name,
                     sheetSize: overview.specs.sheetSize,
                     orderDescription: `${overview.specs.itemsCount} Items`,
-                    status: statusLabelFromBackend(overview.status) as any,
+                    status: labelOf(overview) as any,
                     deadline: overview.deadline || "",
                     createdAt: overview.createdAt,
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
@@ -678,33 +693,66 @@ export default function OrderDetailsPage() {
               <>
                 <CustomerInformation customer={overview.customer} shippingAddress={overview.shippingAddress} />
 
-                <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-                  <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Payment Summary</div>
-                  <div className="p-5">
-                    <dl className="space-y-3 text-sm">
-                      <div className="flex items-center justify-between">
-                        <dt className="text-gray-600">Base price</dt>
-                        <dd className="font-semibold text-gray-900 tabular-nums">
-                          {formatMoney(paymentSummary.base, currency)}
-                        </dd>
-                      </div>
-                    </dl>
-
-                    <div className={`mt-4 px-3 py-2 rounded-xl text-xs font-semibold ${overview.payment?.status === "secured" ? "bg-green-50 text-green-700 border border-green-100" : "bg-gray-50 text-gray-700 border border-gray-200"}`}>
-                      {overview.payment?.status === "secured" ? "Payment secured" : "Payment status unavailable"}
-                    </div>
-                  </div>
-                </div>
-
+                {/*
+                  One card, not two.
+                
+                  "Payment Summary" and "Your Earnings" showed the SAME number under two
+                  labels — "Base price" and "Estimated payout" — and the first sat under a
+                  "Payment secured" badge the server invented for every order that was not
+                  cancelled. Nothing records whether the customer's payment actually
+                  succeeded, and a partner is paid by the platform regardless, so it was
+                  never their question. Rush pay was inside the total and reported as a
+                  separate zero; it has its own line now, when it applies.
+                */}
                 <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
                   <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Your Earnings</div>
-                  <div className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm text-gray-600">Estimated payout</div>
-                      <div className="text-xl font-bold text-blue-600">
-                        {formatMoney(overview.earnings?.net || 0, currency)}
-                      </div>
-                    </div>
+                  <div className="p-5">
+                    {!earningsBreakdown.derivable ? (
+                      <p className="text-sm text-amber-700">
+                        This job&rsquo;s artwork carries no printable dimensions, so we cannot work out
+                        its payout yet. Please contact support before printing it.
+                      </p>
+                    ) : (
+                      <>
+                        <dl className="space-y-3 text-sm">
+                          <div className="flex items-center justify-between">
+                            <dt className="text-gray-600">Print</dt>
+                            <dd className="font-semibold text-gray-900 tabular-nums">
+                              {formatMoney(earningsBreakdown.base, currency)}
+                            </dd>
+                          </div>
+                          {earningsBreakdown.rushFee > 0 && (
+                            <div className="flex items-center justify-between">
+                              <dt className="text-gray-600">Rush (urgent)</dt>
+                              <dd className="font-semibold text-gray-900 tabular-nums">
+                                {formatMoney(earningsBreakdown.rushFee, currency)}
+                              </dd>
+                            </div>
+                          )}
+                          {earningsBreakdown.specialInkFee > 0 && (
+                            <div className="flex items-center justify-between">
+                              <dt className="text-gray-600">Special ink</dt>
+                              <dd className="font-semibold text-gray-900 tabular-nums">
+                                {formatMoney(earningsBreakdown.specialInkFee, currency)}
+                              </dd>
+                            </div>
+                          )}
+                        </dl>
+                        <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between">
+                          <div className="text-sm font-semibold text-gray-900">
+                            {earningsBreakdown.realized ? "You earned" : "You will earn"}
+                          </div>
+                          <div className="text-xl font-bold text-blue-600 tabular-nums">
+                            {formatMoney(earningsBreakdown.total, currency)}
+                          </div>
+                        </div>
+                        <p className="mt-2 text-[11px] text-gray-400">
+                          {earningsBreakdown.realized
+                            ? "Payable — it joins your next payout."
+                            : "Becomes payable once you ship this job."}
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -727,7 +775,7 @@ export default function OrderDetailsPage() {
           customer: overview.customer.name,
           sheetSize: overview.specs.sheetSize,
           orderDescription: `${overview.specs.itemsCount} Items`,
-          status: statusLabelFromBackend(overview.status) as any,
+          status: labelOf(overview) as any,
           deadline: overview.deadline || "",
           createdAt: overview.createdAt,
           priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,

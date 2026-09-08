@@ -24,6 +24,7 @@ interface PayoutSummary {
   pendingEarnings: number;
   paidOutAmount: number;
   nextScheduledPayoutDate: string | null;
+  stripeConfigured: boolean;
   stripeConnected: boolean;
   stripeOnboarded: boolean;
   payoutsEnabled: boolean;
@@ -77,12 +78,14 @@ const Earnings = () => {
   const fetchJobs = useCallback(async (range: string) => {
     const res = await apiFetch(`/printer/earnings/jobs?range=${range}`);
     const mapped: EarningsJob[] = (res.jobs || []).map((j: any) => ({
-      id: j.id,
+      id: String(j.id),
+      displayId: j.displayId ? String(j.displayId) : null,
       customer: j.customer || "—",
       details: { title: j.details?.title || "Print Job", sub: j.details?.sub || "" },
-      completed: j.completed,
+      completedAt: j.completedAt || null,
       earning: `$${Number(j.earning).toFixed(2)}`,
       status: j.status as EarningsJobStatus,
+      orderStatus: String(j.orderStatus || ""),
     }));
     setJobs(mapped);
   }, []);
@@ -153,13 +156,18 @@ const Earnings = () => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
-      j.id.toLowerCase().includes(q) ||
+      (j.displayId || j.id).toLowerCase().includes(q) ||
       j.customer.toLowerCase().includes(q) ||
       j.details.title.toLowerCase().includes(q)
     );
   });
 
-  const totalEarnings = filteredJobs.reduce((sum, job) => sum + parseMoney(job.earning), 0);
+  /*
+   * What the rows on screen add up to. This was computed and never rendered, so
+   * a partner filtering to a range or a search had no total for what they were
+   * looking at — only the all-time cards above, which do not move with the filter.
+   */
+  const visibleTotal = filteredJobs.reduce((sum, job) => sum + parseMoney(job.earning), 0);
 
   const stats = summary
     ? [
@@ -178,7 +186,12 @@ const Earnings = () => {
   };
 
   const columns = [
-    { header: "Order ID",     key: "id" as const,       className: "font-bold text-gray-900" },
+    {
+      header: "Order ID",
+      render: (job: EarningsJob) => (
+        <span className="font-bold text-gray-900">{job.displayId || job.id.slice(-6).toUpperCase()}</span>
+      ),
+    },
     { header: "Customer",     key: "customer" as const,  className: "text-gray-600"           },
     {
       header: "Job Details",
@@ -189,7 +202,23 @@ const Earnings = () => {
         </div>
       ),
     },
-    { header: "Completed",    key: "completed" as const, className: "text-gray-600"           },
+    {
+      header: "Completed",
+      /*
+       * Null until a job actually ships. This rendered `updatedAt` for every
+       * row, so an unfinished job showed a "completed" date — the day someone
+       * last touched it.
+       */
+      render: (job: EarningsJob) => (
+        <span className="text-gray-600">
+          {job.completedAt ? (
+            new Date(job.completedAt).toLocaleDateString()
+          ) : (
+            <span className="text-gray-400">{job.orderStatus || "Not yet"}</span>
+          )}
+        </span>
+      ),
+    },
     { header: "Your Earning", key: "earning" as const,   className: "font-bold text-blue-600" },
     {
       header: "Payout Status",
@@ -198,12 +227,15 @@ const Earnings = () => {
           className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${
             job.status === "Paid"
               ? "bg-green-50 text-green-700"
-              : job.status === "Pending"
-                ? "bg-orange-50 text-orange-700"
-                : "bg-purple-50 text-purple-700"
+              : job.status === "Available"
+                ? "bg-blue-50 text-blue-700"
+                : job.status === "Pending"
+                  ? "bg-orange-50 text-orange-700"
+                  : "bg-purple-50 text-purple-700"
           }`}
         >
           {job.status === "Paid"      && <FiCheckCircle className="w-3.5 h-3.5" />}
+          {job.status === "Available" && <FiCheckCircle className="w-3.5 h-3.5" />}
           {job.status === "Pending"   && <FiClock       className="w-3.5 h-3.5" />}
           {job.status === "Scheduled" && <FiCalendar    className="w-3.5 h-3.5" />}
           {job.status}
@@ -260,27 +292,49 @@ const Earnings = () => {
         <>
           {/* Payout info banner */}
           {summary && (
-            <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-xl px-5 py-4">
-              <FiCalendar className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-blue-900">
-                  Automatic Weekly Payouts via Stripe Connect
-                </p>
-                <p className="text-xs text-blue-700 mt-0.5">
-                  Payouts are processed automatically every Friday via Stripe Connect (test mode).
-                  {summary.nextScheduledPayoutDate && (
-                    <> Next scheduled: <strong>{formatDate(summary.nextScheduledPayoutDate)}</strong>.</>
-                  )}{" "}
-                  Minimum payout threshold: <strong>{formatCurrency(summary.minimumPayoutAmount)}</strong>.
-                </p>
+            /*
+              Two different banners, because there were two different truths and
+              the page only ever told one. It promised "payouts are processed
+              automatically every Friday" whether or not payouts could run at
+              all — and mentioned "(test mode)", which is our business, not the
+              partner's. When the payment provider is not configured, nothing is
+              going to be paid on Friday and saying so is the only honest option.
+            */
+            summary.stripeConfigured ? (
+              <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-xl px-5 py-4">
+                <FiCalendar className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-blue-900">
+                    Automatic Weekly Payouts
+                  </p>
+                  <p className="text-xs text-blue-700 mt-0.5">
+                    Payouts are processed automatically every Friday.
+                    {summary.nextScheduledPayoutDate && (
+                      <> Next scheduled: <strong>{formatDate(summary.nextScheduledPayoutDate)}</strong>.</>
+                    )}{" "}
+                    Minimum payout threshold: <strong>{formatCurrency(summary.minimumPayoutAmount)}</strong>.
+                  </p>
+                </div>
+                {!summary.stripeOnboarded && (
+                  <span className="flex items-center gap-1 text-xs font-semibold text-orange-600 bg-orange-50 px-2 py-1 rounded-full border border-orange-200 whitespace-nowrap">
+                    <FiAlertCircle className="w-3.5 h-3.5" />
+                    Connect your account
+                  </span>
+                )}
               </div>
-              {!summary.stripeOnboarded && (
-                <span className="flex items-center gap-1 text-xs font-semibold text-orange-600 bg-orange-50 px-2 py-1 rounded-full border border-orange-200 whitespace-nowrap">
-                  <FiAlertCircle className="w-3.5 h-3.5" />
-                  Stripe not connected
-                </span>
-              )}
-            </div>
+            ) : (
+              <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-5 py-4">
+                <FiAlertCircle className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-amber-900">Payouts are not running yet</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Your earnings below are being tracked and nothing is lost, but automatic
+                    payouts are not switched on yet. You will be able to connect your account and
+                    be paid once they are.
+                  </p>
+                </div>
+              </div>
+            )
           )}
 
           {/* Stats Cards */}
@@ -356,9 +410,12 @@ const Earnings = () => {
               footerRightContent={
                 <div className="flex items-center gap-6">
                   <div className="text-sm">
-                    <span className="text-gray-500">Total Earnings: </span>
+                    {/* The rows on screen, which is not "all time" once a range
+                        or a search is applied — the label said Total Earnings
+                        beside a filtered subtotal. */}
+                    <span className="text-gray-500">Showing: </span>
                     <span className="font-bold text-blue-600 text-lg">
-                      {`$${totalEarnings.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                      {`$${visibleTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     </span>
                   </div>
                 </div>

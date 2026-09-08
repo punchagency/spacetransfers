@@ -39,7 +39,8 @@ export const JobEarningsModal = ({
         className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${colorClass}`}
       >
         {icon}
-        {job.status} - {job.completed}
+        {job.status}
+        {job.completedAt ? ` - ${new Date(job.completedAt).toLocaleDateString()}` : ""}
       </span>
     );
   };
@@ -80,7 +81,13 @@ export const JobEarningsModal = ({
             <h4 className="text-xs font-medium text-gray-500 mb-1.5">
               Completed Date
             </h4>
-            <p className="text-sm font-bold text-gray-900">{job.completed}</p>
+            {/* Null until the job ships; it used to print `updatedAt`, so an
+                unfinished job showed a completion date it did not have. */}
+            <p className="text-sm font-bold text-gray-900">
+              {job.completedAt
+                ? new Date(job.completedAt).toLocaleDateString()
+                : <span className="text-gray-400 font-medium">Not completed yet</span>}
+            </p>
           </div>
           <div>
             <h4 className="text-xs font-medium text-gray-500 mb-1.5">
