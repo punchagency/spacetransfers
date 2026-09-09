@@ -22,6 +22,9 @@ interface PackagingBand {
 
 interface GlobalPricing {
   baseRatePerSqFt: number;
+  /** The roll every gang sheet is cut from, and the shortest run that can be billed. */
+  sheetWidthIn: number;
+  minSheetLengthIn: number;
   shipping: { standard: number; express: number };
   shippingMarkupPct: number;
   rushSurchargePct: number;
@@ -35,6 +38,8 @@ const FALLBACK: GlobalPricing = {
   // it now prices every sheet, so a failed load must not show a rate seven
   // times what customers are actually charged.
   baseRatePerSqFt: 3.5,
+  sheetWidthIn: 23.5,
+  minSheetLengthIn: 10,
   shipping: { standard: 8.99, express: 24.99 },
   shippingMarkupPct: 10,
   rushSurchargePct: 10,
@@ -66,6 +71,8 @@ export const GeneralSettings = () => {
         if (cancelled) return;
         setPricing({
           baseRatePerSqFt: Number(data?.baseRatePerSqFt ?? FALLBACK.baseRatePerSqFt),
+          sheetWidthIn: Number(data?.sheetWidthIn ?? FALLBACK.sheetWidthIn),
+          minSheetLengthIn: Number(data?.minSheetLengthIn ?? FALLBACK.minSheetLengthIn),
           shipping: {
             standard: Number(data?.shipping?.standard ?? FALLBACK.shipping.standard),
             express: Number(data?.shipping?.express ?? FALLBACK.shipping.express),
@@ -168,6 +175,52 @@ export const GeneralSettings = () => {
             (n) => setPricing((p) => ({ ...p, baseRatePerSqFt: n })),
             "Applied to every gang sheet, by area. Changing this changes what the editor quotes and what customers are charged.",
           )}
+
+          {/*
+            The two figures that decide how much area a sheet is billed for.
+            Both were compiled into the apps: price came from the bounding box
+            of the artwork with no minimum at all, so a single 6x10in graphic
+            was billed $1.46 of the $5.71 of roll it consumes.
+          */}
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-5 space-y-5">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Sheet size</h3>
+              <p className="text-sm text-gray-500 mt-0.5">
+                A gang sheet is billed as the full roll width by its length, never by the
+                area the artwork happens to cover. These also set the parcel a sheet is
+                packed and shipped in.
+              </p>
+            </div>
+
+            {numberField(
+              "Roll width (in)",
+              pricing.sheetWidthIn,
+              (n) => setPricing((p) => ({ ...p, sheetWidthIn: n })),
+              "The width of the film you print on. Every sheet is billed this wide whatever the artwork does.",
+            )}
+
+            {numberField(
+              "Minimum billable length (in)",
+              pricing.minSheetLengthIn,
+              (n) => setPricing((p) => ({ ...p, minSheetLengthIn: n })),
+              "The shortest run worth setting up. A shorter sheet is charged as if it were this long.",
+            )}
+
+            <p className="text-xs text-gray-500">
+              At the current settings the smallest sheet a customer can buy is{" "}
+              <strong>
+                {pricing.sheetWidthIn.toFixed(2)}in x {pricing.minSheetLengthIn.toFixed(2)}in
+              </strong>{" "}
+              ={" "}
+              <strong>
+                ${(
+                  ((pricing.sheetWidthIn * pricing.minSheetLengthIn) / 144) *
+                  pricing.baseRatePerSqFt
+                ).toFixed(2)}
+              </strong>
+              .
+            </p>
+          </div>
 
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-5 space-y-5">
             <div>
