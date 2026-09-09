@@ -29,6 +29,17 @@ interface CheckoutModalProps {
   cartItems?: any[];
   onUpdateCart?: (items: any[]) => void;
   onCheckoutSuccess?: () => void;
+  /**
+   * Whether the visitor has an account yet.
+   *
+   * Browsing and filling a cart do not need one — that is how storefronts work,
+   * and Add to Cart has always allowed it. Placing the order does: it is saved
+   * against a customer, paid for, and shipped somewhere. Without this the
+   * signed-out path ran all the way to payment and failed on a 401 from the
+   * order call, after the customer had entered an address.
+   */
+  isLoggedIn?: boolean;
+  onRequireSignIn?: () => void;
 }
 
 const steps = ["Cart", "Checkout", "Payment", "Confirmation"];
@@ -36,6 +47,8 @@ const steps = ["Cart", "Checkout", "Payment", "Confirmation"];
 export default function CheckoutModal({
   isOpen,
   onClose,
+  isLoggedIn = false,
+  onRequireSignIn,
   cartItems: initialCartItems,
   onUpdateCart,
   onCheckoutSuccess,
@@ -353,6 +366,16 @@ export default function CheckoutModal({
     if (step === 0) {
       if (!isCartValid) {
         toast.error("Your cart is empty.");
+        return;
+      }
+      /*
+       * Asked for here, at the edge of checkout — not earlier. The cart survives
+       * the sign-in, so nothing is lost by leaving it this late, and a visitor
+       * can price a sheet and fill a basket without being stopped.
+       */
+      if (!isLoggedIn) {
+        toast("Please sign in to complete your order.", { icon: "🔐" });
+        onRequireSignIn?.();
         return;
       }
       setStep(1);

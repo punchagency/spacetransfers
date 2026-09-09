@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { ArtboardItem } from "../../types";
+import { billableSheetDimensions } from "../../../../lib/utils/pricingRates";
 import { animateItemPosition } from "../utils";
 import {
   calculateGridLayout,
@@ -12,7 +13,7 @@ import {
 } from "../utils";
 import { snapToGridPoint } from "../utils";
 import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
-import { usePricePerSqFt } from "../../../../lib/utils/pricingRates";
+import { usePricingSettings } from "../../../../lib/utils/pricingRates";
 import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
@@ -32,7 +33,15 @@ export const useArtboardEffects = (
   onDataChange?: (data: any) => void,
   counter?: number
 ) => {
-  const pricePerSqFt = usePricePerSqFt();
+  /*
+   * The whole settings snapshot, not just the rate.
+   *
+   * Watching `pricePerSqFt` alone meant a change to the roll width or the
+   * minimum length never reached this effect — the rate compared equal, React
+   * bailed out, and the board kept the compiled fallback for the session.
+   */
+  const pricingSettings = usePricingSettings();
+  const pricePerSqFt = pricingSettings.pricePerSqFt;
   const [originalPositions, setOriginalPositions] = useState<
     Record<number, { posX: number; posY: number }>
   >({});
@@ -447,10 +456,20 @@ export const useArtboardEffects = (
       const usedHeightIn = items.length > 0 ? Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bounds.maxY)) : 0;
 
       // Pricing is based on actual utilized area (not hardcoded).
-      const totalAreaSf = +(
-        (usedWidthIn * usedHeightIn) /
-        PRICING.SQUARE_INCHES_PER_SQ_FT
-      ).toFixed(UNIT.INCH.DECIMALS);
+      /*
+       * Billed on the roll, with a minimum run length — the same rule the
+       * server charges by. This priced `usedWidthIn * usedHeightIn`, the
+       * bounding box of the artwork, so a sparse sheet was quoted a fraction of
+       * what it would actually cost and a short one ignored the minimum.
+       */
+      const billed = billableSheetDimensions(usedHeightIn);
+      /*
+       * Zero only while the board is genuinely empty — there is nothing to
+       * charge for yet. The dimensions still show the floor, so the strip reads
+       * as "this is what a sheet costs" rather than "this sheet costs nothing".
+       */
+      const hasArtwork = items.length > 0;
+      const totalAreaSf = hasArtwork ? billed.areaSf : 0;
       const totalPrice = +(totalAreaSf * pricePerSqFt).toFixed(
         UNIT.INCH.DECIMALS,
       );
@@ -460,14 +479,25 @@ export const useArtboardEffects = (
         (item.name || `Item #${item.id}`).replace(/\.[^/.]+$/, "")
       );
 
-      // Default to "Instant hot peel" and do not change when items are selected
-      const displayName = 'Instant hot peel';
+      /*
+       * "Instant hot peel" was hard-coded here. Nothing backed it: the store has
+       * no film selection, the order model records no peel type, and it sat in
+       * the slot that becomes the design's name once saved — so one position
+       * meant a product claim before saving and a name after.
+       */
+      const displayName = 'Untitled gang sheet';
 
       onHeaderInfoChange({
         hasItem: items.length > 0,
         areaSf: totalAreaSf,
-        widthIn: +usedWidthIn.toFixed(UNIT.INCH.DECIMALS),
-        heightIn: +usedHeightIn.toFixed(UNIT.INCH.DECIMALS),
+        // The billed dimensions, so the strip, the price and the invoice agree.
+        widthIn: +billed.widthIn.toFixed(UNIT.INCH.DECIMALS),
+        heightIn: +billed.heightIn.toFixed(UNIT.INCH.DECIMALS),
+        minimumAreaSf: billableSheetDimensions(0).areaSf,
+        // What the artwork actually occupies, kept for the layout warnings.
+        usedHeightIn: +usedHeightIn.toFixed(UNIT.INCH.DECIMALS),
+        atMinimumLength: hasArtwork && billed.atMinimum,
+        isEmpty: !hasArtwork,
         name: displayName,
         price: totalPrice,
         imageNames,
@@ -477,5 +507,5 @@ export const useArtboardEffects = (
         unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
-  }, [items, canvasWidth, marginSize, onHeaderInfoChange, pricePerSqFt]);
+  }, [items, canvasWidth, marginSize, onHeaderInfoChange, pricingSettings]);
 };

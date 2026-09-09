@@ -22,11 +22,11 @@ import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
-import { usePricePerSqFt } from "../lib/utils/pricingRates";
+import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
 import { computeRenderCopies } from "./artboard/lib/utils/layoutHelpers";
 
 export default function Editor() {
-  const pricePerSqFt = usePricePerSqFt();
+  const { pricePerSqFt } = usePricingSettings();
   // Phone detection drives both the one-time notice and the hiding of tools
   // that can't be operated smoothly on a small touch screen (see below).
   const isMobile = useIsMobile();
@@ -332,6 +332,16 @@ export default function Editor() {
   const [currentLoadedDesignId, setCurrentLoadedDesignId] = useState<string | null>(null);
   const [currentLoadedDesignString, setCurrentLoadedDesignString] = useState<string | null>(null);
   const [currentLoadedDesignTitle, setCurrentLoadedDesignTitle] = useState<string | null>(null);
+  /*
+   * A name for a board that has not been saved yet.
+   *
+   * Renaming used to require `currentLoadedDesignId`, because it PATCHes a
+   * design record — so a fresh board read "Untitled gang sheet" with no way to
+   * name it until after saving, which is backwards from how every document
+   * editor works. This holds the name until there is something to attach it to,
+   * and seeds the save dialog when there is.
+   */
+  const [draftDesignTitle, setDraftDesignTitle] = useState<string | null>(null);
   const prevUserIdRef = useRef<string | null>(null);
 
   const ensureUniqueItemIds = (items: any[]) => {
@@ -941,10 +951,19 @@ export default function Editor() {
 
     const mapped = orderItems.map((item: any, idx: number) => {
       const quantity = Number(item?.quantity || 1);
-      const subtotal = Number(item?.subtotal || 0);
-      const unitPrice =
-        Number(item?.unitPrice || item?.price || (quantity > 0 ? subtotal / quantity : 0)) || 0;
       const type = item?.type || "gangsheet";
+      /*
+       * Priced at today's rate from the sheet's own dimensions — not the
+       * `unitPrice` stored on the old order.
+       *
+       * The server reprices at checkout regardless, so carrying the old figure
+       * only meant the cart displayed a price the customer would not be charged.
+       * After a rate or minimum-length change that gap is large.
+       */
+      const billed = billableSheetDimensions(
+        Number(item?.sheetHeightIn || item?.heightIn || 0),
+      );
+      const unitPrice = +(billed.areaSf * getPricePerSqFt()).toFixed(2);
 
       return {
         id: Date.now() + idx,
@@ -954,9 +973,10 @@ export default function Editor() {
         items: Array.isArray(item?.artboardItems) ? item.artboardItems : undefined,
         price: unitPrice,
         quantity,
-        widthIn: Number(item?.sheetWidthIn || item?.widthIn || CANVAS.SHEET_WIDTH_IN),
-        heightIn: Number(item?.sheetHeightIn || item?.heightIn || CANVAS.SHEET_HEIGHT_IN),
-        size: `${Number(item?.sheetWidthIn || item?.widthIn || CANVAS.SHEET_WIDTH_IN).toFixed(1)}" × ${Number(item?.sheetHeightIn || item?.heightIn || CANVAS.SHEET_HEIGHT_IN).toFixed(1)}"`,
+        // The billed shape, matching what checkout will charge for.
+        widthIn: billed.widthIn,
+        heightIn: billed.heightIn,
+        size: `${billed.widthIn.toFixed(1)}" × ${billed.heightIn.toFixed(1)}"`,
         color: item?.color || "N/A",
         design: item?.description || "Reorder Item",
         print: item?.print || "DTF Transfer",
@@ -982,7 +1002,14 @@ export default function Editor() {
   return (
     <div className="relative flex flex-col h-screen w-screen bg-white">
       <Header
-        info={headerInfo ? { ...headerInfo, name: currentLoadedDesignTitle || headerInfo.name } : undefined}
+        info={
+          headerInfo
+            ? {
+                ...headerInfo,
+                name: currentLoadedDesignTitle || draftDesignTitle || headerInfo.name,
+              }
+            : undefined
+        }
         itemCount={itemCount}
         canUndo={historyState.canUndo}
         canRedo={historyState.canRedo}
@@ -1000,7 +1027,7 @@ export default function Editor() {
         canAddGangSheetToCart={getCurrentItems().length > 0}
         isLoggedIn={isLoggedIn}
         canSaveLoaded={Boolean(currentLoadedDesignId && hasUnsavedChanges && !isGangsheetBusy)}
-        canRenameDesign={Boolean(isLoggedIn && currentLoadedDesignId)}
+        canRenameDesign
         onProfileClick={() => {
           setShowAccountModal(true);
           setIsSidebarOpen(false);
@@ -1038,7 +1065,15 @@ export default function Editor() {
           return avatarBgClasses[idx % avatarBgClasses.length];
         })()}
         onRenameDesign={async (newTitle) => {
-          if (!currentLoadedDesignId) return;
+          /*
+           * Nothing saved yet — keep the name locally and let it seed the save
+           * dialog. There is no design record to PATCH, and refusing the rename
+           * is what made a fresh board unnameable.
+           */
+          if (!currentLoadedDesignId) {
+            setDraftDesignTitle(newTitle);
+            return;
+          }
           try {
             await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
               method: "PATCH",
@@ -1214,7 +1249,7 @@ export default function Editor() {
         isOpen={showSaveModal}
         onClose={() => setShowSaveModal(false)}
         artboardData={artboardData}
-        initialTitle={currentLoadedDesignTitle}
+        initialTitle={currentLoadedDesignTitle || draftDesignTitle}
         onSave={async (title: string, thumbnail: string, data: any) => {
           if (!isLoggedIn) {
             setAuthView("login");
@@ -1222,8 +1257,13 @@ export default function Editor() {
             return;
           }
 
-          const widthIn = headerInfo?.widthIn || CANVAS.SHEET_WIDTH_IN;
-          const heightIn = headerInfo?.heightIn || CANVAS.SHEET_HEIGHT_IN;
+          /*
+           * The billed dimensions the header is showing — roll width by run
+           * length, floored at the minimum — so the cart line, the quote on
+           * screen and the server's charge are the same three numbers.
+           */
+          const widthIn = headerInfo?.widthIn || getSheetWidthIn();
+          const heightIn = headerInfo?.heightIn || getMinSheetLengthIn();
           const areaSqFt = headerInfo?.areaSf ?? (widthIn * heightIn) / 144;
           const price = headerInfo?.price ?? 0;
 
@@ -1281,6 +1321,7 @@ export default function Editor() {
                 }),
               });
               setCurrentLoadedDesignTitle(title);
+              setDraftDesignTitle(null);
               const nextSnapshot = getGangsheetSnapshot(normalizedItems);
               setCurrentLoadedDesignString(nextSnapshot);
               setBaselineSnapshot(nextSnapshot);
@@ -1308,6 +1349,7 @@ export default function Editor() {
               if (createdId) {
                 setCurrentLoadedDesignId(createdId);
                 setCurrentLoadedDesignTitle(title);
+                setDraftDesignTitle(null);
                 setCurrentLoadedDesignString(nextSnapshot);
               }
               setBaselineSnapshot(nextSnapshot);
@@ -1414,6 +1456,7 @@ export default function Editor() {
         }}
       />
       <OrderDetailsModal
+        onReorderToCart={handleReorderToCart}
         isOpen={showOrderDetailsModal}
         onClose={() => {
           setShowOrderDetailsModal(false);
@@ -1422,6 +1465,12 @@ export default function Editor() {
         orderId={selectedOrderId}
       />
       <CheckoutModal
+        isLoggedIn={isLoggedIn}
+        onRequireSignIn={() => {
+          // The cart is kept; the modal reopens on top of it after signing in.
+          setAuthView("login");
+          setShowAuthModal(true);
+        }}
         isOpen={showCheckoutModal}
         onClose={() => setShowCheckoutModal(false)}
         cartItems={cartItems}

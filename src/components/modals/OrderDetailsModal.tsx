@@ -19,12 +19,15 @@ interface OrderDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   orderId: string | null;
+  /** Fills the cart from a past order and opens checkout. */
+  onReorderToCart?: (orderId: string) => Promise<void> | void;
 }
 
 export default function OrderDetailsModal({
   isOpen,
   onClose,
   orderId,
+  onReorderToCart,
 }: OrderDetailsModalProps) {
   const [order, setOrder] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -84,13 +87,22 @@ export default function OrderDetailsModal({
     }
   };
 
+  /**
+   * Reorder puts the items back in the cart. It does not place an order.
+   *
+   * This used to POST `/customer/orders/:id/reorder`, which created a live order
+   * on the spot and toasted "Order placed successfully!" — one click, no cart, no
+   * address confirmation, no payment step. The order it created carried no
+   * `paymentIntentId` and was priced from the *original* order's stored
+   * `unitPrice`, so it skipped server-side pricing entirely and would have
+   * charged an old rate.
+   *
+   * Order History's reorder already did the right thing; this is the same path.
+   */
   const handleReorder = async () => {
     if (!orderId) return;
     try {
-      await apiFetch(`/customer/orders/${orderId}/reorder`, {
-        method: "POST",
-      });
-      toast.success("Order placed successfully!");
+      await onReorderToCart?.(orderId);
     } catch (err: any) {
       toast.error(err.message || "Failed to reorder");
     }

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Toaster } from "react-hot-toast";
 import IntroAnimation from "./components/IntroAnimation";
 import Editor from "./components/Editor";
-import { hydratePricePerSqFt } from "./lib/utils/pricingRates";
+import { hydratePricePerSqFt, watchPricingSettings } from "./lib/utils/pricingRates";
 
 export default function App() {
   const [showHome, setShowHome] = useState(() => {
@@ -18,6 +18,9 @@ export default function App() {
   // as soon as the first item lands on the board.
   useEffect(() => {
     hydratePricePerSqFt();
+    // Picks up an admin changing the rate or the sheet minimum without needing
+    // the customer to reload.
+    return watchPricingSettings();
   }, []);
 
   return (
