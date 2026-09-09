@@ -1,3 +1,4 @@
+import { getToken } from "../../../../lib/utils/auth";
 import { useRef, useState } from "react";
 import { readDPI, loadImageSize, validateImageFile, checkFade, shouldWarn } from "../utils";
 import type { FadeVerdict } from "../utils";
@@ -269,7 +270,9 @@ export const useDropHandler = (
     // definition of where the API lives.
     const API_BASE_URL =
       import.meta.env.VITE_API_URL || "https://space-transfers-475154718031.herokuapp.com/api";
-    const authToken = localStorage.getItem("token");
+    // XHR, not `apiFetch`, because this one reports upload progress — but the
+    // token still comes from one place.
+    const authToken = getToken();
 
     return new Promise<any>((resolve, reject) => {
       const xhr = new XMLHttpRequest();

@@ -6,6 +6,8 @@ import {
   MdVisibility,
   MdDownload,
 } from "react-icons/md";
+import { getApiBaseUrl } from "../../lib/utils/api";
+import { clearAuth, getToken } from "../../lib/utils/auth";
 import { apiFetch } from "../../lib/utils/api";
 import toast from "react-hot-toast";
 import { formatOrderNumber } from "../../lib/utils/orderNumber";
@@ -61,14 +63,24 @@ export default function OrderHistoryModal({
 
   const handleDownloadInvoice = async (orderId: string) => {
     try {
-      const token = localStorage.getItem("token");
-      const response = await fetch(`http://localhost:4000/api/customer/orders/${orderId}/invoice`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      // Not a hard-coded localhost. This only ever worked in development.
+      const token = getToken();
+      const response = await fetch(
+        `${getApiBaseUrl()}/customer/orders/${orderId}/invoice`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
 
-      if (!response.ok) throw new Error("Failed to download invoice");
+      if (!response.ok) {
+        // A blob download bypasses `apiFetch`, so the session check has to be
+        // made here too — otherwise an expired token reads as a broken invoice.
+        if (response.status === 401) {
+          clearAuth();
+          throw new Error("Your session has expired. Please sign in again.");
+        }
+        let message = "Failed to download invoice";
+        try { message = (await response.json())?.message || message; } catch { /* not JSON */ }
+        throw new Error(message);
+      }
 
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);

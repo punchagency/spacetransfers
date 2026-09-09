@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import toast from "react-hot-toast";
 import Header from "./Header";
 import Artboard from "./Artboard";
@@ -17,6 +17,7 @@ import { useIsMobile } from "../lib/useIsMobile";
 import UnderUtilizedSheetModal from "./modals/UnderUtilizedSheetModal";
 import { captureArtboard } from "./artboard/lib/utils";
 import { apiFetch } from "../lib/utils/api";
+import { clearAuth, getToken, onAuthChanged } from "../lib/utils/auth";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
@@ -62,6 +63,16 @@ export default function Editor() {
     canRedo: boolean;
   }>({ undo: () => {}, redo: () => {}, canUndo: false, canRedo: false });
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  /*
+   * One sign-out. This was written out twice, identically, in two different
+   * menus — so a change to how a session ends had to be remembered in both.
+   */
+  const signOut = useCallback((message = "Successfully signed out") => {
+    setIsLoggedIn(false);
+    setUser(null);
+    clearAuth();
+    if (message) toast.success(message);
+  }, []);
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
@@ -82,20 +93,39 @@ export default function Editor() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (token) {
-      apiFetch("/auth/me")
-        .then((userData) => {
-          setUser(userData);
-          setIsLoggedIn(true);
-        })
-        .catch(() => {
-          localStorage.removeItem("token");
-          setIsLoggedIn(false);
-          setUser(null);
-        });
-    }
+    if (!getToken()) return;
+    apiFetch("/auth/me")
+      .then((userData) => {
+        setUser(userData);
+        setIsLoggedIn(true);
+      })
+      .catch(() => {
+        // `apiFetch` has already cleared the token on a 401; this just brings
+        // the UI into line with it.
+        setIsLoggedIn(false);
+        setUser(null);
+      });
   }, []);
+
+  /*
+   * The session ending mid-flight — an expired or revoked token — used to leave
+   * the header showing a signed-in user while every request failed. `apiFetch`
+   * clears the token on a 401 and announces it; this is what listens.
+   *
+   * It also covers signing out in another tab.
+   */
+  useEffect(
+    () =>
+      onAuthChanged(() => {
+        if (getToken()) return;
+        setIsLoggedIn((wasLoggedIn) => {
+          if (wasLoggedIn) toast.error("Your session has expired. Please sign in again.");
+          return false;
+        });
+        setUser(null);
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!isLoggedIn || !user?.id) {
@@ -1178,13 +1208,7 @@ export default function Editor() {
         }}
         isLoggedIn={isLoggedIn}
         user={user}
-        onSignOut={() => {
-          setIsLoggedIn(false);
-          setUser(null);
-          localStorage.removeItem("token");
-          (window as any).google?.accounts?.id?.disableAutoSelect();
-          toast.success("Successfully signed out");
-        }}
+        onSignOut={() => signOut()}
       />
       <SaveGangSheetModal
         isOpen={showSaveModal}
@@ -1364,11 +1388,7 @@ export default function Editor() {
           setShowOrderDetailsModal(true);
         }}
         onSignOut={() => {
-          setIsLoggedIn(false);
-          setUser(null);
-          localStorage.removeItem("token");
-          (window as any).google?.accounts?.id?.disableAutoSelect();
-          toast.success("Successfully signed out");
+          signOut();
           setShowAccountModal(false);
         }}
         onAuthSuccess={(userData) => {

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
+import { setToken } from "../../lib/utils/auth";
 import LegalAcceptance from "./LegalAcceptance";
 import LegalDocumentModal from "./LegalDocumentModal";
 import { buildLegalAcceptancePayload } from "../../lib/legal/documents";
@@ -19,6 +20,13 @@ interface AuthModalProps {
 }
 
 const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || "";
+
+/**
+ * Mirrors the server's rule in `auth.service` — 8 characters, checked on
+ * register, sub-account creation and reset. The form enforced nothing, so a
+ * short password cost a round trip to learn what the field could have said.
+ */
+const MIN_PASSWORD_LENGTH = 8;
 
 
 export default function AuthModal({
@@ -44,6 +52,13 @@ export default function AuthModal({
     email: "",
     password: "",
   });
+  /*
+   * Confirm password, on the two views that set one: sign-up and reset. A
+   * mistyped password on either is unrecoverable without the email flow — and
+   * email delivery is not working — so catching it here is the difference
+   * between a typo and a locked-out account.
+   */
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
 
   // Legal acknowledgements. Never pre-selected, and reset whenever the user
@@ -98,6 +113,7 @@ export default function AuthModal({
       email: resetEmail || "",
       password: "",
     });
+    setConfirmPassword("");
   }, [isOpen, initialView, isSubAccountCreation, resetToken, resetEmail]);
 
   const handleGoogleCredential = async (response: { credential: string }) => {
@@ -120,7 +136,7 @@ export default function AuthModal({
             : {}),
         }),
       });
-      if (result.token) localStorage.setItem("token", result.token);
+      if (result.token) setToken(result.token);
       toast.success(result.isNew ? "Account created with Google!" : "Welcome back!");
       onAuthSuccess(result.user);
       onClose();
@@ -193,6 +209,16 @@ export default function AuthModal({
   const legalComplete = termsAccepted && contentResponsibilityAccepted;
   const legalBlocked = requiresLegalAcceptance && !legalComplete;
 
+  // Both views where a NEW password is being chosen.
+  const settingNewPassword = mode === "reset" || (mode === "auth" && view === "register");
+  const passwordTooShort =
+    settingNewPassword && formData.password.length > 0 && formData.password.length < MIN_PASSWORD_LENGTH;
+  const passwordsDiffer =
+    settingNewPassword && confirmPassword.length > 0 && formData.password !== confirmPassword;
+  const passwordBlocked =
+    settingNewPassword &&
+    (formData.password.length < MIN_PASSWORD_LENGTH || formData.password !== confirmPassword);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -203,6 +229,22 @@ export default function AuthModal({
       setShowLegalErrors(true);
       setError("Please accept both required agreements to create your account.");
       return;
+    }
+
+    /*
+     * Checked here as well as on the button: Enter still submits a form in some
+     * browser and assistive-technology combinations, so the disabled state is
+     * not the last line of defence.
+     */
+    if (settingNewPassword) {
+      if (formData.password.length < MIN_PASSWORD_LENGTH) {
+        setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+        return;
+      }
+      if (formData.password !== confirmPassword) {
+        setError("The two passwords do not match.");
+        return;
+      }
     }
 
     setLoading(true);
@@ -236,6 +278,7 @@ export default function AuthModal({
         setMode("auth");
         setView("login");
         setFormData({ name: "", email: formData.email, password: "" });
+        setConfirmPassword("");
         return;
       }
 
@@ -291,7 +334,7 @@ export default function AuthModal({
       }
 
       if (response.token) {
-        localStorage.setItem("token", response.token);
+        setToken(response.token);
       }
 
       toast.success(view === "login" ? "Welcome back!" : "Account created successfully!");
@@ -324,7 +367,12 @@ export default function AuthModal({
     );
   }
 
-  const showGoogleOption = mode === "auth" && !isSubAccountCreation;
+  /*
+   * Requires the client ID. Without it the GIS effect returns early and renders
+   * nothing, but this stayed true — leaving a 44px blank where the button should
+   * be, with nothing explaining the gap.
+   */
+  const showGoogleOption = mode === "auth" && !isSubAccountCreation && Boolean(GOOGLE_CLIENT_ID);
 
   return (
     <div
@@ -429,6 +477,11 @@ export default function AuthModal({
                     type={showPassword ? "text" : "password"}
                     name="password"
                     required
+                    minLength={MIN_PASSWORD_LENGTH}
+                    /* Tells a password manager this is a new secret, so it
+                       offers to generate and save one. Without it the browser
+                       treats the field as unremarkable text. */
+                    autoComplete="new-password"
                     value={formData.password}
                     onChange={handleChange}
                     placeholder="••••••••"
@@ -437,6 +490,7 @@ export default function AuthModal({
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
                     className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
                   >
                     {showPassword ? (
@@ -446,6 +500,35 @@ export default function AuthModal({
                     )}
                   </button>
                 </div>
+                {passwordTooShort && (
+                  <p className="mt-1 text-[11px] text-red-500">
+                    Must be at least {MIN_PASSWORD_LENGTH} characters.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                  Confirm Password
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <MdLock size={18} />
+                  </div>
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    name="confirmPassword"
+                    required
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full pl-10 pr-10 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                  />
+                </div>
+                {passwordsDiffer && (
+                  <p className="mt-1 text-[11px] text-red-500">The two passwords do not match.</p>
+                )}
               </div>
             </>
           )}
@@ -462,6 +545,7 @@ export default function AuthModal({
                   type="text"
                   name="name"
                   required
+                  autoComplete="name"
                   value={formData.name}
                   onChange={handleChange}
                   placeholder="John Doe"
@@ -483,6 +567,9 @@ export default function AuthModal({
                 type="email"
                 name="email"
                 required
+                /* "username" is what a password manager pairs with the password
+                   field to save a credential. */
+                autoComplete="username"
                 value={formData.email}
                 onChange={handleChange}
                 placeholder="name@example.com"
@@ -504,6 +591,14 @@ export default function AuthModal({
                 type={showPassword ? "text" : "password"}
                 name="password"
                 required
+                minLength={view === "register" ? MIN_PASSWORD_LENGTH : undefined}
+                /*
+                 * "new-password" on sign-up is what makes a browser offer to
+                 * generate a strong one; "current-password" on sign-in is what
+                 * makes it fill the saved one. Neither was set, so it did
+                 * neither — the same gap we closed on the partner form.
+                 */
+                autoComplete={view === "register" ? "new-password" : "current-password"}
                 value={formData.password}
                 onChange={handleChange}
                 placeholder="••••••••"
@@ -512,6 +607,7 @@ export default function AuthModal({
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
                 className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 transition-colors"
               >
                 {showPassword ? (
@@ -521,6 +617,37 @@ export default function AuthModal({
                 )}
               </button>
             </div>
+            {passwordTooShort && (
+              <p className="mt-1 text-[11px] text-red-500">
+                Must be at least {MIN_PASSWORD_LENGTH} characters.
+              </p>
+            )}
+            </div>
+          )}
+
+          {mode === "auth" && view === "register" && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Confirm Password
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                  <MdLock size={18} />
+                </div>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  name="confirmPassword"
+                  required
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pl-10 pr-10 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                />
+              </div>
+              {passwordsDiffer && (
+                <p className="mt-1 text-[11px] text-red-500">The two passwords do not match.</p>
+              )}
             </div>
           )}
 
@@ -556,13 +683,13 @@ export default function AuthModal({
 
           <button
             type="submit"
-            disabled={loading || legalBlocked}
+            disabled={loading || legalBlocked || passwordBlocked}
             // Kept focusable and announced rather than hidden: a disabled
             // control the user cannot reach gives no clue why they are stuck.
-            aria-disabled={loading || legalBlocked}
+            aria-disabled={loading || legalBlocked || passwordBlocked}
             aria-describedby={legalBlocked ? "submit-blocked-reason" : undefined}
             className={`w-full py-2.5 bg-slate-900 text-white rounded-xl font-semibold text-sm transform active:scale-[0.98] transition-all shadow-lg shadow-slate-900/10 mt-1 ${
-              loading || legalBlocked ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
+              loading || legalBlocked || passwordBlocked ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-800"
             }`}
           >
             {loading
@@ -592,6 +719,7 @@ export default function AuthModal({
                 setView("login");
                 setError(null);
                 setFormData({ name: "", email: "", password: "" });
+                setConfirmPassword("");
               }}
               className="text-sm font-bold text-blue-600 hover:text-blue-700"
             >
@@ -612,6 +740,11 @@ export default function AuthModal({
                   setShowLegalErrors(false);
                   setError(null);
                   setView(view === "login" ? "register" : "login");
+                  // Cleared on the way across: a password typed under one set of
+                  // rules should not sit in a field governed by another.
+                  setFormData((f) => ({ ...f, password: "" }));
+                  setConfirmPassword("");
+                  setError(null);
                 }}
                 className="font-bold text-blue-600 hover:text-blue-700"
               >
