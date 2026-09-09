@@ -32,7 +32,6 @@ import {
   getPricingConfig,
   sendGangsheetUtilizationWarning,
   downloadInvoice,
-  reorder,
   getOrderTracking
 } from "../controllers/customer.controller.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
@@ -71,7 +70,6 @@ router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
 router.get("/orders/:orderId/tracking", getOrderTracking);
-router.post("/orders/:orderId/reorder", reorder);
 router.get("/artboard-draft", getArtboardDraft);
 router.put("/artboard-draft", upsertArtboardDraft);
 router.delete("/artboard-draft", clearArtboardDraft);

@@ -2227,10 +2227,12 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
             widthIn: Number((job as any).shippingQuote.parcel.widthIn),
             heightIn: Number((job as any).shippingQuote.parcel.heightIn),
           }
-        : deriveParcel(
-            totalBillableSqFt((job as any).items || []),
-            (await getGlobalPricing()).packaging,
-          ),
+        : await (async () => {
+            // The same roll rule the quote and the invoice use, so a label
+            // printed later describes the parcel the customer actually paid for.
+            const gp = await getGlobalPricing();
+            return deriveParcel(totalBillableSqFt((job as any).items || [], gp), gp.packaging);
+          })(),
     });
 
     const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =

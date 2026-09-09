@@ -1394,7 +1394,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
      * now derived rather than asserted.
      */
     const shippingQuote = await quoteShipping({
-      totalSqFt: totalBillableSqFt(items),
+      totalSqFt: totalBillableSqFt(items, globalPricing),
       method: normalizeShippingMethod(shippingMethod),
       destination: {
         state: String(shippingAddress?.state || ""),
@@ -1516,7 +1516,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         fallbackReason: shippingQuote.fallbackReason,
         originPostalCode: shippingQuote.originPostalCode ?? undefined,
         originPartnerRegion: shippingQuote.originPartnerRegion ?? undefined,
-        parcel: deriveParcel(totalBillableSqFt(items), globalPricing.packaging),
+        parcel: deriveParcel(totalBillableSqFt(items, globalPricing), globalPricing.packaging),
       },
       status: "PENDING"
     });
@@ -2049,7 +2049,23 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         description: description,
         quantity: item.quantity || 0,
         unitPrice: item.unitPrice || 0,
-        subtotal: item.subtotal || 0
+        subtotal: item.subtotal || 0,
+        /*
+         * The sheet's actual shape, not only a description string built from it.
+         *
+         * These were read to compose `description` and then dropped, so the only
+         * consumer that needs them — reorder, which refills the cart from this
+         * response — had nothing to work with and fell back to a constant. A
+         * 60in sheet came back as a default-length one, quietly.
+         */
+        type: item.type || "gangsheet",
+        widthIn: item.widthIn ?? null,
+        heightIn: item.heightIn ?? null,
+        sheetWidthIn: (item as any).sheetWidthIn ?? item.widthIn ?? null,
+        sheetHeightIn: (item as any).sheetHeightIn ?? item.heightIn ?? null,
+        // So the reordered line can point at the same artwork.
+        designId: (item as any).designId ?? null,
+        previewImage: (item as any).previewImage ?? null,
       };
     });
 
@@ -2422,6 +2438,14 @@ export const getPricingConfig = async (_req: Request, res: Response, next: NextF
     const pricing = await getGlobalPricing();
     res.status(200).json({
       baseRatePerSqFt: pricing.baseRatePerSqFt,
+      /*
+       * The billing shape of a sheet, so the editor quotes what the server will
+       * actually charge. Without these the editor priced the artwork's bounding
+       * box while the server bills the roll — the customer would have been shown
+       * one number and charged another.
+       */
+      sheetWidthIn: pricing.sheetWidthIn,
+      minSheetLengthIn: pricing.minSheetLengthIn,
       // The storefront shows this as a line on express orders, so it has to
       // know the rate or the cart total would not match what is charged.
       rushSurchargePct: pricing.rushSurchargePct,
@@ -2557,7 +2581,7 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
     // own rates (express $19.99, 9.4% tax gated on the country string being
     // exactly "United States") while the charge path used $24.99 and a flat 8%.
     const shippingQuote = await quoteShipping({
-      totalSqFt: totalBillableSqFt(items),
+      totalSqFt: totalBillableSqFt(items, pricing),
       method: normalizeShippingMethod(shippingMethod),
       destination: {
         state: String(req.body?.shippingState || ""),
@@ -2712,78 +2736,17 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
   }
 };
 
-export const reorder = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { orderId } = req.params;
-    const { quantityMultiplier = 1 } = req.body || {};
-
-    if (typeof quantityMultiplier !== "number" || quantityMultiplier <= 0) {
-      const error = new Error("quantityMultiplier must be a positive number") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const originalOrder = await Order.findOne({ _id: orderId, user: req.user?.id });
-
-    if (!originalOrder) {
-      const error = new Error("Original order not found") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const newItems = originalOrder.items.map((item) => {
-      const quantity = item.quantity * quantityMultiplier;
-      const subtotal = item.unitPrice * quantity;
-
-      return {
-        type: item.type,
-        designId: item.designId,
-        name: item.name,
-        widthIn: item.widthIn,
-        heightIn: item.heightIn,
-        quantity,
-        unitPrice: item.unitPrice,
-        subtotal
-      };
-    });
-
-    const subtotal = newItems.reduce((sum, item) => sum + item.subtotal!, 0);
-    const shippingCost = originalOrder.pricing.shippingCost || 0;
-    const taxRate = originalOrder.pricing.subtotal && originalOrder.pricing.subtotal > 0 ? (originalOrder.pricing.tax || 0) / originalOrder.pricing.subtotal : 0;
-    const tax = roundToTwo(subtotal * taxRate);
-    const total = roundToTwo(subtotal + shippingCost + tax);
-
-    const newOrder = new Order({
-      user: req.user?.id,
-      items: newItems,
-      customer: originalOrder.customer,
-      shippingAddress: originalOrder.shippingAddress,
-      shippingMethod: originalOrder.shippingMethod,
-      payment: {
-        method: originalOrder.payment.method
-      },
-      pricing: {
-        subtotal: roundToTwo(subtotal),
-        shippingCost: roundToTwo(shippingCost),
-        tax,
-        total,
-        currency: originalOrder.pricing.currency
-      },
-      status: "PENDING"
-    });
-
-    // A reorder copies artwork references from an existing order, so it can
-    // only be oversized if the original was — but the original predates this
-    // guard, so it is checked rather than assumed.
-    assertPersistable(newOrder.toObject(), { label: "reorder" });
-    await newOrder.save();
-
-    res.status(201).json({
-      orderId: newOrder.id,
-      status: "Pending",
-      createdFrom: originalOrder.id
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+/*
+ * `reorder` was removed.
+ *
+ * It created a live order the moment it was called — no cart, no address
+ * confirmation, no payment step — and the store's Order Details modal called it
+ * behind a button that toasted "Order placed successfully!". The order it wrote
+ * carried no `paymentIntentId`, so it was unpaid, and it was priced by copying
+ * the ORIGINAL order's stored `unitPrice` and tax ratio rather than going
+ * through `deriveItemUnitPrice`. After any rate or minimum-length change it
+ * would have charged the old amount.
+ *
+ * Reordering now fills the cart from `GET /customer/orders/:id` and goes through
+ * checkout like any other order, which is what Order History already did.
+ */

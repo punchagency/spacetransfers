@@ -29,6 +29,19 @@ import {
 export interface GlobalPricing {
   baseRatePerSqFt: number;
   /**
+   * The roll width every gang sheet is cut from, and the shortest length that
+   * can be billed.
+   *
+   * A gang sheet consumes the full width of the roll whatever the artwork does,
+   * and a run below the minimum length costs the same to set up as one at it.
+   * Neither was implemented: price came from the bounding box of the artwork, so
+   * a single 6x10in graphic on a 23.5in roll was billed 0.42 sq ft ($1.47)
+   * instead of the 1.63 sq ft ($5.71) of roll it actually consumes — a four-fold
+   * undercharge that grew worse the sparser the sheet.
+   */
+  sheetWidthIn: number;
+  minSheetLengthIn: number;
+  /**
    * The flat rates are no longer what a customer pays. They are the fallback
    * used when the carrier cannot be reached — see `shipping.service`.
    */
@@ -76,6 +89,10 @@ export const DEFAULT_GLOBAL_PRICING: GlobalPricing = {
    * seeding 24.00 would have made deploying this a sevenfold price rise.
    */
   baseRatePerSqFt: 3.5,
+  // The physical roll, and the shortest run worth setting up. Editable by an
+  // admin like every other rate here, rather than compiled in.
+  sheetWidthIn: 23.5,
+  minSheetLengthIn: 10,
   shipping: { standard: 8.99, express: 24.99 },
   // A starting point, not a considered figure. Set it once a real parcel has
   // been costed — on a $9 parcel this recovers 90c, which will not cover a tube.
@@ -123,6 +140,8 @@ export const normalizeGlobalPricing = (value: unknown): GlobalPricing => {
   const v = (value as any) || {};
   return {
     baseRatePerSqFt: finiteOr(v.baseRatePerSqFt, DEFAULT_GLOBAL_PRICING.baseRatePerSqFt),
+    sheetWidthIn: finiteOr(v.sheetWidthIn, DEFAULT_GLOBAL_PRICING.sheetWidthIn),
+    minSheetLengthIn: finiteOr(v.minSheetLengthIn, DEFAULT_GLOBAL_PRICING.minSheetLengthIn),
     shipping: {
       standard: finiteOr(v.shipping?.standard, DEFAULT_GLOBAL_PRICING.shipping.standard),
       express: finiteOr(v.shipping?.express, DEFAULT_GLOBAL_PRICING.shipping.express),
@@ -281,6 +300,24 @@ export const billableAreaSqFt = (widthIn: unknown, heightIn: unknown): number | 
   return roundToTwo((w * h) / 144);
 };
 
+/**
+ * The area a gang sheet is billed on, as opposed to the area its artwork covers.
+ *
+ * Width is the roll — artwork occupying 6in of a 23.5in roll still consumes the
+ * whole width — and length is floored at the configured minimum. `heightIn` is
+ * still read from the item because the length genuinely varies; the width is not,
+ * so a client understating it cannot buy a cheaper sheet.
+ */
+export const billableSheetArea = (
+  heightIn: unknown,
+  pricing: GlobalPricing,
+): number | null => {
+  const h = Number(heightIn);
+  if (!Number.isFinite(h) || h <= 0) return null;
+  const billedLength = Math.max(h, pricing.minSheetLengthIn);
+  return roundToTwo((pricing.sheetWidthIn * billedLength) / 144);
+};
+
 /** What a gang sheet of a given area costs at the configured retail rate. */
 export const sheetUnitPrice = (areaSqFt: number, pricing: GlobalPricing): number =>
   roundToTwo(roundToTwo(finiteOr(areaSqFt, 0)) * pricing.baseRatePerSqFt);
@@ -309,13 +346,14 @@ export const deriveItemUnitPrice = (item: unknown, pricing: GlobalPricing): numb
     throw badRequest(`Unsupported item type: ${String(it.type)}`);
   }
 
-  const areaSqFt = billableAreaSqFt(it.widthIn, it.heightIn);
+  // Billed on the roll, with a minimum length — not on the artwork's bounds.
+  const areaSqFt = billableSheetArea(it.heightIn, pricing);
   if (areaSqFt == null) {
-    // Not a fallback to the client's figure: a sheet with no positive
-    // dimensions has nothing to print and no basis for a price. Accepting one
-    // at the client's `unitPrice` is how a zero-area order could be placed for
-    // the price of shipping alone.
-    throw badRequest("Each gang sheet requires positive widthIn and heightIn");
+    // Not a fallback to the client's figure: a sheet with no positive length
+    // has nothing to print and no basis for a price. Accepting one at the
+    // client's `unitPrice` is how a zero-area order could be placed for the
+    // price of shipping alone.
+    throw badRequest("Each gang sheet requires a positive heightIn");
   }
 
   return sheetUnitPrice(areaSqFt, pricing);
@@ -359,7 +397,7 @@ export const priceItems = async (
   const method = normalizeShippingMethod(shippingMethod);
 
   const shipping = await quoteShipping({
-    totalSqFt: totalBillableSqFt(items),
+    totalSqFt: totalBillableSqFt(items, pricing),
     method,
     destination: destination ?? null,
     packaging: pricing.packaging,
@@ -383,8 +421,22 @@ export const priceItems = async (
 };
 
 /** Total billed area across a set of line items — what the parcel is sized from. */
-export const totalBillableSqFt = (items: unknown[]): number =>
+/**
+ * The area a shipment is packed for.
+ *
+ * This measured the artwork's bounding box, so a sparse sheet was parcelled as
+ * though only the printed part travelled. What actually ships is the roll — full
+ * width, minimum length — so a 6x10in graphic was being packed as 0.42 sq ft of
+ * film when 1.63 sq ft of roll goes in the tube. Under-declaring weight and size
+ * is what gets charged back by the carrier.
+ *
+ * Same rule as the price, from the same settings, so the parcel and the invoice
+ * describe the same object.
+ */
+export const totalBillableSqFt = (items: unknown[], pricing?: GlobalPricing): number =>
   (Array.isArray(items) ? items : []).reduce((sum: number, it: any) => {
-    const area = billableAreaSqFt(it?.widthIn, it?.heightIn);
+    const area = pricing
+      ? billableSheetArea(it?.heightIn, pricing)
+      : billableAreaSqFt(it?.widthIn, it?.heightIn);
     return area == null ? sum : sum + area * itemQuantity(it);
   }, 0);
