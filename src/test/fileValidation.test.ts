@@ -3,6 +3,7 @@ import {
   sniffFileKind,
   validateImageFile,
 } from "../components/artboard/lib/utils/fileValidation";
+import { MAX_UPLOAD_BYTES } from "../config/artboard.config";
 
 /** Real leading bytes for each format, as a browser would see them. */
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -165,5 +166,39 @@ describe("validateImageFile", () => {
     const result = await validateImageFile(png);
     expect(result.ok).toBe(true);
     expect(slicedTo).toBe(16);
+  });
+});
+
+/**
+ * The server caps a file at 64MB. Without a matching check here the whole file
+ * uploaded before being rejected — minutes of transfer to learn something the
+ * browser knew before it started.
+ */
+describe("size ceiling", () => {
+  // `sizeBytes`, not `bytes` — that name is the module's Uint8Array helper, and
+  // shadowing it made the file builder call a number.
+  const sized = (sizeBytes: number, name = "huge.png", type = "image/png") => {
+    const f = file(bytes(...PNG_MAGIC), name, type);
+    // A real 64MB File would make the suite crawl; only `size` is read.
+    Object.defineProperty(f, "size", { value: sizeBytes });
+    return f;
+  };
+
+  it("refuses a file over the limit before reading or uploading it", async () => {
+    const result = await validateImageFile(sized(MAX_UPLOAD_BYTES + 1));
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/over the 64MB limit/i);
+    // Names the actual size, so "too big" is actionable rather than a verdict.
+    expect(result.message).toMatch(/64\.0MB/);
+  });
+
+  it("accepts a file exactly at the limit", async () => {
+    expect((await validateImageFile(sized(MAX_UPLOAD_BYTES))).ok).toBe(true);
+  });
+
+  it("still reports an empty file as empty, not as oversized", async () => {
+    const result = await validateImageFile(sized(0));
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/empty/i);
   });
 });

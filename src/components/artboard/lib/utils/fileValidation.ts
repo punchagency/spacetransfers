@@ -1,3 +1,4 @@
+import { MAX_UPLOAD_BYTES } from "../../../../config/artboard.config";
 /**
  * Content-level validation for dropped files.
  *
@@ -173,6 +174,23 @@ export const validateImageFile = async (file: File): Promise<FileValidationResul
       ok: false,
       detected: null,
       message: `“${file.name}” is empty (0 bytes). The file may not have finished downloading — please re-export it and try again.`,
+    };
+  }
+
+  /*
+   * Refused before it is sent, not after.
+   *
+   * The server caps a file at 64MB; without this the whole thing uploaded and
+   * came back 413, which on a slow connection is minutes spent to learn
+   * something the browser knew immediately.
+   */
+  if (file.size > MAX_UPLOAD_BYTES) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    const capMb = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
+    return {
+      ok: false,
+      detected: null,
+      message: `“${file.name}” is ${mb}MB, over the ${capMb}MB limit. Please re-export it at a smaller size or lower resolution and try again.`,
     };
   }
 

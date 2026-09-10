@@ -57,6 +57,16 @@ export const MAX_SHEET_HEIGHT_IN = 1200;
  * PDF while the browse dialog's `accept` omitted it, so the same file could be
  * added by dragging but not by browsing.
  */
+/**
+ * The server's per-file ceiling, mirrored — see `middleware/upload.ts`.
+ *
+ * Checked here so an oversized file is refused before it is sent. Without it a
+ * 70MB export uploaded in full, over however slow a connection, and was then
+ * rejected with a 413 — the whole transfer wasted to learn something knowable
+ * up front. Kept in step by hand, as the server's rule cannot be imported.
+ */
+export const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
 export const ACCEPTED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",

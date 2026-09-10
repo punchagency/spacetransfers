@@ -141,6 +141,11 @@ type SidebarProps = {
  * live whether or not auto-nest is on — changing it forces a one-off re-gap
  * (`runGlobalPack = autoNestStickers || configChanged`).
  */
+/** How much one press of a stepper moves the spacing, in inches. */
+const SPACING_STEP_IN = 0.05;
+/** Matches the validation in `editorSettings`, so a stepper cannot store a value a reload would reject. */
+const SPACING_MAX_IN = 6;
+
 function SpacingInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
     const [local, setLocal] = useState(String(value));
 
@@ -150,28 +155,80 @@ function SpacingInput({ value, onChange }: { value: number; onChange: (v: number
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [value]);
 
+    /*
+     * Typing a decimal was the only way to change this. A stepper is what the
+     * control is for — nudging a gap by a hair and watching the sheet re-nest —
+     * and doing that by selecting text and retyping "0.55" is the slow path.
+     *
+     * Rounded to two decimals because repeated float addition drifts: 0.5 + 0.05
+     * eight times lands on 0.8999999999999999, which then renders in the field.
+     */
+    const step = (direction: 1 | -1) => {
+        const current = Number.isFinite(parseFloat(local)) ? parseFloat(local) : value;
+        const next = Math.min(SPACING_MAX_IN, Math.max(0, Math.round((current + direction * SPACING_STEP_IN) * 100) / 100));
+        setLocal(String(next));
+        onChange(next);
+    };
+
+    const atMin = value <= 0;
+    const atMax = value >= SPACING_MAX_IN;
+
+    const stepBtn = "flex h-1/2 w-7 items-center justify-center text-gray-500 hover:bg-gray-200 hover:text-gray-900 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors cursor-pointer";
+
     return (
-        <input
-            type="text"
-            inputMode="decimal"
-            value={local}
-            onChange={(e) => {
-                setLocal(e.target.value);
-                const n = parseFloat(e.target.value);
-                if (Number.isFinite(n) && n >= 0) onChange(n);
-            }}
-            onBlur={() => {
-                const n = parseFloat(local);
-                if (Number.isFinite(n) && n >= 0) {
-                    onChange(n);
-                    setLocal(String(n));
-                } else {
-                    setLocal(String(value));
-                }
-            }}
-            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-            className="w-full bg-gray-100 border-none rounded-md py-2 px-3 text-[12px] font-medium focus:outline-none focus:ring-1 focus:ring-black"
-        />
+        <div className="flex items-stretch rounded-md bg-gray-100 focus-within:ring-1 focus-within:ring-black overflow-hidden">
+            <input
+                type="text"
+                inputMode="decimal"
+                aria-label="Item spacing in inches"
+                value={local}
+                onChange={(e) => {
+                    setLocal(e.target.value);
+                    const n = parseFloat(e.target.value);
+                    if (Number.isFinite(n) && n >= 0 && n <= SPACING_MAX_IN) onChange(n);
+                }}
+                onBlur={() => {
+                    const n = parseFloat(local);
+                    if (Number.isFinite(n) && n >= 0) {
+                        const clamped = Math.min(SPACING_MAX_IN, n);
+                        onChange(clamped);
+                        setLocal(String(clamped));
+                    } else {
+                        setLocal(String(value));
+                    }
+                }}
+                /* Arrow keys step it too, which is what the field already looks
+                   like it should do. */
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    if (e.key === 'ArrowUp') { e.preventDefault(); step(1); }
+                    if (e.key === 'ArrowDown') { e.preventDefault(); step(-1); }
+                }}
+                className="min-w-0 flex-1 bg-transparent border-none py-2 px-3 text-[12px] font-medium focus:outline-none"
+            />
+            <div className="flex w-7 flex-col border-l border-gray-200">
+                <button
+                    type="button"
+                    onClick={() => step(1)}
+                    disabled={atMax}
+                    aria-label={`Increase spacing by ${SPACING_STEP_IN} inches`}
+                    title={`+${SPACING_STEP_IN}"`}
+                    className={`${stepBtn} border-b border-gray-200`}
+                >
+                    <MdKeyboardArrowUp size={14} />
+                </button>
+                <button
+                    type="button"
+                    onClick={() => step(-1)}
+                    disabled={atMin}
+                    aria-label={`Decrease spacing by ${SPACING_STEP_IN} inches`}
+                    title={`-${SPACING_STEP_IN}"`}
+                    className={stepBtn}
+                >
+                    <MdKeyboardArrowDown size={14} />
+                </button>
+            </div>
+        </div>
     );
 }
 
