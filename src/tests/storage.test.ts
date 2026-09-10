@@ -80,8 +80,22 @@ describe("which backend serves", () => {
     const { storeArtwork } = await import("../services/storage.service.js");
     await assert.rejects(
       () => storeArtwork(Buffer.from("x"), "art"),
-      (e: any) => e?.statusCode === 503 && /R2_ACCOUNT_ID/.test(e.message),
+      (e: any) => e?.statusCode === 503,
       "an unconfigured server must refuse, not silently store somewhere unintended",
+    );
+
+    /*
+     * And the refusal must not read like an operator's checklist.
+     *
+     * This used to assert the message *contained* `R2_ACCOUNT_ID` — pinning a
+     * leak rather than catching one. That sentence went verbatim to a customer
+     * whose upload had just failed, naming four of our environment variables.
+     * The actionable version belongs in the log.
+     */
+    await assert.rejects(
+      () => storeArtwork(Buffer.from("x"), "art"),
+      (e: any) => !/R2_|ACCOUNT_ID|SECRET|BUCKET/.test(String(e?.message)),
+      "the customer-facing message must not name our environment variables",
     );
   });
 });

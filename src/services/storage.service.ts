@@ -168,9 +168,20 @@ export const storeArtwork = async (
   contentType?: string,
 ): Promise<StoredObject> => {
   if (!isR2Configured()) {
+    /*
+     * Two audiences, two messages.
+     *
+     * This sentence went to the customer verbatim: an operator's checklist,
+     * naming four of our environment variables, shown to someone whose upload
+     * had just failed. They cannot act on it and should not see it. The
+     * actionable version goes to the log, where the person who can act is.
+     */
+    console.error(
+      "[storage] artwork storage is not configured — set R2_ACCOUNT_ID, " +
+        "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET",
+    );
     const error = new Error(
-      "Artwork storage is not configured. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, " +
-        "R2_SECRET_ACCESS_KEY and R2_BUCKET.",
+      "We can't accept uploads at the moment. Nothing you did caused this — please try again shortly.",
     ) as Error & { statusCode?: number };
     error.statusCode = 503;
     throw error;
