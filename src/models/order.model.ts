@@ -266,7 +266,10 @@ const orderSchema = new Schema<IOrder>(
       required: true
     },
     payment: {
-      method: { type: String, required: true },
+      // Defence in depth behind the controller's check: the only method the
+      // platform takes is a Stripe card, and a free-form string here is what let
+      // `method: "bank_transfer"` slip past payment verification entirely.
+      method: { type: String, required: true, enum: ["card"] },
       cardLast4: { type: String },
       cardBrand: { type: String },
       paymentIntentId: { type: String }
@@ -490,5 +493,22 @@ orderSchema.index({ updatedAt: -1, _id: -1 });
 orderSchema.index({ assignedPrinter: 1, updatedAt: -1, _id: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
+
+/**
+ * One payment cannot buy two orders.
+ *
+ * `verifyCardPayment` looks for an existing order on the same intent, but two
+ * requests arriving together would both find none and both succeed. This is
+ * what actually settles it. Partial, so orders with no `paymentIntentId` — cash,
+ * and every row predating card payments — do not collide on `null`.
+ */
+orderSchema.index(
+  { "payment.paymentIntentId": 1 },
+  {
+    unique: true,
+    partialFilterExpression: { "payment.paymentIntentId": { $type: "string" } },
+    name: "unique_payment_intent",
+  },
+);
 
 export const Order = mongoose.model<IOrder>("Order", orderSchema);

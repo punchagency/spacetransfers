@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { verifyCardPayment } from "../services/paymentVerification.service.js";
 import { User } from "../models/user.model.js";
 import { isValidPhone } from "../utils/accountFields.js";
 import { Asset } from "../models/asset.model.js";
@@ -1231,7 +1232,27 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    if (payment.method === "card" && !payment.paymentIntentId) {
+    /*
+     * Card is the only method the platform takes.
+     *
+     * `payment.method` was a free-form string and verification keyed off it, so
+     * `method: "bank_transfer"` skipped the check entirely and produced a real
+     * unpaid order — the same hole in a different coat. There is no bank
+     * transfer, no invoicing and no cash: checkout offers a Stripe card and
+     * nothing else, so anything else is a request that did not come from it.
+     */
+    if (payment.method !== "card") {
+      const error = new Error(
+        `Unsupported payment method: ${String(payment.method)}. Orders are paid by card.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Presence only — the payment itself is verified below, once the server has
+    // priced the order, because it has to be checked against OUR total rather
+    // than the one the request supplied.
+    if (!payment.paymentIntentId) {
       const error = new Error("payment.paymentIntentId is required for card payments") as CustomError;
       error.statusCode = 400;
       throw error;
@@ -1497,6 +1518,32 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       geocoded: false
     };
 
+    /*
+     * The payment is confirmed with Stripe before an order exists.
+     *
+     * `payment` used to be stored exactly as the request sent it, so a
+     * fabricated `paymentIntentId` produced a real, unpaid order queued for a
+     * partner to print. Checked against `recordedPricing.total` — the server's
+     * own figure — rather than anything the caller supplied.
+     */
+    const verifiedPayment = await verifyCardPayment({
+      paymentIntentId: payment.paymentIntentId,
+      expectedTotal: recordedPricing.total,
+      currency: recordedPricing.currency,
+      userId: String(req.user?.id || ""),
+    });
+
+    /*
+     * Built from what Stripe confirmed, not from what the request sent. The two
+     * agree when the caller is honest, and only one of them is evidence.
+     */
+    const recordedPayment = {
+      method: "card" as const,
+      paymentIntentId: verifiedPayment.paymentIntentId,
+      cardBrand: verifiedPayment.cardBrand ?? undefined,
+      cardLast4: verifiedPayment.cardLast4 ?? undefined,
+    };
+
     const order = new Order({
       user: req.user?.id,
       displayId: await nextOrderDisplayId(),
@@ -1504,7 +1551,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       customer: normalizedCustomer,
       shippingAddress: enrichedShippingAddress,
       shippingMethod,
-      payment,
+      payment: recordedPayment,
       priority: orderPriority,
       pricing: recordedPricing,
       shippingQuote: {
