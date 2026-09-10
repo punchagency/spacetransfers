@@ -497,6 +497,9 @@ export default function Artboard({
         <CanvasContainer
           zoom={zoom}
           showRulers={showRulers}
+          // Was destructured here and passed to nothing — the toggle's whole
+          // journey ended at this component.
+          showGrid={showGrid}
           showMargins={showMargins}
           marginSize={marginSize}
           spacing={spacing}

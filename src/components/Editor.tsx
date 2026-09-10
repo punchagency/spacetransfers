@@ -22,6 +22,7 @@ import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
+import { loadEditorSettings, saveEditorSettings, type EditorSettings } from "../lib/utils/editorSettings";
 import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
 import { computeRenderCopies } from "./artboard/lib/utils/layoutHelpers";
 
@@ -717,28 +718,22 @@ export default function Editor() {
   };
 
   // Settings State lifted from Sidebar
-  const [settings, setSettings] = useState(() => {
-    let canvasBg = '#f3f4f6';
-    try { canvasBg = localStorage.getItem('canvasBg') || '#f3f4f6'; } catch {}
-    return {
-      showGrid: true,
-      showRulers: true,
-      showMargins: false,
-      snapToGrid: false,
-      autoNestStickers: true,
-      // Default item spacing for every new gangsheet. Users can still adjust
-      // it manually at any time via the settings control.
-      spacing: 0.5,
-      marginSize: 0.15,
-      canvasBg,
-    };
-  });
+  const [settings, setSettings] = useState(loadEditorSettings);
 
-  const updateSetting = (key: keyof typeof settings, value: any) => {
-    setSettings((prev) => ({ ...prev, [key]: value }));
-    if (key === 'canvasBg') {
-      try { localStorage.setItem('canvasBg', value); } catch {}
-    }
+  /*
+   * Every setting persists, not just the background.
+   *
+   * `canvasBg` was written to localStorage and the other seven were not, so
+   * turning off rulers or setting a spacing lasted until the next reload and
+   * then silently reverted. That reads as the control not working. One of eight
+   * persisting was an oversight rather than a decision.
+   */
+  const updateSetting = (key: keyof EditorSettings, value: any) => {
+    setSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      saveEditorSettings(next);
+      return next;
+    });
   };
 
   const addGangSheetToCartNow = async (forceFullSheetPrice: boolean = false) => {
@@ -1206,6 +1201,7 @@ export default function Editor() {
           setIsSidebarOpen(false);
           attemptCreateNewGangsheet();
         }}
+        hasArtwork={currentItems.length > 0}
         onOpenSaveModal={() => {
           if (!isLoggedIn) {
             setAuthView("login");

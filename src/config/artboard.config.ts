@@ -71,7 +71,15 @@ export const ACCEPTED_IMAGE_TYPES = [
  * 0.75") snaps to a value the `<select>` can actually display — otherwise the
  * control renders blank and the sidebar stops reflecting the real state.
  */
-export const MARGIN_OPTIONS = [0.25, 0.5, 1.0] as const;
+/**
+ * Selectable margins. `CANVAS.DEFAULT_MARGIN` must be one of them.
+ *
+ * It was not: the editor ran at 0.15in while the options were 0.25, 0.5 and 1.0,
+ * so the select's value matched nothing — it could not show the margin in use,
+ * the default could not be chosen back once changed, and the list labelled 0.25
+ * "(Default)" when the default was 0.15.
+ */
+export const MARGIN_OPTIONS = [0.15, 0.25, 0.5, 1.0] as const;
 
 /**
  * Canvas background swatches, mirroring the sidebar palette. `aliases` are the

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useIsMobile } from '../lib/useIsMobile';
-import { CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
+import { CANVAS, CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
 import {
     MdSettings,
     MdClose,
     MdStraighten,
     MdVisibility,
     MdGridView,
+    MdGridOn,
     MdAdd,
     MdSave,
     MdFolderOpen,
@@ -45,22 +46,28 @@ const IconRow = ({
     icon: Icon,
     label,
     action,
-    onClick
+    onClick,
+    hint,
 }: {
     icon?: React.ElementType;
     label: string;
     action: React.ReactNode;
     onClick?: () => void;
+    /** Shown under the label when the setting has no visible effect yet. */
+    hint?: string;
 }) => (
     <div
-        className="flex items-center justify-between py-1.5 px-2 -mx-2 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
+        className="py-1.5 px-2 -mx-2 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
         onClick={onClick}
     >
-        <div className="flex items-center gap-2 text-gray-600">
-            {Icon && <Icon size={16} />}
-            <span className="text-xs font-medium">{label}</span>
+        <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-gray-600">
+                {Icon && <Icon size={16} />}
+                <span className="text-xs font-medium">{label}</span>
+            </div>
+            {action}
         </div>
-        {action}
+        {hint && <p className="mt-1 ml-6 text-[11px] text-gray-400">{hint}</p>}
     </div>
 );
 
@@ -121,13 +128,20 @@ type SidebarProps = {
     onOpenAccountModal: () => void;
     onOpenAuthModal: (view: "login" | "register") => void;
     onCreateGangSheet: () => void;
+    /** Whether the board has anything on it — decides whether guides can show. */
+    hasArtwork: boolean;
     onClearArtboard: () => void;
     onSignOut: () => void;
     isLoggedIn: boolean;
     user?: { name?: string; email?: string; avatarUrl?: string | null } | null;
 };
 
-function SpacingInput({ value, disabled, onChange }: { value: number; disabled: boolean; onChange: (v: number) => void }) {
+/*
+ * No `disabled` prop. Its only call site passed a literal `false`, and spacing is
+ * live whether or not auto-nest is on — changing it forces a one-off re-gap
+ * (`runGlobalPack = autoNestStickers || configChanged`).
+ */
+function SpacingInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
     const [local, setLocal] = useState(String(value));
 
     useEffect(() => {
@@ -141,7 +155,6 @@ function SpacingInput({ value, disabled, onChange }: { value: number; disabled: 
             type="text"
             inputMode="decimal"
             value={local}
-            disabled={disabled}
             onChange={(e) => {
                 setLocal(e.target.value);
                 const n = parseFloat(e.target.value);
@@ -172,6 +185,7 @@ export default function Sidebar({
     onOpenAccountModal,
     onOpenAuthModal,
     onCreateGangSheet,
+    hasArtwork,
     onClearArtboard,
     onSignOut,
     isLoggedIn,
@@ -185,25 +199,6 @@ export default function Sidebar({
         account: true,
     });
 
-    const [hoverHint, setHoverHint] = useState<{
-        visible: boolean;
-        top: number;
-        left: number;
-        text: string;
-    }>({ visible: false, top: 0, left: 0, text: '' });
-
-    const showHint = (e: React.MouseEvent<HTMLElement>, text: string) => {
-        setHoverHint({
-            visible: true,
-            top: e.clientY + 14,
-            left: e.clientX + 14,
-            text
-        });
-    };
-
-    const hideHint = () => {
-        setHoverHint((prev) => ({ ...prev, visible: false }));
-    };
 
 
     const toggleSection = (key: keyof typeof sections) => {
@@ -249,12 +244,20 @@ export default function Sidebar({
 
                         {sections.canvasDisplay && (
                             <div className="space-y-1 mb-4">
-                                {/* Show Grid - Commented Out */}
-                                {/* <IconRow
+                                {/*
+                                  Uncommented. It was commented out because it did
+                                  nothing — `showGrid` reached `Artboard` and stopped
+                                  there, with no grid renderer anywhere. `CanvasGrid`
+                                  now draws the same lattice `snapToGridPoint` rounds
+                                  to, so the toggle has something to show.
+                                */}
+                                <IconRow
                                     icon={MdGridOn}
                                     label="Show Grid"
+                                    onClick={() => onUpdateSetting('showGrid', !settings.showGrid)}
                                     action={<Toggle checked={settings.showGrid} onChange={() => onUpdateSetting('showGrid', !settings.showGrid)} />}
-                                /> */} 
+                                    hint={hasArtwork ? undefined : "Appears on the sheet once you add artwork"}
+                                />
                                 {!isMobile && (
                                 <IconRow
                                     icon={MdStraighten}
@@ -268,6 +271,13 @@ export default function Sidebar({
                                     label="Show Margins"
                                     onClick={() => onUpdateSetting('showMargins', !settings.showMargins)}
                                     action={<Toggle checked={settings.showMargins} onChange={() => onUpdateSetting('showMargins', !settings.showMargins)} />}
+                                    /*
+                                     * The guide is drawn on the sheet, and there is no sheet
+                                     * until artwork exists — the empty board shows an upload
+                                     * card instead. Without this the toggle looks broken at
+                                     * exactly the moment someone first tries it.
+                                     */
+                                    hint={hasArtwork ? undefined : "Appears on the sheet once you add artwork"}
                                 />
                                 {!isMobile && (
                                 <IconRow
@@ -316,7 +326,10 @@ export default function Sidebar({
                                         >
                                             {MARGIN_OPTIONS.map((option) => (
                                                 <option key={option} value={option}>
-                                                    {option}"{option === 0.25 ? ' (Default)' : ''}
+                                                    {/* Labelled from the constant, so the two cannot
+                                                        drift again — this said 0.25 while the editor
+                                                        ran at 0.15. */}
+                                                    {option}"{option === CANVAS.DEFAULT_MARGIN ? ' (Default)' : ''}
                                                 </option>
                                             ))}
                                         </select>
@@ -348,33 +361,36 @@ export default function Sidebar({
                                     <p className="text-[12px] text-gray-500">Arrange efficiently and fill leftover gaps</p>
                                 </div>
 
-                                {!isMobile && (
+                                {/* Shown on mobile too. The setting applied on a phone
+                                    all along — it was only the control that was hidden,
+                                    so the spacing could not be changed there. */}
                                 <div className="mt-4">
                                     <label className="text-[12px] font-semibold text-slate-700 block mb-2">Item Spacing Inches</label>
                                     <div className="relative">
                                         <SpacingInput
                                             value={settings.spacing}
-                                            disabled={false}
                                             onChange={(v) => onUpdateSetting('spacing', v)}
                                         />
                                     </div>
                                     <p className="text-[12px] text-gray-500 mt-2">Space between items</p>
                                 </div>
-                                )}
                             </div>
                         )}
                     </div>
 
+                    {/*
+                      Gang Sheets.
+
+                      Nothing here is disabled while signed out. Create and Clear
+                      are local — they reset the board in front of you and touch
+                      no account — so blocking them stopped a visitor tidying up
+                      work they were allowed to start. Save and Load do need an
+                      account, and the Editor already prompts for one on click,
+                      which says more than a dead button with a tooltip.
+                    */}
                     {/* Gang Sheets Section */}
                     <div
                         className="border-b border-gray-100 py-2"
-                        onMouseEnter={(e) => {
-                            if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                        }}
-                        onMouseMove={(e) => {
-                            if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                        }}
-                        onMouseLeave={hideHint}
                     >
                         <SectionHeader
                             title="Gang Sheets"
@@ -385,67 +401,36 @@ export default function Sidebar({
                         {sections.gangSheets && (
                             <div className="space-y-1 mb-4">
                                 <div
-                                    onMouseEnter={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseMove={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseLeave={hideHint}
                                 >
                                     <button
                                         className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                         onClick={() => { onCreateGangSheet(); onClose(); }}
-                                        disabled={!isLoggedIn}
                                     >
                                         <MdAdd size={20} />
                                         <span className="text-[12px] font-medium">Create GangSheet</span>
                                     </button>
                                 </div>
                                 <div
-                                    onMouseEnter={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseMove={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseLeave={hideHint}
                                 >
                                     <button
                                         className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                         onClick={onOpenSaveModal}
-                                        disabled={!isLoggedIn}
                                     >
                                         <MdSave size={20} />
                                         <span className="text-[12px] font-medium">Save GangSheet</span>
                                     </button>
                                 </div>
                                 <div
-                                    onMouseEnter={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseMove={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseLeave={hideHint}
                                 >
                                     <button
                                         className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                         onClick={onOpenLoadModal}
-                                        disabled={!isLoggedIn}
                                     >
                                         <MdFolderOpen size={20} />
                                         <span className="text-[12px] font-medium">Load GangSheet</span>
                                     </button>
                                 </div>
                                 <div
-                                    onMouseEnter={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseMove={(e) => {
-                                        if (!isLoggedIn) showHint(e, "Signin or Signup to access Gangsheet");
-                                    }}
-                                    onMouseLeave={hideHint}
                                 >
                                     <button
                                         className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 text-left cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -453,7 +438,6 @@ export default function Sidebar({
                                             onClearArtboard();
                                             onClose();
                                         }}
-                                        disabled={!isLoggedIn}
                                     >
                                         <MdDeleteOutline size={20} />
                                         <span className="text-[12px] font-medium">Clear Artboard</span>
@@ -517,18 +501,8 @@ export default function Sidebar({
 
                 </div>
             </div>
-            <div
-                className={`fixed z-[60] pointer-events-none transition-all duration-200 ease-out ${hoverHint.visible ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-1"}`}
-                style={{
-                    top: hoverHint.top,
-                    left: hoverHint.left,
-                    transform: hoverHint.visible ? "translateX(0)" : "translateX(-4px)"
-                }}
-            >
-                <div className="rounded-lg bg-slate-900 text-white text-[12px] font-medium px-3 py-2 shadow-lg">
-                    {hoverHint.text}
-                </div>
-            </div>
+            {/* The hover tooltip that told signed-out visitors they could not
+                use this section is gone with the restriction it explained. */}
         </>
     );
 }

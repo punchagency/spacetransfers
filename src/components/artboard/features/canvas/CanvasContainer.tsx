@@ -3,6 +3,7 @@ import { MdAdd, MdOutlineFileUpload, MdArrowUpward } from "react-icons/md";
 import { getGridStyle, CHECKER_PAIRS, isDarkBg } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
+import CanvasGrid from "./CanvasGrid";
 import EmptyState from "./EmptyState";
 import BulkLoadOverlay from "./BulkLoadOverlay";
 import QueueBadge from "./QueueBadge";
@@ -16,6 +17,7 @@ import type { AiPanelBridge } from "../ai";
 interface CanvasContainerProps {
   zoom: number;
   showRulers: boolean;
+  showGrid: boolean;
   showMargins: boolean;
   marginSize: number;
   spacing: number;
@@ -86,6 +88,7 @@ function canvasBgStyle(bg: string | undefined, zoom: number): React.CSSPropertie
 export default function CanvasContainer({
   zoom,
   showRulers,
+  showGrid,
   showMargins,
   marginSize,
   spacing,
@@ -457,6 +460,13 @@ export default function CanvasContainer({
                 transition: "transform 200ms ease-out",
               }}
             >
+              {/* Under the margin guide and the artwork — a grid that sits on
+                  top of the items would fight them for attention. */}
+              <CanvasGrid
+                showGrid={showGrid}
+                heightIn={sheetHeightPx / (ppi * zoom)}
+                isDarkBg={isDarkBg(canvasBg ?? 'transparent')}
+              />
               <CanvasMargins
                 showMargins={showMargins}
                 marginSize={marginSize}
