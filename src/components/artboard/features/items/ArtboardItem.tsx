@@ -166,19 +166,12 @@ function ArtboardItem({
     setPanelInitialPos({ x: rect.right + gap, y: rect.top });
   }, [showProperties, item.posX, item.posY, zoom, scrollTop]);
 
-  const isPdf = item.name?.toLowerCase().endsWith('.pdf') ?? false;
   const aiOpen = aiPanel?.openItemId === item.id;
 
   // Detect whether the image has a solid background by sampling the 4 corners.
   // All-transparent corners → already no background → disable Remove BG.
   // Also captures natural dimensions for effective-DPI calculation (pixels / current widthIn).
   useEffect(() => {
-    if (isPdf) {
-      setBgStatus('has-bg');
-      setNaturalWidthPx(null);
-      setNaturalHeightPx(null);
-      return;
-    }
     setBgStatus('detecting');
     setNaturalWidthPx(null);
     setNaturalHeightPx(null);
@@ -211,7 +204,7 @@ function ArtboardItem({
     };
     img.onerror = () => setBgStatus('has-bg');
     img.src = item.url;
-  }, [item.url, isPdf]);
+  }, [item.url]);
 
   const handleRemoveBg = async () => {
     setIsRemovingBg(true);
@@ -532,19 +525,19 @@ function ArtboardItem({
             onFlip={onFlip}
             onDuplicate={onDuplicate}
             onDelete={onDelete}
-            onIncreaseDpi={!isPdf ? handleIncreaseDpi : () => {}}
+            onIncreaseDpi={handleIncreaseDpi}
             currentDpi={effectiveDpi ?? item.dpi}
             isDpiUnknown={isDpiUnknown}
             isDpiEnhancing={isDpiEnhancing}
             dpiEnhanced={dpiEnhanced}
-            onRemoveBg={!isPdf ? handleRemoveBg : () => {}}
+            onRemoveBg={handleRemoveBg}
             bgStatus={bgStatus}
             isRemovingBg={isRemovingBg}
             bgProgress={bgProgress}
             bgJustRemoved={bgJustRemoved}
             onOpenAi={
-              !isPdf && aiPanel
-                ? () => (aiOpen ? aiPanel.onClose() : aiPanel.onOpen(item.id))
+              aiPanel
+                ?() => (aiOpen ? aiPanel.onClose() : aiPanel.onOpen(item.id))
                 : undefined
             }
             aiActive={aiOpen}
@@ -649,75 +642,7 @@ function ArtboardItem({
                 ? col - flowStartCol
                 : firstRowCapacity + (row - 1) * flowCols + col;
             if (index < 0 || index >= renderCopies) return null;
-            const posStyle = needsSwapRender ? (() => {
-              const offset = (scaledWidth - scaledHeight) * ppi / 2;
-              return {
-                position: "absolute" as const,
-                left: `${col * (scaledWidth + gap) * ppi + offset}px`,
-                top:  `${row * (scaledHeight + gap) * ppi - offset}px`,
-                width:  `${scaledHeight * ppi}px`,
-                height: `${scaledWidth  * ppi}px`,
-                maxWidth: "none" as const,
-                maxHeight: "none" as const,
-                transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${totalCssRotation}deg)`,
-              };
-            })() : {
-              position: "absolute" as const,
-              left: `${col * (scaledWidth + gap) * ppi}px`,
-              top:  `${row * (scaledHeight + gap) * ppi}px`,
-              width:  `${scaledWidth  * ppi}px`,
-              height: `${scaledHeight * ppi}px`,
-              maxWidth: "none" as const,
-              maxHeight: "none" as const,
-              transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${totalCssRotation}deg)`,
-            };
-
-            const renderElement = isPdf ? (
-              <div
-                key={index}
-                style={{...posStyle, pointerEvents: "auto"}}
-                className={`rounded-sm ${isLifted ? "cursor-grabbing" : "cursor-grab"} ${
-                  isSelected && renderCopies > 1
-                    ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
-                    : ""
-                }`}
-                onMouseDown={(e: any) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  dragActivatedRef.current = false;
-                  cancelPendingDrag();
-                  const startX = e.clientX;
-                  const startY = e.clientY;
-                  const THRESHOLD_SQ = 4 * 4;
-
-                  const onMove = (moveEvt: MouseEvent) => {
-                    const dx = moveEvt.clientX - startX;
-                    const dy = moveEvt.clientY - startY;
-                    if (dx * dx + dy * dy >= THRESHOLD_SQ) {
-                      cleanup();
-                      dragActivatedRef.current = true;
-                      onDragStart({ clientX: startX, clientY: startY } as React.MouseEvent);
-                    }
-                  };
-                  const onUp = () => cleanup();
-                  const cleanup = () => {
-                    document.removeEventListener("mousemove", onMove);
-                    document.removeEventListener("mouseup", onUp);
-                    pendingDragRef.current = null;
-                  };
-                  document.addEventListener("mousemove", onMove);
-                  document.addEventListener("mouseup", onUp);
-                  pendingDragRef.current = cleanup;
-                }}
-              >
-                <embed
-                  src={item.url}
-                  type="application/pdf"
-                  draggable={false}
-                  style={{ width: "100%", height: "100%", pointerEvents: "none" }}
-                />
-              </div>
-            ) : (
+            const renderElement = (
               <img
                 key={index}
                 src={item.url}

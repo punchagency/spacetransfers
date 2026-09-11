@@ -4,12 +4,14 @@ import { readDPI, loadImageSize, validateImageFile, checkFade, shouldWarn } from
 import type { FadeVerdict } from "../utils";
 import { placeNewItems, arrangeInitialLayout, isSheetFull } from "../utils";
 import { autoCropImage } from "../utils/autoCrop";
+import { rasterizePdf, PdfRasterizeError } from "../utils/pdfRasterize";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
 import {
   ACCEPTED_IMAGE_TYPES,
   CANVAS,
   MAX_SHEET_HEIGHT_IN,
+  PDF_MAX_PAGES,
 } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 import { showLargeImageWarning } from "../../../common/LargeImageWarning";
@@ -354,6 +356,67 @@ export const useDropHandler = (
   };
 
   /**
+   * Replaces each PDF in a drop with its pages, rendered to PNG.
+   *
+   * Runs before anything is counted, so capacity, the progress bar and the
+   * "N files" label all see pages — which is what actually lands on the board.
+   * A PDF that cannot be converted is reported by name and left out; the rest
+   * of the drop carries on.
+   */
+  const expandPdfPages = async (files: File[]): Promise<File[]> => {
+    const out: File[] = [];
+    for (const file of files) {
+      if (file.type !== "application/pdf") {
+        out.push(file);
+        continue;
+      }
+
+      // Before the PDF reader loads: a mislabelled, empty or oversized file
+      // gets the same message any other upload would.
+      const validation = await validateImageFile(file);
+      if (!validation.ok) {
+        showUnsupportedFileWarning(validation.message!);
+        continue;
+      }
+
+      const toastId = toast.loading(`Converting “${file.name}”…`);
+      try {
+        const result = await rasterizePdf(file, (done, total) => {
+          if (total > 1) {
+            toast.loading(`Converting “${file.name}” — page ${done} of ${total}`, { id: toastId });
+          }
+        });
+        toast.dismiss(toastId);
+        out.push(...result.pages.map((p) => p.file));
+
+        if (result.truncated) {
+          toast.error(
+            `“${file.name}” has ${result.totalPages} pages. Only the first ${PDF_MAX_PAGES} were added.`,
+            { duration: 8000 },
+          );
+        }
+        if (result.tooLarge.length > 0) {
+          const numbers = result.tooLarge.map((p) => p.pageNumber).join(", ");
+          const one = result.tooLarge.length === 1;
+          toast.error(
+            `${one ? "Page" : "Pages"} ${numbers} of “${file.name}” ${one ? "was" : "were"} skipped — too large to convert at print resolution.`,
+            { duration: 8000 },
+          );
+        }
+      } catch (err) {
+        console.warn(`[UPLOAD] ${file.name} — PDF conversion failed`, err);
+        toast.error(
+          err instanceof PdfRasterizeError
+            ? err.message
+            : `“${file.name}” could not be converted. Please re-export it and try again.`,
+          { id: toastId, duration: 6000 },
+        );
+      }
+    }
+    return out;
+  };
+
+  /**
    * The only way `processDrop` is ever called.
    *
    * `processDrop` is long and touches decoding, the network, canvas work and
@@ -411,7 +474,8 @@ export const useDropHandler = (
     dropY: number;
   }) => {
     setIsDragging(false);
-    // Reassigned when the drop exceeds the remaining item capacity.
+    // Reassigned as PDFs expand into their pages, and when the drop exceeds the
+    // remaining item capacity.
     let dropped = droppedFiles;
     if (dropped.length === 0 && !droppedUrl) return;
 
@@ -422,6 +486,13 @@ export const useDropHandler = (
         `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
       );
       return;
+    }
+
+    // After the sheet-full check, so a full sheet does not pay for a render
+    // whose pages would all be refused.
+    if (dropped.some((f) => f.type === "application/pdf")) {
+      dropped = await expandPdfPages(dropped);
+      if (dropped.length === 0 && !droppedUrl) return;
     }
 
 
@@ -830,11 +901,10 @@ export const useDropHandler = (
         fileProgress[idx] = 1;
         publishProgress();
 
-        const isPdf = file.type === "application/pdf";
         const rawDpi = Math.max(1, Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300));
         // Mirror server normalization: values < 150 (e.g. 72 dpi JFIF defaults) are treated as unknown
         const dpi = rawDpi < 150 ? 300 : rawDpi;
-        if (dpi < 300 && !isPdf) lowDpiImages++;
+        if (dpi < 300) lowDpiImages++;
 
         const serverUrl = assetResponse?.url || localInfo.url;
         const trimmedUrl = assetResponse?.trimmedUrl || null;
@@ -878,7 +948,7 @@ export const useDropHandler = (
           originalHeightIn,
         };
 
-        if (!trimmedUrl && !isPdf) {
+        if (!trimmedUrl) {
           const cropped = await autoCropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;
@@ -907,26 +977,24 @@ export const useDropHandler = (
           oversizeImages++;
         }
 
-        if (!isPdf) {
-          /**
-           * The upload already ran the AI check on the buffer it held, so its
-           * verdict is passed straight through — no second analysis, and no
-           * request. Only an image the server never saw falls back to a call.
-           *
-           * Checked against `baseItem.url` rather than the original, because a
-           * canvas auto-crop can remove the very region that faded.
-           */
-          const verdict = await detectFade(
-            baseItem.url,
-            baseItem.url === (trimmedUrl || serverUrl) ? assetResponse?.fade : undefined,
-          );
-          baseItem.fade = verdict;
-          // `hasFade` drives the border colour and the warning banner, so it is
-          // only set once the verdict clears the confidence threshold — a
-          // low-confidence guess must not turn an image orange.
-          baseItem.hasFade = shouldWarn(verdict);
-          if (baseItem.hasFade) fadeImages++;
-        }
+        /**
+         * The upload already ran the AI check on the buffer it held, so its
+         * verdict is passed straight through — no second analysis, and no
+         * request. Only an image the server never saw falls back to a call.
+         *
+         * Checked against `baseItem.url` rather than the original, because a
+         * canvas auto-crop can remove the very region that faded.
+         */
+        const verdict = await detectFade(
+          baseItem.url,
+          baseItem.url === (trimmedUrl || serverUrl) ? assetResponse?.fade : undefined,
+        );
+        baseItem.fade = verdict;
+        // `hasFade` drives the border colour and the warning banner, so it is
+        // only set once the verdict clears the confidence threshold — a
+        // low-confidence guess must not turn an image orange.
+        baseItem.hasFade = shouldWarn(verdict);
+        if (baseItem.hasFade) fadeImages++;
 
         return baseItem;
       };

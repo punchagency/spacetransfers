@@ -135,6 +135,34 @@ export const DPI = {
   WARNING_DURATION: 8000,
 } as const;
 
+/**
+ * PDF pages are rendered to PNG in the browser before upload — see
+ * `pdfRasterize.ts` for why a PDF cannot travel the pipeline as a PDF.
+ *
+ * Rendered at the print threshold, so a converted page never trips the low-DPI
+ * notice on its own account. Its physical size always comes from the PDF.
+ */
+export const PDF_RASTER_DPI = DPI.THRESHOLD;
+
+/**
+ * The lowest resolution a page is rendered at to stay under the pixel ceiling.
+ *
+ * Not lower, because the server treats anything under 150dpi as unknown and
+ * substitutes 300 (`uploadAsset`) — a page rendered below it would arrive at
+ * half its real size. One that would need less is refused and named instead.
+ */
+export const PDF_MIN_RASTER_DPI = 150;
+
+/**
+ * Pixels per rendered page. 8000×8000 is well inside what desktop Chrome,
+ * Firefox and Safari will allocate for a canvas, and at four bytes a pixel it
+ * bounds what a single page holds in memory.
+ */
+export const PDF_MAX_RASTER_PIXELS = 64_000_000;
+
+/** Pages converted from one PDF. Any beyond this are reported, not dropped silently. */
+export const PDF_MAX_PAGES = 20;
+
 // Animation configuration
 export const ANIMATION = {
   DROP_DELAY: 50,

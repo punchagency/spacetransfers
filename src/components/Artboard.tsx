@@ -248,17 +248,12 @@ export default function Artboard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
-  // AI editing targets: every selected item that is actually a raster image.
-  // PDFs are excluded — they're placed as documents, not pixels, so no image
-  // model can meaningfully operate on them.
+  // AI editing targets: every selected item still on the board. Every item is a
+  // raster image — PDFs are rendered to PNG pages before they are placed.
   const aiTargetIds = useMemo(() => {
     const ids = new Set<number>(selectedIds);
     if (selectedId != null) ids.add(selectedId);
-    return items
-      .filter(
-        (it) => ids.has(it.id) && !(it.name?.toLowerCase().endsWith(".pdf") ?? false),
-      )
-      .map((it) => it.id);
+    return items.filter((it) => ids.has(it.id)).map((it) => it.id);
   }, [items, selectedId, selectedIds]);
 
   const ai = useAiEdit(
@@ -269,10 +264,6 @@ export default function Artboard({
     onActionPerformed,
   );
 
-  // Board commands target the raw selection, not `aiTargetIds`: PDFs are
-  // excluded from *pixel* edits because no image model can operate on them, but
-  // they are still items on the sheet and must resize, move and delete normally.
-  //
   // Everything the executor reads goes through a ref so `runBoardCommands` keeps
   // a stable identity — otherwise the conversation's `send` handler, and the
   // panel that holds it, would be rebuilt on every item change mid-drag.

@@ -23,7 +23,7 @@ interface ItemToolbarProps {
   isRemovingBg: boolean;
   bgProgress?: { phase: string; pct: number } | null;
   bgJustRemoved?: boolean;
-  /** Opens the anchored AI panel. Omitted (undefined) hides the AI action — e.g. for PDFs. */
+  /** Opens the anchored AI panel. Omitted (undefined) hides the AI action. */
   onOpenAi?: () => void;
   /** The AI panel is currently open for this item — keeps the button highlighted. */
   aiActive?: boolean;

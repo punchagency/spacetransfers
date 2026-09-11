@@ -86,7 +86,10 @@ export const readDPI = async (file: File): Promise<{ dpiX?: number; dpiY?: numbe
           }
           break;
         }
-        off += 12 + length + 4;
+        // A chunk is length(4) + type(4) + data + crc(4). This was `+ 4` more,
+        // which misaligned the walk after IHDR — no PNG's resolution was ever
+        // found, and every one was placed as 300dpi whatever it really was.
+        off += 12 + length;
       }
     }
   } catch { }
@@ -153,17 +156,7 @@ export class ImageDecodeError extends Error {
 
 export const loadImageSize = (file: File): Promise<{ widthPx: number; heightPx: number; url: string }> => {
   return new Promise((resolve, reject) => {
-    // For PDFs, return a placeholder size and let the server handle conversion
-    if (file.type === "application/pdf") {
-      const url = URL.createObjectURL(file);
-      resolve({
-        widthPx: 2550,
-        heightPx: 3300,
-        url,
-      });
-      return;
-    }
-
+    // PDFs never reach here: `useDropHandler` renders each page to a PNG first.
     const url = URL.createObjectURL(file);
     const img = new Image();
 

@@ -229,9 +229,9 @@ export const validateImageFile = async (file: File): Promise<FileValidationResul
     };
   }
 
-  // A PDF must genuinely be a PDF: it takes a different path through the
-  // pipeline (no raster crop, no fade check), so accepting a mislabelled one
-  // would route image bytes down the document path.
+  // A PDF must genuinely be a PDF: it is opened by the PDF reader and rendered
+  // to page images, so image bytes labelled as a PDF (or the reverse) would
+  // fail there with a far less useful message than this one.
   if ((file.type === "application/pdf") !== (detected === "pdf")) {
     return {
       ok: false,
