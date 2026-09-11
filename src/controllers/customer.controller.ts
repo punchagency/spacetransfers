@@ -2240,58 +2240,65 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
      * there is no reason to spend the round trip and the storage on a file that
      * is about to be rejected.
      *
-     * PDFs are exempt because sharp cannot decode them without poppler; they are
-     * checked by signature instead, which is all that is available here.
      */
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
-    const isPdfUpload = req.file.mimetype === "application/pdf";
 
-    if (isPdfUpload) {
-      if (fileBuffer.subarray(0, 5).toString("latin1") !== "%PDF-") {
-        const error = new Error(
-          `“${req.file.originalname}” could not be read — it isn't a valid PDF. It may be damaged or only partly downloaded. Please re-export it and try again.`,
-        ) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-    } else {
-      try {
-        const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
-        widthPx = metadata.width;
-        heightPx = metadata.height;
-        dpi = metadata.density || 300;
-      } catch (err: any) {
-        console.warn(`[UPLOAD] rejected ${req.file.originalname}: ${err?.message}`);
-      }
+    /*
+     * PDFs are refused as artwork. A stored PDF cannot be printed: sharp in this
+     * build has no PDF support, so the export pipeline dropped PDF items from
+     * the sheet without a word. The editor renders each page to a PNG before
+     * uploading (`pdfRasterize.ts`), so only a caller bypassing it lands here.
+     *
+     * Checked by signature as well as type, so a PDF renamed .png gets this
+     * message rather than "could not be read".
+     */
+    if (
+      req.file.mimetype === "application/pdf" ||
+      fileBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
+    ) {
+      const error = new Error(
+        `“${req.file.originalname}” is a PDF. Add it from the editor, which converts each page to an image, or upload a PNG or JPG.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
-      // Dimensions are the test, not merely whether metadata() threw: some
-      // malformed files parse far enough to return an object with no width or
-      // height, and that is exactly the shape that produced the NaN item.
-      if (!widthPx || !heightPx) {
-        const error = new Error(
-          `“${req.file.originalname}” could not be read — the file may be damaged or only partly downloaded. Please re-export it and try again.`,
-        ) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
+    try {
+      const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
+      widthPx = metadata.width;
+      heightPx = metadata.height;
+      dpi = metadata.density || 300;
+    } catch (err: any) {
+      console.warn(`[UPLOAD] rejected ${req.file.originalname}: ${err?.message}`);
+    }
 
-      // Every sharp call here passes `limitInputPixels: false` to allow
-      // legitimately huge gang sheets, which also removes the guard against a
-      // decompression bomb. Without an explicit ceiling, a 50000×50000 PNG
-      // decodes to ~10 GB and the process is killed by the OS rather than
-      // returning an error.
-      if (widthPx * heightPx > MAX_IMAGE_PIXELS) {
-        console.error(
-          `[UPLOAD] rejected ${req.file.originalname}: ${widthPx}×${heightPx} exceeds ` +
-            `the ${MAX_IMAGE_PIXELS.toLocaleString()} px ceiling`,
-        );
-        const error = new Error(
-          `“${req.file.originalname}” is too large to process (${widthPx}×${heightPx}). ` +
-            `Please re-export it at a smaller resolution.`,
-        ) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
+    // Dimensions are the test, not merely whether metadata() threw: some
+    // malformed files parse far enough to return an object with no width or
+    // height, and that is exactly the shape that produced the NaN item.
+    if (!widthPx || !heightPx) {
+      const error = new Error(
+        `“${req.file.originalname}” could not be read — the file may be damaged or only partly downloaded. Please re-export it and try again.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Every sharp call here passes `limitInputPixels: false` to allow
+    // legitimately huge gang sheets, which also removes the guard against a
+    // decompression bomb. Without an explicit ceiling, a 50000×50000 PNG
+    // decodes to ~10 GB and the process is killed by the OS rather than
+    // returning an error.
+    if (widthPx * heightPx > MAX_IMAGE_PIXELS) {
+      console.error(
+        `[UPLOAD] rejected ${req.file.originalname}: ${widthPx}×${heightPx} exceeds ` +
+          `the ${MAX_IMAGE_PIXELS.toLocaleString()} px ceiling`,
+      );
+      const error = new Error(
+        `“${req.file.originalname}” is too large to process (${widthPx}×${heightPx}). ` +
+          `Please re-export it at a smaller resolution.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
     }
 
     // Store the original, exactly as it arrived.

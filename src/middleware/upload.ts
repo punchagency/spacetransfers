@@ -2,13 +2,11 @@ import multer from "multer";
 import { Request } from "express";
 
 /**
- * Must match `ACCEPTED_IMAGE_TYPES` in the store's artboard config.
+ * Types any upload route will take. Each route may narrow further.
  *
- * PDF was missing here while being supported everywhere else: the file picker
- * offers it, the empty state advertises "PNG • JPG • PDF", the client validates
- * its magic bytes, `ArtboardItem` renders it, and `uploadAsset` has a dedicated
- * `isPdfUpload` branch. This filter was the one place that refused it — so the
- * whole feature was unreachable.
+ * PDF is here for partner certification documents (`/printer/profile/upload`).
+ * Artwork PDFs are refused by `uploadAsset` itself: the store renders each page
+ * to a PNG before uploading, because a stored PDF cannot be printed.
  */
 const ALLOWED_TYPES: Record<string, string> = {
   "image/png": ".png",
