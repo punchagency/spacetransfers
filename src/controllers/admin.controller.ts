@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { rollWidthError } from "../services/pricing.service.js";
 import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
 import {
   getRegionFromState,
@@ -48,6 +49,7 @@ import {
 } from "../services/partnerCapacity.service.js";
 import { exportGangsheetPng24,
   GANGSHEET_SHEET_WIDTH_IN,
+  orderSheetWidthIn,
 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
@@ -278,6 +280,15 @@ export const updateGlobalPricing = async (req: Request, res: Response, next: Nex
      * Normalising the merged result also means a partial request cannot blank a
      * field: anything absent falls back to what is already stored.
      */
+    if (req.body && req.body.sheetWidthIn !== undefined) {
+      const problem = rollWidthError(req.body.sheetWidthIn);
+      if (problem) {
+        const error = new Error(problem) as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
     const existing = await Settings.findOne({ key: "global_pricing" }).lean();
     const merged = normalizeGlobalPricing({
       ...((existing as any)?.value || {}),
@@ -1823,6 +1834,7 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
               widthIn: "$$item.widthIn",
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
+              rollWidthIn: "$$item.rollWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
               artboardItems: {
                 $map: {
@@ -1866,22 +1878,13 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
     }
 
     /**
-     * The sheet is always the full artboard width — never a value read off the
-     * order item.
+     * The roll width this order was built on — see `orderSheetWidthIn`.
      *
-     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
-     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
-     * `max(bounds.maxX)`), because that is the area partner pricing charges
-     * for — see `computePartnerCostBreakdown`, which multiplies it into the
-     * square footage a partner is paid on. It is therefore load-bearing as a
-     * pricing figure and is deliberately left alone.
-     *
-     * Rendering onto it was the bug: item `posX` values are absolute against a
-     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
-     * x-coordinate in the wrong place and clipped whatever fell past the new
-     * right edge. That is the artboard/preview mismatch.
+     * Never the artwork's bounding width: item `posX` values are absolute
+     * against the roll, so a canvas sized to anything else puts every
+     * x-coordinate in the wrong place and clips what falls past its edge.
      */
-    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
+    const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;

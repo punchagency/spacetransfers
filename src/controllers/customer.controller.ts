@@ -35,7 +35,7 @@ import { quoteShipping } from "../services/shipping.service.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
+import { exportGangsheetPng24, orderSheetWidthIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { assertPersistable } from "../utils/documentSize.js";
@@ -1378,6 +1378,26 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         typeof sheetMarginIn === "number" && sheetMarginIn >= 0 && sheetMarginIn <= 2 ? sheetMarginIn : undefined;
 
       /*
+       * The roll a sheet was built on must be the roll it is billed and printed
+       * on. The roll width is an admin setting; if it changed after this sheet
+       * was laid out, its positions no longer match the roll. Refused, so the
+       * customer reopens the sheet and it re-fits, rather than paying for one
+       * width and receiving another.
+       */
+      const rollWidthIn = globalPricing.sheetWidthIn;
+      if (
+        String(type).toLowerCase() === "gangsheet" &&
+        typeof sheetWidthIn === "number" &&
+        Math.abs(sheetWidthIn - rollWidthIn) > 0.005
+      ) {
+        const error = new Error(
+          `The sheet width changed to ${rollWidthIn}in after this gang sheet was built. Open it in the editor so the artwork re-fits, then check out again.`,
+        ) as CustomError;
+        error.statusCode = 409;
+        throw error;
+      }
+
+      /*
        * Billed on at least the length it prints.
        *
        * The length arrives from the client, measured on the artboard. The
@@ -1389,7 +1409,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         normalizedArtboardItems && normalizedArtboardItems.length > 0
           ? roundToTwo(
               printedSheetLengthIn({
-                sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
+                sheetWidthIn: rollWidthIn,
                 artboardItems: normalizedArtboardItems,
                 itemSpacingIn: recordedSpacingIn,
                 sheetMarginIn: recordedMarginIn,
@@ -1442,6 +1462,8 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             : typeof sheetHeightIn === "number" ? sheetHeightIn : undefined,
         itemSpacingIn: recordedSpacingIn,
         sheetMarginIn: recordedMarginIn,
+        // The roll this sheet was built and billed on; every render uses it.
+        rollWidthIn: String(type).toLowerCase() === "gangsheet" ? rollWidthIn : undefined,
         previewImage: typeof previewImage === "string" ? previewImage : undefined,
         artboardItems: normalizedArtboardItems && normalizedArtboardItems.length > 0 ? normalizedArtboardItems : undefined
       };
@@ -1674,11 +1696,8 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             sheetMarginIn: gangsheetOrderItem.sheetMarginIn,
             jobId: String(orderId),
             printerId: "order-preview",
-            // The sheet, not the stored `sheetWidthIn` — that field carries the
-            // artwork's bounding width for partner pricing, and rendering onto
-            // it misplaces every absolute `posX`. Same fix as the printer and
-            // admin previews.
-            sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
+            // The roll this order was built on — see `orderSheetWidthIn`.
+            sheetWidthIn: orderSheetWidthIn(gangsheetOrderItem),
             sheetHeightIn: typeof gangsheetOrderItem.sheetHeightIn === "number" ? gangsheetOrderItem.sheetHeightIn : undefined,
             artboardItems: thumbItems,
             dpi: 600,
@@ -2746,44 +2765,41 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
 export const sendGangsheetUtilizationWarning = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = req.user!;
-    const { fullSheetPrice, sheetWidthIn, sheetHeightIn, utilizationPct } = req.body;
+    const { billedPrice, sheetWidthIn, billedLengthIn, usedLengthIn } = req.body || {};
 
-    const price = Number(fullSheetPrice);
-    if (!Number.isFinite(price) || price <= 0) {
-      const error = new Error("fullSheetPrice must be a positive number") as CustomError;
+    const price = Number(billedPrice);
+    const width = Number(sheetWidthIn);
+    const billed = Number(billedLengthIn);
+    const used = Number(usedLengthIn);
+    if (![price, width, billed, used].every((n) => Number.isFinite(n) && n >= 0) || price <= 0) {
+      const error = new Error("billedPrice, sheetWidthIn, billedLengthIn and usedLengthIn are required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const width = Number(sheetWidthIn || 23.5);
-    const height = Number(sheetHeightIn || 23.5);
-    const pct = utilizationPct != null ? Number(utilizationPct) : null;
-    const pctText = pct != null && Number.isFinite(pct) ? `${pct.toFixed(0)}%` : "N/A";
-
-    const amountText = `$${price.toFixed(2)}`;
-
+    /*
+     * About the minimum billable length, which is the rule. This used to say the
+     * customer would be charged for a "full" 23.5 x 23.5in sheet — a figure no
+     * setting held and nothing else charged.
+     */
     const subject = "Unused gang sheet space notice";
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
         <h2 style="margin: 0 0 12px 0;">Unused gang sheet space</h2>
         <p style="margin: 0 0 12px 0;">
-          Your gang sheet (${width.toFixed(1)}&quot; × ${height.toFixed(1)}&quot;) is not fully utilized.
+          Your artwork is ${used.toFixed(2)}in long. Gang sheets are billed from a ${billed.toFixed(2)}in minimum,
+          so this ${width.toFixed(2)}in &times; ${billed.toFixed(2)}in sheet costs <strong>$${price.toFixed(2)}</strong>.
         </p>
-        <p style="margin: 0 0 12px 0;">
-          If you proceed, you will be charged the full gang sheet amount of <strong>${amountText}</strong>.
-        </p>
-        <p style="margin: 0 0 0 0; color: #6B7280; font-size: 12px;">
-          Utilization: ${pctText}
+        <p style="margin: 0; color: #6B7280; font-size: 12px;">
+          You can add more artwork to the same sheet at no extra cost until it reaches ${billed.toFixed(2)}in.
         </p>
       </div>
     `;
 
     const sendResult = await sendEmail({ to: user.email, subject, html });
-
     console.log(
-      `[GANGSHEET_WARN] user=${user.id} email=${user.email} fullSheetPrice=${amountText} utilization=${pctText} sent=${sendResult.sent}`
+      `[GANGSHEET_WARN] user=${user.id} used=${used}in billed=${billed}in price=$${price.toFixed(2)} sent=${sendResult.sent}`,
     );
-
     res.status(200).json({ sent: sendResult.sent });
   } catch (error) {
     next(error);

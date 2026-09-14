@@ -36,6 +36,7 @@ import {
   computeItemVerticalSpansIn,
   computeGangsheetCuts,
   GANGSHEET_SHEET_WIDTH_IN,
+  orderSheetWidthIn,
   GANGSHEET_PRINT_DPI,
 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
@@ -66,7 +67,6 @@ import { storeArtwork } from "../services/storage.service.js";
 import { isValidPhone } from "../utils/accountFields.js";
 import { computePartnerPerformance } from "../services/partnerPerformance.service.js";
 import sharp from "sharp";
-import PDFDocument from "pdfkit";
 
 // In-memory export job queue — lets the HTTP response return immediately while
 // the (potentially slow) PNG render runs in the background.
@@ -1265,11 +1265,9 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
         const rendered = await exportGangsheetPng24({
           jobId: job.id,
           printerId: String(printerId),
-          // Never `gangsheetItem.sheetWidthIn` — that field holds the artwork's
-          // bounding width (checkout writes it for partner pricing), not the
-          // sheet's. Item `posX` values are absolute against a 23.5" sheet, so
-          // this is the only width that places them where the artboard did.
-          sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
+          // The roll this order was built on, so every posX lands where the
+          // artboard put it — see `orderSheetWidthIn`.
+          sheetWidthIn: orderSheetWidthIn(gangsheetItem),
           sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
           artboardItems: fullResItems,
           dpi: exportDpi,
@@ -1418,6 +1416,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
               widthIn: "$$item.widthIn",
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
+              rollWidthIn: "$$item.rollWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
               itemSpacingIn: "$$item.itemSpacingIn",
               sheetMarginIn: "$$item.sheetMarginIn",
@@ -1461,22 +1460,13 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
     }
 
     /**
-     * The sheet is always the full artboard width — never a value read off the
-     * order item.
+     * The roll width this order was built on — see `orderSheetWidthIn`.
      *
-     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
-     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
-     * `max(bounds.maxX)`), because that is the area partner pricing charges
-     * for — see `computePartnerCostBreakdown`, which multiplies it into the
-     * square footage a partner is paid on. It is therefore load-bearing as a
-     * pricing figure and is deliberately left alone.
-     *
-     * Rendering onto it was the bug: item `posX` values are absolute against a
-     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
-     * x-coordinate in the wrong place and clipped whatever fell past the new
-     * right edge. That is the artboard/preview mismatch.
+     * Never the artwork's bounding width: item `posX` values are absolute
+     * against the roll, so a canvas sized to anything else puts every
+     * x-coordinate in the wrong place and clips what falls past its edge.
      */
-    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
+    const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
@@ -1618,173 +1608,6 @@ export const downloadGangsheetExport = async (req: Request, res: Response, next:
   }
 };
 
-export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params as any;
-    const printerId = req.user?.id;
-
-    if (!jobId || !mongoose.Types.ObjectId.isValid(String(jobId))) {
-      const error = new Error("Invalid job id") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-    if (!printerId) {
-      const error = new Error("Unauthorized") as CustomError;
-      error.statusCode = 401;
-      throw error;
-    }
-
-    const [jobRaw] = await (Order as any).aggregate([
-      { $match: { _id: new mongoose.Types.ObjectId(String(jobId)), assignedPrinter: new mongoose.Types.ObjectId(String(printerId)) } },
-      { $project: {
-        displayId: 1,
-        items: {
-          $map: {
-            input: { $ifNull: ["$items", []] },
-            as: "item",
-            in: {
-              type: "$$item.type",
-              widthIn: "$$item.widthIn",
-              heightIn: "$$item.heightIn",
-              sheetWidthIn: "$$item.sheetWidthIn",
-              sheetHeightIn: "$$item.sheetHeightIn",
-              itemSpacingIn: "$$item.itemSpacingIn",
-              sheetMarginIn: "$$item.sheetMarginIn",
-              artboardItems: {
-                $map: {
-                  input: { $ifNull: ["$$item.artboardItems", []] },
-                  as: "ai",
-                  in: {
-                    assetId: "$$ai.assetId",
-                    croppedUrl: "$$ai.croppedUrl",
-                    widthIn: "$$ai.widthIn",
-                    heightIn: "$$ai.heightIn",
-                    posX: "$$ai.posX",
-                    posY: "$$ai.posY",
-                    rotation: "$$ai.rotation",
-                    flipped: "$$ai.flipped",
-                    copies: "$$ai.copies",
-                    nestRotation: "$$ai.nestRotation",
-                    flowCols: "$$ai.flowCols",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }},
-    ]);
-
-    if (!jobRaw) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
-    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
-    if (artboardItems.length === 0) {
-      const error = new Error("No artboard items found for this job") as CustomError;
-      error.statusCode = 422;
-      throw error;
-    }
-
-    /**
-     * The sheet is always the full artboard width — never a value read off the
-     * order item.
-     *
-     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
-     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
-     * `max(bounds.maxX)`), because that is the area partner pricing charges
-     * for — see `computePartnerCostBreakdown`, which multiplies it into the
-     * square footage a partner is paid on. It is therefore load-bearing as a
-     * pricing figure and is deliberately left alone.
-     *
-     * Rendering onto it was the bug: item `posX` values are absolute against a
-     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
-     * x-coordinate in the wrong place and clipped whatever fell past the new
-     * right edge. That is the artboard/preview mismatch.
-     */
-    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
-    const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
-      ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
-      ? gangsheetItem.heightIn : 23.5;
-
-    // Preserve croppedUrl — it is the trimmedUrl (full-res, server-processed) for normally
-    // uploaded assets, or a lossless PNG data URL for canvas-cropped / AI bg-removed items.
-    // Stripping it makes the export download the untrimmed original and squeeze it into the
-    // trimmed bounding box (fit:"fill"), producing a distorted / squished image.
-    const fullResItems = artboardItems.map((it: any) => ({
-      assetId: it.assetId,
-      croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
-      widthIn: it.widthIn,
-      heightIn: it.heightIn,
-      posX: it.posX,
-      posY: it.posY,
-      rotation: it.rotation,
-      flipped: it.flipped,
-      copies: it.copies,
-      nestRotation: it.nestRotation,
-      flowCols: it.flowCols,
-    }));
-
-    // Cap DPI so the rendered PNG stays within PDFKit's safe loading limit (~700 MB raw RGBA).
-    // 175 M pixels × 4 bytes = 700 MB — safely under Node's 4 GB Buffer limit and PDFKit's
-    // internal decompression cap. For a 22"×22" sheet this gives exactly 600 DPI (print grade).
-    // For a 22"×60" roll it gives ~364 DPI. For the 98-foot roll (22"×1179") it gives ~83 DPI.
-    const MAX_PDF_SAFE_PIXELS = 175_000_000;
-    const pdfDpi = Math.max(10, Math.min(600,
-      Math.floor(Math.sqrt(MAX_PDF_SAFE_PIXELS / Math.max(0.01, sheetWidthIn * sheetHeightIn)))
-    ));
-
-    const rendered = await exportGangsheetPng24({
-      jobId: String(jobId),
-      printerId: String(printerId),
-      sheetWidthIn,
-      sheetHeightIn,
-      artboardItems: fullResItems,
-      dpi: pdfDpi,
-      cropToContent: true,
-      format: "png",
-      itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
-      sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
-    });
-
-    const displayId = jobRaw.displayId
-      ? String(jobRaw.displayId)
-      : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
-
-    const PAGE_WIDTH_PTS  = rendered.sheet.widthIn  * 72;
-    const PAGE_HEIGHT_PTS = rendered.sheet.heightIn * 72;
-
-    // Build the PDF entirely in memory before sending.
-    // Piping doc directly to res causes ERR_STREAM_WRITE_AFTER_END if doc.image()
-    // throws: Express's error handler writes a JSON response to an already-piped
-    // stream. Buffering means the try/catch above owns the response cleanly.
-    const doc = new PDFDocument({ autoFirstPage: false, margin: 0, compress: false });
-    const pdfChunks: Buffer[] = [];
-    doc.on("data", (chunk: Buffer) => pdfChunks.push(chunk));
-
-    doc.addPage({ size: [PAGE_WIDTH_PTS, PAGE_HEIGHT_PTS], margin: 0 });
-    doc.image(rendered.filePath, 0, 0, { width: PAGE_WIDTH_PTS, height: PAGE_HEIGHT_PTS });
-
-    await new Promise<void>((resolve, reject) => {
-      doc.on("end", resolve);
-      doc.on("error", reject);
-      doc.end();
-    });
-
-    const pdfBuffer = Buffer.concat(pdfChunks);
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="gangsheet_${displayId}_preview.pdf"`);
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Length", String(pdfBuffer.length));
-    res.send(pdfBuffer);
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const exportPngForDownload = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
@@ -1816,6 +1639,7 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
               widthIn: "$$item.widthIn",
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
+              rollWidthIn: "$$item.rollWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
               itemSpacingIn: "$$item.itemSpacingIn",
               sheetMarginIn: "$$item.sheetMarginIn",
@@ -1871,15 +1695,11 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
         setProgress(5, "Preparing export...");
 
         /**
-         * The printed sheet is always the full artboard width.
-         *
-         * This used to fall back to `gangsheetItem.widthIn` when
-         * `sheetWidthIn` was absent — the *item's* width, not the sheet's,
-         * which on older orders produced an export a few inches wide with the
-         * artwork packed into it. Positions are stored relative to a 23.5"
-         * sheet, so the width has to be that or every x-coordinate is wrong.
+         * The printed sheet is the full roll width this order was built on —
+         * see `orderSheetWidthIn`. Never the item's own width, which on older
+         * orders produced an export a few inches wide with the artwork packed in.
          */
-        const sheetWidthIn = GANGSHEET_WIDTH_IN;
+        const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
         const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
           ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
           ? gangsheetItem.heightIn : 23.5;

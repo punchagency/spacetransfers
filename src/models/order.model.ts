@@ -14,6 +14,8 @@ export interface IOrderItem {
   sheetHeightIn?: number;
   itemSpacingIn?: number;
   sheetMarginIn?: number;
+  /** The roll width the sheet was built, billed and must be printed on. */
+  rollWidthIn?: number;
   previewImage?: string;
   artboardItems?: Array<{
     id: number;
@@ -203,6 +205,9 @@ const orderItemSchema = new Schema<IOrderItem>(
       type: Number
     },
     sheetMarginIn: {
+      type: Number
+    },
+    rollWidthIn: {
       type: Number
     },
     previewImage: {

@@ -6,19 +6,29 @@ import mongoose from "mongoose";
 import { Asset } from "../models/asset.model.js";
 
 /**
- * The physical gang sheet. This is the product, not a default.
+ * The roll width every order was built on before the width was recorded.
  *
- * Every artboard coordinate is absolute against a sheet of exactly this width:
- * `posX` of 20 means twenty inches from the left edge of a 23.5" sheet, and
- * nothing in the stored item says so. Render onto a canvas of any other width
- * and every x-coordinate silently means something else — artwork past the new
- * edge is clipped away, and what survives sits in the wrong place.
- *
- * Exported so the render entry points share one definition rather than each
- * deriving a width from order data, which is how three of them ended up
- * reading a field that does not hold this quantity (see the callers).
+ * Every artboard coordinate is absolute against the roll the sheet was laid out
+ * on: render onto a canvas of any other width and every x-coordinate silently
+ * means something else. The width is now an admin setting and each order records
+ * its own (`rollWidthIn`); renders read it through `orderSheetWidthIn`, which
+ * falls back to this for older orders.
  */
 export const GANGSHEET_SHEET_WIDTH_IN = 23.5;
+
+/**
+ * The width a stored order's sheet was built, billed and must be printed on.
+ *
+ * The roll width is an admin setting, so it can change after an order is
+ * placed. Positions are absolute against the width the customer laid the sheet
+ * out on, which checkout records as `rollWidthIn`; every render uses exactly
+ * that, so a later change to the setting cannot shift or clip a sheet already
+ * ordered. Orders from before it was recorded were all built on 23.5in.
+ */
+export const orderSheetWidthIn = (item: { rollWidthIn?: unknown } | null | undefined): number => {
+  const width = Number(item?.rollWidthIn);
+  return Number.isFinite(width) && width > 0 ? width : GANGSHEET_SHEET_WIDTH_IN;
+};
 
 /**
  * Print resolution for a final export: 23.5in × 300 = 7,050px.

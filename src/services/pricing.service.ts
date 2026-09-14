@@ -121,6 +121,21 @@ const roundToTwo = (value: number) =>
  * read `baseRatePerSqFt`; now that it prices every sheet, clearing the field
  * in the admin form would have made every gang sheet free.
  */
+/**
+ * Bounds on the roll width. Nothing stopped 0 — which prices every sheet at
+ * nothing and leaves the artboard no width — or a typo like 235.
+ */
+export const MIN_ROLL_WIDTH_IN = 6;
+export const MAX_ROLL_WIDTH_IN = 64;
+
+/** Why a roll width cannot be saved, or null when it can. */
+export const rollWidthError = (value: unknown): string | null => {
+  const n = typeof value === "string" && value.trim() === "" ? NaN : Number(value);
+  return Number.isFinite(n) && n >= MIN_ROLL_WIDTH_IN && n <= MAX_ROLL_WIDTH_IN
+    ? null
+    : `Roll width must be between ${MIN_ROLL_WIDTH_IN} and ${MAX_ROLL_WIDTH_IN} inches.`;
+};
+
 const finiteOr = (value: unknown, fallback: number): number => {
   if (value === null || value === undefined) return fallback;
   if (typeof value === "string" && value.trim() === "") return fallback;
