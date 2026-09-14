@@ -2337,6 +2337,19 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
      * Checked by signature as well as type, so a PDF renamed .png gets this
      * message rather than "could not be read".
      */
+    /*
+     * SVG likewise: the editor renders it to a PNG at its real size before
+     * uploading, so the print pipeline only ever composites raster artwork.
+     */
+    const head = fileBuffer.subarray(0, 256).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    if (req.file.mimetype === "image/svg+xml" || head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) {
+      const error = new Error(
+        `“${req.file.originalname}” is an SVG. Add it from the editor, which converts it to an image at its real size, or upload a PNG or JPG.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
     if (
       req.file.mimetype === "application/pdf" ||
       fileBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
