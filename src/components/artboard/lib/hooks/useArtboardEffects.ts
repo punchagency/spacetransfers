@@ -47,7 +47,8 @@ export const useArtboardEffects = (
   const [originalPositions, setOriginalPositions] = useState<
     Record<number, { posX: number; posY: number }>
   >({});
-  const [lastConfig, setLastConfig] = useState({ marginSize, spacing });
+  // The roll width is part of the sheet's geometry: changing it in admin re-fits the board.
+  const [lastConfig, setLastConfig] = useState({ marginSize, spacing, canvasWidth });
   const prevItemsRef = useRef<ArtboardItem[]>([]);
   const warnedMaxHeightRef = useRef(false);
   const rebuildTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -136,9 +137,12 @@ export const useArtboardEffects = (
     rebuildTimerRef.current = setTimeout(() => {
       rebuildTimerRef.current = null;
 
-      const configChanged = lastConfig.marginSize !== marginSize || lastConfig.spacing !== spacing;
+      const configChanged =
+        lastConfig.marginSize !== marginSize ||
+        lastConfig.spacing !== spacing ||
+        lastConfig.canvasWidth !== canvasWidth;
       if (configChanged) {
-        setLastConfig({ marginSize, spacing });
+        setLastConfig({ marginSize, spacing, canvasWidth });
       }
       // Capture the OFF→ON transition before overwriting the ref — turning
       // auto-nest on must force a repack even if no item geometry changed.

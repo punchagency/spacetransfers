@@ -14,6 +14,7 @@ import {
   PDF_MAX_PAGES,
 } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
+import { getSheetWidthIn } from "../../../../lib/utils/pricingRates";
 import { showLargeImageWarning } from "../../../common/LargeImageWarning";
 import {
   showUnsupportedFilesWarning,
@@ -579,7 +580,7 @@ export const useDropHandler = (
       // Oversized artwork is kept at the size it arrived and flagged, not
       // silently shrunk — the notice tells the customer they may want to resize
       // it, which would be untrue if it had already been resized for them.
-      if (baseItem.widthIn > (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize) {
+      if (baseItem.widthIn > (canvasWidth || getSheetWidthIn()) - 2 * marginSize) {
         oversizeImages++;
       }
 
@@ -702,7 +703,7 @@ export const useDropHandler = (
 
         const chunk = pending.splice(0, pending.length);
         const chunkIds = new Set(chunk.map((c) => c.id));
-        const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+        const currentCanvasWidth = canvasWidth || getSheetWidthIn();
 
         setItems((prev) => {
           const all = [...prev, ...chunk];
@@ -980,7 +981,7 @@ export const useDropHandler = (
         // Counted, not clamped. The upload succeeded and the item is usable;
         // whether to resize it is the customer's call, and the notice below
         // says so once for the whole drop rather than once per file.
-        if (baseItem.widthIn > (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize) {
+        if (baseItem.widthIn > (canvasWidth || getSheetWidthIn()) - 2 * marginSize) {
           oversizeImages++;
         }
 
@@ -1126,7 +1127,7 @@ export const useDropHandler = (
       // Single item from a URL or a saved design. Packed against `prev` in the
       // same updater that adds it, for the same reason the file path is: the
       // closure's `items` is a snapshot from before the decode and fade check.
-      const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+      const currentCanvasWidth = canvasWidth || getSheetWidthIn();
       setItems((prev) => {
         const all = [...prev, item];
         const packed = placeNewItems(
@@ -1248,7 +1249,7 @@ export const useDropHandler = (
     const droppedFiles = filterFiles(arr);
     if (droppedFiles.length === 0) return;
 
-    const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+    const currentCanvasWidth = canvasWidth || getSheetWidthIn();
     const dropX = currentCanvasWidth / 2;
     const dropY = 6;
     submitDrop({ droppedFiles, droppedUrl: "", dropX, dropY });

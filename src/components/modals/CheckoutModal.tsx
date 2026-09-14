@@ -14,7 +14,7 @@ import { stripEmbeddedImages, hasEmbeddedImages } from "../../lib/utils/payloadI
 import { itemListsEquivalent } from "../../lib/utils/assetIdentity";
 import { AssetIndex } from "../../lib/utils/assetTable";
 import { resolveFlowCols } from "../artboard/lib/utils/layoutHelpers";
-import { CANVAS } from "../../config/artboard.config";
+import { getSheetWidthIn } from "../../lib/utils/pricingRates";
 import { DEFAULT_SHEET_SETTINGS } from "../../lib/utils/editorSettings";
 import toast from "react-hot-toast";
 import { Elements } from "@stripe/react-stripe-js";
@@ -279,7 +279,8 @@ export default function CheckoutModal({
             nestRotation: it.nestRotation === 90 ? 90 : 0,
             flowCols: resolveFlowCols(
               it,
-              CANVAS.SHEET_WIDTH_IN,
+              // The roll this sheet was built on, recorded on the cart line.
+              (item as any).widthIn || getSheetWidthIn(),
               (item as any).sheetMarginIn ?? DEFAULT_SHEET_SETTINGS.marginSize,
               (item as any).itemSpacingIn ?? DEFAULT_SHEET_SETTINGS.spacing,
             ),

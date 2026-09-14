@@ -194,6 +194,15 @@ export const PRICING = {
 
 // Grid configuration
 export const GRID = {
+  /**
+   * The grid and snap step, in inches: quarter-inch lines with a stronger line
+   * every inch, landing exactly on the ruler's marks. It was 20 screen pixels
+   * (0.208in, stronger every 0.833in), so no grid line met an inch mark and
+   * snap-to-grid snapped to a step nobody would choose.
+   */
+  MINOR_IN: 0.25,
+  MAJOR_IN: 1,
+  /** Checkerboard square size, in unscaled canvas pixels. Not a measurement. */
   SIZE: 20,
   SMALL_GRID_DIVISOR: 0.5,
 } as const;

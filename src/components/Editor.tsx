@@ -258,6 +258,8 @@ export default function Editor() {
     price?: number;
     lowDpiCount?: number;
     unknownDpiCount?: number;
+    /** How long the artwork actually is, before the minimum length applies. */
+    usedHeightIn?: number;
   }>();
 
   /**
@@ -416,8 +418,10 @@ export default function Editor() {
   const [showClearArtboardConfirm, setShowClearArtboardConfirm] = useState(false);
   const [showUnderUtilizedCartConfirm, setShowUnderUtilizedCartConfirm] = useState(false);
   const [underUtilizedMeta, setUnderUtilizedMeta] = useState<{
-    fullSheetPrice: number;
-    utilizationPct: number | null;
+    billedPrice: number;
+    usedLengthIn: number;
+    minLengthIn: number;
+    sheetWidthIn: number;
   } | null>(null);
 
   const clearWorkspace = () => {
@@ -760,7 +764,7 @@ export default function Editor() {
     });
   };
 
-  const addGangSheetToCartNow = async (forceFullSheetPrice: boolean = false) => {
+  const addGangSheetToCartNow = async (fromUnusedSpacePrompt: boolean = false) => {
     if (!isLoggedIn) {
       setAuthView("register");
       setShowAuthModal(true);
@@ -796,19 +800,15 @@ export default function Editor() {
       console.log("artboardData:", artboardData);
       console.log("artboardData.items:", artboardData?.items);
 
-      const fullSheetAreaSf =
-        (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
-        PRICING.SQUARE_INCHES_PER_SQ_FT;
-      const fullSheetPrice = +(fullSheetAreaSf * pricePerSqFt).toFixed(2);
-      const priceToUse = forceFullSheetPrice
-        ? fullSheetPrice
-        : headerInfo?.price || 0;
-      const widthToUse = forceFullSheetPrice
-        ? CANVAS.SHEET_WIDTH_IN
-        : headerInfo?.widthIn || CANVAS.SHEET_WIDTH_IN;
-      const heightToUse = forceFullSheetPrice
-        ? CANVAS.SHEET_HEIGHT_IN
-        : headerInfo?.heightIn || CANVAS.SHEET_HEIGHT_IN;
+      /*
+       * Always the billed figures the header shows — roll width by run length,
+       * floored at the minimum. The unused-space prompt used to swap these for a
+       * "full" 23.5 x 23.5in sheet no setting defined, charging a signed-in
+       * customer for more than the minimum they would otherwise have paid.
+       */
+      const priceToUse = headerInfo?.price || 0;
+      const widthToUse = headerInfo?.widthIn || getSheetWidthIn();
+      const heightToUse = headerInfo?.heightIn || getMinSheetLengthIn();
 
       // Add gang sheet without image first
       const gangSheetItem = {
@@ -835,22 +835,17 @@ export default function Editor() {
 
       setCartItems((prev) => [...prev, gangSheetItem]);
 
-      if (forceFullSheetPrice && user?.role === "CUSTOMER") {
+      if (fromUnusedSpacePrompt && user?.role === "CUSTOMER") {
         // Fire-and-forget: the email notification is non-critical. Gated on a
         // confirmed customer role so non-customer sessions don't generate a
         // guaranteed 403 from the /customer/* role middleware.
-        const utilizationPct =
-          typeof headerInfo?.areaSf === "number" && fullSheetAreaSf > 0
-            ? (headerInfo.areaSf / fullSheetAreaSf) * 100
-            : null;
-
         apiFetch("/customer/notifications/gangsheet-utilization-warning", {
           method: "POST",
           body: JSON.stringify({
-            fullSheetPrice,
-            sheetWidthIn: CANVAS.SHEET_WIDTH_IN,
-            sheetHeightIn: CANVAS.SHEET_HEIGHT_IN,
-            utilizationPct,
+            billedPrice: priceToUse,
+            sheetWidthIn: widthToUse,
+            billedLengthIn: heightToUse,
+            usedLengthIn: headerInfo?.usedHeightIn ?? 0,
           }),
         }).catch(() => {
           // Silent — the cart flow has already succeeded; the email is best-effort.
@@ -882,21 +877,23 @@ export default function Editor() {
     // The same length the header bills and the print export produces.
     const usedHeight =
       Array.isArray(currentItems) && currentItems.length > 0
-        ? sheetContentLengthIn(currentItems, CANVAS.SHEET_WIDTH_IN, settings.marginSize, settings.spacing)
+        ? sheetContentLengthIn(currentItems, getSheetWidthIn(), settings.marginSize, settings.spacing)
         : 0;
-    // Sheet width is fixed at 23.5", so we only gate on height utilization.
-    const notFullyUtilized = usedHeight < CANVAS.SHEET_HEIGHT_IN - 0.01;
+    /*
+     * Shorter than the admin's minimum billable length: the sheet is billed at
+     * the minimum, so say so before it goes in the cart. This compared against a
+     * hard-coded 23.5in and priced a 23.5 x 23.5in sheet, which no setting held.
+     */
+    const minLengthIn = getMinSheetLengthIn();
+    const underMinimum = usedHeight < minLengthIn - 0.01;
 
-    if (isLoggedIn && notFullyUtilized) {
-      const fullSheetAreaSf =
-        (CANVAS.SHEET_WIDTH_IN * CANVAS.SHEET_HEIGHT_IN) /
-        PRICING.SQUARE_INCHES_PER_SQ_FT;
-      const fullSheetPrice = +(fullSheetAreaSf * pricePerSqFt).toFixed(2);
-      const utilizationPct =
-        typeof headerInfo?.areaSf === "number" && fullSheetAreaSf > 0
-          ? (headerInfo.areaSf / fullSheetAreaSf) * 100
-          : null;
-      setUnderUtilizedMeta({ fullSheetPrice, utilizationPct });
+    if (isLoggedIn && underMinimum) {
+      setUnderUtilizedMeta({
+        billedPrice: headerInfo?.price || 0,
+        usedLengthIn: usedHeight,
+        minLengthIn,
+        sheetWidthIn: getSheetWidthIn(),
+      });
       setShowUnderUtilizedCartConfirm(true);
       return;
     }
@@ -957,7 +954,7 @@ export default function Editor() {
   const itemCount = currentItems.reduce((sum: number, it: any) => {
     const rendered = computeRenderCopies(
       { widthIn: it.widthIn, heightIn: it.heightIn, copies: Number(it.copies) || 1 },
-      CANVAS.SHEET_WIDTH_IN,
+      getSheetWidthIn(),
       settings.marginSize,
       settings.spacing,
     );
@@ -1097,9 +1094,10 @@ export default function Editor() {
       />
       <UnderUtilizedSheetModal
         isOpen={showUnderUtilizedCartConfirm}
-        sheetSizeLabel={`${CANVAS.SHEET_WIDTH_IN.toFixed(1)}" × ${CANVAS.SHEET_HEIGHT_IN.toFixed(1)}"`}
-        fullSheetAmount={underUtilizedMeta?.fullSheetPrice || 0}
-        utilizationPct={underUtilizedMeta?.utilizationPct ?? null}
+        amount={underUtilizedMeta?.billedPrice || 0}
+        usedLengthIn={underUtilizedMeta?.usedLengthIn ?? 0}
+        minLengthIn={underUtilizedMeta?.minLengthIn ?? getMinSheetLengthIn()}
+        sheetWidthIn={underUtilizedMeta?.sheetWidthIn ?? getSheetWidthIn()}
         onConfirm={async () => {
           setShowUnderUtilizedCartConfirm(false);
           setUnderUtilizedMeta(null);

@@ -402,12 +402,23 @@ export default function CanvasContainer({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
+      {/*
+        Behind everything. With artwork on the board this is the space *around*
+        the sheet, in a flat neutral; the sheet draws its own surface below. The
+        preview background used to fill this whole area, so zoomed out it ran
+        past the sheet's edge and nothing showed where the roll ended.
+      */}
       <div
         className="absolute inset-0 z-0 opacity-100 transition-[background-color,background-image] duration-200"
-        style={canvasBgStyle(canvasBg, zoom)}
+        style={
+          items.length === 0
+            ? canvasBgStyle(canvasBg, zoom)
+            : { backgroundColor: isDarkBg(canvasBg ?? "transparent") ? "#0b1220" : "#e5e7eb" }
+        }
       />
       <CanvasRulers
         showRulers={showRulers}
+        sheetWidthIn={canvasWidth}
         zoom={zoom}
         sheetHeightPx={sheetHeightPx}
         scrollTopPx={scrollTop}
@@ -497,13 +508,28 @@ export default function CanvasContainer({
             >
               {/* Under the margin guide and the artwork — a grid that sits on
                   top of the items would fight them for attention. */}
+              {/* The sheet itself: exactly the roll's width, scrolling with the
+                  artwork, with a hairline at its edge. */}
+              <div
+                aria-hidden
+                className="absolute top-0 left-0 pointer-events-none"
+                style={{
+                  ...canvasBgStyle(canvasBg, 1),
+                  zIndex: 0,
+                  width: `${canvasWidth * ppi}px`,
+                  height: `${sheetHeightPx / (ppi * zoom) * ppi}px`,
+                  boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.22)",
+                }}
+              />
               <CanvasGrid
                 showGrid={showGrid}
+                sheetWidthIn={canvasWidth}
                 heightIn={sheetHeightPx / (ppi * zoom)}
                 isDarkBg={isDarkBg(canvasBg ?? 'transparent')}
               />
               <CanvasMargins
                 showMargins={showMargins}
+                sheetWidthIn={canvasWidth}
                 marginSize={marginSize}
                 heightIn={sheetHeightPx / (ppi * zoom)}
                 isDarkBg={isDarkBg(canvasBg ?? 'transparent')}

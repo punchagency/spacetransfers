@@ -3,6 +3,7 @@ import { gsap } from "gsap";
 import { ArtboardItem } from "../../types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
+import { getSheetWidthIn } from "../../../../lib/utils/pricingRates";
 import type { CommitHistory } from "./useHistory";
 import {
   getItemFootprint,
@@ -249,7 +250,7 @@ export const useMouseInteractions = (
           const avgDelta = (deltaX + deltaY / ratio) / 2;
           const rawWidth = Math.max(0.5, start.width + avgDelta);
 
-          const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+          const maxPrintableWidth = (canvasWidth || getSheetWidthIn()) - 2 * marginSize;
           const widthAfterWidthClamp = Math.min(rawWidth, maxPrintableWidth);
           // Silently clamped. A drag handle that stops at the sheet edge is
           // self-explanatory direct manipulation — the pointer keeps moving and
@@ -286,7 +287,7 @@ export const useMouseInteractions = (
               : it,
           );
         } else {
-          const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+          const maxPrintableWidth = (canvasWidth || getSheetWidthIn()) - 2 * marginSize;
           const clampedWidth = Math.min(newWidth, maxPrintableWidth);
           // Silently clamped — see the linked-resize branch above.
 
@@ -343,7 +344,7 @@ export const useMouseInteractions = (
   useEffect(() => {
     if (!isDraggingItem || !dragRef.current) return;
     const drag = dragRef.current;
-    const sheetW = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+    const sheetW = canvasWidth || getSheetWidthIn();
     const ppz = CANVAS.PIXELS_PER_INCH * zoom;
 
     // One rAF step: auto-scroll, position the dragged items under the pointer,

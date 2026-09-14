@@ -83,12 +83,12 @@ export default function Artboard({
   // break the responsive behaviour the artboard has always had.
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
 
-  // Auto-fit the 23.5" sheet width into the visible area at browser zoom 100%.
+  // Auto-fit the roll's width into the visible area at browser zoom 100%.
   useEffect(() => {
     const el = document.querySelector("#artboard-main-container") as HTMLElement | null;
     if (!el) return;
 
-    const neededPx = CANVAS.SHEET_WIDTH_IN * CANVAS.PIXELS_PER_INCH;
+    const neededPx = canvasWidth * CANVAS.PIXELS_PER_INCH;
     if (!neededPx) return;
 
     const update = () => {
@@ -107,7 +107,7 @@ export default function Artboard({
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [zoomOverride]);
+  }, [zoomOverride, canvasWidth]);
 
   /**
    * Applies an explicit zoom, or `null` to resume auto-fit. Returns the value
@@ -117,14 +117,14 @@ export default function Artboard({
     if (factor == null) {
       setZoomOverride(null);
       const el = document.querySelector("#artboard-main-container") as HTMLElement | null;
-      const neededPx = CANVAS.SHEET_WIDTH_IN * CANVAS.PIXELS_PER_INCH;
+      const neededPx = canvasWidth * CANVAS.PIXELS_PER_INCH;
       const availablePx = Math.max(0, (el?.clientWidth ?? 0) - CANVAS.RULER_OFFSET_PX);
       return Math.min(1, Math.max(0.1, availablePx / neededPx || 1));
     }
     const clamped = Math.min(ZOOM.MAX, Math.max(ZOOM.MIN, factor));
     setZoomOverride(clamped);
     return clamped;
-  }, []);
+  }, [canvasWidth]);
   /**
    * Uploads canvas-produced artwork in the background, as soon as it appears.
    *

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { computeGroupDims } from "../artboard/lib/utils";
 import { CANVAS } from "../../config/artboard.config";
+import { getSheetWidthIn } from "../../lib/utils/pricingRates";
 
 interface PreviewSubItem {
   id?: number;
@@ -51,7 +52,7 @@ export default function GangsheetPreview({
 }: GangsheetPreviewProps) {
   const layout = useMemo(() => {
     const safeItems = Array.isArray(items) ? items.filter((it) => it && it.url) : [];
-    const sheetW = sheetWidthIn && sheetWidthIn > 0 ? sheetWidthIn : CANVAS.SHEET_WIDTH_IN;
+    const sheetW = sheetWidthIn && sheetWidthIn > 0 ? sheetWidthIn : getSheetWidthIn();
     const maxAvailableWidth = Math.max(1e-6, sheetW - 2 * Math.max(0, marginIn));
 
     /*

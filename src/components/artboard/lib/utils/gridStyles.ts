@@ -59,5 +59,6 @@ export function isDarkBg(bgId: string): boolean {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.70;
 }
 
-export const snapToGridPoint = (value: number, gridSize: number = GRID.SIZE): number =>
-  Math.round(value / (gridSize / CANVAS.PIXELS_PER_INCH)) * (gridSize / CANVAS.PIXELS_PER_INCH);
+/** Rounds to the grid's quarter-inch step — the lines `CanvasGrid` draws. */
+export const snapToGridPoint = (value: number, stepIn: number = GRID.MINOR_IN): number =>
+  Math.round(value / stepIn) * stepIn;

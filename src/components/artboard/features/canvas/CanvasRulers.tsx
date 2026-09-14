@@ -5,6 +5,8 @@ import { isDarkBg as computeIsDark } from "../../lib/utils";
 interface CanvasRulersProps {
   showRulers: boolean;
   zoom: number;
+  /** The roll width — the top ruler ends at the sheet's edge. */
+  sheetWidthIn: number;
   sheetHeightPx: number;
   scrollTopPx: number;
   viewportHeightPx: number;
@@ -14,6 +16,7 @@ interface CanvasRulersProps {
 export default function CanvasRulers({
   showRulers,
   zoom,
+  sheetWidthIn,
   sheetHeightPx,
   scrollTopPx,
   viewportHeightPx,
@@ -24,20 +27,19 @@ export default function CanvasRulers({
   const dark = computeIsDark(canvasBg ?? 'transparent');
   const cornerTextCls = dark ? 'text-white' : 'text-gray-500';
 
-  const topRulerLengthInches = 23.5;
   const offset = CANVAS.RULER_OFFSET_PX;
   const ppi    = CANVAS.PIXELS_PER_INCH;
+  const inchPx = ppi * zoom;
 
-  const topFull      = Math.floor(topRulerLengthInches);
-  const topRemainder = topRulerLengthInches - topFull;
+  // A fixed 23.5 — now the roll width, which is an admin setting.
+  const topFull      = Math.floor(sheetWidthIn);
+  const topRemainder = sheetWidthIn - topFull;
 
   const MAX_RULER_HEIGHT_IN = 1200;
   const hasContent   = sheetHeightPx > 0;
   const totalHeightIn = hasContent ? MAX_RULER_HEIGHT_IN : 0;
   const leftFull      = Math.floor(totalHeightIn);
   const leftRemainder = totalHeightIn - leftFull;
-
-  const fitScale = 1;
 
   return (
     <>
@@ -46,21 +48,23 @@ export default function CanvasRulers({
         className="absolute top-0 z-50 pointer-events-none overflow-hidden bg-transparent"
         style={{ left: `${offset}px`, width: `calc(100% - ${offset}px)`, height: `${offset}px` }}
       >
-        <div
-          className="h-full flex"
-          style={{
-            width: `${topRulerLengthInches * ppi * zoom}px`,
-            transform: `scaleX(${fitScale})`,
-            transformOrigin: "left center",
-          }}
-        >
+        {/*
+          Each inch placed at its exact offset, like the left ruler. As a row of
+          flex segments the fractional widths accumulated rounding, drifting the
+          marks about a tenth of a pixel by the far edge.
+        */}
+        <div className="relative h-full" style={{ width: `${sheetWidthIn * inchPx}px` }}>
           {Array.from({ length: topFull }).map((_, i) => (
-            <div key={i} style={{ width: `${ppi * zoom}px`, flex: "0 0 auto" }}>
+            <div key={i} className="absolute top-0 h-full" style={{ left: `${i * inchPx}px`, width: `${inchPx}px` }}>
               <RulerSegment label={i} isDarkBg={dark} />
             </div>
           ))}
           {topRemainder > 1e-6 ? (
-            <div key="top-remainder" style={{ width: `${topRemainder * ppi * zoom}px`, flex: "0 0 auto" }}>
+            <div
+              key="top-remainder"
+              className="absolute top-0 h-full"
+              style={{ left: `${topFull * inchPx}px`, width: `${topRemainder * inchPx}px` }}
+            >
               <RulerSegment label={topFull} maxFraction={topRemainder} isDarkBg={dark} />
             </div>
           ) : null}
@@ -70,7 +74,7 @@ export default function CanvasRulers({
       {/* Left Ruler */}
       {(() => {
         const effectiveViewportHeight = viewportHeightPx > 0 ? viewportHeightPx : sheetHeightPx;
-        const rulerTotalPx  = hasContent ? MAX_RULER_HEIGHT_IN * ppi * zoom : 0;
+        const rulerTotalPx  = hasContent ? MAX_RULER_HEIGHT_IN * inchPx : 0;
         const visibleRulerPx = Math.max(0, rulerTotalPx - scrollTopPx);
         const leftRulerHeightPx = Math.max(0, Math.min(effectiveViewportHeight, visibleRulerPx));
 
@@ -85,7 +89,6 @@ export default function CanvasRulers({
           >
             <div className="relative w-full h-full">
               {(() => {
-                const inchPx = ppi * zoom;
                 const start  = Math.max(0, Math.floor(scrollTopPx / (inchPx || 1)) - 2);
                 const count  = Math.max(0, Math.ceil(effectiveViewportHeight / (inchPx || 1)) + 4);
                 const totalSegments = Math.ceil(totalHeightIn);
