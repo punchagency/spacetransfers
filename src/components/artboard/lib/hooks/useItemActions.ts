@@ -449,7 +449,7 @@ export const useItemActions = (
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId
-          ? { ...it, posX: finalX, pinned: true, flowCols: undefined, flowStartCol: undefined, flowEndCol: undefined }
+          ? { ...it, posX: finalX, pinned: true }
           : it
       )
     );
@@ -467,7 +467,7 @@ export const useItemActions = (
     setItems((prev) =>
       prev.map((it) =>
         it.id === selectedId
-          ? { ...it, posY: finalY, pinned: true, flowCols: undefined, flowStartCol: undefined, flowEndCol: undefined }
+          ? { ...it, posY: finalY, pinned: true }
           : it
       )
     );

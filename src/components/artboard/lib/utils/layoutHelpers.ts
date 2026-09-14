@@ -84,11 +84,6 @@ export function getItemVerticalExtent(
   const scaledWidth = nestRot === 90 ? item.heightIn : item.widthIn;
   const scaledHeight = nestRot === 90 ? item.widthIn : item.heightIn;
 
-  const capacityCols = Math.max(
-    1,
-    Math.floor((maxAvailableWidth + gap) / Math.max(1e-6, scaledWidth + gap)),
-  );
-
   const renderCopies = computeRenderCopies(
     { widthIn: scaledWidth, heightIn: scaledHeight, copies: item.copies },
     canvasWidthIn,
@@ -100,9 +95,10 @@ export function getItemVerticalExtent(
     typeof item.flowCols === "number" &&
     typeof item.flowStartCol === "number" &&
     typeof item.flowEndCol === "number";
+  // Same column rule as the footprint, the renderer and the print export.
   const flowCols = hasFlow
     ? Math.max(1, item.flowCols!)
-    : Math.max(1, Math.min(renderCopies, capacityCols));
+    : computeGroupDims(scaledWidth, scaledHeight, Math.max(1, renderCopies), Math.max(1e-6, maxAvailableWidth), gap).cols;
   const flowStartCol = hasFlow ? Math.max(0, item.flowStartCol!) : 0;
 
   const rows = (() => {
@@ -380,7 +376,7 @@ class PlacedBoxIndex {
    * Deliberately identical in meaning to the original
    * `placedBoxes.some(b => …)` predicate — see the class comment.
    */
-  overlaps(qx: number, qy: number, qw: number, qh: number, gap: number): boolean {
+  overlaps(qx: number, qy: number, qw: number, qh: number, gap: number, eps = 0): boolean {
     const x0 = Math.floor(qx / this.cell);
     const x1 = Math.floor((qx + qw + gap) / this.cell);
     const y0 = Math.floor(qy / this.cell);
@@ -395,11 +391,13 @@ class PlacedBoxIndex {
         for (const b of bucket) {
           if (this.seen.get(b) === token) continue;
           this.seen.set(b, token);
+          // `eps` forgives float noise in a piece placed exactly at the gap;
+          // the packer passes none, so its answers are unchanged.
           if (
-            qx < b.x + b.w + gap &&
-            qx + qw + gap > b.x &&
-            qy < b.y + b.h + gap &&
-            qy + qh + gap > b.y
+            qx < b.x + b.w + gap - eps &&
+            qx + qw + gap > b.x + eps &&
+            qy < b.y + b.h + gap - eps &&
+            qy + qh + gap > b.y + eps
           ) {
             return true;
           }
@@ -876,6 +874,39 @@ function rotationUnlocksGap(
   return false;
 }
 
+/** Compares two pieces for the order the packer places them in. */
+type PackOrder = (a: LayoutItem, b: LayoutItem) => number;
+
+const groupArea = (it: LayoutItem) => it.widthIn * it.heightIn * Math.max(1, it.copies || 1);
+
+/**
+ * The orders auto-nest tries, keeping whichever gives the shortest sheet.
+ *
+ * The sheet's width is fixed, so length is the only thing a layout can save,
+ * and it is what the customer pays for. A greedy packer's result depends
+ * heavily on the order pieces arrive in, and largest-area-first was the only
+ * order ever tried. Measured on realistic boards, a plain shelf pack beat it on
+ * four of six — 300 small pieces came out at 172in against the shelf's 164in.
+ *
+ * Largest-area-first stays first, so a board no other order makes strictly
+ * shorter keeps exactly the layout it had.
+ */
+const PACK_ORDERS: PackOrder[] = [
+  (a, b) => groupArea(b) - groupArea(a),
+  (a, b) => b.heightIn - a.heightIn || b.widthIn - a.widthIn,
+  (a, b) => b.widthIn - a.widthIn || b.heightIn - a.heightIn,
+  (a, b) =>
+    Math.max(b.widthIn, b.heightIn) - Math.max(a.widthIn, a.heightIn) || groupArea(b) - groupArea(a),
+];
+
+/**
+ * Past this many pieces only the first order runs. The repack happens on every
+ * board change, and trying every order costs about four single passes —
+ * measured, under 90ms at 400 pieces but 730ms at 1,000 — so a large board
+ * keeps a single pass rather than stalling each edit.
+ */
+const MULTI_ORDER_MAX_ITEMS = 400;
+
 function freeRectPack(
   items: LayoutItem[],
   canvasWidthIn: number,
@@ -884,6 +915,8 @@ function freeRectPack(
   onlyPackIds?: Set<number>,
   /** Receives the ids of items that would not fit inside the sheet's length. */
   overflowedIds?: Set<number>,
+  /** The order pieces are offered to the packer in. See PACK_ORDERS. */
+  order: PackOrder = PACK_ORDERS[0],
 ): LayoutItem[] {
   const margin = Math.max(0, marginIn);
   const gap = Math.max(0, gapIn);
@@ -970,11 +1003,7 @@ function freeRectPack(
 
   const packable = items
     .filter((it) => !isFixed(it))
-    .sort((a, b) => {
-      const areaA = a.widthIn * a.heightIn * Math.max(1, a.copies || 1);
-      const areaB = b.widthIn * b.heightIn * Math.max(1, b.copies || 1);
-      return areaB - areaA;
-    });
+    .sort(order);
 
   for (const item of packable) {
     const copies = Math.max(1, item.copies || 1);
@@ -1102,15 +1131,108 @@ export const calculateGridLayout = (
   autoNestStickers: boolean,
   margin: number = 0.15
 ): LayoutItem[] => {
-  // The free-rectangle engine is now the only layout implementation — it always
+  // The free-rectangle engine is the only layout implementation — it always
   // runs, whatever the auto-nest toggle's value. It also reserves each group's
   // TRUE cells rather than its bounding box (see groupCellRects), so the empty
   // cells of a short last row are ordinary free space that later items get
   // scored into like any other gap — no separate post-pass, and nothing ever
   // relocated out of a good spot to fill one.
   void autoNestStickers;
-  return freeRectPack(items, canvasWidth, margin, Math.max(0, spacing));
+  const gap = Math.max(0, spacing);
+  const orders = items.length > MULTI_ORDER_MAX_ITEMS ? PACK_ORDERS.slice(0, 1) : PACK_ORDERS;
+
+  let best: LayoutItem[] = items;
+  let bestOverflow = Infinity;
+  let bestLength = Infinity;
+  const consider = (candidate: LayoutItem[], overflow: number) => {
+    const length = sheetContentLengthIn(candidate, canvasWidth, margin, gap);
+    // Fewer pieces left off the sheet first, then shorter — strictly, so the
+    // first order wins every tie.
+    if (overflow < bestOverflow || (overflow === bestOverflow && length < bestLength - 1e-6)) {
+      best = candidate;
+      bestOverflow = overflow;
+      bestLength = length;
+    }
+  };
+
+  for (const order of orders) {
+    const overflowed = new Set<number>();
+    const candidate = freeRectPack(items, canvasWidth, margin, gap, undefined, overflowed, order);
+    consider(candidate, overflowed.size);
+  }
+
+  /*
+   * A shelf pack is in the running too, wherever it can represent the board:
+   * every piece a single copy, none pinned or locked, each within the printable
+   * width. It neither rotates nor wraps copies, so anything else is out of reach.
+   */
+  const usableWidth = canvasWidth - 2 * Math.max(0, margin);
+  if (
+    items.length > 0 &&
+    items.length <= MULTI_ORDER_MAX_ITEMS &&
+    items.every(
+      (it) => !it.pinned && !it.locked && Math.max(1, it.copies || 1) === 1 && it.widthIn <= usableWidth + 1e-6,
+    )
+  ) {
+    const shelf = arrangeInitialLayout(items, canvasWidth, gap, margin);
+    const overflow = shelf.filter((it) => {
+      const fp = getItemFootprint(it, canvasWidth, margin, gap);
+      return fp.y + fp.h > MAX_SHEET_HEIGHT_IN + 1e-4;
+    }).length;
+    consider(shelf, overflow);
+  }
+
+  return best;
 };
+
+/**
+ * The columns an item's copies wrap into.
+ *
+ * What the artboard draws, what the print export lays out and what the billed
+ * length measures. Sent with every order and saved design, so the export never
+ * has to guess — it used to, with a rule of its own, and printed copy groups in
+ * a different shape from the one the customer approved.
+ */
+export function resolveFlowCols(
+  item: LayoutItem,
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): number {
+  if (item.flowCols && item.flowCols > 0) return item.flowCols;
+  const maxW = Math.max(0, canvasWidthIn - 2 * Math.max(0, marginIn));
+  const rotated = item.nestRotation === 90;
+  const w = Math.max(1e-6, rotated ? item.heightIn : item.widthIn);
+  const h = Math.max(1e-6, rotated ? item.widthIn : item.heightIn);
+  return computeGroupDims(w, h, Math.max(1, item.copies || 1), maxW, gapIn).cols;
+}
+
+/**
+ * The bottom of the artwork, in inches: the length a sheet prints at, and so
+ * the length it is billed at.
+ *
+ * Measured with the footprint the packer, the drag system and the renderer
+ * share. The header used arithmetic of its own — a fixed 0.06in gap, the
+ * unrotated size and as many columns as fit — so it ignored the spacing
+ * setting, auto-nest's quarter turns and the columns auto-nest chose: eight
+ * copies of an 11in square at 0.5in spacing print 45.5in and were quoted at
+ * 44.18in.
+ */
+export function sheetContentLengthIn(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): number {
+  let bottom = 0;
+  for (const it of items) {
+    const fp = getItemFootprint(it, canvasWidthIn, marginIn, gapIn);
+    // The renderer clamps a group against the sheet's end the same way.
+    const top = Math.min(fp.y, MAX_SHEET_HEIGHT_IN - fp.h);
+    bottom = Math.max(bottom, top + fp.h);
+  }
+  return Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bottom));
+}
 
 /**
  * Packs ONLY the given new items into the gaps of the existing layout —
@@ -1469,6 +1591,62 @@ export function planLocalDisplacement(
 
     boxes.set(worst.id, { x: landed.x, y: landed.y, w: box.w, h: box.h });
     moves.set(worst.id, { posX: landed.x, posY: landed.y });
+  }
+
+  return moves;
+}
+
+/**
+ * Moves apart pieces closer than the spacing allows — and nothing else.
+ *
+ * Spacing is the sheet's cutting clearance, so it has to hold for every piece,
+ * including ones placed by hand. A hand-placed (pinned) piece used to be fixed
+ * whatever the spacing: raising it re-spaced everything around that piece and
+ * left the piece itself as close to its neighbours as before, so the control
+ * looked as though it did nothing.
+ *
+ * Pieces settle in reading order. One that crowds a piece already settled moves
+ * to the nearest spot clear of everything settled, found with the same gap
+ * search a displaced neighbour uses; every other piece stays exactly where it
+ * is. Locked pieces never move, and settle first so the others clear them.
+ */
+export function separateCrowdedItems(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): Map<number, { posX: number; posY: number }> {
+  const margin = Math.max(0, marginIn);
+  const gap = Math.max(0, gapIn);
+  const ordered = [...items].sort(
+    (a, b) =>
+      Number(Boolean(b.locked)) - Number(Boolean(a.locked)) || a.posY - b.posY || a.posX - b.posX,
+  );
+
+  const settled = new Map<number, FootprintBox>();
+  // Indexed, so checking a large board is not a comparison of every pair.
+  const index = new PlacedBoxIndex(Math.max(1, (canvasWidthIn - 2 * margin) / 4));
+  const moves = new Map<number, { posX: number; posY: number }>();
+
+  for (const it of ordered) {
+    let box = getItemFootprint(it, canvasWidthIn, margin, gap);
+    if (!it.locked && index.overlaps(box.x, box.y, box.w, box.h, gap, 1e-4)) {
+      /*
+       * Searched with the piece padded by the spacing on its right and bottom.
+       * The gap search only keeps clearance on an obstacle's right and bottom —
+       * enough for the packer, which fills left to right and top down — so an
+       * unpadded search could land a piece just left of, or above, a neighbour.
+       * The spot is still checked before it is taken.
+       */
+      const padded = { ...box, w: box.w + gap, h: box.h + gap };
+      const spot = findNearestGap(it.id, padded, settled, canvasWidthIn, margin, gap);
+      if (spot && !index.overlaps(spot.x, spot.y, box.w, box.h, gap, 1e-4)) {
+        box = { ...box, x: spot.x, y: spot.y };
+        moves.set(it.id, { posX: spot.x, posY: spot.y });
+      }
+    }
+    settled.set(it.id, box);
+    index.insert(box, gap);
   }
 
   return moves;

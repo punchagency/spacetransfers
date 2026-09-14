@@ -10,6 +10,8 @@ import {
   computeGroupDims,
   planLocalDisplacement,
   getItemFootprint,
+  sheetContentLengthIn,
+  separateCrowdedItems,
 } from "../utils";
 import { snapToGridPoint } from "../utils";
 import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
@@ -202,9 +204,15 @@ export const useArtboardEffects = (
 
       let updatesToUse: ArtboardItem[];
 
-      // Auto-nest ON → re-nest continuously on every change; a margin/spacing
-      // change also forces one global re-gap even when auto-nest is off.
-      const runGlobalPack = autoNestStickers || configChanged;
+      /*
+       * Auto-nest ON re-nests the whole sheet on every change. With it off, a
+       * spacing or margin change no longer re-nests anything: every group's
+       * columns are re-fitted to the new gap below, and then, in both modes,
+       * only pieces now closer than the spacing move (`separateCrowdedItems`).
+       * Re-nesting here rearranged a hand-built board for a nudge of the
+       * spacing, yet left hand-placed pieces as close together as before.
+       */
+      const runGlobalPack = autoNestStickers;
       if (runGlobalPack) {
         // Strip `pinned` ONLY at the moment auto-nest is switched on, so a
         // hand-arranged board snaps into a clean nest on that toggle. While
@@ -228,9 +236,10 @@ export const useArtboardEffects = (
         const changedIds: number[] = [];
         for (const it of items) {
           const key = prevKeys?.get(it.id);
-          if (key === undefined || key !== geomKey(it)) changedIds.push(it.id);
+          // A spacing or margin change reshapes every group, so every item counts.
+          if (configChanged || key === undefined || key !== geomKey(it)) changedIds.push(it.id);
         }
-        if (prevKeys === null || changedIds.length === 0) {
+        if ((prevKeys === null && !configChanged) || changedIds.length === 0) {
           snapshotAndBail();
           return;
         }
@@ -275,6 +284,18 @@ export const useArtboardEffects = (
           if (!m) return it;
           return { ...it, posX: m.posX, posY: clampPosY({ ...it, posY: m.posY }) };
         });
+      }
+
+      // The spacing is the sheet's cutting clearance: once it or the margin
+      // changes, anything now too close is moved apart, hand-placed pieces too.
+      if (configChanged) {
+        const apart = separateCrowdedItems(updatesToUse, canvasWidth, effectiveMargin, spacing);
+        if (apart.size > 0) {
+          updatesToUse = updatesToUse.map((it) => {
+            const m = apart.get(it.id);
+            return m ? { ...it, posX: m.posX, posY: clampPosY({ ...it, posY: m.posY }) } : it;
+          });
+        }
       }
 
       if (didClamp && !warnedMaxHeightRef.current) {
@@ -395,65 +416,10 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      const bounds = items.reduce(
-        (acc, item) => {
-          const copies = item.copies || 1;
-          const gap = CANVAS.GRID_GAP_IN;
-          const effectiveMargin = marginSize;
-          const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
-
-          const scaledWidth = item.widthIn;
-          const scaledHeight = item.heightIn;
-          const capacityCols = Math.max(
-            1,
-            Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
-          );
-          const visibleCols = Math.min(copies, capacityCols);
-          const rows = Math.ceil(copies / capacityCols);
-
-          const groupWidthRaw =
-            visibleCols * scaledWidth + (visibleCols - 1) * gap;
-          const maxGroupWidth = Math.max(0, maxAvailableWidth);
-          const groupWidth = Math.min(groupWidthRaw, maxGroupWidth);
-
-          const groupHeight =
-            rows * scaledHeight + (rows - 1) * gap;
-
-          const centeredLeft =
-            effectiveMargin + (maxAvailableWidth - groupWidth) / 2;
-          const rightBoundLeft = canvasWidth - effectiveMargin - groupWidth;
-          const clampedLeft =
-            copies > 1
-              ? Math.max(
-                  effectiveMargin,
-                  Math.min(centeredLeft, rightBoundLeft),
-                )
-              : Math.max(effectiveMargin, item.posX);
-          const maxTopBySheetLimit = Math.max(
-            0,
-            MAX_SHEET_HEIGHT_IN - groupHeight,
-          );
-          const clampedTop = Math.min(
-            Math.max(effectiveMargin, item.posY),
-            maxTopBySheetLimit,
-          );
-
-          const left = clampedLeft;
-          const top = clampedTop;
-          const right = clampedLeft + groupWidth;
-          const bottom = clampedTop + groupHeight;
-          return {
-            minX: Math.min(acc.minX, left),
-            minY: Math.min(acc.minY, top),
-            maxX: Math.max(acc.maxX, right),
-            maxY: Math.max(acc.maxY, bottom),
-          };
-        },
-        { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: 0, maxY: 0 },
-      );
-
-      const usedWidthIn = items.length > 0 ? Math.max(0, bounds.maxX) : 0;
-      const usedHeightIn = items.length > 0 ? Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bounds.maxY)) : 0;
+      // The length the sheet prints at — see `sheetContentLengthIn` for why this
+      // no longer has arithmetic of its own.
+      const usedHeightIn =
+        items.length > 0 ? sheetContentLengthIn(items, canvasWidth, marginSize, spacing) : 0;
 
       // Pricing is based on actual utilized area (not hardcoded).
       /*
@@ -507,5 +473,5 @@ export const useArtboardEffects = (
         unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
-  }, [items, canvasWidth, marginSize, onHeaderInfoChange, pricingSettings]);
+  }, [items, canvasWidth, marginSize, spacing, onHeaderInfoChange, pricingSettings]);
 };

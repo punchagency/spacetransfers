@@ -143,6 +143,34 @@ export default function CanvasContainer({
   const scrollStopTimerRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
 
+  /**
+   * Whether a pointer event landed on empty sheet rather than on artwork.
+   *
+   * This used to be `e.target === e.currentTarget` — true only when the browser
+   * reported the scroll container itself. The sheet inside it is sized in zoomed
+   * pixels and then scaled by zoom again, so its hit box is zoom² of the sheet:
+   * at 62% it covered the left 62%, where a click reported that inner div and
+   * was ignored. Clicking away did not deselect and double-click did not add
+   * files there, yet both worked on the strip to its right.
+   *
+   * So this asks what matters instead: was it outside every item? `contains`
+   * keeps out events React bubbles up from portals — the item toolbar and the
+   * properties panel live elsewhere in the DOM but still bubble through this
+   * component, and pressing one of their buttons must not deselect the item.
+   */
+  const isEmptySheetTarget = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as Element | null;
+    return Boolean(target && e.currentTarget.contains(target) && !target.closest("[data-item-id]"));
+  };
+
+  /*
+   * A click only counts as on the sheet if the press started there too. Dragging
+   * an item and releasing over empty space fires `click` on their common
+   * ancestor, which would otherwise deselect the piece just placed. Captured,
+   * because items stop mousedown from propagating.
+   */
+  const pressedOnSheetRef = useRef(false);
+
   useEffect(() => () => {
     if (scrollStopTimerRef.current !== null) {
       window.clearTimeout(scrollStopTimerRef.current);
@@ -446,8 +474,15 @@ export default function CanvasContainer({
 
               onCloseProperties();
             }}
-            onClick={(e) => { if (e.target === e.currentTarget) onCanvasClick(); }}
-            onDoubleClick={(e) => { if (e.target === e.currentTarget && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles(); }}
+            onMouseDownCapture={(e) => {
+              pressedOnSheetRef.current = isEmptySheetTarget(e);
+            }}
+            onClick={(e) => {
+              if (pressedOnSheetRef.current && isEmptySheetTarget(e)) onCanvasClick();
+            }}
+            onDoubleClick={(e) => {
+              if (isEmptySheetTarget(e) && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles();
+            }}
           >
             <div
               id="artboard-canvas-inner"
@@ -673,7 +708,8 @@ export default function CanvasContainer({
           <div className="px-3 py-2 border-b   border-gray-100">
             <div className="text-[11px] font-semibold  text-gray-700">Item Spacing</div>
             <div className="text-[11px] text-gray-500">
-              {autoNestStickers ? "Auto-Nest ON (tight)" : `${spacing.toFixed(2)} in`}
+              {/* Spacing applies with auto-nest on too; "tight" claimed it did not. */}
+              {`${spacing.toFixed(2)} in${autoNestStickers ? " · auto-nest on" : ""}`}
             </div>
             <div className="mt-1 text-[11px] text-gray-400">Add more item</div>
           </div>

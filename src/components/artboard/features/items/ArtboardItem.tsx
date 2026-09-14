@@ -7,7 +7,7 @@ import PropertiesPanel from "./PropertiesPanel";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
-import { computeRenderCopies } from "../../lib/utils/layoutHelpers";
+import { computeGroupDims, computeRenderCopies } from "../../lib/utils/layoutHelpers";
 
 let hasShownMaxHeightToast = false;
 
@@ -339,11 +339,6 @@ function ArtboardItem({
   const userRotationOdd = ((item.rotation / 90) % 2 + 2) % 2 === 1;
   const needsSwapRender = (nestRot === 90) !== userRotationOdd;
   const totalCssRotation = nestRot + item.rotation;
-  const capacityCols = Math.max(
-    1,
-    Math.floor((maxAvailableWidth + gap) / Math.max(1e-6, scaledWidth + gap))
-  );
-
   const renderCopies = computeRenderCopies(
     { widthIn: scaledWidth, heightIn: scaledHeight, copies: item.copies },
     canvasWidth,
@@ -357,9 +352,12 @@ function ArtboardItem({
     typeof item.flowCols === "number" &&
     typeof item.flowStartCol === "number" &&
     typeof item.flowEndCol === "number";
+  // Without a layout-assigned column count, wrap the way the footprint, the
+  // billed length and the print export do. "As many as fit" made this the one
+  // place that drew a copy group in a different shape from the other three.
   const flowCols = hasFlow
     ? Math.max(1, item.flowCols!)
-    : Math.max(1, Math.min(renderCopies, capacityCols));
+    : computeGroupDims(scaledWidth, scaledHeight, Math.max(1, renderCopies), Math.max(1e-6, maxAvailableWidth), gap).cols;
   const flowStartCol = hasFlow ? Math.max(0, item.flowStartCol!) : 0;
   const flowEndColRaw = hasFlow
     ? Math.max(0, item.flowEndCol!)

@@ -510,14 +510,10 @@ export const useMouseInteractions = (
         setItems((prev) =>
           prev.map((it) => {
             if (drag.startPositions.has(it.id)) {
-              return {
-                ...it,
-                pinned: true,
-                flowCols: undefined,
-                flowStartCol: undefined,
-                flowEndCol: undefined,
-                gravityActive: false,
-              };
+              // Pinned where it was released. Its columns are kept: the drop was
+              // validated against this shape, and clearing them re-wrapped a copy
+              // group wider, over the neighbours it had just been placed beside.
+              return { ...it, pinned: true, gravityActive: false };
             }
             const mv = moves.get(it.id);
             if (mv) {
@@ -526,9 +522,6 @@ export const useMouseInteractions = (
                 posX: mv.posX,
                 posY: mv.posY,
                 pinned: true,
-                flowCols: undefined,
-                flowStartCol: undefined,
-                flowEndCol: undefined,
                 gravityActive: false,
               };
             }

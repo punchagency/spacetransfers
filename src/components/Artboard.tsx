@@ -20,19 +20,23 @@ import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
 import { ACCEPTED_IMAGE_TYPES, CANVAS, MAX_SHEET_HEIGHT_IN, ZOOM } from "../config/artboard.config";
+import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
 import { isSheetFull } from "./artboard/lib/utils";
 
 export default function Artboard({
   onHeaderInfoChange,
   onActionPerformed,
-  showRulers = true,
-  showGrid = true,
-  snapToGrid = false,
-  showMargins = false,
-  marginSize = 0.25,
-  autoNestStickers = false,
-  spacing = 0.5,
-  canvasBg = '#f3f4f6',
+  // One set of defaults. These disagreed with the editor's (0.25in margin,
+  // auto-nest off, 0.5in spacing), so a caller omitting a prop got a different
+  // sheet from the one the editor starts.
+  showRulers = DEFAULT_EDITOR_SETTINGS.showRulers,
+  showGrid = DEFAULT_EDITOR_SETTINGS.showGrid,
+  snapToGrid = DEFAULT_EDITOR_SETTINGS.snapToGrid,
+  showMargins = DEFAULT_EDITOR_SETTINGS.showMargins,
+  marginSize = DEFAULT_EDITOR_SETTINGS.marginSize,
+  autoNestStickers = DEFAULT_EDITOR_SETTINGS.autoNestStickers,
+  spacing = DEFAULT_EDITOR_SETTINGS.spacing,
+  canvasBg = DEFAULT_EDITOR_SETTINGS.canvasBg,
   highlightLowDpi = false,
   onRequestAutoNest,
   onUpdateSetting,
@@ -51,6 +55,24 @@ export default function Artboard({
   );
   const [addedToCart, setAddedToCart] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /*
+   * Escape clears the selection, the standard way out of one. Panels that own
+   * Escape (the AI panel, the edit preview) stop it in the capture phase, so
+   * pressing it there closes the panel and leaves the selection alone.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      setSelectedId(null);
+      setSelectedIds((prev) => (prev.size === 0 ? prev : new Set()));
+      setShowProperties((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const canvasWidth = useCanvasWidth();
 

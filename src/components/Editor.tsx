@@ -22,9 +22,16 @@ import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
-import { loadEditorSettings, saveEditorSettings, type EditorSettings } from "../lib/utils/editorSettings";
+import {
+  DEFAULT_SHEET_SETTINGS,
+  loadEditorSettings,
+  saveEditorSettings,
+  sheetSettingsForSave,
+  sheetSettingsFromSaved,
+  type EditorSettings,
+} from "../lib/utils/editorSettings";
 import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
-import { computeRenderCopies } from "./artboard/lib/utils/layoutHelpers";
+import { computeRenderCopies, sheetContentLengthIn } from "./artboard/lib/utils/layoutHelpers";
 
 export default function Editor() {
   const { pricePerSqFt } = usePricingSettings();
@@ -422,8 +429,9 @@ export default function Editor() {
     setLastAction(null);
     setDeletedItems({});
     setBaselineSnapshot(getGangsheetSnapshot([]));
-    // A brand-new gangsheet always starts at the default 0.5 item spacing.
-    setSettings((prev) => (prev.spacing === 0.5 ? prev : { ...prev, spacing: 0.5 }));
+    // A new sheet starts from the defaults. View settings are the customer's
+    // and carry over; spacing, margin and auto-nest belong to the sheet.
+    setSettings((prev) => ({ ...prev, ...DEFAULT_SHEET_SETTINGS }));
   };
 
   const mapItemsForSave = (items: any[]) => {
@@ -452,6 +460,12 @@ export default function Editor() {
       copies: it.copies || 1,
       linked: Boolean(it.linked),
       autoCrop: it.autoCrop !== false,
+      // Everything needed to reopen the design exactly as it was laid out.
+      flipped: Boolean(it.flipped),
+      nestRotation: it.nestRotation === 90 ? 90 : 0,
+      flowCols: typeof it.flowCols === "number" && it.flowCols >= 1 ? it.flowCols : undefined,
+      pinned: Boolean(it.pinned),
+      locked: Boolean(it.locked),
     }));
     return { normalizedItems, mappedItems };
   };
@@ -482,7 +496,7 @@ export default function Editor() {
         method: "PATCH",
         body: JSON.stringify({
           ...(thumbnail ? { thumbnail } : {}),
-          artboardData: { items: mappedItems },
+          artboardData: { items: mappedItems, ...sheetSettingsForSave(settings) },
         }),
       });
 
@@ -553,15 +567,20 @@ export default function Editor() {
               croppedWidthPx: typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0 ? it.croppedWidthPx : undefined,
               croppedHeightPx: typeof it.croppedHeightPx === "number" && it.croppedHeightPx > 0 ? it.croppedHeightPx : undefined,
               rotation: it.rotation || 0,
-              locked: false,
+              // Restored rather than reset: a locked or mirrored piece used to
+              // reopen unlocked and unmirrored.
+              locked: Boolean(it.locked),
               expanded: false,
-              flipped: false,
+              flipped: Boolean(it.flipped),
               autoCrop,
               copies: it.copies || 1,
               widthIn: it.widthIn,
               heightIn: it.heightIn,
               posX: it.posX,
               posY: it.posY,
+              nestRotation: it.nestRotation === 90 ? 90 : 0,
+              flowCols: typeof it.flowCols === "number" && it.flowCols >= 1 ? it.flowCols : undefined,
+              pinned: Boolean(it.pinned),
               linked: Boolean(it.linked),
               price: 0,
               originalUrl,
@@ -569,6 +588,11 @@ export default function Editor() {
           }),
         ),
       );
+
+      // The design's own spacing, margin and auto-nest, applied in the same
+      // render as its items so it lays out exactly as it was saved.
+      const savedSheet = sheetSettingsFromSaved(res?.artboardData);
+      setSettings((prev) => ({ ...prev, ...savedSheet }));
 
       const nextSnapshot = getGangsheetSnapshot(mappedItems);
       setLoadedDesignData({ items: mappedItems, counter: Date.now() });
@@ -855,65 +879,11 @@ export default function Editor() {
 
   const handleAddGangSheetToCart = async () => {
     const currentItems = getCurrentItems();
-    const used = (() => {
-      if (!Array.isArray(currentItems) || currentItems.length === 0) {
-        return { usedWidthIn: 0, usedHeightIn: 0 };
-      }
-
-      const canvasWidthIn = CANVAS.SHEET_WIDTH_IN;
-      const effectiveMargin = settings.marginSize;
-      const gap = CANVAS.GRID_GAP_IN;
-
-      const bounds = currentItems.reduce(
-        (acc: any, item: any) => {
-          const copies = item.copies || 1;
-          const scaledWidth = item.widthIn;
-          const scaledHeight = item.heightIn;
-
-          const maxAvailableWidth = Math.max(0, canvasWidthIn - 2 * effectiveMargin);
-          const capacityCols = Math.max(
-            1,
-            Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
-          );
-          const visibleCols = Math.min(copies, capacityCols);
-          const rows = Math.ceil(copies / capacityCols);
-
-          const groupWidthRaw = visibleCols * scaledWidth + (visibleCols - 1) * gap;
-          const groupWidth = Math.min(groupWidthRaw, maxAvailableWidth);
-          const groupHeight = rows * scaledHeight + (rows - 1) * gap;
-
-          const centeredLeft = effectiveMargin + (maxAvailableWidth - groupWidth) / 2;
-          const rightBoundLeft = canvasWidthIn - effectiveMargin - groupWidth;
-          const clampedLeft =
-            copies > 1
-              ? Math.max(effectiveMargin, Math.min(centeredLeft, rightBoundLeft))
-              : Math.max(effectiveMargin, item.posX);
-          const clampedTop = Math.max(effectiveMargin, item.posY);
-
-          const left = clampedLeft;
-          const top = clampedTop;
-          const right = clampedLeft + groupWidth;
-          const bottom = clampedTop + groupHeight;
-
-          return {
-            minX: Math.min(acc.minX, left),
-            minY: Math.min(acc.minY, top),
-            maxX: Math.max(acc.maxX, right),
-            maxY: Math.max(acc.maxY, bottom),
-          };
-        },
-        {
-          minX: Number.POSITIVE_INFINITY,
-          minY: Number.POSITIVE_INFINITY,
-          maxX: 0,
-          maxY: 0,
-        },
-      );
-
-      return { usedWidthIn: Math.max(0, bounds.maxX), usedHeightIn: Math.max(0, bounds.maxY) };
-    })();
-
-    const usedHeight = used.usedHeightIn || 0;
+    // The same length the header bills and the print export produces.
+    const usedHeight =
+      Array.isArray(currentItems) && currentItems.length > 0
+        ? sheetContentLengthIn(currentItems, CANVAS.SHEET_WIDTH_IN, settings.marginSize, settings.spacing)
+        : 0;
     // Sheet width is fixed at 23.5", so we only gate on height utilization.
     const notFullyUtilized = usedHeight < CANVAS.SHEET_HEIGHT_IN - 0.01;
 
@@ -1286,6 +1256,11 @@ export default function Editor() {
             copies: it.copies || 1,
             linked: Boolean(it.linked),
             autoCrop: it.autoCrop !== false,
+            flipped: Boolean(it.flipped),
+            nestRotation: it.nestRotation === 90 ? 90 : 0,
+            flowCols: typeof it.flowCols === "number" && it.flowCols >= 1 ? it.flowCols : undefined,
+            pinned: Boolean(it.pinned),
+            locked: Boolean(it.locked),
           }));
 
           // Pre-flight: the /customer/designs routes are gated to CUSTOMER role
@@ -1313,7 +1288,7 @@ export default function Editor() {
                 body: JSON.stringify({
                   title,
                   thumbnail,
-                  artboardData: { items: mappedItems },
+                  artboardData: { items: mappedItems, ...sheetSettingsForSave(settings) },
                 }),
               });
               setCurrentLoadedDesignTitle(title);
@@ -1337,7 +1312,7 @@ export default function Editor() {
                   thumbnail,
                   size: { widthIn, heightIn },
                   pricing: { areaSqFt, price },
-                  artboardData: { items: mappedItems },
+                  artboardData: { items: mappedItems, ...sheetSettingsForSave(settings) },
                 }),
               });
               const createdId = created?.id ? String(created.id) : null;

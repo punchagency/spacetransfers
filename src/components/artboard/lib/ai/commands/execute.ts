@@ -66,18 +66,15 @@ const rotateItem = (item: ArtboardItem, turns: number): ArtboardItem => {
 };
 
 /**
- * Marks an item as explicitly placed. Without clearing the flow fields the
- * auto-nest layout engine re-flows it on the next pass and the move visibly
- * snaps back — the same reason `setPosX`/`setPosY` clear them.
+ * Marks an item as explicitly placed. `pinned` is what keeps auto-nest from
+ * moving it on the next pass. Its columns are kept, so a copy group keeps the
+ * shape it was moved as instead of re-wrapping wider over its neighbours.
  */
 const pinAt = (item: ArtboardItem, posX: number, posY: number): ArtboardItem => ({
   ...item,
   posX,
   posY,
   pinned: true,
-  flowCols: undefined,
-  flowStartCol: undefined,
-  flowEndCol: undefined,
 });
 
 export const executeBoardCommands = async (

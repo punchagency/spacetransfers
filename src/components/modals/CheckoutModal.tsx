@@ -13,6 +13,9 @@ import { apiFetch } from "../../lib/utils/api";
 import { stripEmbeddedImages, hasEmbeddedImages } from "../../lib/utils/payloadImages";
 import { itemListsEquivalent } from "../../lib/utils/assetIdentity";
 import { AssetIndex } from "../../lib/utils/assetTable";
+import { resolveFlowCols } from "../artboard/lib/utils/layoutHelpers";
+import { CANVAS } from "../../config/artboard.config";
+import { DEFAULT_SHEET_SETTINGS } from "../../lib/utils/editorSettings";
 import toast from "react-hot-toast";
 import { Elements } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
@@ -271,6 +274,15 @@ export default function CheckoutModal({
             flipped: Boolean(it.flipped),
             copies: typeof it.copies === "number" ? it.copies : 1,
             linked: Boolean(it.linked),
+            // How auto-nest laid the piece out. Without these the print export
+            // drew nested pieces upright and wrapped copies its own way.
+            nestRotation: it.nestRotation === 90 ? 90 : 0,
+            flowCols: resolveFlowCols(
+              it,
+              CANVAS.SHEET_WIDTH_IN,
+              (item as any).sheetMarginIn ?? DEFAULT_SHEET_SETTINGS.marginSize,
+              (item as any).itemSpacingIn ?? DEFAULT_SHEET_SETTINGS.spacing,
+            ),
           }))
         : undefined;
 
