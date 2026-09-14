@@ -60,9 +60,13 @@ export default function ItemToolbar({ locked, onLink, onRotate, onToggleLock, on
   const dpiButtonDisabled = dpiMeetsMinimum || isDpiEnhancing;
 
   return (
-    <div className="pointer-events-auto w-full flex justify-center py-2">
+    // Clicks pass through everywhere but the bar itself. This wrapper spans the
+    // sheet's full width, and with `pointer-events-auto` here it swallowed every
+    // click along the top of the sheet while anything was selected — artwork
+    // there could not be selected, right-clicked or dragged.
+    <div className="pointer-events-none w-full flex justify-center py-2">
     <div className="flex flex-col items-center gap-1">
-      <div data-action-toolbar className="flex items-center px-1 py-1 bg-white border border-gray-200 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.12)] max-md:max-w-[calc(100vw-1rem)] max-md:overflow-x-auto">
+      <div data-action-toolbar className="pointer-events-auto flex items-center px-1 py-1 bg-white border border-gray-200 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.12)] max-md:max-w-[calc(100vw-1rem)] max-md:overflow-x-auto">
         <div className="flex items-center gap-0.5">
 
           {/* AI — the primary editing entry point, and deliberately the one

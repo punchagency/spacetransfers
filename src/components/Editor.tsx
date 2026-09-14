@@ -1155,6 +1155,7 @@ export default function Editor() {
         autoNestStickers={settings.autoNestStickers}
         spacing={settings.spacing}
         canvasBg={settings.canvasBg}
+        autoCropUploads={settings.autoCropUploads}
         onRequestAutoNest={(enabled) => updateSetting("autoNestStickers", enabled)}
         onUpdateSetting={(key, value) => updateSetting(key as keyof typeof settings, value)}
         onDataChange={setArtboardData}

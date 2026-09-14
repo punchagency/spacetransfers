@@ -37,6 +37,7 @@ export default function Artboard({
   autoNestStickers = DEFAULT_EDITOR_SETTINGS.autoNestStickers,
   spacing = DEFAULT_EDITOR_SETTINGS.spacing,
   canvasBg = DEFAULT_EDITOR_SETTINGS.canvasBg,
+  autoCropUploads = DEFAULT_EDITOR_SETTINGS.autoCropUploads,
   highlightLowDpi = false,
   onRequestAutoNest,
   onUpdateSetting,
@@ -173,6 +174,7 @@ export default function Artboard({
       spacing,
       marginSize,
       history.commit,
+      autoCropUploads,
     );
   /**
    * The items the DPI chip is counting.

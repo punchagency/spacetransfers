@@ -55,21 +55,14 @@ function DimInput({
         type="text"
         inputMode="decimal"
         value={local}
-        onChange={(e) => {
-          const raw = e.target.value;
-          setLocal(raw);
-          const n = parseFloat(raw);
-          if (!isNaN(n) && n > 0) {
-            onChange(parseFloat(n.toFixed(2)));
-          }
-        }}
+        // Applied on Enter or leaving the field, not per keystroke: typing "12"
+        // used to make the piece 1in first, and auto-nest re-packed around it.
+        onChange={(e) => setLocal(e.target.value)}
         onBlur={() => {
           const n = parseFloat(local);
-          if (!isNaN(n) && n > 0) {
-            onChange(parseFloat(n.toFixed(2)));
-          } else {
-            setLocal(fmt(value));
-          }
+          if (!isNaN(n) && n > 0) onChange(parseFloat(n.toFixed(2)));
+          // Show what was actually applied — a refused or clamped value included.
+          setLocal(fmt(value));
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -96,20 +89,12 @@ function CopiesInput({ value, onChange }: { value: number; onChange: (n: number)
       type="text"
       inputMode="numeric"
       value={local}
-      onChange={(e) => {
-        const raw = e.target.value;
-        setLocal(raw);
-        const n = parseInt(raw, 10);
-        if (!isNaN(n) && n >= 1) onChange(n);
-      }}
+      // Applied on Enter or leaving the field, like the dimensions.
+      onChange={(e) => setLocal(e.target.value)}
       onBlur={() => {
         const n = parseInt(local, 10);
-        if (!isNaN(n) && n >= 1) {
-          onChange(n);
-          setLocal(String(n));
-        } else {
-          setLocal(String(value));
-        }
+        if (!isNaN(n) && n >= 1) onChange(n);
+        setLocal(String(value));
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -292,7 +277,7 @@ export default function PropertiesPanel({
       >
         <div>
           <div className="font-medium text-gray-900 text-[12px]">Auto Crop</div>
-          <div className="text-gray-500 text-[10px]">Remove empty space</div>
+          <div className="text-gray-500 text-[10px]">Trim empty space around the artwork</div>
         </div>
         <button
           className={`w-9 h-5 rounded-full flex items-center transition-colors pointer-events-none ${
@@ -323,7 +308,7 @@ export default function PropertiesPanel({
               item.linked ? "text-blue-600" : "text-gray-400"
             }`}
             onClick={onToggleLinked}
-            title={item.linked ? "Click to Unlink" : "Click to Link"}
+            title={item.linked ? "Width and height change together — click to size them separately" : "Click to keep width and height in proportion"}
           >
             {item.linked ? "Unlink" : "Link"}
           </button>

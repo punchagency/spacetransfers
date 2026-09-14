@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
-import { FiLink } from "react-icons/fi";
 import ItemToolbar from "./ItemToolbar";
 import PropertiesPanel from "./PropertiesPanel";
 import { AiImagePanel } from "../ai";
@@ -562,26 +561,7 @@ function ArtboardItem({
           onRevertHistory={aiPanel.onRevertHistory}
         />
       ) : null}
-      {isSelected ? (
-        <div className="absolute top-1 right-2 bg-white/90 border border-gray-200 text-gray-700 text-[10px] rounded-full px-2 h-5 flex items-center gap-2 pointer-events-none">
-          <span className="font-semibold">{item.copies > 1 ? "Group" : "Single"}</span>
-          <span className="text-gray-400">•</span>
-          <span>{item.copies > 1 ? "Top" : "Bottom"}</span>
-        </div>
-      ) : null}
       {propertiesPortal}
-      {isSelected && !item.autoCrop && (
-        <div
-          className="absolute top-1 left-2 bg-blue-600 text-white text-xs rounded-xl px-2 h-5 flex items-center gap-1 cursor-pointer hover:bg-blue-700 pointer-events-auto"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleLinked();
-          }}
-        >
-          <FiLink className="w-3 h-3" />
-          <span>#{item.id}</span>
-        </div>
-      )}
       {/* Group Layout for Copies — virtual rows, absolute positioned */}
       <div
         className="relative"

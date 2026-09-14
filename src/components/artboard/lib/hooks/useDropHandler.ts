@@ -106,7 +106,9 @@ export const useDropHandler = (
   onRequestAutoNest: ((enabled: boolean) => void) | undefined,
   spacing: number,
   marginSize: number,
-  commitHistory?: CommitHistory
+  commitHistory?: CommitHistory,
+  /** Whether new uploads are cropped to their artwork — the sidebar's "Auto Crop Uploads". */
+  autoCropUploads: boolean = true,
 ) => {
   const [isDragging, setIsDragging] = useState(false);
   const [fadeCount, setFadeCount] = useState(0);
@@ -539,7 +541,7 @@ export const useDropHandler = (
         locked: false,
         expanded: false,
         flipped: false,
-        autoCrop: true,
+        autoCrop: autoCropUploads,
         copies: 1,
         widthIn,
         heightIn,
@@ -555,9 +557,11 @@ export const useDropHandler = (
         originalUrl: originalUrlOverride || url,
         originalWidthIn: widthIn,
         originalHeightIn: heightIn,
+        originalWidthPx: loaded.widthPx,
+        originalHeightPx: loaded.heightPx,
       };
 
-      const cropped = await autoCropImage(url, dpi);
+      const cropped = autoCropUploads ? await autoCropImage(url, dpi) : null;
       if (cropped) {
         const deltaX = (widthIn - cropped.widthIn) / 2;
         const deltaY = (heightIn - cropped.heightIn) / 2;
@@ -907,7 +911,8 @@ export const useDropHandler = (
         if (dpi < 300) lowDpiImages++;
 
         const serverUrl = assetResponse?.url || localInfo.url;
-        const trimmedUrl = assetResponse?.trimmedUrl || null;
+        // With auto crop off for uploads, the server's trimmed copy goes unused.
+        const trimmedUrl = autoCropUploads ? assetResponse?.trimmedUrl || null : null;
         const widthPx = assetResponse?.widthPx || localInfo.widthPx;
         const heightPx = assetResponse?.heightPx || localInfo.heightPx;
 
@@ -925,7 +930,7 @@ export const useDropHandler = (
           locked: false,
           expanded: false,
           flipped: false,
-          autoCrop: true,
+          autoCrop: autoCropUploads,
           copies: 1,
           widthIn,
           heightIn,
@@ -946,9 +951,11 @@ export const useDropHandler = (
           originalUrl: serverUrl,
           originalWidthIn,
           originalHeightIn,
+          originalWidthPx: widthPx,
+          originalHeightPx: heightPx,
         };
 
-        if (!trimmedUrl) {
+        if (autoCropUploads && !trimmedUrl) {
           const cropped = await autoCropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;

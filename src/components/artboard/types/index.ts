@@ -50,6 +50,9 @@ export interface ArtboardItem {
   originalUrl?: string;
   originalWidthIn?: number;
   originalHeightIn?: number;
+  /** Pixel size of `originalUrl`, so the auto-crop toggle keeps a piece's scale both ways. */
+  originalWidthPx?: number;
+  originalHeightPx?: number;
   isDropping?: boolean;
   dpi?: number;
   /**
@@ -106,6 +109,8 @@ export interface ArtboardProps {
   marginSize?: number;
   autoNestStickers?: boolean;
   spacing?: number;
+  /** Whether new uploads are auto-cropped — the sidebar's "Auto Crop Uploads". */
+  autoCropUploads?: boolean;
   onRequestAutoNest?: (enabled: boolean) => void;
   /**
    * Writes a board setting owned by the editor. Supplied so the AI text box can

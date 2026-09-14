@@ -29,6 +29,8 @@ export interface EditorSettings {
   spacing: number;
   marginSize: number;
   canvasBg: string;
+  /** Whether new uploads are cropped to their artwork. Existing pieces are untouched. */
+  autoCropUploads: boolean;
 }
 
 export type SheetSettings = Pick<EditorSettings, "spacing" | "marginSize" | "autoNestStickers">;
@@ -63,6 +65,7 @@ const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   snapToGrid: false,
   // The background the sidebar shows as unselected-but-default.
   canvasBg: "#f3f4f6",
+  autoCropUploads: true,
 };
 
 export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
@@ -111,6 +114,7 @@ export const loadEditorSettings = (): EditorSettings => {
           showMargins: bool(stored.showMargins, v.showMargins),
           snapToGrid: bool(stored.snapToGrid, v.snapToGrid),
           canvasBg: canvasBgOr(stored.canvasBg, v.canvasBg),
+          autoCropUploads: bool(stored.autoCropUploads, v.autoCropUploads),
         }
       : { ...v };
 
@@ -126,6 +130,7 @@ export const saveEditorSettings = (settings: EditorSettings): void => {
     showMargins: settings.showMargins,
     snapToGrid: settings.snapToGrid,
     canvasBg: settings.canvasBg,
+    autoCropUploads: settings.autoCropUploads,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(view));

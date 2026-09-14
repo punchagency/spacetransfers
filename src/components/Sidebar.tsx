@@ -121,6 +121,7 @@ type SidebarProps = {
         spacing: number;
         marginSize: number;
         canvasBg: string;
+        autoCropUploads: boolean;
     };
     onUpdateSetting: (key: keyof SidebarProps['settings'], value: any) => void;
     onOpenSaveModal: () => void;
@@ -416,6 +417,17 @@ export default function Sidebar({
                                         <Toggle checked={settings.autoNestStickers} onChange={() => onUpdateSetting('autoNestStickers', !settings.autoNestStickers)} />
                                     </div>
                                     <p className="text-[12px] text-gray-500">Arrange efficiently and fill leftover gaps</p>
+                                </div>
+
+                                {/* The default for new uploads only. Each image on the
+                                    sheet keeps its own setting, changed from its
+                                    right-click panel. */}
+                                <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-100 hover:bg-gray-100 transition-colors">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className="text-[12px] font-semibold text-slate-800">Auto Crop Uploads</span>
+                                        <Toggle checked={settings.autoCropUploads} onChange={() => onUpdateSetting('autoCropUploads', !settings.autoCropUploads)} />
+                                    </div>
+                                    <p className="text-[12px] text-gray-500">Trim empty space around new images. Change any image from its right-click menu.</p>
                                 </div>
 
                                 {/* Shown on mobile too. The setting applied on a phone
