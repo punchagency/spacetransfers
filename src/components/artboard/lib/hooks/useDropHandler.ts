@@ -4,14 +4,14 @@ import { readDPI, loadImageSize, validateImageFile, checkFade, shouldWarn } from
 import type { FadeVerdict } from "../utils";
 import { placeNewItems, arrangeInitialLayout, isSheetFull } from "../utils";
 import { autoCropImage } from "../utils/autoCrop";
-import { rasterizePdf, PdfRasterizeError } from "../utils/pdfRasterize";
+import { convertUpload, UploadConvertError } from "../utils/uploadConvert";
+import { isAcceptedUpload } from "../utils/fileValidation";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
 import {
   ACCEPTED_IMAGE_TYPES,
   CANVAS,
   MAX_SHEET_HEIGHT_IN,
-  PDF_MAX_PAGES,
 } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 import { getSheetWidthIn } from "../../../../lib/utils/pricingRates";
@@ -359,61 +359,39 @@ export const useDropHandler = (
   };
 
   /**
-   * Replaces each PDF in a drop with its pages, rendered to PNG.
+   * Turns every file in a drop into the PNG or JPEG the upload path takes.
    *
    * Runs before anything is counted, so capacity, the progress bar and the
-   * "N files" label all see pages — which is what actually lands on the board.
-   * A PDF that cannot be converted is reported by name and left out; the rest
-   * of the drop carries on.
+   * "N files" label all see what actually lands on the board — a PDF's pages,
+   * a PSD's flattened image. A file that cannot be converted is reported by
+   * name and left out; the rest of the drop carries on.
    */
-  const expandPdfPages = async (files: File[]): Promise<File[]> => {
+  const convertUploads = async (files: File[]): Promise<File[]> => {
     const out: File[] = [];
     for (const file of files) {
-      if (file.type !== "application/pdf") {
-        out.push(file);
-        continue;
-      }
-
-      // Before the PDF reader loads: a mislabelled, empty or oversized file
-      // gets the same message any other upload would.
-      const validation = await validateImageFile(file);
-      if (!validation.ok) {
-        showUnsupportedFileWarning(validation.message!);
-        continue;
-      }
-
-      const toastId = toast.loading(`Converting “${file.name}”…`);
+      let toastId: string | undefined;
       try {
-        const result = await rasterizePdf(file, (done, total) => {
-          if (total > 1) {
-            toast.loading(`Converting “${file.name}” — page ${done} of ${total}`, { id: toastId });
-          }
+        const result = await convertUpload(file, {
+          onConverting: () => {
+            toastId = toast.loading(`Converting “${file.name}”…`);
+          },
+          onProgress: (done, total) => {
+            if (total > 1 && toastId) {
+              toast.loading(`Converting “${file.name}” — page ${done} of ${total}`, { id: toastId });
+            }
+          },
         });
-        toast.dismiss(toastId);
-        out.push(...result.pages.map((p) => p.file));
-
-        if (result.truncated) {
-          toast.error(
-            `“${file.name}” has ${result.totalPages} pages. Only the first ${PDF_MAX_PAGES} were added.`,
-            { duration: 8000 },
-          );
-        }
-        if (result.tooLarge.length > 0) {
-          const numbers = result.tooLarge.map((p) => p.pageNumber).join(", ");
-          const one = result.tooLarge.length === 1;
-          toast.error(
-            `${one ? "Page" : "Pages"} ${numbers} of “${file.name}” ${one ? "was" : "were"} skipped — too large to convert at print resolution.`,
-            { duration: 8000 },
-          );
-        }
+        if (toastId) toast.dismiss(toastId);
+        out.push(...result.files);
+        for (const notice of result.notices) toast(notice, { duration: 8000, icon: "ℹ️" });
       } catch (err) {
-        console.warn(`[UPLOAD] ${file.name} — PDF conversion failed`, err);
-        toast.error(
-          err instanceof PdfRasterizeError
-            ? err.message
-            : `“${file.name}” could not be converted. Please re-export it and try again.`,
-          { id: toastId, duration: 6000 },
-        );
+        if (toastId) toast.dismiss(toastId);
+        if (err instanceof UploadConvertError) {
+          showUnsupportedFileWarning(err.message);
+        } else {
+          console.warn(`[UPLOAD] ${file.name} — conversion failed`, err);
+          toast.error(`“${file.name}” could not be converted. Please re-export it and try again.`, { duration: 6000 });
+        }
       }
     }
     return out;
@@ -491,10 +469,10 @@ export const useDropHandler = (
       return;
     }
 
-    // After the sheet-full check, so a full sheet does not pay for a render
-    // whose pages would all be refused.
-    if (dropped.some((f) => f.type === "application/pdf")) {
-      dropped = await expandPdfPages(dropped);
+    // After the sheet-full check, so a full sheet does not pay for conversions
+    // whose results would all be refused.
+    if (dropped.length > 0) {
+      dropped = await convertUploads(dropped);
       if (dropped.length === 0 && !droppedUrl) return;
     }
 
@@ -1187,9 +1165,9 @@ export const useDropHandler = (
   };
 
   const filterFiles = (files: File[]) => {
-    const accepted = files.filter((f) =>
-      (ACCEPTED_IMAGE_TYPES as readonly string[]).includes(f.type),
-    );
+    // By type or extension — see `isAcceptedUpload`. The contents decide the
+    // rest, including refusing a file whose name was the only thing right.
+    const accepted = files.filter(isAcceptedUpload);
     const other = files.length - accepted.length;
     // The count and the format list both come from this one call, so the
     // advice can never name a format the filter above would reject.

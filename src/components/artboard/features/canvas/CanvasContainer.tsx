@@ -9,7 +9,7 @@ import BulkLoadOverlay from "./BulkLoadOverlay";
 import QueueBadge from "./QueueBadge";
 import ArtboardItem from "../items/ArtboardItem";
 import { ArtboardItem as ArtboardItemType } from "../../types";
-import { CANVAS } from "../../../../config/artboard.config";
+import { CANVAS, UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
 import { getItemVerticalExtent } from "../../lib/utils/layoutHelpers";
 import type { DropIndicator, PreviewOffset } from "../../lib/hooks/useMouseInteractions";
 import type { AiPanelBridge } from "../ai";
@@ -610,7 +610,9 @@ export default function CanvasContainer({
             </span>
             <span className="flex flex-col items-start">
               <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
-              <span className="text-[11px] text-slate-400 mt-0.5">PNG · JPG · PDF</span>
+              <span className="text-[11px] text-slate-400 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
+                {UPLOAD_FORMAT_LABELS.slice(0, 7).join(" · ")} & more
+              </span>
             </span>
           </button>
         </div>

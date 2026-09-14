@@ -1,4 +1,10 @@
-import { MAX_UPLOAD_BYTES } from "../../../../config/artboard.config";
+import {
+  ACCEPTED_IMAGE_EXTENSIONS,
+  ACCEPTED_IMAGE_TYPES,
+  MAX_CONVERT_SOURCE_BYTES,
+  MAX_UPLOAD_BYTES,
+  UPLOAD_FORMAT_LABELS,
+} from "../../../../config/artboard.config";
 /**
  * Content-level validation for dropped files.
  *
@@ -12,10 +18,19 @@ import { MAX_UPLOAD_BYTES } from "../../../../config/artboard.config";
  * Checking the magic bytes up front turns that into an immediate, specific
  * message, before a byte is uploaded. It also costs almost nothing: only the
  * first few bytes are read, not the whole file.
+ *
+ * The contents also decide *what* a file is. Every accepted format is converted
+ * to PNG by `convertUpload`, which dispatches on the kind found here, so a PDF
+ * named `.png` or an Illustrator file the system reports as a PostScript
+ * document is simply opened as what it really is.
  */
 
-/** Longest signature we compare, so only this many bytes are ever read. */
-const SNIFF_BYTES = 16;
+/**
+ * Longest head we read. Enough for every signature below, including the
+ * compatible-brand list that separates an AVIF from a HEIC in the same
+ * container.
+ */
+const SNIFF_BYTES = 64;
 
 export type DetectedKind =
   | "png"
@@ -25,12 +40,19 @@ export type DetectedKind =
   | "pdf"
   | "svg"
   | "avif"
+  | "heic"
   | "tiff"
   | "bmp"
+  | "psd"
+  /** EPS, and Illustrator files saved without PDF compatibility. Refused. */
+  | "postscript"
   | null;
 
 const startsWith = (bytes: Uint8Array, signature: number[], offset = 0): boolean =>
   signature.every((byte, i) => bytes[offset + i] === byte);
+
+const ascii4 = (bytes: Uint8Array, offset: number) =>
+  String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
 
 /**
  * Reads the first `count` bytes of a file.
@@ -59,6 +81,8 @@ const readHead = async (file: File, count: number): Promise<Uint8Array> => {
   });
 };
 
+const HEIC_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs"]);
+
 /**
  * Identifies a file from its leading bytes.
  *
@@ -82,19 +106,31 @@ export const sniffFileKind = (bytes: Uint8Array): DetectedKind => {
     return "webp";
   }
 
-  // %PDF-
+  // %PDF- — PDFs, and Illustrator files saved PDF-compatible (Illustrator's default).
   if (startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return "pdf";
 
-  // The formats below are all *rejected*, but they are sniffed anyway so the
-  // customer is told what the file actually is. "That's an AVIF" is
-  // actionable; "that isn't a valid image" sends them looking for corruption
-  // in a file that is perfectly intact.
+  // 8BPS — Photoshop (.psd, and .psb large documents).
+  if (startsWith(bytes, [0x38, 0x42, 0x50, 0x53])) return "psd";
 
-  // ISO-BMFF: 4-byte size, then "ftyp", then a brand. AVIF and HEIC share the
-  // container, so the brand is what separates them.
+  // %!PS — PostScript: EPS, or an Illustrator file saved without PDF
+  // compatibility. The DOS EPS binary header (C5 D0 D3 C6) wraps the same.
+  if (startsWith(bytes, [0x25, 0x21, 0x50, 0x53]) || startsWith(bytes, [0xc5, 0xd0, 0xd3, 0xc6])) {
+    return "postscript";
+  }
+
+  // ISO-BMFF: 4-byte size, then "ftyp", then a major brand and compatible
+  // brands. AVIF and HEIC share the container, so the brands separate them —
+  // including the generic "mif1", which either can declare.
   if (startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4)) {
-    const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
-    if (brand === "avif" || brand === "avis" || brand.startsWith("hei")) return "avif";
+    const major = ascii4(bytes, 8);
+    const boxSize = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
+    const compatible: string[] = [];
+    for (let at = 16; at + 4 <= Math.min(bytes.length, boxSize || bytes.length); at += 4) {
+      compatible.push(ascii4(bytes, at));
+    }
+    const brands = [major, ...compatible];
+    if (brands.includes("avif") || brands.includes("avis")) return "avif";
+    if (brands.some((b) => HEIC_BRANDS.has(b)) || major === "mif1" || major === "msf1") return "heic";
   }
 
   // TIFF, both byte orders: "II*\0" (little-endian) and "MM\0*" (big-endian).
@@ -123,42 +159,55 @@ export const sniffFileKind = (bytes: Uint8Array): DetectedKind => {
   return null;
 };
 
-/**
- * Detected kinds the artboard will actually accept.
- *
- * This is the gate that closes the extension-rename hole. `File.type` comes
- * from the extension, so a WEBP saved as `artwork.png` reports `image/png`
- * and sails through any MIME-based filter — and the previous table listed
- * `webp` and `gif` as acceptable content for an `image/png`, so it was
- * *uploaded and placed*. The formats below are the only ones the print
- * pipeline can composite.
- *
- * PNG and JPEG remain interchangeable between themselves: a JPEG named .png is
- * a mislabelling of a supported format, decodes fine and prints fine, so
- * refusing it would block a file that works.
- */
-const SUPPORTED_KINDS: readonly DetectedKind[] = ["png", "jpeg", "pdf"];
+/** Kinds sent straight to the server. Everything else is converted to PNG first. */
+const DIRECT_KINDS: readonly DetectedKind[] = ["png", "jpeg"];
 
-/** Detected kinds that are real images, just not ones we can print. */
-const UNSUPPORTED_KIND_LABELS: Partial<Record<NonNullable<DetectedKind>, string>> = {
-  gif: "GIF",
-  webp: "WEBP",
-  svg: "SVG",
-  avif: "AVIF/HEIC",
-  tiff: "TIFF",
-  bmp: "BMP",
+/** Every kind `convertUpload` can turn into a printable image. */
+const SUPPORTED_KINDS: readonly DetectedKind[] = [
+  "png", "jpeg", "pdf", "svg", "psd", "tiff", "webp", "avif", "heic", "gif", "bmp",
+];
+
+/** The formats a customer can export to, as a sentence fragment. */
+const EXPORT_ADVICE = "PNG, JPG, PDF or SVG";
+
+const extensionOf = (name: string) => {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
 };
+
+/**
+ * Whether a dropped or chosen file is worth opening at all.
+ *
+ * By reported type *or* extension. Operating systems often report no type for
+ * `.ai`, `.psd` and `.heic` — Chrome gives an empty string for all three — so a
+ * MIME-only filter discarded those files before their contents were read, and
+ * told the customer the format was unsupported.
+ */
+export const isAcceptedUpload = (file: { name: string; type: string }): boolean =>
+  (ACCEPTED_IMAGE_TYPES as readonly string[]).includes(file.type) ||
+  (ACCEPTED_IMAGE_EXTENSIONS as readonly string[]).includes(extensionOf(file.name));
 
 export interface FileValidationResult {
   ok: boolean;
   /** Customer-facing explanation. Only set when `ok` is false. */
   message?: string;
-  /** What the bytes actually turned out to be, for logging. */
+  /** What the bytes actually turned out to be, for logging and conversion. */
   detected: DetectedKind;
 }
 
 /**
- * Validates that a file's contents match what its name claims.
+ * The explanation for a PostScript file, which no browser can render.
+ *
+ * Worded for what the customer is holding: an Illustrator file only needs
+ * re-saving with a box ticked, while an EPS needs exporting to another format.
+ */
+const postscriptMessage = (name: string) =>
+  extensionOf(name) === ".ai"
+    ? `“${name}” was saved without PDF compatibility, so it can't be opened here. In Illustrator, use File › Save As and tick “Create PDF Compatible File”, or export it as PDF or SVG, then upload that.`
+    : `“${name}” is an EPS file, which can't be opened in the browser. In your design app, save or export it as PDF or SVG and upload that.`;
+
+/**
+ * Validates that a file is readable and is a format we can print.
  *
  * Deliberately permissive about *which* image format it is and strict about
  * whether it is an image at all. Rejecting a JPEG because it is named .png
@@ -177,23 +226,6 @@ export const validateImageFile = async (file: File): Promise<FileValidationResul
     };
   }
 
-  /*
-   * Refused before it is sent, not after.
-   *
-   * The server caps a file at 64MB; without this the whole thing uploaded and
-   * came back 413, which on a slow connection is minutes spent to learn
-   * something the browser knew immediately.
-   */
-  if (file.size > MAX_UPLOAD_BYTES) {
-    const mb = (file.size / (1024 * 1024)).toFixed(1);
-    const capMb = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
-    return {
-      ok: false,
-      detected: null,
-      message: `“${file.name}” is ${mb}MB, over the ${capMb}MB limit. Please re-export it at a smaller size or lower resolution and try again.`,
-    };
-  }
-
   let bytes: Uint8Array;
   try {
     bytes = await readHead(file, SNIFF_BYTES);
@@ -209,34 +241,34 @@ export const validateImageFile = async (file: File): Promise<FileValidationResul
 
   const detected = sniffFileKind(bytes);
 
-  if (detected === null) {
+  /*
+   * Refused before it is sent or opened, not after.
+   *
+   * PNG and JPEG go to the server as they are, so they meet its 64MB cap. The
+   * other formats never leave the browser — only the PNG made from them does,
+   * and that meets the same cap when it is uploaded — so they may be larger:
+   * a layered print-size PSD or TIFF is routinely over 64MB.
+   */
+  const cap = detected === null || DIRECT_KINDS.includes(detected) ? MAX_UPLOAD_BYTES : MAX_CONVERT_SOURCE_BYTES;
+  if (file.size > cap) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    const capMb = Math.round(cap / (1024 * 1024));
     return {
       ok: false,
       detected,
-      message: `“${file.name}” could not be read — it isn't a valid image file. It may be damaged or only partly downloaded. Please re-export it and try again.`,
+      message: `“${file.name}” is ${mb}MB, over the ${capMb}MB limit. Please re-export it at a smaller size or lower resolution and try again.`,
     };
   }
 
-  if (!SUPPORTED_KINDS.includes(detected)) {
-    const label = UNSUPPORTED_KIND_LABELS[detected] ?? detected.toUpperCase();
-    // Named by what it *is*, not by what its extension claimed. A file the
-    // customer believes is a PNG is really an AVIF, and saying so is the
-    // difference between a fixable problem and a mysterious one.
-    return {
-      ok: false,
-      detected,
-      message: `“${file.name}” is ${label}, which isn't supported. Please re-export it as PNG, JPG or PDF.`,
-    };
+  if (detected === "postscript") {
+    return { ok: false, detected, message: postscriptMessage(file.name) };
   }
 
-  // A PDF must genuinely be a PDF: it is opened by the PDF reader and rendered
-  // to page images, so image bytes labelled as a PDF (or the reverse) would
-  // fail there with a far less useful message than this one.
-  if ((file.type === "application/pdf") !== (detected === "pdf")) {
+  if (detected === null || !SUPPORTED_KINDS.includes(detected)) {
     return {
       ok: false,
       detected,
-      message: `“${file.name}” is named as ${file.type === "application/pdf" ? "a PDF" : file.type.split("/")[1]?.toUpperCase() || "an image"} but contains ${detected.toUpperCase()} data. Please re-export it in the correct format.`,
+      message: `“${file.name}” could not be read — it isn't a supported image (${UPLOAD_FORMAT_LABELS.join(", ")}). It may be damaged or only partly downloaded. Please re-export it as ${EXPORT_ADVICE} and try again.`,
     };
   }
 

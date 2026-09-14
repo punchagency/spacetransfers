@@ -64,6 +64,12 @@ const MIME_LABELS: Record<string, string> = {
   "image/jpeg": "JPG",
   "image/svg+xml": "SVG",
   "application/pdf": "PDF",
+  "application/postscript": "AI",
+  "application/illustrator": "AI",
+  "image/vnd.adobe.photoshop": "PSD",
+  "image/tiff": "TIFF",
+  "image/heic": "HEIC",
+  "image/heif": "HEIC",
 };
 
 export const formatLabels = (mimeTypes: readonly string[]): string[] => [

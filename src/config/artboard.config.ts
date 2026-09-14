@@ -67,11 +67,48 @@ export const MAX_SHEET_HEIGHT_IN = 1200;
  */
 export const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Largest source file converted in the browser — everything except PNG and
+ * JPEG. These never leave the browser as they are: only the PNG made from them
+ * is uploaded, and that meets `MAX_UPLOAD_BYTES`. So they can be larger, which
+ * they need to be: a layered print-size PSD or TIFF is routinely over 64MB.
+ */
+export const MAX_CONVERT_SOURCE_BYTES = 256 * 1024 * 1024;
+
 export const ACCEPTED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",
-  "image/svg+xml",
   "application/pdf",
+  "image/svg+xml",
+  "application/postscript",
+  "application/illustrator",
+  "image/vnd.adobe.photoshop",
+  "image/tiff",
+  "image/webp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+  "image/gif",
+  "image/bmp",
+] as const;
+
+/**
+ * Extensions accepted alongside the MIME types. Operating systems often report
+ * no type at all for .ai, .psd and .heic, so a type-only filter threw those
+ * away unread. EPS is listed so it reaches the content check and gets its own
+ * explanation rather than a generic "unsupported".
+ */
+export const ACCEPTED_IMAGE_EXTENSIONS = [
+  ".png", ".jpg", ".jpeg", ".pdf", ".svg", ".ai", ".eps", ".psd", ".psb",
+  ".tif", ".tiff", ".webp", ".avif", ".heic", ".heif", ".gif", ".bmp",
+] as const;
+
+/** For the file picker: types and extensions, so no accepted file is greyed out. */
+export const UPLOAD_ACCEPT_ATTRIBUTE = [...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_IMAGE_EXTENSIONS].join(",");
+
+/** The formats as customers read them, for every hint and message. */
+export const UPLOAD_FORMAT_LABELS = [
+  "PNG", "JPG", "PDF", "SVG", "AI", "PSD", "TIFF", "WEBP", "AVIF", "HEIC", "GIF", "BMP",
 ] as const;
 
 /**

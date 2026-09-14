@@ -101,9 +101,10 @@ const loadPdfjs = () => {
  * that encodes to nothing, rather than an error — so a page that fails at the
  * desktop budget is retried once at a size every browser will allocate.
  */
-const PIXEL_BUDGETS = [PDF_MAX_RASTER_PIXELS, 16_777_216];
+export const PRINT_PIXEL_BUDGETS = [PDF_MAX_RASTER_PIXELS, 16_777_216];
 
-const dpiWithin = (widthIn: number, heightIn: number, budget: number) =>
+/** The highest print DPI (up to the target) whose render stays within `budget` pixels. */
+export const printDpiWithin = (widthIn: number, heightIn: number, budget: number) =>
   Math.min(PDF_RASTER_DPI, Math.floor(Math.sqrt(budget / (widthIn * heightIn))));
 
 /** One render attempt. Null when the browser could not allocate or encode it. */
@@ -169,7 +170,8 @@ export const rasterizePdf = async (
   const renderCount = Math.min(totalPages, PDF_MAX_PAGES);
   const pages: RasterizedPage[] = [];
   const tooLarge: OversizePage[] = [];
-  const stem = file.name.replace(/\.pdf$/i, "");
+  // Any extension: Illustrator files arrive here too, and "logo.ai.png" is not a name.
+  const stem = file.name.replace(/\.[^.]+$/, "") || file.name;
 
   try {
     for (let n = 1; n <= renderCount; n++) {
@@ -186,8 +188,8 @@ export const rasterizePdf = async (
 
         let blob: Blob | null = null;
         let dpi = 0;
-        for (const budget of PIXEL_BUDGETS) {
-          const candidate = dpiWithin(widthIn, heightIn, budget);
+        for (const budget of PRINT_PIXEL_BUDGETS) {
+          const candidate = printDpiWithin(widthIn, heightIn, budget);
           // Too coarse to keep its size, or the same attempt that just failed.
           if (candidate < PDF_MIN_RASTER_DPI || candidate === dpi) continue;
           dpi = candidate;

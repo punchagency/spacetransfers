@@ -19,7 +19,7 @@ import type { AiPanelBridge } from "./artboard/features/ai";
 import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
-import { ACCEPTED_IMAGE_TYPES, CANVAS, MAX_SHEET_HEIGHT_IN, ZOOM } from "../config/artboard.config";
+import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
 import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
 import { isSheetFull } from "./artboard/lib/utils";
 
@@ -497,7 +497,7 @@ export default function Artboard({
         // Same list the drop filter uses. These had drifted: PDF was accepted
         // when dragged but absent here, so browsing could not select a file
         // the artboard would happily have taken.
-        accept={ACCEPTED_IMAGE_TYPES.join(",")}
+        accept={UPLOAD_ACCEPT_ATTRIBUTE}
         multiple
         className="hidden"
         onChange={async (e) => {
