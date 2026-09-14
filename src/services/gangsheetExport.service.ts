@@ -117,11 +117,12 @@ const loadImageBuffer = async (url: string) => {
 const computeItemsHash = (items: Array<{
   assetId: string; croppedUrl: string; widthIn: number; heightIn: number;
   posX: number; posY: number; rotation: number; flipped: boolean; copies: number;
+  nestRotation: number; flowCols: number | null;
 }>): string => {
   const h = crypto.createHash("sha1");
   h.update(`n=${items.length};`);
   for (const it of items) {
-    h.update(`${it.assetId}|${it.croppedUrl}|${it.widthIn}|${it.heightIn}|${it.posX}|${it.posY}|${it.rotation}|${it.flipped ? 1 : 0}|${it.copies};`);
+    h.update(`${it.assetId}|${it.croppedUrl}|${it.widthIn}|${it.heightIn}|${it.posX}|${it.posY}|${it.rotation}|${it.flipped ? 1 : 0}|${it.copies}|${it.nestRotation}|${it.flowCols ?? ""};`);
   }
   return h.digest("hex");
 };
@@ -147,6 +148,72 @@ const computeRotatedBounds = (wIn: number, hIn: number, rotationDeg: number) => 
   return { wIn: w, hIn: h };
 };
 
+/** What the artboard stores about one placement's geometry. */
+export interface PlacementGeometryInput {
+  widthIn: number;
+  heightIn: number;
+  rotation?: number;
+  copies?: number;
+  /** 90 when auto-nest turned the piece to fit it; see `resolvePlacement`. */
+  nestRotation?: number | null;
+  /** Columns auto-nest wrapped the copies into. */
+  flowCols?: number | null;
+}
+
+/**
+ * How the artboard draws one placement, in the terms the renderer needs.
+ *
+ * The export used to derive this with rules of its own, and they disagreed
+ * with the artboard in three ways. Measured on a real layout, 39% of the
+ * printed ink landed outside the cells the customer had approved:
+ *
+ *   - `nestRotation`, the quarter turn auto-nest applies to fit a piece, was
+ *     never stored, so a piece nested on its side printed upright, across
+ *     whatever had been packed beside it;
+ *   - copies were spread over as many columns as fit, while the artboard wraps
+ *     them into the columns the layout engine chose (`flowCols`);
+ *   - a customer's rotation arrives with width and height already swapped
+ *     (`rotateSelected` swaps them so the box matches what is drawn), and the
+ *     image was resized to those swapped dimensions *before* being rotated —
+ *     squashed, then turned back across its own cell.
+ *
+ * The rules, mirroring `ArtboardItem`:
+ *   - the cell is `widthIn × heightIn`, swapped once more when nested;
+ *   - the image's own upright size is `widthIn × heightIn`, swapped back when
+ *     the customer's rotation is an odd quarter turn;
+ *   - it is drawn at that size, turned by the customer's rotation plus the nest
+ *     turn, and centred in the cell, which it then fills exactly.
+ *
+ * Orders stored before these fields existed carry neither and fall back to the
+ * old column rule, which is all the information they have.
+ */
+export const resolvePlacement = (
+  it: PlacementGeometryInput,
+  effectiveWidthIn: number,
+  gapIn: number,
+) => {
+  const widthIn = Math.max(0, Number(it.widthIn || 0));
+  const heightIn = Math.max(0, Number(it.heightIn || 0));
+  const copies = Math.max(1, Math.floor(Number(it.copies || 1)));
+  const rotation = typeof it.rotation === "number" && Number.isFinite(it.rotation) ? it.rotation : 0;
+  const nested = Number(it.nestRotation) === 90;
+
+  const cellW = nested ? heightIn : widthIn;
+  const cellH = nested ? widthIn : heightIn;
+  const oddQuarter = ((Math.round(rotation / 90) % 2) + 2) % 2 === 1;
+  const imageW = oddQuarter ? heightIn : widthIn;
+  const imageH = oddQuarter ? widthIn : heightIn;
+  const totalRotation = (((rotation + (nested ? 90 : 0)) % 360) + 360) % 360;
+
+  const flowCols = Number(it.flowCols);
+  const cols =
+    Number.isFinite(flowCols) && flowCols >= 1
+      ? Math.min(copies, Math.floor(flowCols))
+      : Math.max(1, Math.min(copies, Math.floor((effectiveWidthIn + gapIn) / Math.max(1e-6, cellW + gapIn))));
+
+  return { cellW, cellH, imageW, imageH, totalRotation, copies, cols };
+};
+
 interface PlacedCopyBox {
   left: number;
   top: number;
@@ -154,16 +221,9 @@ interface PlacedCopyBox {
   bottom: number;
 }
 
-interface PlacementParams {
+export interface PlacementParams {
   sheetWidthIn: number;
-  artboardItems: Array<{
-    widthIn: number;
-    heightIn: number;
-    posX: number;
-    posY: number;
-    rotation?: number;
-    copies?: number;
-  }>;
+  artboardItems: Array<PlacementGeometryInput & { posX: number; posY: number }>;
   itemSpacingIn?: number | null;
   sheetMarginIn?: number | null;
 }
@@ -187,31 +247,23 @@ const forEachPlacedCopy = (
   const effectiveWidthIn = sheetWidthIn - 2 * marginIn;
 
   for (const it of artboardItems) {
-    const copies = Math.max(1, Number(it.copies || 1));
-    const wIn = Math.max(0, Number(it.widthIn || 0));
-    const hIn = Math.max(0, Number(it.heightIn || 0));
-    if (!(wIn > 0) || !(hIn > 0)) continue;
+    const p = resolvePlacement(it, effectiveWidthIn, gapIn);
+    if (!(p.cellW > 0) || !(p.cellH > 0)) continue;
 
-    const rotation = typeof it.rotation === "number" ? it.rotation : 0;
-    const rotated = computeRotatedBounds(wIn, hIn, rotation);
+    // A quarter turn fills the cell exactly; any other angle is bounded as drawn.
+    const drawn = computeRotatedBounds(p.imageW, p.imageH, p.totalRotation);
 
-    const capacityCols = Math.max(1, Math.floor((effectiveWidthIn + gapIn) / Math.max(1e-6, wIn + gapIn)));
-    const cols = Math.max(1, Math.min(copies, capacityCols));
-
-    for (let idx = 0; idx < copies; idx++) {
-      const col = idx % cols;
-      const row = Math.floor(idx / cols);
-      const xIn = Number(it.posX || 0) + col * (wIn + gapIn);
-      const yIn = Number(it.posY || 0) + row * (hIn + gapIn);
-
-      const cx = xIn + wIn / 2;
-      const cy = yIn + hIn / 2;
+    for (let idx = 0; idx < p.copies; idx++) {
+      const col = idx % p.cols;
+      const row = Math.floor(idx / p.cols);
+      const cx = Number(it.posX || 0) + col * (p.cellW + gapIn) + p.cellW / 2;
+      const cy = Number(it.posY || 0) + row * (p.cellH + gapIn) + p.cellH / 2;
 
       visit({
-        left: cx - rotated.wIn / 2,
-        top: cy - rotated.hIn / 2,
-        right: cx + rotated.wIn / 2,
-        bottom: cy + rotated.hIn / 2,
+        left: cx - drawn.wIn / 2,
+        top: cy - drawn.hIn / 2,
+        right: cx + drawn.wIn / 2,
+        bottom: cy + drawn.hIn / 2,
       });
     }
   }
@@ -226,6 +278,21 @@ export const computeItemVerticalSpansIn = (
     spans.push({ topIn: top, bottomIn: bottom });
   });
   return spans;
+};
+
+/**
+ * How long this sheet prints, in inches: the bottom of its lowest graphic.
+ *
+ * A sheet is billed on its length, so the billed length has to be at least
+ * this. Checkout sends the length it measured on the artboard; the order keeps
+ * the longer of the two, so no sheet is charged for less than it prints.
+ */
+export const printedSheetLengthIn = (params: PlacementParams): number => {
+  let bottom = 0;
+  forEachPlacedCopy(params, (box) => {
+    if (box.bottom > bottom) bottom = box.bottom;
+  });
+  return bottom;
 };
 
 /**
@@ -294,14 +361,7 @@ const computeContentBoundsIn = ({
 }: {
   sheetWidthIn: number;
   sheetHeightIn: number;
-  artboardItems: Array<{
-    widthIn: number;
-    heightIn: number;
-    posX: number;
-    posY: number;
-    rotation?: number;
-    copies?: number;
-  }>;
+  artboardItems: PlacementParams["artboardItems"];
   itemSpacingIn?: number | null;
   sheetMarginIn?: number | null;
 }) => {
@@ -363,6 +423,8 @@ export const exportGangsheetPng24 = async ({
     rotation?: number;
     flipped?: boolean;
     copies?: number;
+    nestRotation?: number | null;
+    flowCols?: number | null;
   }>;
   dpi: number;
   cropToContent?: boolean;
@@ -472,7 +534,8 @@ const _doExport = async ({
 }: {
   jobId: string; printerId: string; sheetWidthIn?: number | null; sheetHeightIn?: number | null;
   artboardItems: Array<{ assetId: string; croppedUrl?: string; widthIn: number; heightIn: number;
-    posX: number; posY: number; rotation?: number; flipped?: boolean; copies?: number }>;
+    posX: number; posY: number; rotation?: number; flipped?: boolean; copies?: number;
+    nestRotation?: number | null; flowCols?: number | null }>;
   dpi: number; cropToContent?: boolean; maxComposites?: number; format?: "png" | "webp";
   useLossyPreview?: boolean;
   itemSpacingIn?: number | null; sheetMarginIn?: number | null;
@@ -496,6 +559,11 @@ const _doExport = async ({
       rotation: typeof it.rotation === "number" ? it.rotation : 0,
       flipped: it.flipped === true,
       copies: Math.max(1, Number(it.copies || 1)),
+      nestRotation: Number(it.nestRotation) === 90 ? 90 : 0,
+      flowCols:
+        Number.isFinite(Number(it.flowCols)) && Number(it.flowCols) >= 1
+          ? Math.floor(Number(it.flowCols))
+          : null,
     }))
     .sort((a, b) => {
       if (a.assetId !== b.assetId) return a.assetId.localeCompare(b.assetId);
@@ -505,6 +573,8 @@ const _doExport = async ({
       if (a.widthIn !== b.widthIn) return a.widthIn - b.widthIn;
       if (a.heightIn !== b.heightIn) return a.heightIn - b.heightIn;
       if (a.rotation !== b.rotation) return a.rotation - b.rotation;
+      if (a.nestRotation !== b.nestRotation) return a.nestRotation - b.nestRotation;
+      if ((a.flowCols ?? 0) !== (b.flowCols ?? 0)) return (a.flowCols ?? 0) - (b.flowCols ?? 0);
       return a.copies - b.copies;
     });
 
@@ -543,7 +613,9 @@ const _doExport = async ({
   const capForKey = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : normalizedItems.length;
   const itemsHash = computeItemsHash(normalizedItems.slice(0, capForKey));
   const cacheKey = computeCacheKey({
-    v: 10,
+    // 11: placements honour nestRotation, flowCols and a rotated piece's
+    // pre-swapped size. Every earlier cached render drew those wrongly.
+    v: 11,
     jobId,
     printerId,
     dpi,
@@ -687,15 +759,17 @@ const _doExport = async ({
   const uniqueKeys = new Set<string>();
   const uniqueJobs: Promise<CachedBuf | null>[] = [];
   for (const it of itemsToLoad) {
-    const wIn = Math.max(0, Number(it.widthIn || 0));
-    const hIn = Math.max(0, Number(it.heightIn || 0));
-    if (!(wIn > 0) || !(hIn > 0)) continue;
+    const p = resolvePlacement(it, effectiveWidthIn, gapIn);
+    if (!(p.cellW > 0) || !(p.cellH > 0)) continue;
     const srcUrl = resolveUrl(it);
     if (!srcUrl) continue;
-    const key = `${srcUrl}|${Math.round(wIn * dpi)}|${Math.round(hIn * dpi)}|${it.rotation ?? 0}|${it.flipped ? 1 : 0}`;
+    // Sized to the image's own upright shape, then turned — see resolvePlacement.
+    const wPx = Math.round(p.imageW * dpi);
+    const hPx = Math.round(p.imageH * dpi);
+    const key = `${srcUrl}|${wPx}|${hPx}|${p.totalRotation}|${it.flipped ? 1 : 0}`;
     if (!uniqueKeys.has(key)) {
       uniqueKeys.add(key);
-      uniqueJobs.push(prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.flipped, it.assetId));
+      uniqueJobs.push(prepareUnique(srcUrl, wPx, hPx, p.totalRotation, it.flipped, it.assetId));
     }
   }
   const LOAD_BATCH = 16;
@@ -704,39 +778,38 @@ const _doExport = async ({
   }
 
   // Phase 2 — build preparedItems from cache (instant — no I/O).
-  type PreparedItem = { it: (typeof normalizedItems)[number]; data: Buffer; info: { width: number; height: number } };
+  type PreparedItem = {
+    it: (typeof normalizedItems)[number];
+    p: ReturnType<typeof resolvePlacement>;
+    data: Buffer;
+    info: { width: number; height: number };
+  };
   const preparedItems: PreparedItem[] = [];
   for (const it of itemsToLoad) {
-    const wIn = Math.max(0, Number(it.widthIn || 0));
-    const hIn = Math.max(0, Number(it.heightIn || 0));
-    if (!(wIn > 0) || !(hIn > 0)) continue;
+    const p = resolvePlacement(it, effectiveWidthIn, gapIn);
+    if (!(p.cellW > 0) || !(p.cellH > 0)) continue;
     const srcUrl = resolveUrl(it);
     if (!srcUrl) continue;
-    const cached = await prepareUnique(srcUrl, Math.round(wIn * dpi), Math.round(hIn * dpi), it.rotation ?? 0, it.flipped, it.assetId);
+    const cached = await prepareUnique(srcUrl, Math.round(p.imageW * dpi), Math.round(p.imageH * dpi), p.totalRotation, it.flipped, it.assetId);
     if (!cached) continue;
-    preparedItems.push({ it, data: cached.data, info: cached.info });
+    preparedItems.push({ it, p, data: cached.data, info: cached.info });
   }
 
   // Lay out placements; stop at cap so preview never OOMs.
-  for (const { it, data, info } of preparedItems) {
+  for (const { it, p, data, info } of preparedItems) {
     if (placements.length >= compositesCap) break;
-    const copies = it.copies;
-    const wIn = it.widthIn;
-    const hIn = it.heightIn;
-    const capacityCols = Math.max(1, Math.floor((effectiveWidthIn + gapIn) / Math.max(1e-6, wIn + gapIn)));
-    const cols = Math.max(1, Math.min(copies, capacityCols));
 
-    for (let idx = 0; idx < copies; idx++) {
+    for (let idx = 0; idx < p.copies; idx++) {
       if (placements.length >= compositesCap) break;
-      const col = idx % cols;
-      const row = Math.floor(idx / cols);
-      const xIn = Number(it.posX || 0) + col * (wIn + gapIn);
-      const yIn = Number(it.posY || 0) + row * (hIn + gapIn);
+      const col = idx % p.cols;
+      const row = Math.floor(idx / p.cols);
+      const xIn = Number(it.posX || 0) + col * (p.cellW + gapIn);
+      const yIn = Number(it.posY || 0) + row * (p.cellH + gapIn);
 
       const cropLeftIn = crop ? crop.leftIn : 0;
       const cropTopIn = crop ? crop.topIn : 0;
-      const centerXpx = Math.round((xIn - cropLeftIn + wIn / 2) * dpi);
-      const centerYpx = Math.round((yIn - cropTopIn + hIn / 2) * dpi);
+      const centerXpx = Math.round((xIn - cropLeftIn + p.cellW / 2) * dpi);
+      const centerYpx = Math.round((yIn - cropTopIn + p.cellH / 2) * dpi);
 
       placements.push({
         data,

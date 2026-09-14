@@ -28,6 +28,10 @@ export interface IOrderItem {
     flipped?: boolean;
     copies: number;
     linked: boolean;
+    /** 90 when auto-nest turned the piece to fit it. The export draws it that way. */
+    nestRotation?: number;
+    /** Columns auto-nest wrapped the copies into. */
+    flowCols?: number;
   }>;
 }
 
@@ -218,7 +222,9 @@ const orderItemSchema = new Schema<IOrderItem>(
           rotation: { type: Number, default: 0 },
           flipped: { type: Boolean, default: false },
           copies: { type: Number, default: 1 },
-          linked: { type: Boolean, default: false }
+          linked: { type: Boolean, default: false },
+          nestRotation: { type: Number, enum: [0, 90], default: 0 },
+          flowCols: { type: Number, min: 1 }
         }
       ],
       default: undefined

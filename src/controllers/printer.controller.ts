@@ -1179,6 +1179,8 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           rotation: typeof it.rotation === "number" ? it.rotation : 0,
           flipped: Boolean(it.flipped),
           copies: typeof it.copies === "number" ? it.copies : 1,
+          nestRotation: it.nestRotation,
+          flowCols: it.flowCols,
         }));
 
         // Determine export DPI from the native resolution of the ACTUAL source images.
@@ -1433,6 +1435,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
                     rotation: "$$ai.rotation",
                     flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },
@@ -1493,6 +1497,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       rotation: it.rotation,
       flipped: it.flipped,
       copies: it.copies,
+      nestRotation: it.nestRotation,
+      flowCols: it.flowCols,
     }));
 
     // WebP has a hard 16383 px per-dimension limit. For very tall sheets (e.g. a
@@ -1658,6 +1664,8 @@ export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, n
                     rotation: "$$ai.rotation",
                     flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },
@@ -1716,6 +1724,8 @@ export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, n
       rotation: it.rotation,
       flipped: it.flipped,
       copies: it.copies,
+      nestRotation: it.nestRotation,
+      flowCols: it.flowCols,
     }));
 
     // Cap DPI so the rendered PNG stays within PDFKit's safe loading limit (~700 MB raw RGBA).
@@ -1823,6 +1833,8 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
                     rotation: "$$ai.rotation",
                     flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },
@@ -1882,6 +1894,8 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
           rotation: typeof it.rotation === "number" ? it.rotation : 0,
           flipped: Boolean(it.flipped),
           copies: typeof it.copies === "number" ? it.copies : 1,
+          nestRotation: it.nestRotation,
+          flowCols: it.flowCols,
         }));
 
         setProgress(10, "Generating PNG...");

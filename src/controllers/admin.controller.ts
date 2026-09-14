@@ -1836,7 +1836,12 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
                     posX: "$$ai.posX",
                     posY: "$$ai.posY",
                     rotation: "$$ai.rotation",
+                    // Flip and the auto-nest layout fields were not projected, so
+                    // the admin preview drew mirrored and nested pieces wrongly.
+                    flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },

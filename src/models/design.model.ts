@@ -12,6 +12,14 @@ export interface IDesignItem {
   rotation: number;
   copies: number;
   linked: boolean;
+  flipped?: boolean;
+  /** 90 when auto-nest turned the piece to fit it. */
+  nestRotation?: number;
+  /** Columns auto-nest wrapped the copies into. */
+  flowCols?: number;
+  /** Placed by hand — auto-nest leaves it where it is. */
+  pinned?: boolean;
+  locked?: boolean;
 }
 
 export interface IDesign extends Document {
@@ -28,6 +36,13 @@ export interface IDesign extends Document {
   };
   artboardData: {
     items: IDesignItem[];
+    /**
+     * The sheet's own settings, so a reopened design lays out exactly as it was
+     * saved. Absent on designs saved before they were recorded.
+     */
+    itemSpacingIn?: number;
+    sheetMarginIn?: number;
+    autoNest?: boolean;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -76,7 +91,12 @@ const designItemSchema = new Schema<IDesignItem>({
   linked: {
     type: Boolean,
     default: false
-  }
+  },
+  flipped: { type: Boolean, default: false },
+  nestRotation: { type: Number, enum: [0, 90], default: 0 },
+  flowCols: { type: Number, min: 1 },
+  pinned: { type: Boolean, default: false },
+  locked: { type: Boolean, default: false }
 });
 
 const designSchema = new Schema<IDesign>(
@@ -116,7 +136,10 @@ const designSchema = new Schema<IDesign>(
       }
     },
     artboardData: {
-      items: [designItemSchema]
+      items: [designItemSchema],
+      itemSpacingIn: { type: Number, min: 0, max: 6 },
+      sheetMarginIn: { type: Number, min: 0, max: 2 },
+      autoNest: { type: Boolean }
     }
   },
   {

@@ -35,7 +35,7 @@ import { quoteShipping } from "../services/shipping.service.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN } from "../services/gangsheetExport.service.js";
+import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { assertPersistable } from "../utils/documentSize.js";
@@ -1289,7 +1289,9 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         sheetHeightIn,
         previewImage,
         artboardItems,
-        assetTable
+        assetTable,
+        itemSpacingIn,
+        sheetMarginIn
       } = item || {};
 
       if (!type || !name) {
@@ -1306,20 +1308,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
        * accepted — a caller could name a $0.01 subtotal for a full sheet and
        * both this order and the Stripe charge would honour it.
        */
-      const quantity = itemQuantity(item);
-      const unitPrice = deriveItemUnitPrice(item, globalPricing);
-
-      const clientUnitPrice = Number(item?.unitPrice);
-      if (Number.isFinite(clientUnitPrice) && roundToTwo(clientUnitPrice) !== unitPrice) {
-        console.warn(
-          `[ORDER_PRICING] item "${String(name)}" sent unitPrice ${roundToTwo(clientUnitPrice)} ` +
-            `but ${widthIn}x${heightIn}in at $${globalPricing.baseRatePerSqFt}/sq ft is ${unitPrice} — charging ${unitPrice}`,
-        );
-      }
-
-      const lineSubtotal = unitPrice * quantity;
-      computedSubtotal += lineSubtotal;
-
       /**
        * Resolves an artwork reference back to its URL.
        *
@@ -1358,8 +1346,16 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
               posX: Number(it.posX),
               posY: Number(it.posY),
               rotation: typeof it.rotation === "number" ? it.rotation : 0,
+              // Dropped here before, so a mirrored design printed unmirrored.
+              flipped: Boolean(it.flipped),
               copies: typeof it.copies === "number" ? it.copies : 1,
-              linked: Boolean(it.linked)
+              linked: Boolean(it.linked),
+              // How auto-nest laid the piece out; the export draws it the same way.
+              nestRotation: Number(it.nestRotation) === 90 ? 90 : 0,
+              flowCols:
+                Number.isInteger(Number(it.flowCols)) && Number(it.flowCols) >= 1
+                  ? Number(it.flowCols)
+                  : undefined
             }))
             .filter((it: any) =>
               Number.isFinite(it.id) &&
@@ -1371,17 +1367,81 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             )
         : undefined;
 
+      /*
+       * The spacing and margin the print export lays copies out with. Checkout
+       * sent both and they were dropped right here, so every printed sheet fell
+       * back to a 0.06in gap whatever the customer had set.
+       */
+      const recordedSpacingIn =
+        typeof itemSpacingIn === "number" && itemSpacingIn >= 0 && itemSpacingIn <= 6 ? itemSpacingIn : undefined;
+      const recordedMarginIn =
+        typeof sheetMarginIn === "number" && sheetMarginIn >= 0 && sheetMarginIn <= 2 ? sheetMarginIn : undefined;
+
+      /*
+       * Billed on at least the length it prints.
+       *
+       * The length arrives from the client, measured on the artboard. The
+       * placements say where every graphic actually lands, so the sheet is
+       * priced and recorded on whichever is longer: a client that measures
+       * short cannot buy a longer print than it paid for.
+       */
+      const printedLengthIn =
+        normalizedArtboardItems && normalizedArtboardItems.length > 0
+          ? roundToTwo(
+              printedSheetLengthIn({
+                sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
+                artboardItems: normalizedArtboardItems,
+                itemSpacingIn: recordedSpacingIn,
+                sheetMarginIn: recordedMarginIn,
+              }),
+            )
+          : 0;
+      const claimedLengthIn = Number(heightIn);
+      const billedLengthIn =
+        printedLengthIn > (Number.isFinite(claimedLengthIn) ? claimedLengthIn : 0) + 0.02
+          ? printedLengthIn
+          : heightIn;
+      if (billedLengthIn !== heightIn) {
+        console.warn(
+          `[ORDER_PRICING] item "${String(name)}" claimed ${heightIn}in but its placements print ${printedLengthIn}in — billing ${printedLengthIn}in`,
+        );
+      }
+
+      /**
+       * Priced here, from the sheet's dimensions and the configured rate — see
+       * the note above `deriveItemUnitPrice`. After the length check, so the
+       * price is for the sheet that prints.
+       */
+      const quantity = itemQuantity(item);
+      const unitPrice = deriveItemUnitPrice({ ...item, heightIn: billedLengthIn }, globalPricing);
+
+      const clientUnitPrice = Number(item?.unitPrice);
+      if (Number.isFinite(clientUnitPrice) && roundToTwo(clientUnitPrice) !== unitPrice) {
+        console.warn(
+          `[ORDER_PRICING] item "${String(name)}" sent unitPrice ${roundToTwo(clientUnitPrice)} ` +
+            `but ${widthIn}x${billedLengthIn}in at $${globalPricing.baseRatePerSqFt}/sq ft is ${unitPrice} — charging ${unitPrice}`,
+        );
+      }
+
+      const lineSubtotal = unitPrice * quantity;
+      computedSubtotal += lineSubtotal;
+
       return {
         type,
         designId,
         name,
         widthIn,
-        heightIn,
+        heightIn: billedLengthIn,
         quantity,
         unitPrice,
         subtotal: lineSubtotal,
         sheetWidthIn: typeof sheetWidthIn === "number" ? sheetWidthIn : undefined,
-        sheetHeightIn: typeof sheetHeightIn === "number" ? sheetHeightIn : undefined,
+        sheetHeightIn:
+          billedLengthIn !== heightIn
+            ? billedLengthIn
+            : typeof sheetHeightIn === "number" ? sheetHeightIn : undefined,
+        itemSpacingIn: recordedSpacingIn,
+        sheetMarginIn: recordedMarginIn,
         previewImage: typeof previewImage === "string" ? previewImage : undefined,
         artboardItems: normalizedArtboardItems && normalizedArtboardItems.length > 0 ? normalizedArtboardItems : undefined
       };
@@ -1604,8 +1664,14 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             rotation: typeof it.rotation === "number" ? it.rotation : 0,
             flipped: Boolean(it.flipped),
             copies: typeof it.copies === "number" ? it.copies : 1,
+            nestRotation: it.nestRotation,
+            flowCols: it.flowCols,
           }));
           const rendered = await exportGangsheetPng24({
+            // The sheet's own spacing and margin — without them the thumbnail
+            // laid copies out on the export's fallback gap.
+            itemSpacingIn: gangsheetOrderItem.itemSpacingIn,
+            sheetMarginIn: gangsheetOrderItem.sheetMarginIn,
             jobId: String(orderId),
             printerId: "order-preview",
             // The sheet, not the stored `sheetWidthIn` — that field carries the
