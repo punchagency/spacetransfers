@@ -31,10 +31,12 @@ import {
   type EditorSettings,
 } from "../lib/utils/editorSettings";
 import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
+import { cartLineKey, cartSignInMessage, mergeCarts, readCartOwner, repriceCart, writeCartOwner } from "../lib/utils/cartSync";
 import { computeRenderCopies, sheetContentLengthIn } from "./artboard/lib/utils/layoutHelpers";
 
 export default function Editor() {
-  const { pricePerSqFt } = usePricingSettings();
+  const pricingSettings = usePricingSettings();
+  const { pricePerSqFt } = pricingSettings;
   // Phone detection drives both the one-time notice and the hiding of tools
   // that can't be operated smoothly on a small touch screen (see below).
   const isMobile = useIsMobile();
@@ -79,6 +81,10 @@ export default function Editor() {
     setIsLoggedIn(false);
     setUser(null);
     clearAuth();
+    // The account keeps its cart; this browser should not show it to whoever
+    // uses it next. (A session that only expired keeps it — see cartSync.ts.)
+    setCartItems([]);
+    writeCartOwner(null);
     if (message) toast.success(message);
   }, []);
   const [user, setUser] = useState<any>(null);
@@ -165,6 +171,75 @@ export default function Editor() {
       return [];
     }
   });
+  const cartItemsRef = useRef(cartItems);
+  cartItemsRef.current = cartItems;
+  /** The account whose saved cart has been read this session; nothing is written to an account before that. */
+  const [cartLoadedFor, setCartLoadedFor] = useState<string | null>(null);
+
+  /*
+   * Signing in loads the account's saved cart. See cartSync.ts for the rules.
+   *
+   * Until this succeeds the account's cart is never written: the sync below used
+   * to fire on mount, so opening the store on a new device replaced the saved
+   * cart with that browser's empty one. If the read fails it is not retried
+   * until the next sign-in or reload, and the saved cart is left untouched.
+   */
+  const isCustomer = isLoggedIn && Boolean(user?.id) && user?.role === "CUSTOMER";
+  useEffect(() => {
+    if (!isCustomer) {
+      setCartLoadedFor(null);
+      return;
+    }
+    const userId = String(user.id);
+    if (cartLoadedFor === userId) return;
+
+    let cancelled = false;
+    apiFetch("/customer/cart")
+      .then((res: any) => {
+        if (cancelled) return;
+        const saved = Array.isArray(res?.cart) ? res.cart : [];
+        const owner = readCartOwner();
+        // A cart another account left in this browser is theirs, not a guest cart.
+        const browserCart = owner && owner !== userId ? [] : cartItemsRef.current;
+        const merged = mergeCarts(saved, browserCart);
+        const browserKeys = new Set(browserCart.map(cartLineKey));
+        const savedKeys = new Set(saved.map(cartLineKey));
+        const restored = saved.filter((line: any) => !browserKeys.has(cartLineKey(line))).length;
+        /*
+         * Items added while signed out. Nothing ties a signed-out cart to a
+         * person, so they join whichever account signs in here — said out loud,
+         * so someone signing in on a shared computer notices items that are not
+         * theirs. Only for a genuine guest cart: this account's own lines that
+         * had not synced yet are not news.
+         */
+        const addedAsGuest = owner ? 0 : browserCart.filter((line: any) => !savedKeys.has(cartLineKey(line))).length;
+
+        setCartItems(merged);
+        writeCartOwner(userId);
+        setCartLoadedFor(userId);
+        const message = cartSignInMessage(restored, addedAsGuest);
+        if (message) toast.success(message);
+      })
+      .catch(() => {
+        // Leave the saved cart alone rather than risk overwriting it.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCustomer, user?.id, cartLoadedFor]);
+
+  /*
+   * Cart lines follow the admin's pricing, like the board does. A line kept its
+   * price from when it was added, while checkout charges today's — so after a
+   * rate or minimum-length change the cart showed one total and the card was
+   * charged another. Waits for the real settings; the compiled fallbacks must
+   * not rewrite anything.
+   */
+  useEffect(() => {
+    if (!pricingSettings.loaded) return;
+    setCartItems((prev) => repriceCart(prev));
+  }, [pricingSettings, cartItems]);
 
   useEffect(() => {
     /**
@@ -200,7 +275,7 @@ export default function Editor() {
     // Sync to server only for actual customer accounts. Other roles hit a
     // guaranteed 403 from the /customer/* role middleware, which would spam
     // the console on every cart mutation.
-    if (isLoggedIn && user?.id && user?.role === "CUSTOMER") {
+    if (isCustomer && cartLoadedFor === String(user.id)) {
       // Materialize before sending. Unlike the localStorage copy — where
       // artwork can simply be dropped and re-fetched — the server cart has to
       // keep working references, so embedded images are uploaded once and
@@ -218,7 +293,7 @@ export default function Editor() {
           // the server sync is best-effort persistence across devices.
         });
     }
-  }, [cartItems, isLoggedIn, user?.id, user?.role]);
+  }, [cartItems, isCustomer, cartLoadedFor, user?.id]);
 
   // Keyboard shortcuts: Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z (or Ctrl+Y) = redo.
   // Skipped while typing in form fields so we don't hijack the browser's native
@@ -941,17 +1016,27 @@ export default function Editor() {
     const mapped = orderItems.map((item: any, idx: number) => {
       const quantity = Number(item?.quantity || 1);
       const type = item?.type || "gangsheet";
+      const isGangsheet = type === "gangsheet";
       /*
-       * Priced at today's rate from the sheet's own dimensions — not the
-       * `unitPrice` stored on the old order.
+       * The same sheet, on the roll it was laid out for.
        *
-       * The server reprices at checkout regardless, so carrying the old figure
-       * only meant the cart displayed a price the customer would not be charged.
-       * After a rate or minimum-length change that gap is large.
+       * The width was set to today's roll width, which slipped a sheet built for
+       * a roll that has since changed past checkout's width check — its placements
+       * would print on a roll they do not fit. Kept as recorded, checkout refuses
+       * it with a clear message instead.
        */
+      // `rollWidthIn` is the roll the order printed on (the server applies the
+      // printer's rule for orders that predate recording it).
+      const recordedWidthIn = Number(item?.rollWidthIn || 0);
       const billed = billableSheetDimensions(
         Number(item?.sheetHeightIn || item?.heightIn || 0),
       );
+      const widthIn = isGangsheet && recordedWidthIn > 0 ? recordedWidthIn : billed.widthIn;
+      /*
+       * Priced at today's rate — not the `unitPrice` stored on the old order,
+       * which the server would not charge. `repriceCartLine` (via the cart's
+       * pricing effect) keeps it current from here on.
+       */
       const unitPrice = +(billed.areaSf * getPricePerSqFt()).toFixed(2);
 
       return {
@@ -959,20 +1044,40 @@ export default function Editor() {
         name: item?.name || "Gang Sheet",
         type,
         image: item?.previewImage || "/placeholder-gangsheet.png",
+        /*
+         * Where every graphic sits. Without these a reordered sheet reached
+         * checkout with no artwork and became an order the printer could not
+         * print.
+         */
         items: Array.isArray(item?.artboardItems) ? item.artboardItems : undefined,
+        itemSpacingIn: typeof item?.itemSpacingIn === "number" ? item.itemSpacingIn : undefined,
+        sheetMarginIn: typeof item?.sheetMarginIn === "number" ? item.sheetMarginIn : undefined,
         price: unitPrice,
         quantity,
-        // The billed shape, matching what checkout will charge for.
-        widthIn: billed.widthIn,
+        widthIn,
         heightIn: billed.heightIn,
-        size: `${billed.widthIn.toFixed(1)}" × ${billed.heightIn.toFixed(1)}"`,
+        size: `${widthIn.toFixed(1)}" × ${billed.heightIn.toFixed(1)}"`,
         color: item?.color || "N/A",
         design: item?.description || "Reorder Item",
         print: item?.print || "DTF Transfer",
       };
     });
 
-    setCartItems((prev) => [...prev, ...mapped]);
+    /*
+     * A gang sheet with nothing on it cannot be printed, so it is not added.
+     * Orders placed before placements were recorded have none to copy.
+     */
+    const printable = mapped.filter((line: any) => line.type !== "gangsheet" || (Array.isArray(line.items) && line.items.length > 0));
+    if (printable.length < mapped.length) {
+      toast.error(
+        printable.length === 0
+          ? "This order can't be reordered because its artwork layout wasn't saved. Please rebuild the sheet in the editor."
+          : "Some sheets in this order can't be reordered because their artwork layout wasn't saved.",
+      );
+    }
+    if (printable.length === 0) return;
+
+    setCartItems((prev) => [...prev, ...printable]);
     setShowOrderHistoryModal(false);
     setShowCheckoutModal(true);
   };

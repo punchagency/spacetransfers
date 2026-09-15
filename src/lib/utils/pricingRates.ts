@@ -45,14 +45,22 @@ export const getMinSheetLengthIn = () => minSheetLengthIn;
  * whole session, reload included, because hydration resolves *after* mount and
  * changed nothing the editor was watching.
  */
+/**
+ * False until the admin's settings have arrived. Before that the figures are
+ * compiled fallbacks, which must not be used to rewrite anything the customer
+ * already has — a cart re-priced against them would show the wrong totals.
+ */
+let loaded = false;
+
 let settingsSnapshot = {
   pricePerSqFt: ratePerSqFt,
   sheetWidthIn,
   minSheetLengthIn,
+  loaded,
 };
 
 const refreshSnapshot = () => {
-  settingsSnapshot = { pricePerSqFt: ratePerSqFt, sheetWidthIn, minSheetLengthIn };
+  settingsSnapshot = { pricePerSqFt: ratePerSqFt, sheetWidthIn, minSheetLengthIn, loaded };
 };
 
 export const getPricingSettings = () => settingsSnapshot;
@@ -124,11 +132,13 @@ export const hydratePricePerSqFt = (): Promise<void> => {
       const minLength = Number(res?.minSheetLengthIn);
 
       const changed =
+        !loaded ||
         value !== ratePerSqFt ||
         (Number.isFinite(width) && width > 0 && width !== sheetWidthIn) ||
         (Number.isFinite(minLength) && minLength > 0 && minLength !== minSheetLengthIn);
 
       ratePerSqFt = value;
+      loaded = true;
       if (Number.isFinite(width) && width > 0) sheetWidthIn = width;
       if (Number.isFinite(minLength) && minLength > 0) minSheetLengthIn = minLength;
 
