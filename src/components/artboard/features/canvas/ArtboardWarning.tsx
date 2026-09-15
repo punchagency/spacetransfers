@@ -1,13 +1,12 @@
+import { transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
+
 interface ArtboardWarningProps {
-  fadeCount: number;
   /**
-   * The fade verdicts behind `fadeCount`, so the banner can say *why* rather
-   * than only how many. When a single image is flagged its own explanation is
-   * shown, which is far more actionable than the generic sentence — "a
-   * sustained gradient into transparency was found" tells someone what to look
-   * for, "transparency fading" does not.
+   * The verdict behind each flagged image on the board, one per image. The
+   * count is its length; when a single image is flagged its own explanation is
+   * shown, which is far more actionable than the generic sentence.
    */
-  fadeVerdicts?: Array<{ confidence: number; reason: string; source: "ai" | "heuristic" }>;
+  flagged?: FadeVerdict[];
 }
 
 /**
@@ -59,10 +58,6 @@ const FadeMark = (
     <line x1="12" y1="17" x2="12.01" y2="17" />
   </svg>
 );
-
-function plural(n: number, singular: string, plural: string) {
-  return n === 1 ? singular : plural;
-}
 
 /**
  * The banner shell every variant renders through.
@@ -125,22 +120,18 @@ function NoticeBanner({
  * the press wrong — so it has to remain on screen for as long as the offending
  * artwork is on the board, which a timed toast cannot express.
  */
-export default function ArtboardWarning({
-  fadeCount,
-  fadeVerdicts = [],
-}: ArtboardWarningProps) {
-  if (fadeCount <= 0) return null;
+export default function ArtboardWarning({ flagged = [] }: ArtboardWarningProps) {
+  const count = flagged.length;
+  if (count === 0) return null;
 
   // The specific explanation is only unambiguous for a single flagged image.
   // With several, each may have been flagged for a different reason, and
   // showing one image's would misattribute it to the rest.
-  const soleVerdict = fadeCount === 1 && fadeVerdicts.length === 1 ? fadeVerdicts[0] : null;
+  const sole = count === 1 ? transparencyMessage(flagged[0]) : null;
   // Weakest link: the banner should not claim more certainty than its least
   // certain member.
-  const lowestConfidence = fadeVerdicts.length
-    ? Math.min(...fadeVerdicts.map((v) => v.confidence))
-    : 0;
-  const allAi = fadeVerdicts.length > 0 && fadeVerdicts.every((v) => v.source === "ai");
+  const lowestConfidence = Math.min(...flagged.map((v) => v.confidence));
+  const allAi = flagged.every((v) => v.source === "ai");
 
   const confidence =
     allAi && lowestConfidence > 0 ? (
@@ -150,16 +141,17 @@ export default function ArtboardWarning({
   return (
     <NoticeBanner
       mark={FadeMark}
-      title="Fade Detected"
+      title={sole ? sole.title : "Transparency won't print"}
       trailing={confidence}
       body={
-        <>
-          ({fadeCount}) {plural(fadeCount, "image has", "images have")} transparency fading.
-          {/* The AI's own explanation when exactly one image is flagged; it
-              names the evidence, which the generic sentence cannot. */}
-          {soleVerdict?.reason ? ` ${soleVerdict.reason}` : ""} DTF Technology cannot print fades.
-          Please remove transparency gradients or fading into transparency.
-        </>
+        sole ? (
+          sole.body
+        ) : (
+          <>
+            ({count}) images have fades or see-through areas, which DTF can't print as they look.
+            Update the files outlined in orange, or replace them with different files.
+          </>
+        )
       }
     />
   );

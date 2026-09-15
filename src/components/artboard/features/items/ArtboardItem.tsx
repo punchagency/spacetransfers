@@ -7,6 +7,7 @@ import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { computeGroupDims, computeRenderCopies } from "../../lib/utils/layoutHelpers";
+import { shouldWarn, transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
 
 let hasShownMaxHeightToast = false;
 
@@ -32,15 +33,6 @@ interface ArtboardItemProps {
     flowEndCol?: number;
     dpi?: number;
     nativeWidthPx?: number;
-    hasFade?: boolean;
-    /** Full fade verdict, for the explanation on hover. */
-    fade?: {
-      hasFade: boolean;
-      confidence: number;
-      kind: string;
-      reason: string;
-      source: "ai" | "heuristic";
-    };
     nestRotation?: 0 | 90;
   };
   isSelected: boolean;
@@ -51,6 +43,11 @@ interface ArtboardItemProps {
    * about the item's geometry, transform or content.
    */
   isDpiHighlighted?: boolean;
+  /**
+   * The transparency check's verdict for this item's current image, or
+   * undefined while it is still being checked (`useTransparencyVerdicts`).
+   */
+  transparency?: FadeVerdict;
   showProperties: boolean;
   addedToCart: boolean;
   onSelect: (multi?: boolean) => void;
@@ -100,6 +97,7 @@ function ArtboardItem({
   isSelected,
   isPrimary,
   isDpiHighlighted = false,
+  transparency,
   showProperties,
   addedToCart,
   onSelect,
@@ -292,19 +290,20 @@ function ArtboardItem({
   const PT_TO_IN = 1 / 72;
   const isTooSmall = item.widthIn < 2 * PT_TO_IN || item.heightIn < 2 * PT_TO_IN;
 
-  const hasFade = !!item.hasFade;
+  const hasFade = shouldWarn(transparency);
 
   /**
    * Hover explanation for a flagged image.
    *
    * The orange border says something is wrong but not what, and the banner is
    * about the sheet as a whole. On a sheet with several images this is the only
-   * place that connects a specific image to a specific reason.
+   * place that connects a specific image to a specific reason — and says what
+   * to do about it.
    */
-  const fadeTitle = hasFade && item.fade
-    ? `Fade detected${item.fade.source === "ai" ? ` (${Math.round(item.fade.confidence * 100)}% confident)` : ""}` +
-      (item.fade.reason ? ` — ${item.fade.reason}` : "")
-    : undefined;
+  const fadeMessage = hasFade && transparency ? transparencyMessage(transparency) : null;
+  const fadeConfidence =
+    transparency?.source === "ai" ? ` (${Math.round(transparency.confidence * 100)}% confident)` : "";
+  const fadeTitle = fadeMessage ? `${fadeMessage.title}${fadeConfidence}: ${fadeMessage.body}` : undefined;
 
   // Priority: too-small (red) > fade (orange) > low/unknown-dpi (amber) > normal (blue)
   const borderColor = isTooSmall ? "#EF4444" : hasFade ? "#F97316" : needsDpiAttention ? "#EDAE00" : "#3b82f6";
@@ -754,10 +753,14 @@ function ArtboardItem({
                   Items smaller than 2pt may not print properly.
                 </p>
               )}
-              {hasFade && (
-                <p className="text-[11px] leading-snug text-orange-600 font-medium">
-                  DTF Technology cannot print fades. Please remove transparency gradients or fading into transparency.
-                </p>
+              {fadeMessage && (
+                <>
+                  <p className="text-[11px] leading-snug text-orange-600 font-semibold">
+                    {fadeMessage.title}
+                    {fadeConfidence}
+                  </p>
+                  <p className="text-[11px] leading-snug text-gray-700">{fadeMessage.body}</p>
+                </>
               )}
             </div>
           </div>
@@ -804,6 +807,25 @@ function ArtboardItem({
             strokeWidth={3}
             strokeLinejoin="round"
           />
+        </svg>
+      )}
+      {/*
+        Transparency flag.
+
+        Always drawn, not only on hover or selection: artwork that will not print
+        as it looks has to be findable on a busy sheet at a glance, including
+        zoomed out. Drawn before the selection outline, which is the same orange
+        for a flagged item, so selecting one changes nothing but the handles.
+      */}
+      {hasFade && (
+        <svg
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path d={polygonPathD} fill="none" stroke="#F97316" strokeWidth={3} strokeLinejoin="round" />
         </svg>
       )}
       {(isSelected || isHovered) && (

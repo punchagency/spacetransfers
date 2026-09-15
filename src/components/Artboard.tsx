@@ -10,8 +10,9 @@ import {
   useAiEdit,
   useAiConversation,
   useMaterializeImages,
+  useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
-import { snapToGridPoint, isDpiFlagged } from "./artboard/lib/utils";
+import { snapToGridPoint, isDpiFlagged, shouldWarn } from "./artboard/lib/utils";
 import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
@@ -148,7 +149,6 @@ export default function Artboard({
 
   const {
     isDragging,
-    fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,
@@ -176,6 +176,18 @@ export default function Artboard({
       history.commit,
       autoCropUploads,
     );
+  const transparencyVerdicts = useTransparencyVerdicts(items);
+
+  /** One verdict per flagged item on the board, for the banner. */
+  const flaggedTransparency = useMemo(
+    () =>
+      items.flatMap((it) => {
+        const verdict = transparencyVerdicts.get(it.url);
+        return verdict && shouldWarn(verdict) ? [verdict] : [];
+      }),
+    [items, transparencyVerdicts],
+  );
+
   /**
    * The items the DPI chip is counting.
    *
@@ -475,22 +487,7 @@ export default function Artboard({
       {/* Resolution is no longer routed through here — it is raised as a toast
           when a drop lands (`showLowDpiWarning`) and reported continuously by
           the top-bar chip, so this banner is now purely about fades. */}
-      <ArtboardWarning
-        fadeCount={fadeCount > 0 ? items.filter((it) => it.hasFade).length : 0}
-        // Only the verdicts behind the flagged items, so the banner's
-        // confidence reflects what it is actually warning about.
-        fadeVerdicts={
-          fadeCount > 0
-            ? items
-                .filter((it) => it.hasFade && it.fade)
-                .map((it) => ({
-                  confidence: it.fade!.confidence,
-                  reason: it.fade!.reason,
-                  source: it.fade!.source,
-                }))
-            : []
-        }
-      />
+      <ArtboardWarning flagged={flaggedTransparency} />
       <input
         ref={fileInputRef}
         type="file"
@@ -530,6 +527,7 @@ export default function Artboard({
           batchTotal={batchTotal}
           queuedCount={queuedCount}
           dpiHighlightIds={dpiHighlightIds}
+          transparencyVerdicts={transparencyVerdicts}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}
           items={items}

@@ -55,20 +55,6 @@ export interface ArtboardItem {
   originalHeightPx?: number;
   isDropping?: boolean;
   dpi?: number;
-  /**
-   * True only when the fade verdict is confident enough to warn about — this is
-   * what drives the orange border and the banner. `fade` carries the full
-   * result, including verdicts too uncertain to surface.
-   */
-  hasFade?: boolean;
-  /** Full fade-check result: confidence, what kind of transparency, and why. */
-  fade?: {
-    hasFade: boolean;
-    confidence: number;
-    kind: string;
-    reason: string;
-    source: "ai" | "heuristic";
-  };
   // Unified flow geometry — when set, copies render at cells within a shared
   // grid so multiple grouped items can occupy a single fluid layout.
   // flowCols is the total columns of the shared grid; flowStartCol/flowEndCol

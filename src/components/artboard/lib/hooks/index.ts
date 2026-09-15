@@ -7,3 +7,4 @@ export * from "./useHistory";
 export * from "./useItemActions";
 export * from "./useMouseInteractions";
 export * from "./useMaterializeImages";
+export * from "./useTransparencyVerdicts";

@@ -13,6 +13,7 @@ import { CANVAS, UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config
 import { getItemVerticalExtent } from "../../lib/utils/layoutHelpers";
 import type { DropIndicator, PreviewOffset } from "../../lib/hooks/useMouseInteractions";
 import type { AiPanelBridge } from "../ai";
+import type { FadeVerdict } from "../../lib/utils/fadeCheck";
 
 interface CanvasContainerProps {
   zoom: number;
@@ -65,6 +66,8 @@ interface CanvasContainerProps {
    * Chrome only — nothing about an item's geometry or content is read from it.
    */
   dpiHighlightIds?: Set<number> | null;
+  /** Transparency verdicts by image URL (`useTransparencyVerdicts`). */
+  transparencyVerdicts?: ReadonlyMap<string, FadeVerdict>;
   uploadFileName: string | null;
   onCancelUpload: () => void;
   /** Something else (the AI button) occupies the bottom-right — lift the scroll-to-top control clear of it. */
@@ -129,6 +132,7 @@ export default function CanvasContainer({
   batchTotal = 0,
   queuedCount = 0,
   dpiHighlightIds = null,
+  transparencyVerdicts,
   uploadFileName,
   onCancelUpload,
   avoidBottomRight = false,
@@ -592,6 +596,7 @@ export default function CanvasContainer({
                   scrollTop={scrollTop}
                   viewportHeight={viewportHeight}
                   isDpiHighlighted={dpiHighlightIds?.has(it.id) ?? false}
+                  transparency={transparencyVerdicts?.get(it.url)}
                 />
               ))}
             </div>

@@ -1,7 +1,6 @@
 import { getToken } from "../../../../lib/utils/auth";
 import { useRef, useState } from "react";
-import { readDPI, loadImageSize, validateImageFile, checkFade, shouldWarn } from "../utils";
-import type { FadeVerdict } from "../utils";
+import { readDPI, loadImageSize, validateImageFile, checkFade } from "../utils";
 import { placeNewItems, arrangeInitialLayout, isSheetFull } from "../utils";
 import { autoCropImage } from "../utils/autoCrop";
 import { convertUpload, UploadConvertError } from "../utils/uploadConvert";
@@ -112,8 +111,6 @@ export const useDropHandler = (
   autoCropUploads: boolean = true,
 ) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [fadeCount, setFadeCount] = useState(0);
-  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadFileName, setUploadFileName] = useState<string | null>(null);
@@ -217,20 +214,6 @@ export const useDropHandler = (
     canceledBatchesRef.current.delete(token);
     activeUploadsRef.current.delete(token);
   };
-
-  /**
-   * Fade check.
-   *
-   * Replaces the old `semiTransparent / visible > 0.05` rule, which could not
-   * tell a genuine fade from the three printable things that look identical to
-   * a pixel count — anti-aliased edges, drop shadows and soft glows — and so
-   * flagged ordinary cutouts as unprintable.
-   *
-   * `checkFade` prefers the AI verdict the upload response already carried, so
-   * on the normal path this costs no request at all.
-   */
-  const detectFade = async (url: string, serverVerdict?: unknown): Promise<FadeVerdict> =>
-    checkFade(url, serverVerdict);
 
   /**
    * Cancels every in-flight batch.
@@ -489,7 +472,6 @@ export const useDropHandler = (
     const nextItemId = () => (idCursorRef.current += 1);
 
     let lowDpiImages = 0;
-    let fadeImages = 0;
     // Artwork wider than the printable area. Tallied across the drop so the
     // notice appears once, however many files were added.
     let oversizeImages = 0;
@@ -561,13 +543,6 @@ export const useDropHandler = (
       if (baseItem.widthIn > (canvasWidth || getSheetWidthIn()) - 2 * marginSize) {
         oversizeImages++;
       }
-
-      // No upload response on this path (the item came from a URL or a saved
-      // design), so the checker resolves it against the server itself.
-      const verdict = await detectFade(baseItem.url);
-      baseItem.fade = verdict;
-      baseItem.hasFade = shouldWarn(verdict);
-      if (baseItem.hasFade) fadeImages++;
 
       return baseItem;
     };
@@ -964,23 +939,18 @@ export const useDropHandler = (
         }
 
         /**
-         * The upload already ran the AI check on the buffer it held, so its
-         * verdict is passed straight through — no second analysis, and no
-         * request. Only an image the server never saw falls back to a call.
+         * The upload already ran the transparency check on the buffer it held,
+         * so its verdict is remembered for this URL — no second analysis, and no
+         * request. Not awaited: the flag is drawn by the artboard from the
+         * image's URL (`useTransparencyVerdicts`), which also checks any image
+         * the server never saw, so the item need not wait for it.
          *
-         * Checked against `baseItem.url` rather than the original, because a
-         * canvas auto-crop can remove the very region that faded.
+         * Only for the URL the server actually analysed; a canvas auto-crop
+         * produces a different image, which is checked in its own right.
          */
-        const verdict = await detectFade(
-          baseItem.url,
-          baseItem.url === (trimmedUrl || serverUrl) ? assetResponse?.fade : undefined,
-        );
-        baseItem.fade = verdict;
-        // `hasFade` drives the border colour and the warning banner, so it is
-        // only set once the verdict clears the confidence threshold — a
-        // low-confidence guess must not turn an image orange.
-        baseItem.hasFade = shouldWarn(verdict);
-        if (baseItem.hasFade) fadeImages++;
+        if (baseItem.url === (trimmedUrl || serverUrl) && assetResponse?.fade) {
+          void checkFade(baseItem.url, assetResponse.fade);
+        }
 
         return baseItem;
       };
@@ -1150,11 +1120,6 @@ export const useDropHandler = (
     if (lowDpiImages > 0) {
       showLowDpiWarning(lowDpiImages);
     }
-    if (fadeImages > 0) {
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
-      setFadeCount(fadeImages);
-      fadeTimerRef.current = setTimeout(() => setFadeCount(0), 7000);
-    }
 
 
     // Published from the allocator, not recomputed from a stale `counter` plus
@@ -1235,7 +1200,6 @@ export const useDropHandler = (
 
   return {
     isDragging,
-    fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,

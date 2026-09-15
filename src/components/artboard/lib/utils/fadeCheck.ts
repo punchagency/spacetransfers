@@ -1,33 +1,50 @@
-import { apiFetch } from "../../../../lib/utils/api";
 import { postAssetRef } from "../../../../lib/utils/payloadImages";
 
 /**
- * Fade checking for the artboard.
+ * Transparency checking for the artboard.
  *
  * DTF lays a white underbase that is effectively binary — ink is either
- * deposited or it is not — so artwork that ramps into transparency prints as a
- * hard, ragged edge instead of a fade. Catching that before checkout is the
- * point of this check.
+ * deposited or it is not — so no partial transparency prints as it looks:
  *
- * The verdict comes from the server's AI checker by default. It sees the alpha
- * channel rendered as a greyscale map alongside a checkerboard composite, which
- * is what lets it tell a real fade from the three printable things that look
- * identical to a pixel count: anti-aliased edges, drop shadows and soft glows.
+ *  - a **fade** into transparency prints as a hard, ragged edge;
+ *  - areas **more than 50% transparent** do not come out as shown at all;
+ *  - areas **partly transparent** (at least 50% opaque) print fully solid,
+ *    stronger than on screen.
  *
- * The local check here is the fallback for when that is unreachable. It is a
- * strict improvement on what used to be the *only* rule — `semiTransparent /
- * visible > 0.05` — which flagged every anti-aliased cutout and every shadow.
+ * The verdict comes from the server by default: see-through areas are measured, and
+ * fades go to its AI checker, which sees the alpha channel rendered as a
+ * greyscale map alongside a checkerboard composite. Anti-aliased edges and
+ * halftone dots, which print normally, are excluded from both.
+ *
+ * The local check here is the fallback for when the server is unreachable. It
+ * applies the same measurements as the server's geometry layer
+ * (`fadeDetection.service.ts`), so a verdict reached without the network agrees
+ * with one reached through it.
  */
 
 export type FadeKind =
   | "fade"
+  | "semi-transparent"
+  | "translucent"
   | "anti-aliasing"
   | "shadow"
   | "soft-edge"
   | "opaque"
   | "none";
 
+const FADE_KINDS: FadeKind[] = [
+  "fade",
+  "semi-transparent",
+  "translucent",
+  "anti-aliasing",
+  "shadow",
+  "soft-edge",
+  "opaque",
+  "none",
+];
+
 export interface FadeVerdict {
+  /** True when the image has transparency DTF cannot print as shown: a fade, or see-through areas. */
   hasFade: boolean;
   /** 0–1. */
   confidence: number;
@@ -45,17 +62,13 @@ export interface FadeVerdict {
  * artwork cannot be printed — they re-export it, nothing changes, and they stop
  * believing the warning, which costs more than the occasional missed fade that
  * a proof would catch anyway. So a fade has to be asserted with real confidence
- * before it interrupts anyone.
+ * before it interrupts anyone. See-through areas are measured and always clear it.
  */
 export const FADE_CONFIDENCE_THRESHOLD = 0.6;
 
 /** Whether a verdict should actually raise a warning in the UI. */
 export const shouldWarn = (verdict: FadeVerdict | undefined | null): boolean =>
   Boolean(verdict?.hasFade && verdict.confidence >= FADE_CONFIDENCE_THRESHOLD);
-
-const isFadeKind = (value: unknown): value is FadeKind =>
-  typeof value === "string" &&
-  ["fade", "anti-aliasing", "shadow", "soft-edge", "opaque", "none"].includes(value);
 
 /** Normalises a server payload, tolerating partial or malformed responses. */
 export const parseFadeVerdict = (raw: any): FadeVerdict | null => {
@@ -67,28 +80,265 @@ export const parseFadeVerdict = (raw: any): FadeVerdict | null => {
     // high-confidence verdict; 0.5 sits below the warning threshold, so an
     // unparseable answer fails safe rather than raising a false alarm.
     confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.5,
-    kind: isFadeKind(raw.kind) ? raw.kind : raw.hasFade ? "fade" : "none",
+    kind: FADE_KINDS.includes(raw.kind) ? raw.kind : raw.hasFade ? "fade" : "none",
     reason: typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : "",
     source: raw.source === "ai" ? "ai" : "heuristic",
   };
 };
 
+/**
+ * What a flagged image tells the customer: a short title, and a body that says
+ * what is wrong, why it matters, and what to do about it.
+ *
+ * One builder for the hover card, the native tooltip and the banner, so the
+ * three never describe the same image differently.
+ */
+export const transparencyMessage = (verdict: FadeVerdict) => {
+  const reason = verdict.reason ? `${verdict.reason} ` : "";
+  const replace = "or replace it with a different file.";
+  if (verdict.kind === "translucent") {
+    return {
+      title: "Partly transparent",
+      body: `${reason}DTF can't print partial transparency, so these areas will print solid, stronger than they look on screen. Update the file to make those areas solid, ${replace}`,
+    };
+  }
+  if (verdict.kind === "semi-transparent") {
+    return {
+      title: "Too transparent to print",
+      body: `${reason}DTF can't print areas more than 50% transparent, so this won't print as it looks. Update the file to make those areas solid, ${replace}`,
+    };
+  }
+  return {
+    title: "Fade detected",
+    body: `${reason}DTF can't print fades into transparency, so this won't print as it looks. Update the file to remove the fade, ${replace}`,
+  };
+};
+
 /* ------------------------------------------------------------------ *
- * Local fallback
+ * Measurements — mirrors of fadeDetection.service.ts
  * ------------------------------------------------------------------ */
 
 const ANALYSIS_PX = 256;
 const TRANSPARENT_AT = 8;
 const OPAQUE_AT = 248;
 
+/** Alpha below this is more than 50% transparent. */
+export const FAINT_BELOW = 128;
+
+/** Share of the visible artwork that must be see-through (edges excluded) to flag. */
+export const SEE_THROUGH_FLAG_RATIO = 0.01;
+
 /**
- * Geometry-only fade check, run in the browser.
+ * Resolution for the see-through measurement, sampled nearest-neighbour:
+ * averaging turns a halftone's solid dots into an even grey that would read as
+ * see-through.
+ */
+const SEE_THROUGH_ANALYSIS_PX = 1024;
+
+/** Whether a partial pixel sits between solid artwork and empty space (an anti-aliased edge). */
+const isEdge = (alpha: Uint8ClampedArray | Uint8Array, w: number, h: number, x: number, y: number) => {
+  let sawOpaque = false;
+  let sawTransparent = false;
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
+        sawTransparent = true;
+      } else {
+        const n = alpha[ny * w + nx];
+        if (n >= OPAQUE_AT) sawOpaque = true;
+        else if (n <= TRANSPARENT_AT) sawTransparent = true;
+      }
+      if (sawOpaque && sawTransparent) return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Shares of the visible artwork that are see-through, not counting anti-aliased
+ * edges: `faint` (more than 50% transparent) and `translucent` (partly
+ * transparent, at least 50% opaque). `alpha` is one byte per pixel.
+ */
+export const seeThroughShares = (
+  alpha: Uint8ClampedArray | Uint8Array,
+  w: number,
+  h: number,
+): { faint: number; translucent: number } => {
+  let visible = 0;
+  let faint = 0;
+  let translucent = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const a = alpha[y * w + x];
+      if (a <= TRANSPARENT_AT) continue;
+      visible++;
+      if (a >= OPAQUE_AT || isEdge(alpha, w, h, x, y)) continue;
+      if (a < FAINT_BELOW) faint++;
+      else translucent++;
+    }
+  }
+  const total = Math.max(1, visible);
+  return { faint: faint / total, translucent: translucent / total };
+};
+
+/** Longest smooth, same-direction alpha gradient, relative to the longest side. */
+const longestRamp = (alpha: Uint8ClampedArray | Uint8Array, w: number, h: number): number => {
+  const MAX_GENTLE_STEP = 32;
+  const MAX_PLATEAU = 3;
+  let best = 0;
+
+  const scan = (length: number, read: (i: number) => number) => {
+    let runLength = 0;
+    let plateau = 0;
+    let direction = 0;
+    let previous = read(0);
+    for (let i = 1; i < length; i++) {
+      const current = read(i);
+      const delta = current - previous;
+      previous = current;
+      const magnitude = Math.abs(delta);
+      if (magnitude === 0) {
+        if (direction === 0) continue;
+        plateau++;
+        if (plateau > MAX_PLATEAU) {
+          runLength = 0;
+          plateau = 0;
+          direction = 0;
+        } else {
+          runLength++;
+        }
+        continue;
+      }
+      if (magnitude > MAX_GENTLE_STEP) {
+        runLength = 0;
+        plateau = 0;
+        direction = 0;
+        continue;
+      }
+      const nextDirection = Math.sign(delta);
+      runLength = direction !== 0 && nextDirection !== direction ? 1 : runLength + 1;
+      direction = nextDirection;
+      plateau = 0;
+      if (runLength > best) best = runLength;
+    }
+  };
+
+  for (let y = 0; y < h; y++) scan(w, (x) => alpha[y * w + x]);
+  for (let x = 0; x < w; x++) scan(h, (y) => alpha[y * w + x]);
+  return best / Math.max(1, Math.max(w, h));
+};
+
+export interface AlphaMeasurements {
+  semiRatio: number;
+  interiorSemiRatio: number;
+  maxRampRatio: number;
+  faintRatio: number;
+  translucentRatio: number;
+}
+
+/**
+ * The verdict from measurements alone — the same rules, in the same order, as
+ * the server's `faintVerdict` and `heuristicVerdict`.
+ */
+export const verdictFromMeasurements = (m: AlphaMeasurements): FadeVerdict => {
+  const fades = m.interiorSemiRatio > 0.02 && m.maxRampRatio > 0.08;
+
+  const seeThrough = m.faintRatio + m.translucentRatio;
+  const percent = (ratio: number) => Math.max(1, Math.round(ratio * 100));
+  if (seeThrough >= SEE_THROUGH_FLAG_RATIO) {
+    if (fades) {
+      return {
+        hasFade: true,
+        confidence: 1,
+        kind: "fade",
+        reason: `It fades into transparency; about ${percent(seeThrough)}% of the artwork is see-through.`,
+        source: "heuristic",
+      };
+    }
+    if (m.faintRatio >= SEE_THROUGH_FLAG_RATIO) {
+      return {
+        hasFade: true,
+        confidence: 1,
+        kind: "semi-transparent",
+        reason: `About ${percent(m.faintRatio)}% of the artwork is more than 50% transparent.`,
+        source: "heuristic",
+      };
+    }
+    return {
+      hasFade: true,
+      confidence: 1,
+      kind: "translucent",
+      reason: `About ${percent(seeThrough)}% of the artwork is partly transparent.`,
+      source: "heuristic",
+    };
+  }
+  if (m.semiRatio < 0.005) {
+    return {
+      hasFade: false,
+      confidence: 0.95,
+      kind: "opaque",
+      reason: "No partial transparency beyond hard edges.",
+      source: "heuristic",
+    };
+  }
+  if (m.interiorSemiRatio < 0.01) {
+    return {
+      hasFade: false,
+      confidence: 0.9,
+      kind: "anti-aliasing",
+      reason: "Partial transparency is confined to anti-aliased edges, which print normally.",
+      source: "heuristic",
+    };
+  }
+  if (fades) {
+    return {
+      hasFade: true,
+      confidence: Math.min(0.9, 0.55 + m.interiorSemiRatio * 2 + m.maxRampRatio),
+      kind: "fade",
+      reason: "A sustained gradient into transparency was found, which DTF cannot reproduce.",
+      source: "heuristic",
+    };
+  }
+  return {
+    hasFade: false,
+    confidence: 0.6,
+    kind: m.interiorSemiRatio > 0.05 ? "shadow" : "soft-edge",
+    reason: "Semi-transparent areas look like a shadow or soft edge rather than a fade.",
+    source: "heuristic",
+  };
+};
+
+/** The alpha channel of `img`, drawn at most `maxEdge` on its long side. */
+const readAlpha = (img: HTMLImageElement, maxEdge: number, smooth: boolean) => {
+  const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight, 1));
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = smooth;
+  ctx.drawImage(img, 0, 0, w, h);
+  const rgba = ctx.getImageData(0, 0, w, h).data;
+  const alpha = new Uint8ClampedArray(w * h);
+  for (let i = 0; i < alpha.length; i++) alpha[i] = rgba[i * 4 + 3];
+  canvas.width = 0;
+  canvas.height = 0;
+  return { alpha, w, h };
+};
+
+/* ------------------------------------------------------------------ *
+ * Local fallback
+ * ------------------------------------------------------------------ */
+
+/**
+ * Geometry-only transparency check, run in the browser.
  *
  * Mirrors the server's analysis so a verdict reached without the network is
- * consistent with one reached through it. The discriminating measure is
- * *interior* partial alpha: anti-aliasing is a 1–2px band whose neighbourhood
- * always contains both a fully opaque and a fully transparent pixel, whereas a
- * genuine fade has broad regions where everything nearby is also partial.
+ * consistent with one reached through it.
  */
 export const detectFadeLocally = (url: string): Promise<FadeVerdict> =>
   new Promise<FadeVerdict>((resolve) => {
@@ -104,7 +354,7 @@ export const detectFadeLocally = (url: string): Promise<FadeVerdict> =>
     img.crossOrigin = "anonymous";
 
     // The decode can fail silently on a damaged file; without a bound this
-    // promise would never settle and would stall the upload that awaits it.
+    // promise would never settle.
     const timer = window.setTimeout(() => {
       img.onload = null;
       img.onerror = null;
@@ -119,100 +369,38 @@ export const detectFadeLocally = (url: string): Promise<FadeVerdict> =>
     img.onload = () => {
       window.clearTimeout(timer);
       try {
-        const scale = Math.min(
-          1,
-          ANALYSIS_PX / Math.max(img.naturalWidth, img.naturalHeight, 1),
-        );
-        const w = Math.max(1, Math.round(img.naturalWidth * scale));
-        const h = Math.max(1, Math.round(img.naturalHeight * scale));
-
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) {
+        const small = readAlpha(img, ANALYSIS_PX, true);
+        const sharpView = readAlpha(img, SEE_THROUGH_ANALYSIS_PX, false);
+        if (!small || !sharpView) {
           resolve(inconclusive);
           return;
         }
-        ctx.drawImage(img, 0, 0, w, h);
-        const data = ctx.getImageData(0, 0, w, h).data;
-        const alphaAt = (x: number, y: number) => data[(y * w + x) * 4 + 3];
 
+        const { alpha, w, h } = small;
         let visible = 0;
         let semi = 0;
         let interiorSemi = 0;
-
         for (let y = 0; y < h; y++) {
           for (let x = 0; x < w; x++) {
-            const a = alphaAt(x, y);
+            const a = alpha[y * w + x];
             if (a <= TRANSPARENT_AT) continue;
             visible++;
             if (a >= OPAQUE_AT) continue;
             semi++;
-
-            let sawOpaque = false;
-            let sawTransparent = false;
-            for (let dy = -2; dy <= 2 && !(sawOpaque && sawTransparent); dy++) {
-              for (let dx = -2; dx <= 2; dx++) {
-                const nx = x + dx;
-                const ny = y + dy;
-                if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
-                  sawTransparent = true;
-                  continue;
-                }
-                const n = alphaAt(nx, ny);
-                if (n >= OPAQUE_AT) sawOpaque = true;
-                else if (n <= TRANSPARENT_AT) sawTransparent = true;
-                if (sawOpaque && sawTransparent) break;
-              }
-            }
-            if (!(sawOpaque && sawTransparent)) interiorSemi++;
+            if (!isEdge(alpha, w, h, x, y)) interiorSemi++;
           }
         }
 
-        const semiRatio = semi / Math.max(1, visible);
-        const interiorSemiRatio = interiorSemi / Math.max(1, visible);
-
-        if (semiRatio < 0.005) {
-          resolve({
-            hasFade: false,
-            confidence: 0.95,
-            kind: "opaque",
-            reason: "No partial transparency beyond hard edges.",
-            source: "heuristic",
-          });
-          return;
-        }
-
-        if (interiorSemiRatio < 0.01) {
-          resolve({
-            hasFade: false,
-            confidence: 0.9,
-            kind: "anti-aliasing",
-            reason: "Partial transparency is confined to anti-aliased edges, which print normally.",
-            source: "heuristic",
-          });
-          return;
-        }
-
-        if (interiorSemiRatio > 0.02) {
-          resolve({
-            hasFade: true,
-            confidence: Math.min(0.85, 0.6 + interiorSemiRatio * 2),
-            kind: "fade",
-            reason: "Large semi-transparent areas suggest a fade into transparency, which DTF cannot reproduce.",
-            source: "heuristic",
-          });
-          return;
-        }
-
-        resolve({
-          hasFade: false,
-          confidence: 0.6,
-          kind: "soft-edge",
-          reason: "Semi-transparent areas look like a shadow or soft edge rather than a fade.",
-          source: "heuristic",
-        });
+        resolve(
+          verdictFromMeasurements({
+            semiRatio: semi / Math.max(1, visible),
+            interiorSemiRatio: interiorSemi / Math.max(1, visible),
+            maxRampRatio: longestRamp(alpha, w, h),
+            ...(({ faint, translucent }) => ({ faintRatio: faint, translucentRatio: translucent }))(
+              seeThroughShares(sharpView.alpha, sharpView.w, sharpView.h),
+            ),
+          }),
+        );
       } catch {
         // A cross-origin asset taints the canvas and makes getImageData throw.
         resolve(inconclusive);
@@ -227,42 +415,78 @@ export const detectFadeLocally = (url: string): Promise<FadeVerdict> =>
  * ------------------------------------------------------------------ */
 
 /**
- * Checks an image for a fade, AI-first.
+ * Verdicts by image URL, for the session.
  *
- * `serverVerdict` is the result the upload response already carried. Uploads run
+ * A verdict is a property of the image, and every edit that changes the image
+ * (auto-crop, background removal, an AI edit) gives it a new URL — so keying by
+ * URL is what lets a flag follow the artwork: an edited image is checked afresh,
+ * and undoing back to an earlier URL finds its verdict already here.
+ */
+const verdicts = new Map<string, Promise<FadeVerdict>>();
+const MAX_REMEMBERED = 500;
+
+const remember = (url: string, verdict: Promise<FadeVerdict>) => {
+  if (verdicts.size >= MAX_REMEMBERED) {
+    const oldest = verdicts.keys().next().value;
+    if (oldest !== undefined) verdicts.delete(oldest);
+  }
+  verdicts.set(url, verdict);
+  return verdict;
+};
+
+/**
+ * At most this many checks at once. Opening a saved design checks every image
+ * on it, and each server check may be a model call.
+ */
+const MAX_CONCURRENT_CHECKS = 3;
+let running = 0;
+const waiting: Array<() => void> = [];
+
+const withSlot = async <T>(work: () => Promise<T>): Promise<T> => {
+  if (running >= MAX_CONCURRENT_CHECKS) {
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  }
+  running++;
+  try {
+    return await work();
+  } finally {
+    running--;
+    waiting.shift()?.();
+  }
+};
+
+const runCheck = (url: string): Promise<FadeVerdict> =>
+  withSlot(async () => {
+    try {
+      /**
+       * Send a reference, never the image.
+       *
+       * For anything the editor produced locally — auto-crop, background
+       * removal, an AI edit — `url` is a `data:` URL carrying the whole image.
+       * Posting it inline put tens of megabytes in a JSON body and returned
+       * `413 Payload Too Large`. `postAssetRef` uploads such an image once, as
+       * raw bytes, and sends the hosted URL instead.
+       */
+      const response = await postAssetRef("/customer/assets/fade-check", { url });
+      const parsed = parseFadeVerdict(response);
+      if (parsed) return parsed;
+    } catch {
+      // Unreachable or errored — fall through to the local check rather than
+      // leaving the image unchecked.
+    }
+    return detectFadeLocally(url);
+  });
+
+/**
+ * Checks an image for transparency DTF cannot print.
+ *
+ * `serverVerdict` is the result an upload response already carried. Uploads run
  * the check server-side on the buffer they already hold, so the normal path
  * costs no extra request at all — this only reaches the network for images that
- * arrived some other way (a saved design, an AI edit that changed the alpha).
+ * arrived some other way (a saved design, an edit that changed the image).
  */
-export const checkFade = async (
-  url: string,
-  serverVerdict?: unknown,
-): Promise<FadeVerdict> => {
+export const checkFade = (url: string, serverVerdict?: unknown): Promise<FadeVerdict> => {
   const fromUpload = parseFadeVerdict(serverVerdict);
-  if (fromUpload) return fromUpload;
-
-  try {
-    /**
-     * Send a reference, never the image.
-     *
-     * `url` is whatever the item currently holds, and for anything the editor
-     * produced locally — auto-crop, background removal, an AI edit — that is a
-     * `data:image/png;base64,…` URL carrying the whole image. Posting it inline
-     * put tens of megabytes in a JSON body and returned
-     * `413 Payload Too Large` from `/customer/assets/fade-check`.
-     *
-     * `toHostedUrl` uploads such an image once, as raw bytes, and caches the
-     * hosted URL it gets back — so the check sends ~120 characters, the server
-     * fetches the original from storage, and any later operation on the same
-     * image reuses the same upload rather than re-sending it.
-     */
-    const response = await postAssetRef("/customer/assets/fade-check", { url });
-    const parsed = parseFadeVerdict(response);
-    if (parsed) return parsed;
-  } catch {
-    // Unreachable or errored — fall through to the local check rather than
-    // failing an upload over an advisory warning.
-  }
-
-  return detectFadeLocally(url);
+  if (fromUpload) return remember(url, Promise.resolve(fromUpload));
+  return verdicts.get(url) ?? remember(url, runCheck(url));
 };
