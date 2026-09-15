@@ -267,6 +267,17 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
       return assertBufferWithinBounds(await fs.promises.readFile(localPath), "image");
     }
   }
+  /*
+   * Anything else must be a web address. A `blob:` URL (an image that only
+   * exists in the customer's browser, because its upload failed) or a bare id
+   * reached `fetch`, which threw a TypeError that surfaced as an unexplained 500.
+   */
+  if (!/^https?:\/\//i.test(url)) {
+    throw Object.assign(
+      new Error("This image hasn't finished uploading, so it can't be processed yet. Please try again once it has."),
+      { statusCode: 400, code: "IMAGE_NOT_UPLOADED" },
+    );
+  }
   const r = await fetch(url);
   if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
 
@@ -1942,12 +1953,34 @@ export const getDesignById = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
+    /*
+     * Items store `assetId`, usually an asset's database id. The editor needs an
+     * image address for a piece whose saved image is missing, and showed a broken
+     * image when all it had was the id — so each id is sent with its address.
+     */
+    const artboardData = design.toObject().artboardData ?? { items: [] };
+    const items = Array.isArray(artboardData.items) ? artboardData.items : [];
+    const assetIds = [
+      ...new Set(items.map((it: any) => String(it.assetId || "")).filter((id) => mongoose.isValidObjectId(id) && /^[a-f0-9]{24}$/i.test(id))),
+    ];
+    const addresses = new Map<string, string>();
+    if (assetIds.length > 0) {
+      const assets = await Asset.find({ _id: { $in: assetIds }, user: req.user?.id }).select("url").lean();
+      for (const asset of assets as any[]) if (asset.url) addresses.set(String(asset._id), String(asset.url));
+    }
+
     res.json({
       id: design.id,
       title: design.title,
       size: design.size,
       pricing: design.pricing,
-      artboardData: design.artboardData
+      artboardData: {
+        ...artboardData,
+        items: items.map((it: any) => {
+          const assetUrl = addresses.get(String(it.assetId));
+          return assetUrl ? { ...it, assetUrl } : it;
+        }),
+      },
     });
   } catch (error) {
     next(error);

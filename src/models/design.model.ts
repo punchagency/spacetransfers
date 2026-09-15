@@ -3,7 +3,10 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface IDesignItem {
   id: number;
   assetId: string;
+  /** The image the piece shows and prints, cropped or not. */
   croppedUrl?: string;
+  /** The auto-crop switch's source, when an edit has replaced the upload. */
+  uncroppedUrl?: string;
   autoCrop?: boolean;
   widthIn: number;
   heightIn: number;
@@ -58,6 +61,9 @@ const designItemSchema = new Schema<IDesignItem>({
     required: true
   },
   croppedUrl: {
+    type: String
+  },
+  uncroppedUrl: {
     type: String
   },
   autoCrop: {
