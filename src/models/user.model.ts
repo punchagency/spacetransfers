@@ -42,7 +42,6 @@ export interface IUser extends Document {
   stripeConnectAccountId?: string | null;
   stripeConnectOnboarded?: boolean;
   payoutsEnabled?: boolean;
-  artboardDraft?: any;
   cart?: any[];
   verificationStatus?: {
     email: boolean;
@@ -327,9 +326,14 @@ const userSchema = new Schema<IUser>(
     stripeConnectAccountId: { type: String, default: null },
     stripeConnectOnboarded: { type: Boolean, default: false },
     payoutsEnabled: { type: Boolean, default: true },
-    artboardDraft: {
-      type: Schema.Types.Mixed,
-      default: null
+    /*
+     * The customer's saved cart. It was declared on the interface but not here,
+     * so strict mode dropped every write: `PUT /customer/cart` answered "Cart
+     * updated" and stored nothing, and every read came back empty.
+     */
+    cart: {
+      type: [Schema.Types.Mixed],
+      default: undefined
     },
     verificationStatus: {
       email: { type: Boolean, default: false },

@@ -1754,6 +1754,18 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       }
     })();
 
+    /*
+     * The order is saved and paid, so what was in the cart has been bought.
+     * Cleared here, not only by the store after the response: if the customer
+     * closes the tab first, the saved cart would otherwise come back on their
+     * next sign-in holding sheets they already paid for.
+     */
+    if (req.user?.id) {
+      await User.updateOne({ _id: req.user.id }, { $set: { cart: [] } }).catch((err: any) => {
+        console.warn(`[ORDER_CART] orderId=${orderId} could not clear the saved cart (non-fatal): ${err?.message}`);
+      });
+    }
+
     notifyAllAdmins({
       category: "orders",
       priority: "medium",
@@ -1827,7 +1839,6 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
     // than failing an order, since the work is not recoverable from a cart.
     assertPersistable(design.toObject(), { label: "design" });
     await design.save();
-    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
 
     res.status(201).json({
       id: design.id,
@@ -1835,34 +1846,6 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
       createdAt: design.createdAt,
       updatedAt: design.updatedAt
     });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const user = await User.findById(req.user?.id).select("artboardDraft");
-    res.json({ draft: user?.artboardDraft || null });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const upsertArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { draft } = req.body || {};
-    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: draft || null } });
-    res.json({ message: "Draft saved" });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const clearArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
-    res.json({ message: "Draft cleared" });
   } catch (error) {
     next(error);
   }
@@ -2231,6 +2214,18 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         // So the reordered line can point at the same artwork.
         designId: (item as any).designId ?? null,
         previewImage: (item as any).previewImage ?? null,
+        /*
+         * What reorder needs to rebuild the same sheet: where every graphic sat,
+         * and the roll and spacing it was laid out with. Without the placements a
+         * reordered sheet reached checkout with no artwork and became an order
+         * the printer had nothing to print from.
+         */
+        artboardItems: Array.isArray((item as any).artboardItems) ? (item as any).artboardItems : undefined,
+        // The roll it printed on, by the same rule the printer export uses —
+        // orders placed before the roll was recorded printed at the legacy width.
+        rollWidthIn: (item.type || "gangsheet") === "gangsheet" ? orderSheetWidthIn(item as any) : null,
+        itemSpacingIn: (item as any).itemSpacingIn ?? null,
+        sheetMarginIn: (item as any).sheetMarginIn ?? null,
       };
     });
 

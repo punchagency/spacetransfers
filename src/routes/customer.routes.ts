@@ -23,9 +23,6 @@ import {
   updateDesign,
   duplicateDesign,
   searchDesigns,
-  getArtboardDraft,
-  upsertArtboardDraft,
-  clearArtboardDraft,
   getCart,
   updateCart,
   getCartQuote,
@@ -70,9 +67,6 @@ router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
 router.get("/orders/:orderId/tracking", getOrderTracking);
-router.get("/artboard-draft", getArtboardDraft);
-router.put("/artboard-draft", upsertArtboardDraft);
-router.delete("/artboard-draft", clearArtboardDraft);
 router.get("/cart", getCart);
 router.put("/cart", updateCart);
 router.post("/designs", createDesign);
