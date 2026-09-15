@@ -58,7 +58,7 @@ import {
   planEditWithGemini,
 } from "../services/gemini.service.js";
 import { conformToSource, readSourceGeometry } from "../utils/generativeImage.js";
-import { detectFade } from "../services/fadeDetection.service.js";
+import { detectFade, TRANSPARENCY_CHECK_VERSION } from "../services/fadeDetection.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -2273,14 +2273,15 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
         const thumbUrl = computeThumbUrl(foundAsset.trimmedUrl || foundAsset.url);
         const normDpi = foundAsset.dpi || 300;
         /**
-         * Reuse the stored verdict, and only compute one if this record predates
-         * the fade check. Identical bytes cannot produce a different answer, so
-         * re-running the model here would spend a call to reproduce a result we
-         * already have — while an asset saved before this feature existed still
-         * needs one, or it would silently report "no fade" forever.
+         * Reuse the stored verdict unless it was reached under older rules (or
+         * none). Identical bytes cannot produce a different answer under the same
+         * rules, so re-running the model would spend a call to reproduce a result
+         * we already have — while a verdict from before a rule change would
+         * silently keep missing what the new rule catches.
          */
-        const cachedFade = foundAsset.fade ?? (await detectFade(fileBuffer));
-        if (!foundAsset.fade) {
+        const fadeIsCurrent = foundAsset.fade?.version === TRANSPARENCY_CHECK_VERSION;
+        const cachedFade = fadeIsCurrent ? foundAsset.fade : await detectFade(fileBuffer);
+        if (!fadeIsCurrent) {
           await Asset.findByIdAndUpdate(foundAsset._id, { fade: cachedFade }).catch(() => {
             // A failed backfill is not worth failing the upload over; the
             // verdict is still returned and will be recomputed next time.

@@ -12,13 +12,22 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 
-import { analyzeAlpha, heuristicVerdict } from "../services/fadeDetection.service.js";
+import {
+  analyzeAlpha,
+  detectFade,
+  seeThroughVerdict,
+  heuristicVerdict,
+  TRANSPARENCY_CHECK_VERSION,
+} from "../services/fadeDetection.service.js";
 
 const W = 200;
-const H = 200;
 
 /** Builds an RGBA PNG from a function returning alpha 0-255 per pixel. */
-const buildImage = async (alphaAt: (x: number, y: number) => number): Promise<Buffer> => {
+const buildImage = async (
+  alphaAt: (x: number, y: number) => number,
+  W = 200,
+  H = 200,
+): Promise<Buffer> => {
   const raw = Buffer.alloc(W * H * 4);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -185,6 +194,79 @@ describe("heuristicVerdict", () => {
         verdict.confidence >= 0 && verdict.confidence <= 1,
         `${verdict.kind} produced confidence ${verdict.confidence}`,
       );
+    }
+  });
+});
+
+describe("see-through artwork", () => {
+  /** A solid subject plus a shadow at `alpha`, covering about a third of the artwork. */
+  const shadowAt = (alpha: number) =>
+    buildImage((x, y) => {
+      if (x >= 30 && x < 120 && y >= 30 && y < 120) return 255;
+      if (x >= 50 && x < 140 && y >= 50 && y < 140) return alpha;
+      return 0;
+    });
+
+  it("flags a shadow that is more than 50% transparent", async () => {
+    const analysis = await analyzeAlpha(await shadowAt(90));
+    const verdict = seeThroughVerdict(analysis);
+    assert.ok(verdict, `expected a flag, faintRatio ${analysis.faintRatio}`);
+    assert.equal(verdict.hasFade, true);
+    assert.equal(verdict.kind, "semi-transparent");
+    assert.equal(verdict.confidence, 1);
+    assert.match(verdict.reason, /more than 50% transparent/);
+  });
+
+  it("flags a shadow that is less than 50% transparent as partly transparent", async () => {
+    const analysis = await analyzeAlpha(await shadowAt(200));
+    const verdict = seeThroughVerdict(analysis);
+    assert.ok(verdict, `expected a flag, translucentRatio ${analysis.translucentRatio}`);
+    assert.equal(verdict.kind, "translucent");
+    assert.match(verdict.reason, /partly transparent/);
+  });
+
+  it("flags artwork that is 20% transparent throughout", async () => {
+    // The shape of the sample that exposed the 50%-only rule: no fade, no edge,
+    // every pixel at alpha 204. It prints fully solid, not as shown.
+    const verdict = seeThroughVerdict(await analyzeAlpha(await buildImage(() => 204)));
+    assert.ok(verdict);
+    assert.equal(verdict.kind, "translucent");
+    assert.match(verdict.reason, /About 100% of the artwork is partly transparent/);
+  });
+
+  it("does not count anti-aliased edges", async () => {
+    const analysis = await analyzeAlpha(await antiAliasedImage());
+    assert.equal(analysis.faintRatio, 0);
+    assert.equal(analysis.translucentRatio, 0);
+    assert.equal(seeThroughVerdict(analysis), null);
+  });
+
+  it("does not flag a halftone made of solid dots, even when downscaled", async () => {
+    // 3000px of 3px solid dots on a 6px grid: averaging it down would read as an
+    // even grey at 25% opacity. Nearest sampling keeps every sample solid or empty.
+    const halftone = await buildImage((x, y) => (x % 6 < 3 && y % 6 < 3 ? 255 : 0), 3000, 3000);
+    const analysis = await analyzeAlpha(halftone);
+    assert.equal(seeThroughVerdict(analysis), null, `halftone read as see-through: ${JSON.stringify(analysis)}`);
+  });
+
+  it("names a fade as a fade", async () => {
+    const verdict = seeThroughVerdict(await analyzeAlpha(await fadeImage()));
+    assert.ok(verdict);
+    assert.equal(verdict.kind, "fade");
+  });
+
+  it("decides without the AI model and stamps the rules version", async () => {
+    const result = await detectFade(await shadowAt(60));
+    assert.equal(result.hasFade, true);
+    assert.equal(result.source, "heuristic");
+    assert.equal(result.version, TRANSPARENCY_CHECK_VERSION);
+  });
+
+  it("does not flag an opaque image or a hard cutout", async () => {
+    for (const image of [await opaqueImage(), await buildImage((x, y) => (x >= 50 && x < 150 && y >= 50 && y < 150 ? 255 : 0))]) {
+      const result = await detectFade(image);
+      assert.equal(result.hasFade, false);
+      assert.equal(result.version, TRANSPARENCY_CHECK_VERSION);
     }
   });
 });
