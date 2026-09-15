@@ -457,6 +457,9 @@ const withSlot = async <T>(work: () => Promise<T>): Promise<T> => {
 
 const runCheck = (url: string): Promise<FadeVerdict> =>
   withSlot(async () => {
+    // A blob: URL exists only in this browser (its upload has not happened or
+    // failed), so the server can never read it — check it here without asking.
+    if (url.startsWith("blob:")) return detectFadeLocally(url);
     try {
       /**
        * Send a reference, never the image.

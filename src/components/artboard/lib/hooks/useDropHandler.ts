@@ -518,8 +518,9 @@ export const useDropHandler = (
         originalUrl: originalUrlOverride || url,
         originalWidthIn: widthIn,
         originalHeightIn: heightIn,
-        originalWidthPx: loaded.widthPx,
-        originalHeightPx: loaded.heightPx,
+        uncroppedUrl: url,
+        uncroppedWidthPx: loaded.widthPx,
+        uncroppedHeightPx: loaded.heightPx,
       };
 
       const cropped = autoCropUploads ? await autoCropImage(url, dpi) : null;
@@ -905,8 +906,9 @@ export const useDropHandler = (
           originalUrl: serverUrl,
           originalWidthIn,
           originalHeightIn,
-          originalWidthPx: widthPx,
-          originalHeightPx: heightPx,
+          uncroppedUrl: serverUrl,
+          uncroppedWidthPx: widthPx,
+          uncroppedHeightPx: heightPx,
         };
 
         if (autoCropUploads && !trimmedUrl) {

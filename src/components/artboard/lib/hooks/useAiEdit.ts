@@ -3,6 +3,7 @@ import type { ArtboardItem } from "../../types";
 import type { AiEditOptions, AiEditProgress, AiEditResult, AiIntentId, PlanStep } from "../ai";
 import { AiEditAbortedError, INTENT_VERBS, classifyPrompt, runAiEdit } from "../ai";
 import type { CommitHistory } from "./useHistory";
+import { afterPixelEdit, captureImageSnapshot, restoreImageSnapshot } from "../utils/imageState";
 
 const PROMPT_HISTORY_KEY = "artboard.ai.promptHistory";
 const PROMPT_HISTORY_MAX = 20;
@@ -134,19 +135,17 @@ const applyResultToItem = (item: ArtboardItem, result: AiEditResult, prompt: str
 
   const aiHistory = [
     ...(item.aiHistory ?? []),
-    { prompt, url: item.url, at: Date.now() },
+    // The whole image state, not just the URL, so reverting restores the size
+    // and pixel counts that went with it.
+    { prompt, url: item.url, at: Date.now(), snapshot: captureImageSnapshot(item) },
   ].slice(-10);
 
   const base: ArtboardItem = {
     ...item,
-    url: result.url,
-    // croppedUrl is what checkout ships to the print pipeline. Without updating
-    // it too, an AI edit would only change the on-screen preview while the
-    // printed file silently stayed the pre-edit original.
-    croppedUrl: result.url,
-    croppedWidthPx: result.widthPx,
-    croppedHeightPx: result.heightPx,
-    nativeWidthPx: result.widthPx,
+    // Shown, shipped to print (checkout sends croppedUrl — without it an AI
+    // edit would only change the preview), and the new uncropped source for the
+    // auto-crop switch.
+    ...afterPixelEdit(result.url, result.widthPx, result.heightPx),
     // Keep originalUrl pointing at the pre-edit remote asset so the checkout
     // assetId still resolves to a real DB record rather than a data URL.
     originalUrl: item.originalUrl || item.url,
@@ -528,9 +527,21 @@ export const useAiEdit = (
         prev.map((it) =>
           it.id === itemId
             ? {
-                ...it,
-                url: entry.url,
-                croppedUrl: entry.url,
+                // Entries recorded before snapshots existed carry only a URL.
+                ...(entry.snapshot
+                  ? restoreImageSnapshot(it, entry.snapshot)
+                  : {
+                      ...it,
+                      url: entry.url,
+                      croppedUrl: entry.url,
+                      uncroppedUrl: entry.url,
+                      // Unknown for that image; measured again when needed.
+                      croppedWidthPx: undefined,
+                      croppedHeightPx: undefined,
+                      nativeWidthPx: undefined,
+                      uncroppedWidthPx: undefined,
+                      uncroppedHeightPx: undefined,
+                    }),
                 // Everything from this point on is discarded. Keeping the later
                 // entries would present a history that no longer describes the
                 // image, and re-reverting into them would restore edits that

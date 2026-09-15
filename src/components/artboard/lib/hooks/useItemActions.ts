@@ -1,9 +1,8 @@
 import { ArtboardItem } from "../../types";
-import { apiFetch } from "../../../../lib/utils/api";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { computeRenderCopies, getItemFootprint, isSheetFull, resolveDragPlacement } from "../utils/layoutHelpers";
 import { autoCropImage } from "../utils/autoCrop";
-import { canvasToLocalUrl } from "../utils/imageUtils";
+import { afterPixelEdit, uncroppedSourceOf } from "../utils/imageState";
 import type { CommitHistory } from "./useHistory";
 import toast from "react-hot-toast";
 
@@ -17,9 +16,6 @@ const naturalSizeOf = (url: string) =>
     img.onerror = () => resolve(null);
     img.src = url;
   });
-
-const DPI_STEP = 50;
-const DPI_MAX = 600;
 
 export const useItemActions = (
   items: ArtboardItem[],
@@ -96,6 +92,10 @@ export const useItemActions = (
   /**
    * Auto crop on or off for the selected piece, keeping its scale either way.
    *
+   * It works from the piece's uncropped image (`uncroppedSourceOf`), which every
+   * edit updates. Working from the upload instead undid edits: a background
+   * removed and then auto-crop turned off brought the background back.
+   *
    * Three faults in the old toggle, each confirmed in the browser:
    *   - turning it off swapped the image shown but left `croppedUrl` — the copy
    *     the print is made from — as the cropped image, so the order printed the
@@ -114,7 +114,7 @@ export const useItemActions = (
     const id = selectedId;
     const item = items.find((it) => it.id === id);
     if (!item) return;
-    const source = item.originalUrl || item.url;
+    const source = uncroppedSourceOf(item);
     if (!source) return;
 
     const oddQuarter = ((Math.round((item.rotation || 0) / 90) % 2) + 2) % 2 === 1;
@@ -122,8 +122,8 @@ export const useItemActions = (
       item.croppedWidthPx || item.nativeWidthPx
         ? Promise.resolve(item.croppedWidthPx || item.nativeWidthPx || 0)
         : naturalSizeOf(item.url).then((size) => size?.w ?? 0),
-      item.originalWidthPx && item.originalHeightPx
-        ? Promise.resolve({ w: item.originalWidthPx, h: item.originalHeightPx })
+      item.uncroppedUrl === source && item.uncroppedWidthPx && item.uncroppedHeightPx
+        ? Promise.resolve({ w: item.uncroppedWidthPx, h: item.uncroppedHeightPx })
         : naturalSizeOf(source),
     ]);
     if (!currentPx || !original) {
@@ -158,9 +158,9 @@ export const useItemActions = (
                 croppedWidthPx: original.w,
                 croppedHeightPx: original.h,
                 nativeWidthPx: original.w,
-                originalUrl: source,
-                originalWidthPx: original.w,
-                originalHeightPx: original.h,
+                uncroppedUrl: source,
+                uncroppedWidthPx: original.w,
+                uncroppedHeightPx: original.h,
                 ...resizedTo(it, original.w, original.h),
               }
             : it,
@@ -179,7 +179,7 @@ export const useItemActions = (
       prev.map((it) => {
         // Switched off again while the crop ran: leave it off.
         if (it.id !== id || !it.autoCrop) return it;
-        const recorded = { ...it, originalUrl: source, originalWidthPx: original.w, originalHeightPx: original.h };
+        const recorded = { ...it, uncroppedUrl: source, uncroppedWidthPx: original.w, uncroppedHeightPx: original.h };
         // Nothing around the artwork to trim: the image is already its own crop.
         if (!cropped) return recorded;
         return {
@@ -386,19 +386,9 @@ export const useItemActions = (
         const newHeightIn = it.heightIn * (rotOdd ? scaleW : scaleH);
         return {
           ...it,
-          url: result.dataUrl,
-          // croppedUrl = full-resolution BG-removed PNG (bgRemover runs at
-          // img.naturalWidth × img.naturalHeight — the original upload resolution).
-          // Stored separately from `url` so the export pipeline never reads from
-          // a CSS-scaled or compressed intermediate; it gets the raw canvas output.
-          croppedUrl: result.dataUrl,
-          // Actual pixel dimensions of the cutout, measured by bgRemover —
-          // not approximated from a possibly-stale dpi × widthIn product —
-          // so DPI calculations (client warnings and the server compositor)
-          // stay truthful after removal.
-          croppedWidthPx: result.widthPx,
-          croppedHeightPx: result.heightPx,
-          nativeWidthPx: result.widthPx,
+          // The full-resolution cutout is shown, printed, and becomes the
+          // uncropped source, with its real pixel counts so DPI stays truthful.
+          ...afterPixelEdit(result.dataUrl, result.widthPx, result.heightPx),
           widthIn: newWidthIn,
           heightIn: newHeightIn,
           posX: it.posX + (it.widthIn - newWidthIn) / 2,
@@ -455,16 +445,11 @@ export const useItemActions = (
         const newDpi = widthAxisIn > 0 ? Math.round(result.widthPx / widthAxisIn) : 300;
         return {
           ...it,
-          url: result.upscaledUrl,
+          // Shown, printed (checkout sends croppedUrl), and the new uncropped
+          // source — without all three the print or a later crop toggle would
+          // go back to the lower-resolution image.
+          ...afterPixelEdit(result.upscaledUrl, result.widthPx, result.heightPx),
           dpi: newDpi,
-          nativeWidthPx: result.widthPx,
-          // croppedUrl/croppedWidthPx are what checkout actually sends to the
-          // print pipeline for server-side DPI — without updating these too,
-          // the upscale would only affect the on-canvas preview and the final
-          // printed file would still use the old, lower-resolution source.
-          croppedUrl: result.upscaledUrl,
-          croppedWidthPx: result.widthPx,
-          croppedHeightPx: result.heightPx,
           originalUrl: it.originalUrl || it.url,
         };
       }),

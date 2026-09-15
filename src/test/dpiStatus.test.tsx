@@ -252,7 +252,7 @@ describe("artboard warning banner", () => {
 
   it("counts several flagged images", () => {
     render(<ArtboardWarning flagged={[faint, { ...faint, kind: "fade" }]} />);
-    expect(screen.getByText("Transparency won't print")).toBeTruthy();
+    expect(screen.getByText("Transparency won't print as shown")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("(2) images have fades");
   });
 

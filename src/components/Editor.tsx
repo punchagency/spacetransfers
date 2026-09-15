@@ -443,13 +443,22 @@ export default function Editor() {
     const mappedItems = normalizedItems.map((it: any) => ({
       id: it.id,
       assetId: it.assetId || it.originalUrl || it.url,
+      /*
+       * The image the piece shows and prints, cropped or not. It used to be
+       * dropped whenever auto-crop was off, so an uncropped piece reopened as
+       * its original upload — losing any background removal or AI edit — and
+       * was sent to print as the asset's trimmed copy, not the image laid out.
+       */
       croppedUrl:
-        it.autoCrop !== false
-          ? (typeof it.croppedUrl === "string" && it.croppedUrl
-              ? it.croppedUrl
-              : typeof it.url === "string" && !it.url.startsWith("data:")
-              ? it.url
-              : undefined)
+        typeof it.croppedUrl === "string" && it.croppedUrl
+          ? it.croppedUrl
+          : typeof it.url === "string" && !it.url.startsWith("data:")
+          ? it.url
+          : undefined,
+      // The auto-crop switch's source, when an edit has replaced the upload.
+      uncroppedUrl:
+        typeof it.uncroppedUrl === "string" && it.uncroppedUrl && it.uncroppedUrl !== it.originalUrl
+          ? it.uncroppedUrl
           : undefined,
       // Pixel dimensions of the croppedUrl source. Required for canvas-processed items
       // (canvas crop, BG removal) so the server calculates DPI from the actual source
@@ -554,13 +563,30 @@ export default function Editor() {
       const mappedItems = ensureUniqueItemIds(
         await Promise.all(
           items.map(async (it: any) => {
-            const originalUrl = it.assetId;
+            /*
+             * `assetId` is usually the asset's database id, not an address — the
+             * server sends the address alongside as `assetUrl`. Using the id as
+             * the image showed a broken image for any piece that had to fall
+             * back to it.
+             */
+            const originalUrl =
+              typeof it.assetUrl === "string" && it.assetUrl
+                ? it.assetUrl
+                : /^(https?:|data:|\/)/.test(String(it.assetId || ""))
+                ? it.assetId
+                : undefined;
             const autoCrop = it.autoCrop !== false;
             const savedCroppedUrl =
               typeof it.croppedUrl === "string" && it.croppedUrl ? it.croppedUrl : null;
-            const url = autoCrop ? savedCroppedUrl || (await cropImage(originalUrl)) : originalUrl;
+            const uncroppedUrl =
+              typeof it.uncroppedUrl === "string" && it.uncroppedUrl ? it.uncroppedUrl : originalUrl;
+            const url =
+              savedCroppedUrl ||
+              (autoCrop && uncroppedUrl ? await cropImage(uncroppedUrl) : uncroppedUrl) ||
+              "";
             return {
               id: it.id,
+              assetId: it.assetId,
               url,
               // Restore croppedUrl so subsequent saves don't lose the export source.
               // Without this, re-saving a loaded design loses the data URL for
@@ -588,6 +614,7 @@ export default function Editor() {
               linked: Boolean(it.linked),
               price: 0,
               originalUrl,
+              uncroppedUrl,
             };
           }),
         ),
@@ -1233,34 +1260,7 @@ export default function Editor() {
           const price = headerInfo?.price ?? 0;
 
           const items = Array.isArray(data?.items) ? data.items : [];
-          const normalizedItems = ensureUniqueItemIds(items);
-          const mappedItems = normalizedItems.map((it: any) => ({
-            id: it.id,
-            assetId: it.assetId || it.originalUrl || it.url,
-            croppedUrl:
-              it.autoCrop !== false
-                ? (typeof it.croppedUrl === "string" && it.croppedUrl
-                    ? it.croppedUrl                                  // explicit export URL (Cloudinary or full-res data URL)
-                    : typeof it.url === "string" && !it.url.startsWith("data:")
-                    ? it.url                                         // Cloudinary display URL fallback
-                    : undefined)
-                : undefined,
-            croppedWidthPx: it.croppedWidthPx || undefined,
-            croppedHeightPx: it.croppedHeightPx || undefined,
-            widthIn: it.widthIn,
-            heightIn: it.heightIn,
-            posX: it.posX,
-            posY: it.posY,
-            rotation: it.rotation || 0,
-            copies: it.copies || 1,
-            linked: Boolean(it.linked),
-            autoCrop: it.autoCrop !== false,
-            flipped: Boolean(it.flipped),
-            nestRotation: it.nestRotation === 90 ? 90 : 0,
-            flowCols: typeof it.flowCols === "number" && it.flowCols >= 1 ? it.flowCols : undefined,
-            pinned: Boolean(it.pinned),
-            locked: Boolean(it.locked),
-          }));
+          const { normalizedItems, mappedItems } = mapItemsForSave(items);
 
           // Pre-flight: the /customer/designs routes are gated to CUSTOMER role
           // server-side. Without this check the user clicks Save, waits, and

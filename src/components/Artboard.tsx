@@ -12,7 +12,7 @@ import {
   useMaterializeImages,
   useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
-import { snapToGridPoint, isDpiFlagged, shouldWarn } from "./artboard/lib/utils";
+import { snapToGridPoint, isDpiFlagged, shouldWarn, type FadeVerdict } from "./artboard/lib/utils";
 import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
@@ -178,15 +178,19 @@ export default function Artboard({
     );
   const transparencyVerdicts = useTransparencyVerdicts(items);
 
-  /** One verdict per flagged item on the board, for the banner. */
-  const flaggedTransparency = useMemo(
-    () =>
-      items.flatMap((it) => {
-        const verdict = transparencyVerdicts.get(it.url);
-        return verdict && shouldWarn(verdict) ? [verdict] : [];
-      }),
-    [items, transparencyVerdicts],
-  );
+  /**
+   * One verdict per flagged file on the board, for the banner. Counted by file,
+   * not by piece: duplicates of one image share it, and the banner's instruction
+   * is to update the file — two copies of one image are one file to fix.
+   */
+  const flaggedTransparency = useMemo(() => {
+    const flagged = new Map<string, FadeVerdict>();
+    for (const it of items) {
+      const verdict = transparencyVerdicts.get(it.url);
+      if (verdict && shouldWarn(verdict)) flagged.set(it.url, verdict);
+    }
+    return [...flagged.values()];
+  }, [items, transparencyVerdicts]);
 
   /**
    * The items the DPI chip is counting.
@@ -436,7 +440,10 @@ export default function Artboard({
       next.splice(idx === -1 ? next.length : idx + 1, 0, copy);
       return next;
     });
+    // The copy alone is selected. Setting only the primary left the original in
+    // the multi-selection too, so both showed handles.
     setSelectedId(newId);
+    setSelectedIds(new Set([newId]));
   };
 
   const handleLinkSelected = () => {

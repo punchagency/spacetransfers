@@ -1,3 +1,5 @@
+import type { ImageSnapshot } from "../lib/utils/imageState";
+
 export interface ArtboardItem {
   id: number;
   url: string;
@@ -47,12 +49,19 @@ export interface ArtboardItem {
    * across resizes without needing a live image element.
    */
   nativeWidthPx?: number;
+  /** The upload this piece came from — its identity for saving and checkout. Never changes after an edit. */
   originalUrl?: string;
   originalWidthIn?: number;
   originalHeightIn?: number;
-  /** Pixel size of `originalUrl`, so the auto-crop toggle keeps a piece's scale both ways. */
-  originalWidthPx?: number;
-  originalHeightPx?: number;
+  /**
+   * The piece's current image before auto-crop trims it: the upload, or the
+   * result of the latest edit. The auto-crop switch works from this, so it never
+   * undoes an edit. See `imageState.ts`.
+   */
+  uncroppedUrl?: string;
+  /** Pixel size of `uncroppedUrl`, so the auto-crop toggle keeps a piece's scale both ways. */
+  uncroppedWidthPx?: number;
+  uncroppedHeightPx?: number;
   isDropping?: boolean;
   dpi?: number;
   // Unified flow geometry — when set, copies render at cells within a shared
@@ -72,11 +81,12 @@ export interface ArtboardItem {
   nestRotation?: 0 | 90;
   /**
    * Trail of AI edits applied to this item, oldest first (capped at 10). Each
-   * entry stores the prompt and the url as it was *before* that edit, so a
-   * version-history UI can restore any earlier state. Undo/redo is handled
-   * separately by useHistory's item snapshots — this survives across sessions.
+   * entry stores the prompt and the image as it was *before* that edit — its
+   * URL, and the size and pixel counts that went with it — so a version-history
+   * UI can restore any earlier state. Undo/redo is handled separately by
+   * useHistory's item snapshots.
    */
-  aiHistory?: Array<{ prompt: string; url: string; at: number }>;
+  aiHistory?: Array<{ prompt: string; url: string; at: number; snapshot?: ImageSnapshot }>;
 }
 
 export interface HistoryState {

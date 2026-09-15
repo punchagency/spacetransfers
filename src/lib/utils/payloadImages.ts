@@ -31,6 +31,7 @@ const MIN_BYTES_TO_UPLOAD = 8 * 1024;
 const IMAGE_FIELDS = [
   "url",
   "croppedUrl",
+  "uncroppedUrl",
   "originalUrl",
   "thumbnailUrl",
   "image",

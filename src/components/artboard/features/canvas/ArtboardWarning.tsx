@@ -141,7 +141,7 @@ export default function ArtboardWarning({ flagged = [] }: ArtboardWarningProps) 
   return (
     <NoticeBanner
       mark={FadeMark}
-      title={sole ? sole.title : "Transparency won't print"}
+      title={sole ? sole.title : "Transparency won't print as shown"}
       trailing={confidence}
       body={
         sole ? (
