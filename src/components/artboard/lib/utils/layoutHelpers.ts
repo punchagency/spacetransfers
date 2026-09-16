@@ -837,43 +837,6 @@ function evaluateSpill(
   }
 }
 
-/**
- * Whether some existing gap accepts this item turned but not upright.
- *
- * The packer's rotation gate only ever asked whether an item fit the *sheet*
- * width. That answers "can this be placed at all", not "can this be nested",
- * so a piece narrow enough for the sheet but too wide for the strip beside a
- * larger image was never offered the one orientation that would have fitted
- * there — the strip stayed empty and the piece opened a new row.
- *
- * This asks the question per gap instead, and only reports true when turning
- * genuinely unlocks space that upright cannot use. That distinction is what
- * keeps the existing conservatism intact: an item that already fits somewhere
- * upright is not turned merely because rotating would score marginally
- * better, so a portrait design is never silently laid on its side when it had
- * a home the right way up.
- */
-function rotationUnlocksGap(
-  freeRects: FreeRect[],
-  widthIn: number,
-  heightIn: number,
-  copies: number,
-  gap: number,
-): boolean {
-  for (const fr of freeRects) {
-    const uprightFits =
-      fr.w >= widthIn - 1e-6 &&
-      computeGroupDims(widthIn, heightIn, copies, fr.w, gap).gh <= fr.h + 1e-6;
-    if (uprightFits) continue;
-
-    const turnedFits =
-      fr.w >= heightIn - 1e-6 &&
-      computeGroupDims(heightIn, widthIn, copies, fr.w, gap).gh <= fr.h + 1e-6;
-    if (turnedFits) return true;
-  }
-  return false;
-}
-
 /** Compares two pieces for the order the packer places them in. */
 type PackOrder = (a: LayoutItem, b: LayoutItem) => number;
 
@@ -917,6 +880,13 @@ function freeRectPack(
   overflowedIds?: Set<number>,
   /** The order pieces are offered to the packer in. See PACK_ORDERS. */
   order: PackOrder = PACK_ORDERS[0],
+  /**
+   * "free" turns a piece whenever the score says the sheet comes out shorter;
+   * "only-to-fit" turns one only when it would not fit the width upright, which
+   * is what the packer used to do. Greedy packing can lose from an early turn,
+   * so `calculateGridLayout` runs both and keeps the shorter sheet.
+   */
+  rotation: "free" | "only-to-fit" = "free",
 ): LayoutItem[] {
   const margin = Math.max(0, marginIn);
   const gap = Math.max(0, gapIn);
@@ -1007,39 +977,23 @@ function freeRectPack(
 
   for (const item of packable) {
     const copies = Math.max(1, item.copies || 1);
-    // Rotation is only ever attempted when it provides a genuine benefit:
-    // either the item literally doesn't fit within the sheet width as-is
-    // (rotating is the only way it fits at all), or it's a multi-copy group
-    // where rotating lets strictly MORE copies fit per row, so fewer rows
-    // are needed overall — a real packing gain. Merely swapping which
-    // dimension is taller is NOT that: a single copy has no grid to
-    // rearrange at all, and even a multi-copy group can have its per-row
-    // "added height" shrink under rotation purely because the cell itself
-    // is taller than it is wide, with the SAME row count either way — that
-    // isn't a packing improvement, just the same "looks shorter to the
-    // packer" illusion that would silently flip a portrait photo onto its
-    // side for a single item. Comparing row counts (not raw height) is what
-    // tells genuine copies-per-row gains apart from that illusion.
-    const notSquare = Math.abs(item.widthIn - item.heightIn) >= 1e-4;
-    const fitsUnrotated = item.widthIn <= maxWidth + 1e-6;
-    let canRotate: boolean;
-    if (!notSquare) {
-      canRotate = false;
-    } else if (!fitsUnrotated) {
-      canRotate = true;
-    } else if (copies <= 1) {
-      // A single copy has no grid to rearrange, so the row-count test below
-      // says nothing about it. It is still worth turning when doing so is the
-      // only way into an existing gap — which is the case the sheet-width
-      // check above cannot see.
-      canRotate = rotationUnlocksGap(freeRects, item.widthIn, item.heightIn, copies, gap);
-    } else {
-      const rows0 = computeGroupDims(item.widthIn, item.heightIn, copies, maxWidth, gap).rows;
-      const rows90 = computeGroupDims(item.heightIn, item.widthIn, copies, maxWidth, gap).rows;
-      canRotate =
-        rows90 < rows0 ||
-        rotationUnlocksGap(freeRects, item.widthIn, item.heightIn, copies, gap);
-    }
+    /*
+     * Both orientations are offered; the score picks between them.
+     *
+     * The sheet's width is fixed, so its length is the only thing a layout can
+     * save and the only thing the customer pays for — a piece is turned whenever
+     * that makes the sheet shorter. Rotation used to be refused for a single
+     * piece unless it was the only way it fit at all, so a portrait design was
+     * laid out upright at its full height: a 10.8 x 16.3in photo took 16.4in of
+     * roll where turning it takes 11in, under the minimum billable length.
+     *
+     * Turning is not free in the score (`SCORE_WEIGHT_ROTATION`), so a piece is
+     * only turned when it genuinely buys length or fills a gap that upright
+     * cannot — never on a tie.
+     */
+    const canRotate =
+      Math.abs(item.widthIn - item.heightIn) >= 1e-4 &&
+      (rotation === "free" || item.widthIn > maxWidth + 1e-6);
 
     // Atomic and spill candidates are evaluated together into one shared
     // accumulator — see evaluateSpill's comment for why running spill only
@@ -1156,9 +1110,11 @@ export const calculateGridLayout = (
   };
 
   for (const order of orders) {
-    const overflowed = new Set<number>();
-    const candidate = freeRectPack(items, canvasWidth, margin, gap, undefined, overflowed, order);
-    consider(candidate, overflowed.size);
+    for (const rotation of ["free", "only-to-fit"] as const) {
+      const overflowed = new Set<number>();
+      const candidate = freeRectPack(items, canvasWidth, margin, gap, undefined, overflowed, order, rotation);
+      consider(candidate, overflowed.size);
+    }
   }
 
   /*

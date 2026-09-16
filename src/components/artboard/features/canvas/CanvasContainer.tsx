@@ -23,6 +23,8 @@ interface CanvasContainerProps {
   marginSize: number;
   spacing: number;
   autoNestStickers: boolean;
+  /** Turns auto-nest on or off — the "N" shortcut and this menu share it. */
+  onToggleAutoNest?: () => void;
   canvasBg?: string;
   isDragging: boolean;
   isResizing: boolean;
@@ -96,6 +98,7 @@ export default function CanvasContainer({
   marginSize,
   spacing,
   autoNestStickers,
+  onToggleAutoNest,
   canvasBg,
   isDragging,
   isResizing,
@@ -618,6 +621,10 @@ export default function CanvasContainer({
               <span className="text-[11px] text-slate-400 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
                 {UPLOAD_FORMAT_LABELS.slice(0, 7).join(" · ")} & more
               </span>
+              {/* The nesting gesture, named next to the one for adding artwork. */}
+              <span className="text-[11px] text-slate-400 mt-0.5">
+                Press <span className="font-semibold text-slate-500">N</span> to auto-nest
+              </span>
             </span>
           </button>
         </div>
@@ -744,8 +751,28 @@ export default function CanvasContainer({
               {/* Spacing applies with auto-nest on too; "tight" claimed it did not. */}
               {`${spacing.toFixed(2)} in${autoNestStickers ? " · auto-nest on" : ""}`}
             </div>
-            <div className="mt-1 text-[11px] text-gray-400">Add more item</div>
           </div>
+          {onToggleAutoNest ? (
+            <button
+              className="w-full px-3 py-2 text-left border-b border-gray-100 hover:bg-gray-50"
+              onClick={() => {
+                setMenu(null);
+                onToggleAutoNest();
+              }}
+              role="menuitem"
+            >
+              <span className="text-[11px] font-semibold text-gray-700">
+                {autoNestStickers ? "Turn auto-nest off" : "Auto-nest the sheet"}
+              </span>
+              <span className="block text-[11px] text-gray-500">
+                {autoNestStickers
+                  ? "Keep artwork where you put it"
+                  : "Rearrange everything into the shortest sheet"}
+                {" · press N"}
+              </span>
+            </button>
+          ) : null}
+          <div className="px-3 py-2 text-[11px] text-gray-400">Add more item</div>
           <div className="px-3 py-3">
             <button
               className="w-full flex items-center justify-center"

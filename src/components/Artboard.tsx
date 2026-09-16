@@ -76,6 +76,36 @@ export default function Artboard({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  /**
+   * Auto-nest on and off, without opening the sidebar.
+   *
+   * Turning it on re-nests the whole sheet, which is the one-press way to pull a
+   * hand-arranged board back into the shortest layout. Shared by the "N"
+   * shortcut and the canvas's right-click menu, and said out loud either way:
+   * the change is to the whole board, so it should never be silent.
+   */
+  const toggleAutoNest = useCallback(() => {
+    const next = !autoNestStickers;
+    onRequestAutoNest?.(next);
+    toast.success(
+      next ? "Auto-nest on — artwork re-nested into the shortest sheet" : "Auto-nest off — artwork stays where you put it",
+      { id: "auto-nest-toggle" },
+    );
+  }, [autoNestStickers, onRequestAutoNest]);
+
+  /* "N" nests, the way double-clicking the sheet adds artwork. */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      e.preventDefault();
+      toggleAutoNest();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleAutoNest]);
+
   const canvasWidth = useCanvasWidth();
 
   // Explicit zoom, set through the AI command box or the zoom controls. While
@@ -523,6 +553,7 @@ export default function Artboard({
           marginSize={marginSize}
           spacing={spacing}
           autoNestStickers={autoNestStickers}
+          onToggleAutoNest={toggleAutoNest}
           canvasBg={canvasBg}
           canvasWidth={canvasWidth}
           isDragging={isDragging}

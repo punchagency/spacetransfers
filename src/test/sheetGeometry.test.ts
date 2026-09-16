@@ -191,6 +191,32 @@ describe("fitItemToPrintableArea", () => {
   });
 });
 
+describe("auto-nest rotation", () => {
+  const len = (list: any[], gap = 0.25) => sheetContentLengthIn(list, SHEET, MARGIN, gap);
+  const nest = (list: any[], gap = 0.25) => calculateGridLayout(list, SHEET, gap, true, MARGIN) as any[];
+
+  it("turns a single portrait piece when that makes the sheet shorter", () => {
+    // The reported photo: 3250x4875 at 300dpi takes 16.4in upright, 11in turned —
+    // under the minimum billable length.
+    const packed = nest([item(1, 10.83, 16.25)]);
+    expect(packed[0].nestRotation).toBe(90);
+    expect(len(packed)).toBeLessThan(11.5);
+  });
+
+  it("leaves a piece upright when turning it saves nothing", () => {
+    const packed = nest([item(1, 16.25, 10.83)]);
+    expect(packed[0].nestRotation ?? 0).toBe(0);
+  });
+
+  it("never comes out longer than packing without free rotation", () => {
+    // Greedy packing can lose from an early turn, so both policies are tried.
+    const board = [item(1, 10.83, 16.25), item(2, 8, 4, { copies: 3 }), item(3, 12, 5), item(4, 6.5, 9)];
+    const packed = nest(board);
+    const upright = board.map((it) => ({ ...it, nestRotation: 0 as const }));
+    expect(len(packed)).toBeLessThanOrEqual(len(nest(upright)) + 1e-6);
+  });
+});
+
 describe("resolveDragPlacement bounds", () => {
   const drop = (posX: number, posY: number) =>
     resolveDragPlacement(
