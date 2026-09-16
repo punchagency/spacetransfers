@@ -897,10 +897,10 @@ export const loginWithGoogle = async (
   // they happen to share an email. Without this guard, a Google sign-in could
   // silently link to a non-customer account and the resulting JWT would carry
   // a non-CUSTOMER role, triggering 403s on every /api/customer/* route.
-  let user = await User.findOne({ googleId }) as any;
-  // Customer-scoped: this path only ever creates or signs in CUSTOMER accounts,
-  // so an unscoped lookup could now return that person's partner or admin
-  // account and refuse them for having "a different role".
+  // Both lookups are customer-scoped. The `googleId` one was not, so a Google
+  // identity ever linked to a partner or admin record would sign that account
+  // into the store — the very thing the email lookup below already refused.
+  let user = await User.findOne({ googleId, role: UserRoles.CUSTOMER }) as any;
   if (!user) user = await User.findOne({ email: normalizedEmail, role: UserRoles.CUSTOMER }) as any;
 
   let isNew = false;
