@@ -183,6 +183,22 @@ describe("fitItemToPrintableArea", () => {
     expect(fit(item(1, 5, 5, { posY: 40 })).item.posY).toBe(40);
   });
 
+  it("settles in one pass — running it again changes nothing", () => {
+    // The layout runs this on every board change, and a piece that kept being
+    // adjusted would loop and re-raise the "resized to fit" notice each time.
+    for (const piece of [
+      item(1, 30, 16.875, { posX: 5 }),
+      item(2, 20, 11.25, { posX: 11.16, pinned: true }),
+      item(3, 5, 5, { posY: 0 }),
+      item(4, 5, 5, { copies: 6, flowCols: 6 }),
+    ]) {
+      const once = fit(piece).item;
+      const twice = fit(once);
+      expect(twice.changed).toBe(false);
+      expect(twice.item).toBe(once);
+    }
+  });
+
   it("returns the same piece when it already fits", () => {
     const inside = item(1, 10, 10, { posX: 5 });
     const result = fit(inside);

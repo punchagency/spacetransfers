@@ -107,6 +107,8 @@ export interface ArtboardProps {
   spacing?: number;
   /** Whether new uploads are auto-cropped — the sidebar's "Auto Crop Uploads". */
   autoCropUploads?: boolean;
+  /** False while a dialog owns the screen, so "N" does not re-nest the board behind it. */
+  shortcutsEnabled?: boolean;
   onRequestAutoNest?: (enabled: boolean) => void;
   /**
    * Writes a board setting owned by the editor. Supplied so the AI text box can

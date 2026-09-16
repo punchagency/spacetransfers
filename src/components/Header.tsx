@@ -65,11 +65,13 @@ function SaveStateChip({
   isSheetSaved,
   onRetry,
   onSignIn,
+  errorMessage,
 }: {
   state: "idle" | "saving" | "saved" | "error" | "guest";
   isSheetSaved: boolean;
   onRetry?: () => void;
   onSignIn?: () => void;
+  errorMessage?: string | null;
 }) {
   if (state === "guest") {
     return (
@@ -88,7 +90,7 @@ function SaveStateChip({
       <button
         onClick={onRetry}
         className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 hover:underline"
-        title="Your last change could not be saved. Click to try again."
+        title={errorMessage || "Your last change could not be saved. Click to try again."}
       >
         <MdErrorOutline className="h-3.5 w-3.5" aria-hidden />
         Not saved
@@ -136,6 +138,7 @@ export default function Header({
   saveState = "idle",
   isSheetSaved = false,
   onRetrySave,
+  saveErrorMessage,
   onProfileClick,
   profileLabel,
   profileBgClass,
@@ -176,6 +179,8 @@ export default function Header({
   isSheetSaved?: boolean;
   /** Retries after a failed save. */
   onRetrySave?: () => void;
+  /** Why the sheet is not saved, shown on hover. */
+  saveErrorMessage?: string | null;
   onProfileClick?: () => void;
   profileLabel?: string;
   profileBgClass?: string;
@@ -347,6 +352,7 @@ export default function Header({
             isSheetSaved={isSheetSaved}
             onRetry={onRetrySave}
             onSignIn={onSignInClick}
+            errorMessage={saveErrorMessage}
           />
           <span className="text-gray-300">|</span>
           {/* One chip for both conditions. Two separate amber discs could be on

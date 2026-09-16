@@ -116,6 +116,21 @@ export default function Editor() {
     if (!getToken()) return;
     apiFetch("/auth/me")
       .then((userData) => {
+        /*
+         * Only customer accounts belong in the store. A session of another kind
+         * — a token from the printer or admin app, or one minted before this
+         * check existed — could work the board but never save it, since every
+         * `/customer/*` route refuses it.
+         */
+        if (String(userData?.role || "").toUpperCase() !== "CUSTOMER") {
+          clearAuth();
+          setIsLoggedIn(false);
+          setUser(null);
+          toast.error(
+            "That's not a customer account. Printers and admins have their own apps — sign in with your customer account to build gang sheets.",
+          );
+          return;
+        }
         setUser(userData);
         setIsLoggedIn(true);
       })
@@ -325,13 +340,15 @@ export default function Editor() {
   /*
    * Single-key shortcuts, alongside the artboard's "N" for auto-nest: "S" opens
    * the settings panel, "C" puts the sheet in the cart (or updates the line it
-   * is already on). Ignored while typing, and never with a modifier held, so
-   * they cannot collide with the browser's own.
+   * is already on). Ignored while typing, never with a modifier held, and never
+   * while a dialog is open — pressing "n" with the cart on screen re-nested the
+   * board behind it, which is not what anyone reading a cart means.
    */
+  const dialogOpenRef = useRef(false);
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
-      if (isTypingTarget(e.target)) return;
+      if (dialogOpenRef.current || isTypingTarget(e.target)) return;
       const key = e.key.toLowerCase();
       if (key === "s") {
         e.preventDefault();
@@ -627,7 +644,14 @@ export default function Editor() {
    */
   const saveBoardNow = async (options: SaveOptions = {}): Promise<SaveResult> => {
     const items = getCurrentItems();
-    if (!canAutosave) return { ok: false, reason: "Sign in to save your gang sheets." };
+    if (!canAutosave) {
+      return {
+        ok: false,
+        reason: isLoggedIn
+          ? "Gang sheets are saved to customer accounts. Sign in with your customer account to save this one."
+          : "Sign in to save your gang sheets.",
+      };
+    }
     if (items.length === 0) return { ok: false, reason: "There is nothing on the sheet to save." };
     if (artworkNotUploaded(items)) {
       setSaveState("error");
@@ -1176,10 +1200,18 @@ export default function Editor() {
       size: `${widthIn.toFixed(1)}" × ${heightIn.toFixed(1)}"`,
       itemSpacingIn: settings.spacing,
       sheetMarginIn: settings.marginSize,
+      // Without a snapshot the cart draws the sheet from these items, which is
+      // accurate and free — so the stale one goes rather than being kept.
       image: "/placeholder-gangsheet.png",
     };
     setCartItems((prev) => prev.map((line) => (line.id === cartLine.id ? updated : line)));
-    if (!options.silent) toast.success("Cart updated with your changes.", { id: "cart-add" });
+    /*
+     * A screenshot costs a full render of the board, and these run every time
+     * editing settles. The cart's own preview covers it until the customer does
+     * something deliberate, which is when a snapshot is worth taking.
+     */
+    if (options.silent) return;
+    toast.success("Cart updated with your changes.", { id: "cart-add" });
     try {
       const imageDataUrl = await captureArtboard();
       setCartItems((prev) =>
@@ -1392,6 +1424,21 @@ export default function Editor() {
 
   addToCartRef.current = handleAddGangSheetToCart;
 
+  /** True while any dialog owns the screen — see the shortcut handler above. */
+  const anyDialogOpen =
+    showSaveModal ||
+    showLoadModal ||
+    showAccountModal ||
+    showAuthModal ||
+    showOrderHistoryModal ||
+    showOrderDetailsModal ||
+    showCheckoutModal ||
+    showMobileNotice ||
+    showClearArtboardConfirm ||
+    showUnderUtilizedCartConfirm ||
+    Boolean(unsavedPrompt);
+  dialogOpenRef.current = anyDialogOpen;
+
   const currentItems = getCurrentItems();
   const itemCount = currentItems.reduce((sum: number, it: any) => {
     const rendered = computeRenderCopies(
@@ -1432,7 +1479,20 @@ export default function Editor() {
         cartSheetState={cartSheetState}
         /* A guest has no account to save to, and should know it before they
            spend an hour on a sheet. */
-        saveState={!canAutosave && currentItems.length > 0 ? "guest" : saveState}
+        saveState={
+          !canAutosave && currentItems.length > 0
+            ? isLoggedIn
+              ? "error"
+              : "guest"
+            : saveState
+        }
+        /* Why it is not saved, for the chip's tooltip — otherwise the only way
+           to find out is to click it. */
+        saveErrorMessage={
+          !canAutosave && isLoggedIn
+            ? "Gang sheets are saved to customer accounts."
+            : saveError
+        }
         isSheetSaved={Boolean(currentLoadedDesignId) && !hasUnsavedChanges}
         onRetrySave={() => {
           void saveRef.current().then((result) => {
@@ -1607,6 +1667,8 @@ export default function Editor() {
         spacing={settings.spacing}
         canvasBg={settings.canvasBg}
         autoCropUploads={settings.autoCropUploads}
+        /* "N" belongs to the board, so it stops while a dialog is in front of it. */
+        shortcutsEnabled={!anyDialogOpen}
         onRequestAutoNest={(enabled) => updateSetting("autoNestStickers", enabled)}
         onUpdateSetting={(key, value) => updateSetting(key as keyof typeof settings, value)}
         onDataChange={setArtboardData}

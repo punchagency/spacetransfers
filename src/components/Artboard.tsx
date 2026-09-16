@@ -40,6 +40,7 @@ export default function Artboard({
   spacing = DEFAULT_EDITOR_SETTINGS.spacing,
   canvasBg = DEFAULT_EDITOR_SETTINGS.canvasBg,
   autoCropUploads = DEFAULT_EDITOR_SETTINGS.autoCropUploads,
+  shortcutsEnabled = true,
   highlightLowDpi = false,
   onRequestAutoNest,
   onUpdateSetting,
@@ -98,13 +99,13 @@ export default function Artboard({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
-      if (isTypingTarget(e.target)) return;
+      if (!shortcutsEnabled || isTypingTarget(e.target)) return;
       e.preventDefault();
       toggleAutoNest();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleAutoNest]);
+  }, [toggleAutoNest, shortcutsEnabled]);
 
   const canvasWidth = useCanvasWidth();
 

@@ -116,6 +116,20 @@ export default function AuthModal({
     setConfirmPassword("");
   }, [isOpen, initialView, isSubAccountCreation, resetToken, resetEmail]);
 
+  /**
+   * The store is the customer app, and only customer accounts belong in it.
+   *
+   * The admin and printer apps have always refused a session of the wrong kind;
+   * this one accepted whatever came back. A partner or admin signing in here got
+   * a board they could use but never save — every `/customer/*` route refuses
+   * their token — which read as "saving is broken" rather than "wrong app".
+   */
+  const isCustomerAccount = (user: any) =>
+    String(user?.role || "").toUpperCase() === "CUSTOMER";
+
+  const WRONG_APP_MESSAGE =
+    "That's not a customer account. Printers and admins have their own apps — sign in with your customer account to build gang sheets.";
+
   const handleGoogleCredential = async (response: { credential: string }) => {
     setGoogleLoading(true);
     setError(null);
@@ -136,6 +150,10 @@ export default function AuthModal({
             : {}),
         }),
       });
+      if (!isCustomerAccount(result.user)) {
+        setError(WRONG_APP_MESSAGE);
+        return;
+      }
       if (result.token) setToken(result.token);
       toast.success(result.isNew ? "Account created with Google!" : "Welcome back!");
       onAuthSuccess(result.user);
@@ -330,6 +348,11 @@ export default function AuthModal({
         toast.success("Account created successfully!");
         onSubAccountCreated?.(response.user);
         onClose();
+        return;
+      }
+
+      if (!isCustomerAccount(response.user)) {
+        setError(WRONG_APP_MESSAGE);
         return;
       }
 
