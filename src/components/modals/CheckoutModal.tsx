@@ -36,6 +36,8 @@ interface CheckoutModalProps {
   onEditSheet?: (item: any) => void;
   /** Empties the cart at its owner. Doing it in here alone was lost if this modal closed. */
   onClearCart?: () => void;
+  /** Clears the artboard for another sheet, leaving the cart as it is. */
+  onStartNewSheet?: () => void;
   onCheckoutSuccess?: () => void;
   /**
    * Whether the visitor has an account yet.
@@ -61,6 +63,7 @@ export default function CheckoutModal({
   onUpdateCart,
   onEditSheet,
   onClearCart,
+  onStartNewSheet,
   onCheckoutSuccess,
 }: CheckoutModalProps) {
   const [step, setStep] = useState(0);
@@ -652,6 +655,7 @@ export default function CheckoutModal({
                       removeItem={removeItem}
                       onEditItem={onEditSheet ? (item) => onEditSheet(item) : undefined}
                       onClearCart={() => setConfirmClear(true)}
+                      onStartNewSheet={onStartNewSheet ? () => { onClose(); onStartNewSheet(); } : undefined}
                     />
                   )}
 

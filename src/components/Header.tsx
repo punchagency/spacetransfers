@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { CANVAS } from "../config/artboard.config";
 import { usePricingSettings } from "../lib/utils/pricingRates";
@@ -59,6 +59,61 @@ function ItemCountBadge({ count }: { count: number }) {
   );
 }
 
+/** Says whether the sheet is saved, in a few words and one icon. */
+function SaveStateChip({
+  state,
+  isSheetSaved,
+  onRetry,
+  onSignIn,
+}: {
+  state: "idle" | "saving" | "saved" | "error" | "guest";
+  isSheetSaved: boolean;
+  onRetry?: () => void;
+  onSignIn?: () => void;
+}) {
+  if (state === "guest") {
+    return (
+      <button
+        onClick={onSignIn}
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 hover:underline"
+        title="Sign in and your gang sheets are saved as you work"
+      >
+        <MdCloudOff className="h-3.5 w-3.5" aria-hidden />
+        Not saved — sign in
+      </button>
+    );
+  }
+  if (state === "error") {
+    return (
+      <button
+        onClick={onRetry}
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 hover:underline"
+        title="Your last change could not be saved. Click to try again."
+      >
+        <MdErrorOutline className="h-3.5 w-3.5" aria-hidden />
+        Not saved
+      </button>
+    );
+  }
+  if (state === "saving") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-gray-500" title="Saving your gang sheet">
+        <MdCloudUpload className="h-3.5 w-3.5 animate-pulse" aria-hidden />
+        Saving…
+      </span>
+    );
+  }
+  if (state === "saved" || isSheetSaved) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-gray-500" title="Saved to your account — find it under Load gang sheet">
+        <MdCloudDone className="h-3.5 w-3.5 text-emerald-600" aria-hidden />
+        Saved
+      </span>
+    );
+  }
+  return null;
+}
+
 export default function Header({
   info,
   itemCount,
@@ -78,6 +133,9 @@ export default function Header({
   canSaveLoaded,
   canRenameDesign,
   onRenameDesign,
+  saveState = "idle",
+  isSheetSaved = false,
+  onRetrySave,
   onProfileClick,
   profileLabel,
   profileBgClass,
@@ -98,11 +156,10 @@ export default function Header({
   onAddGangSheetToCart?: () => void;
   canAddGangSheetToCart?: boolean;
   /**
-   * Where this board stands with the cart: not in it, in it unchanged, or in it
-   * and edited since. The one button covers all three — a second "update" button
-   * beside "add" would leave the customer deciding which one they need.
+   * Whether this board is in the cart. It has no "needs updating" state: a sheet
+   * in the cart is kept in step with the board, so there is nothing to press.
    */
-  cartSheetState?: "none" | "current" | "changed";
+  cartSheetState?: "none" | "current";
   onUndo?: () => void;
   canUndo?: boolean;
   onRedo?: () => void;
@@ -113,6 +170,12 @@ export default function Header({
   canSaveLoaded?: boolean;
   canRenameDesign?: boolean;
   onRenameDesign?: (newTitle: string) => void;
+  /** Whether the sheet is saved, saving, could not be saved, or cannot be (signed out). */
+  saveState?: "idle" | "saving" | "saved" | "error" | "guest";
+  /** True once the sheet has a saved record — "Saved" means something then. */
+  isSheetSaved?: boolean;
+  /** Retries after a failed save. */
+  onRetrySave?: () => void;
   onProfileClick?: () => void;
   profileLabel?: string;
   profileBgClass?: string;
@@ -261,15 +324,30 @@ export default function Header({
             />
           ) : (
             <span
-              className={`max-w-xs truncate ${canRenameDesign ? "cursor-text" : ""}`}
-              title={canRenameDesign ? "Double-click to rename this gang sheet" : info?.name}
-              onDoubleClick={() => {
+              className={`inline-flex max-w-xs items-center gap-1 truncate ${canRenameDesign ? "cursor-text hover:text-gray-900" : ""}`}
+              title={canRenameDesign ? "Click to rename this gang sheet" : info?.name}
+              /* Click, not only double-click: renaming was there but unfindable. */
+              onClick={() => {
                 if (canRenameDesign) setIsRenaming(true);
               }}
             >
-              {info?.name || "Gang Sheet"}
+              <span className="truncate">{info?.name || "Gang Sheet"}</span>
+              {canRenameDesign && <MdEdit className="h-3 w-3 shrink-0 text-gray-400" aria-hidden />}
             </span>
           )}
+          {/*
+            Whether the work is safe, in the place the sheet is named.
+
+            Saving used to be a sidebar button, so "is my sheet saved?" had no
+            answer on screen at all. Autosave answers it continuously; this is
+            where it says so.
+          */}
+          <SaveStateChip
+            state={saveState}
+            isSheetSaved={isSheetSaved}
+            onRetry={onRetrySave}
+            onSignIn={onSignInClick}
+          />
           <span className="text-gray-300">|</span>
           {/* One chip for both conditions. Two separate amber discs could be on
               screen at once, each with its own red count bubble, which is the
@@ -343,18 +421,14 @@ export default function Header({
           title={
             canAddGangSheetToCart === false
               ? "Add items to the artboard before adding to cart"
-              : cartSheetState === "changed"
-                ? "Update this sheet in your cart (C)"
-                : cartSheetState === "current"
-                  ? "This sheet is in your cart — open it (C)"
-                  : "Add current gangsheet to cart (C)"
+              : cartSheetState === "current"
+              ? "This sheet is in your cart and updates with it — open the cart (C)"
+              : "Add current gangsheet to cart (C)"
           }
           className={`inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
             canAddGangSheetToCart === false
               ? "text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed"
-              : cartSheetState === "changed"
-                ? "text-white bg-black border-black hover:bg-gray-900 cursor-pointer"
-                : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
+              : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
           }`}
         >
           {cartSheetState === "current" ? (
@@ -362,9 +436,7 @@ export default function Header({
           ) : (
             <MdAddShoppingCart className="w-4 h-4 sm:hidden" />
           )}
-          <span className="hidden sm:inline">
-            {cartSheetState === "changed" ? "Update Cart" : cartSheetState === "current" ? "In Cart" : "Add to Cart"}
-          </span>
+          <span className="hidden sm:inline">{cartSheetState === "current" ? "In Cart" : "Add to Cart"}</span>
         </button>
 
         {/*

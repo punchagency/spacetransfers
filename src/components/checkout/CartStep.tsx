@@ -26,6 +26,8 @@ interface CartStepProps {
   onEditItem?: (item: CartItem) => void;
   /** Empties the cart. The caller confirms first. */
   onClearCart?: () => void;
+  /** Clears the board for a separate sheet; what is in the cart stays there. */
+  onStartNewSheet?: () => void;
 }
 
 export default function CartStep({
@@ -34,6 +36,7 @@ export default function CartStep({
   removeItem,
   onEditItem,
   onClearCart,
+  onStartNewSheet,
 }: CartStepProps) {
   const renderItemImage = (item: CartItem) => {
     if (item.type === "gangsheet") {
@@ -119,6 +122,11 @@ export default function CartStep({
         </div>
       ) : (
         <div className="space-y-6">
+          {/*
+            Starting another sheet belongs here, not in the toast that confirms
+            an add: by the time someone is looking at the cart, a second sheet is
+            a decision they have actually made.
+          */}
           {cartItems.map((item) => (
             <div
               key={item.id}
@@ -197,6 +205,20 @@ export default function CartStep({
           ))}
         </div>
       )}
+
+      {cartItems.length > 0 && onStartNewSheet ? (
+        <div className="mt-6 border-t border-gray-200 pt-4">
+          <button
+            onClick={onStartNewSheet}
+            className="text-sm font-semibold text-gray-800 underline-offset-2 hover:underline"
+          >
+            + Start a new sheet
+          </button>
+          <p className="mt-1 text-xs text-gray-500">
+            Clears the artboard for another gang sheet. Everything here stays in your cart.
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }

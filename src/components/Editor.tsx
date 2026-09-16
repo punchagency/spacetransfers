@@ -21,6 +21,7 @@ import { clearAuth, getToken, onAuthChanged } from "../lib/utils/auth";
 import { showCartAddedToast } from "./common/CartAddedToast";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { isTypingTarget } from "../lib/utils/keyboard";
+import { artworkNotUploaded, nextUntitledName } from "../lib/utils/sheetSaving";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
@@ -35,6 +36,9 @@ import {
 import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
 import { cartLineKey, cartSignInMessage, mergeCarts, readCartOwner, repriceCart, writeCartOwner } from "../lib/utils/cartSync";
 import { computeRenderCopies, sheetContentLengthIn } from "./artboard/lib/utils/layoutHelpers";
+
+type SaveOptions = { title?: string; thumbnail?: string };
+type SaveResult = { ok: boolean; reason?: string };
 
 export default function Editor() {
   const pricingSettings = usePricingSettings();
@@ -510,12 +514,8 @@ export default function Editor() {
    */
   const [cartLineId, setCartLineId] = useState<number | null>(null);
   const cartLine = cartItems.find((line) => line.id === cartLineId) ?? null;
-  /** "none" — not in the cart · "current" — in it, unchanged · "changed" — in it, edited since. */
-  const cartSheetState: "none" | "current" | "changed" = !cartLine
-    ? "none"
-    : cartLine.designSignature === currentSnapshot
-    ? "current"
-    : "changed";
+  /** Whether this board is in the cart. Once it is, it is kept in step with it. */
+  const cartSheetState: "none" | "current" = cartLine ? "current" : "none";
 
   const [isGangsheetBusy, setIsGangsheetBusy] = useState(false);
   const pendingAfterSaveRef = useRef<null | (() => Promise<void> | void)>(null);
@@ -536,6 +536,9 @@ export default function Editor() {
 
   const clearWorkspace = () => {
     setCartLineId(null);
+    // A fresh board has nothing saved yet; the chip must not still say "Saved".
+    setSaveState("idle");
+    setSaveError(null);
     setArtboardData({ items: [], counter: Date.now() });
     setLoadedDesignData({ items: [], counter: Date.now() });
     setCurrentLoadedDesignId(null);
@@ -594,6 +597,119 @@ export default function Editor() {
     return { normalizedItems, mappedItems };
   };
 
+  /**
+   * Autosave.
+   *
+   * A gang sheet takes a while to build, and losing it to a closed tab is the
+   * worst thing this editor can do. Saving was a button in the sidebar, so a
+   * board was unsaved by default and every clear or load had to interrupt with
+   * "save first?". The board is now saved on its own a couple of seconds after
+   * it stops changing, and `saveState` says so in the header — which is also
+   * what makes "start a new sheet" a safe, one-press action.
+   *
+   * Signed-in customers only: a design belongs to an account. Guests keep the
+   * old prompt before anything would discard their work.
+   */
+  const AUTOSAVE_DELAY_MS = 2000;
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saveRef = useRef<(options?: SaveOptions) => Promise<SaveResult>>(async () => ({ ok: false }));
+
+  const canAutosave = isLoggedIn && user?.role === "CUSTOMER";
+
+  const ARTWORK_PENDING_MESSAGE =
+    "Your artwork hasn't finished uploading yet, so this sheet can't be saved. Check your connection and try again in a moment.";
+
+  /**
+   * The one place a sheet is written to the account — autosave, the Save button
+   * and adding to cart all come through here, so they cannot disagree about what
+   * "saved" means.
+   */
+  const saveBoardNow = async (options: SaveOptions = {}): Promise<SaveResult> => {
+    const items = getCurrentItems();
+    if (!canAutosave) return { ok: false, reason: "Sign in to save your gang sheets." };
+    if (items.length === 0) return { ok: false, reason: "There is nothing on the sheet to save." };
+    if (artworkNotUploaded(items)) {
+      setSaveState("error");
+      setSaveError(ARTWORK_PENDING_MESSAGE);
+      return { ok: false, reason: ARTWORK_PENDING_MESSAGE };
+    }
+
+    const { normalizedItems, mappedItems } = mapItemsForSave(items);
+    const snapshot = getGangsheetSnapshot(normalizedItems);
+    setSaveState("saving");
+    try {
+      // Artwork the editor rendered locally is uploaded once and referenced by
+      // URL; sending it inline puts the whole board in the request body.
+      const { items: payloadItems } = await stripEmbeddedImages({ items: mappedItems });
+      const artboardData = { items: payloadItems, ...sheetSettingsForSave(settings) };
+
+      if (currentLoadedDesignId) {
+        await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            ...(options.thumbnail ? { thumbnail: options.thumbnail } : {}),
+            ...(options.title ? { title: options.title } : {}),
+            artboardData,
+          }),
+        });
+        if (options.title) setCurrentLoadedDesignTitle(options.title);
+        updateSavedDesignSnapshot(currentLoadedDesignId, {
+          ...(options.title ? { title: options.title } : {}),
+          ...(options.thumbnail ? { thumbnail: options.thumbnail } : {}),
+          time: formatDesignTime(new Date().toISOString()),
+        });
+      } else {
+        const title = (
+          options.title ||
+          draftDesignTitle ||
+          nextUntitledName(savedDesigns.map((d: any) => d?.title))
+        ).trim();
+        const thumbnail = options.thumbnail ?? (await captureArtboard().catch(() => undefined));
+        const created = await apiFetch("/customer/designs", {
+          method: "POST",
+          body: JSON.stringify({
+            title,
+            thumbnail,
+            size: {
+              widthIn: headerInfo?.widthIn || getSheetWidthIn(),
+              heightIn: headerInfo?.heightIn || getMinSheetLengthIn(),
+            },
+            pricing: { areaSqFt: headerInfo?.areaSf ?? 0, price: headerInfo?.price ?? 0 },
+            artboardData,
+          }),
+        });
+        const createdId = created?.id ? String(created.id) : null;
+        if (createdId) {
+          setCurrentLoadedDesignId(createdId);
+          setCurrentLoadedDesignTitle(title);
+          setDraftDesignTitle(null);
+        }
+      }
+      fetchDesigns();
+      setBaselineSnapshot(snapshot);
+      setCurrentLoadedDesignString(snapshot);
+      setSaveState("saved");
+      setSaveError(null);
+      return { ok: true };
+    } catch (err: any) {
+      const reason = err?.message || "This sheet could not be saved.";
+      setSaveState("error");
+      setSaveError(reason);
+      return { ok: false, reason };
+    }
+  };
+  saveRef.current = saveBoardNow;
+
+  useEffect(() => {
+    if (!canAutosave || !hasUnsavedChanges) return;
+    const timer = setTimeout(() => {
+      void saveRef.current();
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [currentSnapshot, canAutosave, hasUnsavedChanges]);
+
+  /** The sidebar's Save for a sheet that already has a record. */
   const saveLoadedGangsheet = async () => {
     if (!currentLoadedDesignId) return false;
     if (!isLoggedIn) {
@@ -602,49 +718,16 @@ export default function Editor() {
       setShowAuthModal(true);
       return false;
     }
-
-    const items = getCurrentItems();
-    const { normalizedItems, mappedItems } = mapItemsForSave(items);
-
     setIsGangsheetBusy(true);
     const toastId = toast.loading("Saving gangsheet...");
     try {
-      let thumbnail: string | undefined;
-      try {
-        thumbnail = await captureArtboard();
-      } catch {
-        thumbnail = undefined;
+      const thumbnail = await captureArtboard().catch(() => undefined);
+      const result = await saveRef.current({ thumbnail });
+      if (result.ok) {
+        toast.success("Gangsheet saved", { id: toastId });
+        return true;
       }
-
-      await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          ...(thumbnail ? { thumbnail } : {}),
-          artboardData: { items: mappedItems, ...sheetSettingsForSave(settings) },
-        }),
-      });
-
-      const nextSnapshot = getGangsheetSnapshot(normalizedItems);
-      setBaselineSnapshot(nextSnapshot);
-      setCurrentLoadedDesignString(nextSnapshot);
-      setLoadedDesignData({ items: normalizedItems as any[], counter: Date.now() });
-      setArtboardData({ items: normalizedItems as any[], counter: Date.now() });
-      if (thumbnail) {
-        updateSavedDesignSnapshot(currentLoadedDesignId, {
-          thumbnail,
-          time: formatDesignTime(new Date().toISOString()),
-        });
-      } else {
-        updateSavedDesignSnapshot(currentLoadedDesignId, {
-          time: formatDesignTime(new Date().toISOString()),
-        });
-      }
-      fetchDesigns();
-
-      toast.success("Gangsheet saved", { id: toastId });
-      return true;
-    } catch (err: any) {
-      toast.error(err?.message || "Failed to save gangsheet", { id: toastId });
+      toast.error(result.reason || "Failed to save gangsheet", { id: toastId });
       return false;
     } finally {
       setIsGangsheetBusy(false);
@@ -748,6 +831,44 @@ export default function Editor() {
       setLastAction(null);
       setDeletedItems({});
       toast.success("Gangsheet loaded", { id: toastId });
+
+      /*
+       * Say when artwork cannot be fetched, instead of leaving the board to
+       * report it as unknown DPI. Designs saved before artwork was required to
+       * be uploaded can reference images that exist nowhere any more, and
+       * "0 DPI" is not an explanation anyone can act on.
+       */
+      void (async () => {
+        const urls = Array.from(
+          new Set(mappedItems.map((it: any) => String(it.url || "")).filter(Boolean)),
+        );
+        const loadable = await Promise.all(
+          urls.map(
+            (url) =>
+              new Promise<boolean>((resolve) => {
+                const img = new Image();
+                const timer = window.setTimeout(() => resolve(false), 15000);
+                img.onload = () => {
+                  window.clearTimeout(timer);
+                  resolve(true);
+                };
+                img.onerror = () => {
+                  window.clearTimeout(timer);
+                  resolve(false);
+                };
+                img.src = url;
+              }),
+          ),
+        );
+        const missing = loadable.filter((ok) => !ok).length;
+        if (missing > 0) {
+          toast.error(
+            `${missing} ${missing === 1 ? "image" : "images"} in this gang sheet could not be loaded. ` +
+              "It was saved before its artwork finished uploading — re-add the artwork to print it.",
+            { id: "design-missing-art", duration: 9000 },
+          );
+        }
+      })();
     } catch (err: any) {
       toast.error(err?.message || "Failed to load gangsheet", { id: toastId });
     } finally {
@@ -787,58 +908,66 @@ export default function Editor() {
     pendingAfterSaveRef.current = null;
   };
 
-  const attemptCreateNewGangsheet = () => {
-    if (hasUnsavedChanges) {
-      openUnsavedPrompt(
-        {
-          title: "Unsaved Changes",
-          message: "You have unsaved changes. Do you want to save before creating a new gangsheet?",
-          primaryLabel: "Save & Create New",
-          secondaryLabel: "Discard & Create New",
-        },
-        async () => {
-          clearWorkspace();
-        },
-      );
+  /**
+   * Runs `proceed` once the board on screen is safe to leave.
+   *
+   * With autosave on there is nothing to ask: the last changes are written and
+   * the sheet is waiting under "Load gang sheet". Only a guest — who has no
+   * account to save to — still gets the choice, which is the one case where the
+   * work really would be lost.
+   */
+  const leaveBoard = async (
+    prompt: NonNullable<typeof unsavedPrompt>,
+    proceed: () => void | Promise<void>,
+  ) => {
+    if (!hasUnsavedChanges) return void (await proceed());
+    if (canAutosave) {
+      const result = await saveRef.current();
+      if (result.ok) {
+        toast.success(`Saved “${currentLoadedDesignTitle || draftDesignTitle || "gang sheet"}”`, { id: "board-saved" });
+        return void (await proceed());
+      }
+      // Could not be saved — never discard the board silently over it.
+      openUnsavedPrompt({ ...prompt, message: `${result.reason ?? ""} ${prompt.message}`.trim() }, proceed);
       return;
     }
-    clearWorkspace();
+    openUnsavedPrompt(prompt, proceed);
+  };
+
+  const attemptCreateNewGangsheet = () => {
+    void leaveBoard(
+      {
+        title: "Unsaved Changes",
+        message: "You have unsaved changes. Do you want to save before creating a new gangsheet?",
+        primaryLabel: "Save & Create New",
+        secondaryLabel: "Discard & Create New",
+      },
+      clearWorkspace,
+    );
   };
 
   const attemptLoadGangsheet = (id: string) => {
-    if (hasUnsavedChanges) {
-      openUnsavedPrompt(
-        {
-          title: "Unsaved Changes",
-          message: "You have unsaved changes. Do you want to save before loading?",
-          primaryLabel: "Save & Load",
-          secondaryLabel: "Discard & Load",
-        },
-        async () => {
-          await loadGangsheetById(id);
-        },
-      );
-      return;
-    }
-    loadGangsheetById(id);
+    void leaveBoard(
+      {
+        title: "Unsaved Changes",
+        message: "You have unsaved changes. Do you want to save before loading?",
+        primaryLabel: "Save & Load",
+        secondaryLabel: "Discard & Load",
+      },
+      () => loadGangsheetById(id),
+    );
   };
 
   const attemptClearArtboard = () => {
-    if (hasUnsavedChanges) {
-      openUnsavedPrompt(
-        {
-          title: "Unsaved Changes",
-          message: "You have unsaved changes. Do you want to save before clearing the artboard?",
-          primaryLabel: "Save & Clear",
-          secondaryLabel: "Discard & Clear",
-        },
-        async () => {
-          clearWorkspace();
-        },
-      );
-      return;
-    }
-    setShowClearArtboardConfirm(true);
+    void leaveBoard(
+      {
+        title: "Unsaved Changes",
+        message: "You have unsaved changes. Do you want to save before clearing the artboard?",
+        primaryLabel: "Save & Clear",
+        secondaryLabel: "Discard & Clear",
+      },
+      () => setShowClearArtboardConfirm(true),
+    );
   };
 
   const hasAnyItems =
@@ -921,6 +1050,18 @@ export default function Editor() {
         return;
       }
 
+      /*
+       * A sheet in the cart is a sheet the customer intends to buy, so it is
+       * saved to their account first — and if it cannot be saved (artwork still
+       * uploading), it must not go in the cart either: the order would reach the
+       * printer with artwork nobody can fetch.
+       */
+      const saved = await saveRef.current();
+      if (!saved.ok && saved.reason) {
+        toast.error(saved.reason);
+        return;
+      }
+
       const normalized = ensureUniqueItemIds(currentItems);
       const designSignature = getGangsheetSnapshot(normalized);
       const duplicate = cartItems.find(
@@ -974,7 +1115,7 @@ export default function Editor() {
       setCartLineId(gangSheetItem.id);
       showCartAddedToast({
         onViewCart: () => setShowCheckoutModal(true),
-        onStartNewSheet: startNewSheet,
+        sheetName: currentLoadedDesignTitle || draftDesignTitle,
       });
 
       if (fromUnusedSpacePrompt && user?.role === "CUSTOMER") {
@@ -1019,7 +1160,7 @@ export default function Editor() {
    * in the cart. The alternative — adding another line — is what "Start a new
    * sheet" is for.
    */
-  const updateCartSheet = async () => {
+  const updateCartSheet = async (options: { silent?: boolean } = {}) => {
     const currentItems = getCurrentItems();
     if (!cartLine || !currentItems?.length) return;
     const normalized = ensureUniqueItemIds(currentItems);
@@ -1038,7 +1179,7 @@ export default function Editor() {
       image: "/placeholder-gangsheet.png",
     };
     setCartItems((prev) => prev.map((line) => (line.id === cartLine.id ? updated : line)));
-    toast.success("Cart updated with your changes.", { id: "cart-add" });
+    if (!options.silent) toast.success("Cart updated with your changes.", { id: "cart-add" });
     try {
       const imageDataUrl = await captureArtboard();
       setCartItems((prev) =>
@@ -1081,36 +1222,63 @@ export default function Editor() {
       setShowCheckoutModal(false);
       return;
     }
-    if (hasUnsavedChanges) {
-      openUnsavedPrompt(
-        {
-          title: "Unsaved Changes",
-          message: "You have unsaved changes. Do you want to save before opening the cart sheet?",
-          primaryLabel: "Save & Open",
-          secondaryLabel: "Discard & Open",
-        },
-        open,
-      );
-      return;
-    }
-    open();
+    void leaveBoard(
+      {
+        title: "Unsaved Changes",
+        message: "You have unsaved changes. Do you want to save before opening the cart sheet?",
+        primaryLabel: "Save & Open",
+        secondaryLabel: "Discard & Open",
+      },
+      open,
+    );
   };
 
-  /** Clears the board for a separate sheet, so the next add is a new cart line. */
+  /*
+   * A sheet in the cart stays in step with the board.
+   *
+   * Pressing an "Update Cart" button was one more thing to remember, and
+   * forgetting it meant checking out the sheet as it was several images ago.
+   * Changes land on the cart line a moment after the board settles, so the cart
+   * always holds what is on screen.
+   */
+  const CART_SYNC_DELAY_MS = 1200;
+  const cartSyncRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {});
+  cartSyncRef.current = updateCartSheet;
+  useEffect(() => {
+    if (!cartLine || cartLine.designSignature === currentSnapshot) return;
+    const timer = setTimeout(() => {
+      void cartSyncRef.current({ silent: true });
+    }, CART_SYNC_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [currentSnapshot, cartLine]);
+
+  /**
+   * Clears the board for a separate sheet, so the next add is a new cart line.
+   *
+   * No "are you sure": the sheet being cleared is saved to the account, and if it
+   * is in the cart it stays there — there is nothing to lose. A guest, who has no
+   * account to save to, still gets the choice.
+   */
   const startNewSheet = () => {
-    setCartLineId(null);
-    attemptClearArtboard();
+    void leaveBoard(
+      {
+        title: "Unsaved Changes",
+        message: "You have unsaved changes. Do you want to save before starting a new sheet?",
+        primaryLabel: "Save & Start New",
+        secondaryLabel: "Discard & Start New",
+      },
+      () => {
+        setCartLineId(null);
+        clearWorkspace();
+      },
+    );
   };
 
   const addToCartRef = useRef<() => Promise<void> | void>(() => {});
 
   const handleAddGangSheetToCart = async () => {
-    // Already in the cart and edited since: update that line rather than
-    // stacking a near-identical one beside it.
-    if (cartSheetState === "changed") {
-      await updateCartSheet();
-      return;
-    }
+    // Already in the cart, and kept in step with the board — so this is the
+    // customer asking to see it.
     if (cartSheetState === "current") {
       setShowCheckoutModal(true);
       return;
@@ -1262,6 +1430,16 @@ export default function Editor() {
         onAddGangSheetToCart={handleAddGangSheetToCart}
         canAddGangSheetToCart={getCurrentItems().length > 0}
         cartSheetState={cartSheetState}
+        /* A guest has no account to save to, and should know it before they
+           spend an hour on a sheet. */
+        saveState={!canAutosave && currentItems.length > 0 ? "guest" : saveState}
+        isSheetSaved={Boolean(currentLoadedDesignId) && !hasUnsavedChanges}
+        onRetrySave={() => {
+          void saveRef.current().then((result) => {
+            if (result.ok) toast.success("Gang sheet saved");
+            else if (result.reason) toast.error(result.reason);
+          });
+        }}
         isLoggedIn={isLoggedIn}
         canSaveLoaded={Boolean(currentLoadedDesignId && hasUnsavedChanges && !isGangsheetBusy)}
         canRenameDesign
@@ -1490,113 +1668,28 @@ export default function Editor() {
         onClose={() => setShowSaveModal(false)}
         artboardData={artboardData}
         initialTitle={currentLoadedDesignTitle || draftDesignTitle}
-        onSave={async (title: string, thumbnail: string, data: any) => {
+        onSave={async (title: string, thumbnail: string) => {
           if (!isLoggedIn) {
             setAuthView("login");
             setShowAuthModal(true);
             return;
           }
-
           /*
-           * The billed dimensions the header is showing — roll width by run
-           * length, floored at the minimum — so the cart line, the quote on
-           * screen and the server's charge are the same three numbers.
+           * The same save autosave uses, with the name this dialog collected.
+           * There used to be a second copy of the create/update logic here, so
+           * the two could disagree about whether a sheet was saved — and only
+           * this one refused to store artwork that had not finished uploading.
            */
-          const widthIn = headerInfo?.widthIn || getSheetWidthIn();
-          const heightIn = headerInfo?.heightIn || getMinSheetLengthIn();
-          const areaSqFt = headerInfo?.areaSf ?? (widthIn * heightIn) / 144;
-          const price = headerInfo?.price ?? 0;
-
-          const items = Array.isArray(data?.items) ? data.items : [];
-          const { normalizedItems, mappedItems } = mapItemsForSave(items);
-
-          // Pre-flight: the /customer/designs routes are gated to CUSTOMER role
-          // server-side. Without this check the user clicks Save, waits, and
-          // gets a useless "Forbidden" toast. Catch it up-front with a clear message.
-          if (!isLoggedIn || !user?.id) {
-            toast.error("Please sign in to save your design.");
-            setShowAuthModal(true);
-            return;
-          }
-          if (user.role !== "CUSTOMER") {
-            toast.error(
-              "This account can't save designs. Please sign in with a customer account.",
-            );
-            return;
-          }
-
-          let toastId: string | undefined;
-          try {
-            setIsGangsheetBusy(true);
-            toastId = toast.loading("Saving gangsheet...");
-            if (currentLoadedDesignId) {
-              await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
-                method: "PATCH",
-                body: JSON.stringify({
-                  title,
-                  thumbnail,
-                  artboardData: { items: mappedItems, ...sheetSettingsForSave(settings) },
-                }),
-              });
-              setCurrentLoadedDesignTitle(title);
-              setDraftDesignTitle(null);
-              const nextSnapshot = getGangsheetSnapshot(normalizedItems);
-              setCurrentLoadedDesignString(nextSnapshot);
-              setBaselineSnapshot(nextSnapshot);
-              toast.success(`Saved "${title.trim() || "Gang Sheet"}"`, { id: toastId });
-              updateSavedDesignSnapshot(currentLoadedDesignId, {
-                title,
-                thumbnail,
-                time: formatDesignTime(new Date().toISOString()),
-              });
-              setLoadedDesignData({ items: normalizedItems as any[], counter: Date.now() });
-              setArtboardData({ items: normalizedItems as any[], counter: Date.now() });
-            } else {
-              const created = await apiFetch("/customer/designs", {
-                method: "POST",
-                body: JSON.stringify({
-                  title,
-                  thumbnail,
-                  size: { widthIn, heightIn },
-                  pricing: { areaSqFt, price },
-                  artboardData: { items: mappedItems, ...sheetSettingsForSave(settings) },
-                }),
-              });
-              const createdId = created?.id ? String(created.id) : null;
-              const nextSnapshot = getGangsheetSnapshot(normalizedItems);
-              if (createdId) {
-                setCurrentLoadedDesignId(createdId);
-                setCurrentLoadedDesignTitle(title);
-                setDraftDesignTitle(null);
-                setCurrentLoadedDesignString(nextSnapshot);
-              }
-              setBaselineSnapshot(nextSnapshot);
-              setLoadedDesignData({ items: normalizedItems as any[], counter: Date.now() });
-              setArtboardData({ items: normalizedItems as any[], counter: Date.now() });
-              setLastAction(null);
-              toast.success("Design saved", { id: toastId });
-            }
+          const toastId = toast.loading("Saving gang sheet...");
+          const result = await saveRef.current({ title: title.trim() || undefined, thumbnail });
+          if (result.ok) {
             setShowSaveModal(false);
-            fetchDesigns();
-
+            toast.success(`Saved “${title.trim() || currentLoadedDesignTitle || "gang sheet"}”`, { id: toastId });
             const pending = pendingAfterSaveRef.current;
             pendingAfterSaveRef.current = null;
-            if (pending) {
-              await pending();
-            }
-          } catch (err: any) {
-            // Auth gate from /customer/* role middleware — translate "Forbidden"
-            // into something the user can act on.
-            const isAuthGate = err?.status === 403 || err?.status === 401;
-            const fallback = currentLoadedDesignId
-              ? "Failed to update gangsheet"
-              : "Failed to save gangsheet";
-            const message = isAuthGate
-              ? "Your session can't save designs. Please sign in with a customer account."
-              : err?.message || fallback;
-            toast.error(message, toastId ? { id: toastId } : undefined);
-          } finally {
-            setIsGangsheetBusy(false);
+            if (pending) await pending();
+          } else {
+            toast.error(result.reason || "Failed to save gang sheet", { id: toastId });
           }
         }}
       />
@@ -1694,13 +1787,19 @@ export default function Editor() {
         cartItems={cartItems}
         onUpdateCart={setCartItems}
         onEditSheet={editCartSheet}
+        onStartNewSheet={startNewSheet}
         onClearCart={() => {
           setCartItems([]);
           setCartLineId(null);
         }}
         onCheckoutSuccess={() => {
+          /*
+           * The order is placed: the cart is empty and the board starts fresh,
+           * so the next sheet is not built on top of one already bought. The
+           * sheet itself is not lost — it is saved, and the order is in history.
+           */
           setCartItems([]);
-          setCartLineId(null);
+          clearWorkspace();
         }}
       />
       <AuthModal

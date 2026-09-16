@@ -2,19 +2,19 @@ import toast from "react-hot-toast";
 import { MdCheckCircle } from "react-icons/md";
 
 /**
- * What to do next, right after a sheet goes in the cart.
+ * Confirmation that a sheet is in the cart, with the one thing worth doing next.
  *
- * Adding used to end in a bare success toast, leaving the two things a customer
- * actually wants — see the cart, or start the next sheet — to be found on their
- * own. Carrying on editing instead is the third option and needs no button: the
- * Add button becomes "Update Cart" and the change lands on the same line.
+ * It offered "Start a new sheet" too, which right after adding is a step nobody
+ * is ready for — that choice now lives in the cart, where starting another sheet
+ * is a deliberate act. Carrying on editing needs no button at all: the cart line
+ * follows the board.
  */
 export const showCartAddedToast = ({
   onViewCart,
-  onStartNewSheet,
+  sheetName,
 }: {
   onViewCart: () => void;
-  onStartNewSheet: () => void;
+  sheetName?: string | null;
 }) => {
   toast.custom(
     (t) => (
@@ -27,34 +27,25 @@ export const showCartAddedToast = ({
         <div className="flex items-start gap-2">
           <MdCheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden />
           <div className="min-w-0">
-            <p className="text-[13px] font-semibold text-gray-900">Sheet added to your cart</p>
+            <p className="text-[13px] font-semibold text-gray-900">
+              {sheetName ? `“${sheetName}” is in your cart` : "Sheet added to your cart"}
+            </p>
             <p className="mt-0.5 text-[12px] leading-[17px] text-gray-600">
-              Keep editing and the cart updates with it, or start a separate sheet.
+              It is saved, and any change you make here updates it.
             </p>
           </div>
         </div>
-        <div className="mt-2.5 flex gap-2">
-          <button
-            onClick={() => {
-              toast.dismiss(t.id);
-              onViewCart();
-            }}
-            className="flex-1 rounded-lg bg-black py-1.5 text-[12px] font-semibold text-white hover:bg-gray-900"
-          >
-            View cart
-          </button>
-          <button
-            onClick={() => {
-              toast.dismiss(t.id);
-              onStartNewSheet();
-            }}
-            className="flex-1 rounded-lg border border-gray-300 py-1.5 text-[12px] font-semibold text-gray-800 hover:bg-gray-50"
-          >
-            Start a new sheet
-          </button>
-        </div>
+        <button
+          onClick={() => {
+            toast.dismiss(t.id);
+            onViewCart();
+          }}
+          className="mt-2.5 w-full rounded-lg bg-black py-1.5 text-[12px] font-semibold text-white hover:bg-gray-900"
+        >
+          View cart
+        </button>
       </div>
     ),
-    { duration: 9000, id: "cart-add" },
+    { duration: 7000, id: "cart-add" },
   );
 };
