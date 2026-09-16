@@ -13,6 +13,7 @@ import {
   useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
 import { snapToGridPoint, isDpiFlagged, shouldWarn, type FadeVerdict } from "./artboard/lib/utils";
+import { isTypingTarget } from "../lib/utils/keyboard";
 import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
@@ -97,8 +98,7 @@ export default function Artboard({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
-      const el = e.target as HTMLElement | null;
-      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      if (isTypingTarget(e.target)) return;
       e.preventDefault();
       toggleAutoNest();
     };
@@ -553,7 +553,6 @@ export default function Artboard({
           marginSize={marginSize}
           spacing={spacing}
           autoNestStickers={autoNestStickers}
-          onToggleAutoNest={toggleAutoNest}
           canvasBg={canvasBg}
           canvasWidth={canvasWidth}
           isDragging={isDragging}

@@ -8,6 +8,7 @@ import PaymentStep from "../checkout/PaymentStep";
 import ReviewStep from "../checkout/ReviewStep";
 import OrderSummary from "../checkout/OrderSummary";
 import { ErrorBoundary } from "../common/ErrorBoundary";
+import ConfirmModal from "./ConfirmModal";
 import { LuShoppingCart } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
 import { stripEmbeddedImages, hasEmbeddedImages } from "../../lib/utils/payloadImages";
@@ -31,6 +32,10 @@ interface CheckoutModalProps {
   onClose: () => void;
   cartItems?: any[];
   onUpdateCart?: (items: any[]) => void;
+  /** Puts a cart sheet back on the artboard, so edits update that same line. */
+  onEditSheet?: (item: any) => void;
+  /** Empties the cart at its owner. Doing it in here alone was lost if this modal closed. */
+  onClearCart?: () => void;
   onCheckoutSuccess?: () => void;
   /**
    * Whether the visitor has an account yet.
@@ -54,9 +59,12 @@ export default function CheckoutModal({
   onRequireSignIn,
   cartItems: initialCartItems,
   onUpdateCart,
+  onEditSheet,
+  onClearCart,
   onCheckoutSuccess,
 }: CheckoutModalProps) {
   const [step, setStep] = useState(0);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // True only while `placeOrder`'s `stripEmbeddedImages` safety net is doing
   // real (uncached) upload work — the pre-warm effect below normally means
@@ -642,6 +650,8 @@ export default function CheckoutModal({
                       cartItems={cartItems}
                       updateQuantity={updateQuantity}
                       removeItem={removeItem}
+                      onEditItem={onEditSheet ? (item) => onEditSheet(item) : undefined}
+                      onClearCart={() => setConfirmClear(true)}
                     />
                   )}
 
@@ -793,16 +803,18 @@ export default function CheckoutModal({
                         </div>
                       </div>
 
-                      <div className="mt-4 text-xs text-gray-600">
-                        Returns are easy! Free return within 7 days for items in
-                        original condition.
-                      </div>
-
                       <button
                         onClick={() => setStep(1)}
                         className="w-full mt-4 rounded-lg bg-black py-3 text-sm font-semibold text-white hover:bg-gray-900"
                       >
                         Proceed to Checkout
+                      </button>
+                      {/* The way back to the artboard, where the rest of the order is built. */}
+                      <button
+                        onClick={handleContinueDesigning}
+                        className="w-full mt-2 rounded-lg border border-gray-300 py-3 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                      >
+                        Continue designing
                       </button>
                     </div>
                   ) : (
@@ -834,6 +846,23 @@ export default function CheckoutModal({
             </div>
           </ErrorBoundary>
         </div>
+      </div>
+      {/* Its own layer: a click inside it used to bubble to the backdrop above,
+          closing checkout before the emptied cart reached its owner. */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <ConfirmModal
+          isOpen={confirmClear}
+          title="Clear your cart?"
+          message="Every sheet in the cart will be removed. Sheets you saved as designs are kept."
+          confirmLabel="Clear cart"
+          danger
+          onConfirm={() => {
+            setConfirmClear(false);
+            setCartItems([]);
+            onClearCart?.();
+          }}
+          onCancel={() => setConfirmClear(false)}
+        />
       </div>
     </div>
   );

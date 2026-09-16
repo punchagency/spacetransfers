@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { CANVAS } from "../config/artboard.config";
 import { usePricingSettings } from "../lib/utils/pricingRates";
@@ -67,6 +67,7 @@ export default function Header({
   cartCount,
   onAddGangSheetToCart,
   canAddGangSheetToCart,
+  cartSheetState = "none",
   onUndo,
   canUndo,
   onRedo,
@@ -96,6 +97,12 @@ export default function Header({
   cartCount?: number;
   onAddGangSheetToCart?: () => void;
   canAddGangSheetToCart?: boolean;
+  /**
+   * Where this board stands with the cart: not in it, in it unchanged, or in it
+   * and edited since. The one button covers all three — a second "update" button
+   * beside "add" would leave the customer deciding which one they need.
+   */
+  cartSheetState?: "none" | "current" | "changed";
   onUndo?: () => void;
   canUndo?: boolean;
   onRedo?: () => void;
@@ -336,16 +343,28 @@ export default function Header({
           title={
             canAddGangSheetToCart === false
               ? "Add items to the artboard before adding to cart"
-              : "Add current gangsheet to cart"
+              : cartSheetState === "changed"
+                ? "Update this sheet in your cart (C)"
+                : cartSheetState === "current"
+                  ? "This sheet is in your cart — open it (C)"
+                  : "Add current gangsheet to cart (C)"
           }
           className={`inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
             canAddGangSheetToCart === false
               ? "text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed"
-              : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
+              : cartSheetState === "changed"
+                ? "text-white bg-black border-black hover:bg-gray-900 cursor-pointer"
+                : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
           }`}
         >
-          <MdAddShoppingCart className="w-4 h-4 sm:hidden" />
-          <span className="hidden sm:inline">Add to Cart</span>
+          {cartSheetState === "current" ? (
+            <MdCheckCircle className="w-4 h-4 sm:hidden" />
+          ) : (
+            <MdAddShoppingCart className="w-4 h-4 sm:hidden" />
+          )}
+          <span className="hidden sm:inline">
+            {cartSheetState === "changed" ? "Update Cart" : cartSheetState === "current" ? "In Cart" : "Add to Cart"}
+          </span>
         </button>
 
         {/*

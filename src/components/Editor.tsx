@@ -18,7 +18,9 @@ import UnderUtilizedSheetModal from "./modals/UnderUtilizedSheetModal";
 import { captureArtboard } from "./artboard/lib/utils";
 import { apiFetch } from "../lib/utils/api";
 import { clearAuth, getToken, onAuthChanged } from "../lib/utils/auth";
+import { showCartAddedToast } from "./common/CartAddedToast";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
+import { isTypingTarget } from "../lib/utils/keyboard";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
@@ -299,16 +301,8 @@ export default function Editor() {
   // Skipped while typing in form fields so we don't hijack the browser's native
   // text-editing undo/redo inside inputs and textareas.
   useEffect(() => {
-    const isTextInputTarget = (el: EventTarget | null) => {
-      const node = el as HTMLElement | null;
-      if (!node) return false;
-      const tag = node.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-      if (node.isContentEditable) return true;
-      return false;
-    };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTextInputTarget(e.target)) return;
+      if (isTypingTarget(e.target)) return;
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;
       const key = e.key.toLowerCase();
@@ -323,6 +317,29 @@ export default function Editor() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [historyState]);
+
+  /*
+   * Single-key shortcuts, alongside the artboard's "N" for auto-nest: "S" opens
+   * the settings panel, "C" puts the sheet in the cart (or updates the line it
+   * is already on). Ignored while typing, and never with a modifier held, so
+   * they cannot collide with the browser's own.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (isTypingTarget(e.target)) return;
+      const key = e.key.toLowerCase();
+      if (key === "s") {
+        e.preventDefault();
+        setIsSidebarOpen((open) => !open);
+      } else if (key === "c") {
+        e.preventDefault();
+        void addToCartRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const [headerInfo, setHeaderInfo] = useState<{
     hasItem: boolean;
@@ -482,6 +499,24 @@ export default function Editor() {
   );
   const hasUnsavedChanges = currentSnapshot !== baselineSnapshot;
 
+  /**
+   * The cart line this board was added as.
+   *
+   * Without it, carrying on designing after adding to the cart and pressing Add
+   * again put a second, near-identical sheet in the cart — or, when nothing had
+   * changed, was refused with "this exact gang sheet is already in your cart"
+   * and no way forward. The board now knows its line: more edits update it, and
+   * "Start a new sheet" is what makes the next add a separate one.
+   */
+  const [cartLineId, setCartLineId] = useState<number | null>(null);
+  const cartLine = cartItems.find((line) => line.id === cartLineId) ?? null;
+  /** "none" — not in the cart · "current" — in it, unchanged · "changed" — in it, edited since. */
+  const cartSheetState: "none" | "current" | "changed" = !cartLine
+    ? "none"
+    : cartLine.designSignature === currentSnapshot
+    ? "current"
+    : "changed";
+
   const [isGangsheetBusy, setIsGangsheetBusy] = useState(false);
   const pendingAfterSaveRef = useRef<null | (() => Promise<void> | void)>(null);
   const [unsavedPrompt, setUnsavedPrompt] = useState<null | {
@@ -500,6 +535,7 @@ export default function Editor() {
   } | null>(null);
 
   const clearWorkspace = () => {
+    setCartLineId(null);
     setArtboardData({ items: [], counter: Date.now() });
     setLoadedDesignData({ items: [], counter: Date.now() });
     setCurrentLoadedDesignId(null);
@@ -703,6 +739,8 @@ export default function Editor() {
       const nextSnapshot = getGangsheetSnapshot(mappedItems);
       setLoadedDesignData({ items: mappedItems, counter: Date.now() });
       setArtboardData({ items: mappedItems, counter: Date.now() });
+      // A different sheet is on the board now, so it is not the cart's line.
+      setCartLineId(null);
       setCurrentLoadedDesignId(id);
       setCurrentLoadedDesignString(nextSnapshot);
       setBaselineSnapshot(nextSnapshot);
@@ -885,22 +923,19 @@ export default function Editor() {
 
       const normalized = ensureUniqueItemIds(currentItems);
       const designSignature = getGangsheetSnapshot(normalized);
-      const isDuplicate = cartItems.some(
+      const duplicate = cartItems.find(
         (item) =>
           item.type === "gangsheet" &&
           typeof (item as any).designSignature === "string" &&
           (item as any).designSignature === designSignature
       );
-      if (isDuplicate) {
-        const msg = "This exact gang sheet is already in your cart.";
-        setCartWarning(msg);
-        setTimeout(() => setCartWarning(null), 8000);
+      if (duplicate) {
+        // The same sheet is already there. Point at it rather than refusing: the
+        // customer wanted this sheet in the cart, and it is.
+        setCartLineId(duplicate.id);
+        toast.success("This sheet is already in your cart.", { id: "cart-add" });
         return;
       }
-
-      console.log("=== ADDING GANG SHEET TO CART ===");
-      console.log("artboardData:", artboardData);
-      console.log("artboardData.items:", artboardData?.items);
 
       /*
        * Always the billed figures the header shows — roll width by run length,
@@ -936,6 +971,11 @@ export default function Editor() {
       console.log("gangSheetItem.items:", gangSheetItem.items);
 
       setCartItems((prev) => [...prev, gangSheetItem]);
+      setCartLineId(gangSheetItem.id);
+      showCartAddedToast({
+        onViewCart: () => setShowCheckoutModal(true),
+        onStartNewSheet: startNewSheet,
+      });
 
       if (fromUnusedSpacePrompt && user?.role === "CUSTOMER") {
         // Fire-and-forget: the email notification is non-critical. Gated on a
@@ -974,7 +1014,107 @@ export default function Editor() {
     }
   };
 
+  /**
+   * Replaces the cart line this board came from, keeping its quantity and place
+   * in the cart. The alternative — adding another line — is what "Start a new
+   * sheet" is for.
+   */
+  const updateCartSheet = async () => {
+    const currentItems = getCurrentItems();
+    if (!cartLine || !currentItems?.length) return;
+    const normalized = ensureUniqueItemIds(currentItems);
+    const widthIn = headerInfo?.widthIn || getSheetWidthIn();
+    const heightIn = headerInfo?.heightIn || getMinSheetLengthIn();
+    const updated = {
+      ...cartLine,
+      items: normalized,
+      designSignature: getGangsheetSnapshot(normalized),
+      price: headerInfo?.price || 0,
+      widthIn,
+      heightIn,
+      size: `${widthIn.toFixed(1)}" × ${heightIn.toFixed(1)}"`,
+      itemSpacingIn: settings.spacing,
+      sheetMarginIn: settings.marginSize,
+      image: "/placeholder-gangsheet.png",
+    };
+    setCartItems((prev) => prev.map((line) => (line.id === cartLine.id ? updated : line)));
+    toast.success("Cart updated with your changes.", { id: "cart-add" });
+    try {
+      const imageDataUrl = await captureArtboard();
+      setCartItems((prev) =>
+        prev.map((line) => (line.id === cartLine.id ? { ...line, image: imageDataUrl } : line)),
+      );
+    } catch {
+      // The preview is cosmetic; the sheet itself is already updated.
+    }
+  };
+
+  /**
+   * Opens a cart sheet back on the artboard.
+   *
+   * The board becomes that cart line, so anything changed from here updates it
+   * — the same relationship as the sheet you have just added. Without this, a
+   * sheet already in the cart could only be removed and rebuilt.
+   */
+  const editCartSheet = (line: any) => {
+    const items = Array.isArray(line?.items) ? line.items : [];
+    if (items.length === 0) {
+      toast.error("This sheet has no artwork to edit.");
+      return;
+    }
+    const open = () => {
+      const snapshot = getGangsheetSnapshot(items);
+      setArtboardData({ items, counter: Date.now() });
+      setLoadedDesignData({ items, counter: Date.now() });
+      setBaselineSnapshot(snapshot);
+      setSettings((prev) => ({
+        ...prev,
+        spacing: typeof line.itemSpacingIn === "number" ? line.itemSpacingIn : prev.spacing,
+        marginSize: typeof line.sheetMarginIn === "number" ? line.sheetMarginIn : prev.marginSize,
+      }));
+      setCartLineId(line.id);
+      setShowCheckoutModal(false);
+      toast.success("Editing this sheet — your changes update the cart.", { id: "cart-add" });
+    };
+    // Already the board's own line: nothing to swap in, so nothing to warn about.
+    if (line.id === cartLineId) {
+      setShowCheckoutModal(false);
+      return;
+    }
+    if (hasUnsavedChanges) {
+      openUnsavedPrompt(
+        {
+          title: "Unsaved Changes",
+          message: "You have unsaved changes. Do you want to save before opening the cart sheet?",
+          primaryLabel: "Save & Open",
+          secondaryLabel: "Discard & Open",
+        },
+        open,
+      );
+      return;
+    }
+    open();
+  };
+
+  /** Clears the board for a separate sheet, so the next add is a new cart line. */
+  const startNewSheet = () => {
+    setCartLineId(null);
+    attemptClearArtboard();
+  };
+
+  const addToCartRef = useRef<() => Promise<void> | void>(() => {});
+
   const handleAddGangSheetToCart = async () => {
+    // Already in the cart and edited since: update that line rather than
+    // stacking a near-identical one beside it.
+    if (cartSheetState === "changed") {
+      await updateCartSheet();
+      return;
+    }
+    if (cartSheetState === "current") {
+      setShowCheckoutModal(true);
+      return;
+    }
     const currentItems = getCurrentItems();
     // The same length the header bills and the print export produces.
     const usedHeight =
@@ -1082,6 +1222,8 @@ export default function Editor() {
     setShowCheckoutModal(true);
   };
 
+  addToCartRef.current = handleAddGangSheetToCart;
+
   const currentItems = getCurrentItems();
   const itemCount = currentItems.reduce((sum: number, it: any) => {
     const rendered = computeRenderCopies(
@@ -1119,6 +1261,7 @@ export default function Editor() {
         cartCount={cartItems.length}
         onAddGangSheetToCart={handleAddGangSheetToCart}
         canAddGangSheetToCart={getCurrentItems().length > 0}
+        cartSheetState={cartSheetState}
         isLoggedIn={isLoggedIn}
         canSaveLoaded={Boolean(currentLoadedDesignId && hasUnsavedChanges && !isGangsheetBusy)}
         canRenameDesign
@@ -1550,8 +1693,14 @@ export default function Editor() {
         onClose={() => setShowCheckoutModal(false)}
         cartItems={cartItems}
         onUpdateCart={setCartItems}
+        onEditSheet={editCartSheet}
+        onClearCart={() => {
+          setCartItems([]);
+          setCartLineId(null);
+        }}
         onCheckoutSuccess={() => {
           setCartItems([]);
+          setCartLineId(null);
         }}
       />
       <AuthModal
