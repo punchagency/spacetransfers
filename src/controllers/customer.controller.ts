@@ -35,7 +35,7 @@ import { quoteShipping } from "../services/shipping.service.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { exportGangsheetPng24, orderSheetWidthIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
+import { exportGangsheetPng24, orderSheetWidthIn, printedSheetExtentIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { assertPersistable } from "../utils/documentSize.js";
@@ -1427,6 +1427,28 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
               }),
             )
           : 0;
+      /*
+       * Every graphic must sit on the roll. The editor keeps artwork inside the
+       * printable width, but a sheet from an older session or another client
+       * could still reach past it — and the printer would cut that artwork off.
+       */
+      if (normalizedArtboardItems && normalizedArtboardItems.length > 0) {
+        const extent = printedSheetExtentIn({
+          sheetWidthIn: rollWidthIn,
+          artboardItems: normalizedArtboardItems,
+          itemSpacingIn: recordedSpacingIn,
+          sheetMarginIn: recordedMarginIn,
+        });
+        const toleranceIn = 0.01;
+        if (extent.right > rollWidthIn + toleranceIn || extent.left < -toleranceIn) {
+          const error = new Error(
+            `Some artwork on this gang sheet extends past the ${rollWidthIn}in sheet width, so it would be cut off. Open it in the editor so it fits, then check out again.`,
+          ) as CustomError;
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+
       const claimedLengthIn = Number(heightIn);
       const billedLengthIn =
         printedLengthIn > (Number.isFinite(claimedLengthIn) ? claimedLengthIn : 0) + 0.02

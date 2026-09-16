@@ -297,6 +297,21 @@ export const computeItemVerticalSpansIn = (
  * this. Checkout sends the length it measured on the artboard; the order keeps
  * the longer of the two, so no sheet is charged for less than it prints.
  */
+/**
+ * How far across the roll the artwork reaches, in inches: the right edge of its
+ * rightmost graphic (and the left edge of its leftmost, which must not be
+ * negative). Anything past the roll width cannot be printed — it is cut off.
+ */
+export const printedSheetExtentIn = (params: PlacementParams): { left: number; right: number } => {
+  let left = Infinity;
+  let right = 0;
+  forEachPlacedCopy(params, (box) => {
+    if (box.left < left) left = box.left;
+    if (box.right > right) right = box.right;
+  });
+  return { left: Number.isFinite(left) ? left : 0, right };
+};
+
 export const printedSheetLengthIn = (params: PlacementParams): number => {
   let bottom = 0;
   forEachPlacedCopy(params, (box) => {

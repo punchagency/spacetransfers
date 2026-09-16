@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_ROLL_WIDTH_IN, MIN_ROLL_WIDTH_IN, rollWidthError } from "../services/pricing.service.js";
-import { orderSheetWidthIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
+import { orderSheetWidthIn, printedSheetExtentIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 
 /**
  * The roll width is one number: the admin setting, which the artboard lays out
@@ -29,6 +29,17 @@ describe("roll width", () => {
       printedSheetLengthIn({ sheetWidthIn: rollWidthIn, artboardItems: [item], itemSpacingIn: 0.25, sheetMarginIn: 0.15 });
     assert.ok(Math.abs(on(22) - 5.15) < 1e-6, `22in roll: ${on(22)}`);
     assert.ok(Math.abs(on(12) - (0.15 + 5 + 0.25 + 5)) < 1e-6, `12in roll: ${on(12)}`);
+  });
+
+  it("measures how far across the roll the artwork reaches", () => {
+    const sheet = (items: any[]) =>
+      printedSheetExtentIn({ sheetWidthIn: 23.5, artboardItems: items, itemSpacingIn: 0.25, sheetMarginIn: 0.15 });
+    // A 20x11.25in piece pinned at 11.16in — the overflow reported from the editor.
+    assert.ok(Math.abs(sheet([{ widthIn: 20, heightIn: 11.25, posX: 11.16, posY: 0.15 }]).right - 31.16) < 1e-6);
+    // The same piece moved inside the printable width.
+    assert.ok(sheet([{ widthIn: 20, heightIn: 11.25, posX: 3.35, posY: 0.15 }]).right <= 23.35 + 1e-6);
+    // A nested (quarter-turned) piece is measured by its turned footprint.
+    assert.ok(Math.abs(sheet([{ widthIn: 20, heightIn: 11.25, posX: 0.15, posY: 0.15, nestRotation: 90 }]).right - 11.4) < 1e-6);
   });
 
   it("refuses a roll width no printer has", () => {
