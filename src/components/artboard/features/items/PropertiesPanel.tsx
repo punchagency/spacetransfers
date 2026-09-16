@@ -33,10 +33,17 @@ function DimInput({
   label,
   value,
   onChange,
+  /**
+   * Smallest value the field accepts. A size must be positive, but a position
+   * may be 0 — typing it there used to be ignored, so "put it at the top" did
+   * nothing. It is applied and then clamped to the margin, like any other move.
+   */
+  min = 0.01,
 }: {
   label: string;
   value: number;
   onChange: (n: number) => void;
+  min?: number;
 }) {
   const [local, setLocal] = useState(fmt(value));
 
@@ -60,7 +67,7 @@ function DimInput({
         onChange={(e) => setLocal(e.target.value)}
         onBlur={() => {
           const n = parseFloat(local);
-          if (!isNaN(n) && n > 0) onChange(parseFloat(n.toFixed(2)));
+          if (!isNaN(n) && n >= min) onChange(parseFloat(n.toFixed(2)));
           // Show what was actually applied — a refused or clamped value included.
           setLocal(fmt(value));
         }}
@@ -323,8 +330,8 @@ export default function PropertiesPanel({
       <div className="px-3 py-2.5">
         <div className="text-[12px] font-medium text-gray-900 mb-2">Position</div>
         <div className="grid grid-cols-2 gap-2">
-          <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} />
-          <DimInput label="Y Long" value={item.posY} onChange={onSetPosY} />
+          <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} min={0} />
+          <DimInput label="Y Long" value={item.posY} onChange={onSetPosY} min={0} />
         </div>
       </div>
     </div>

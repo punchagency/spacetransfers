@@ -2,54 +2,42 @@ import toast from "react-hot-toast";
 import { NoticeCard } from "./UnsupportedFilesWarning";
 
 /**
- * Non-blocking notice for artwork larger than the sheet's printable area.
+ * Notice that artwork was scaled down to fit the sheet's printable width.
  *
- * This used to be `toast.error("Image width cannot exceed the printable area
- * …")`, which was wrong in both tone and substance. The upload had in fact
- * succeeded, so a red error stated a failure that had not happened — and it
- * gave no indication of what to do about it. Being oversized is a thing worth
- * knowing before printing, not a thing that went wrong.
+ * Oversized artwork used to be left at its size with a suggestion to resize it,
+ * so a piece could run off the side of the sheet, be priced that way, and be cut
+ * off in print. Pieces are now always kept inside the printable width (see
+ * `fitItemToPrintableArea`), and this says when that meant shrinking one — so
+ * the customer can check it still prints at a size they want.
  *
- * Amber rather than red is the whole point: red is reserved for states that
- * actually block progress (a corrupt file, a failed upload). Using it here
- * taught customers to distrust it.
- *
- * Renders through `NoticeCard`, the shell the "files skipped" notice defines,
- * so every amber toast in the app shares one visual definition rather than
- * three hand-matched copies of the same card.
+ * Amber rather than red: nothing failed, the artwork is on the sheet.
  */
 
-/** Mid-point of the requested 6–8s window. */
 const WARNING_DURATION_MS = 7000;
 
-/**
- * Body copy, worded for one image or several.
- *
- * Exported so its wording is testable without rendering a toast — the exact
- * reassurance ("added successfully") is the part that stops this reading as a
- * failure, and it should not be able to drift unnoticed.
- */
-export const largeImageWarningText = (count: number) => {
+// Rounded down, never up past what fits — with a hair of tolerance, because
+// 23.2 * 100 is 2319.9999999999995 and a plain floor shows 23.19.
+const inches = (n: number) => `${Math.floor(n * 100 + 1e-6) / 100}in`;
+
+/** Body copy, worded for one image or several. Exported so the wording is testable. */
+export const largeImageWarningText = (count: number, printableWidthIn: number) => {
   const isSingle = count <= 1;
+  const width = inches(printableWidthIn);
   return {
-    title: isSingle ? "Large Image Detected" : `${count} Large Images Detected`,
+    title: isSingle ? "Image Resized to Fit" : `${count} Images Resized to Fit`,
     body: isSingle
-      ? "This image is larger than the recommended printable area for the selected gang sheet. It has been added successfully, but you may need to resize or reposition it to ensure it fits within the printable area before printing."
-      : `These images are larger than the recommended printable area for the selected gang sheet. They have been added successfully, but you may need to resize or reposition them to ensure they fit within the printable area before printing.`,
+      ? `This image was wider than the sheet's printable width, so it was scaled down to fit within ${width}. Check that it still prints at the size you need.`
+      : `These images were wider than the sheet's printable width, so they were scaled down to fit within ${width}. Check that they still print at the size you need.`,
   };
 };
 
 /**
- * Shows the notice.
- *
- * `count` aggregates a whole drop into one message. Files upload concurrently,
- * so a per-file toast would stack several overlapping copies of the same
- * advice — which is how a helpful notice becomes noise people dismiss without
- * reading.
+ * Shows the notice. `count` aggregates one change into one message, so several
+ * pieces resized at once do not stack identical cards.
  */
-export const showLargeImageWarning = (count = 1) => {
+export const showLargeImageWarning = (count: number, printableWidthIn: number) => {
   if (count < 1) return;
-  const { title, body } = largeImageWarningText(count);
+  const { title, body } = largeImageWarningText(count, printableWidthIn);
 
   toast.custom(
     (t) => <NoticeCard t={t} title={title} body={body} />,

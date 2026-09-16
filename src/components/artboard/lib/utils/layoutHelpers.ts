@@ -1374,6 +1374,79 @@ export function getItemFootprint(
   };
 }
 
+export interface FitResult<T> {
+  item: T;
+  /** Shrunk, keeping its proportions, because it was wider than the printable width. */
+  scaled: boolean;
+  /** Moved or reshaped to lie inside the printable width. */
+  changed: boolean;
+}
+
+/**
+ * A piece brought inside the sheet's safe print area — the margin lines.
+ *
+ * The roll cannot print past its edge, and the margin is the customer's own
+ * clearance from it, so no piece may reach beyond either. Pieces used to be kept
+ * inside only when a drag was validated: a piece pinned near the right edge and
+ * then rotated, resized from the properties panel, uploaded wider than the sheet,
+ * or left over from a wider roll kept its position and ran off the sheet — on
+ * screen, in the price, and cut off in print. The top margin was enforced
+ * nowhere at all, so artwork could sit above the "Safe Print Area" line.
+ *
+ *  1. One copy wider than the printable width is scaled down to fit, keeping
+ *     its proportions (the width axis is the nested one when auto-nest turned it).
+ *     With `canNestRotate` — auto-nest on, piece free to move — it is scaled only
+ *     if it would not fit turned either, since the packer turns it to fit at
+ *     full size.
+ *  2. A copy group whose recorded columns no longer fit has them cleared, so the
+ *     group re-wraps within the width.
+ *  3. The piece is moved left, or down off the top margin, just far enough to
+ *     lie inside the margins. The sheet grows downward, so there is no bottom
+ *     bound here — `clampPosY` keeps a piece inside the sheet's maximum length.
+ *
+ * Returns the same object when nothing needed to change.
+ */
+export function fitItemToPrintableArea<T extends LayoutItem>(
+  item: T,
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+  canNestRotate = false,
+): FitResult<T> {
+  const margin = Math.max(0, marginIn);
+  const maxW = Math.max(0, canvasWidthIn - 2 * margin);
+  const eps = 1e-4;
+  if (!(maxW > 0)) return { item, scaled: false, changed: false };
+
+  let next = item;
+  let scaled = false;
+
+  const cellW = canNestRotate
+    ? Math.min(next.widthIn, next.heightIn)
+    : next.nestRotation === 90
+    ? next.heightIn
+    : next.widthIn;
+  if (cellW > maxW + eps) {
+    const k = maxW / cellW;
+    next = { ...next, widthIn: next.widthIn * k, heightIn: next.heightIn * k };
+    scaled = true;
+  }
+
+  if (next.flowCols && getItemFootprint(next, canvasWidthIn, margin, gapIn).w > maxW + eps) {
+    next = { ...next, flowCols: undefined, flowStartCol: undefined, flowEndCol: undefined };
+  }
+
+  const fp = getItemFootprint(next, canvasWidthIn, margin, gapIn);
+  const maxPosX = Math.max(margin, canvasWidthIn - margin - fp.w);
+  const posX = Math.max(margin, Math.min(next.posX, maxPosX));
+  const posY = Math.max(margin, next.posY);
+  if (Math.abs(posX - next.posX) > eps || Math.abs(posY - next.posY) > eps) {
+    next = { ...next, posX, posY };
+  }
+
+  return { item: next, scaled, changed: next !== item };
+}
+
 const boxesCollide = (a: FootprintBox, b: FootprintBox, gap: number, eps = 1e-4) =>
   a.x < b.x + b.w + gap - eps &&
   a.x + a.w > b.x - gap + eps &&
@@ -1718,13 +1791,13 @@ export function resolveDragPlacement(
     ...getItemFootprint(it, canvasWidthIn, marginIn, gap),
   }));
 
-  // Bounds: any moved item pushed off the printable sheet fails the drop.
+  // Bounds: any moved item pushed outside the margins fails the drop.
   for (const b of boxes) {
     if (!changed.has(b.id)) continue;
     if (
       b.x < margin - eps ||
       b.x + b.w > canvasWidthIn - margin + eps ||
-      b.y < -eps ||
+      b.y < margin - eps ||
       b.y + b.h > MAX_SHEET_HEIGHT_IN + eps
     ) {
       return { moves: new Map(), valid: false };

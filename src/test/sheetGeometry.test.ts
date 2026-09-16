@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   arrangeInitialLayout,
   calculateGridLayout,
+  fitItemToPrintableArea,
+  resolveDragPlacement,
   getItemFootprint,
   resolveFlowCols,
   separateCrowdedItems,
@@ -124,5 +126,89 @@ describe("auto-nest length", () => {
         expect(overlap).toBe(false);
       }
     }
+  });
+});
+
+describe("fitItemToPrintableArea", () => {
+  const printable = SHEET - 2 * MARGIN;
+  const fit = (it: any, canNestRotate = false) => fitItemToPrintableArea(it, SHEET, MARGIN, 0.25, canNestRotate);
+  const right = (it: any) => getItemFootprint(it, SHEET, MARGIN, 0.25).x + getItemFootprint(it, SHEET, MARGIN, 0.25).w;
+
+  it("moves a piece that runs off the right edge back onto the sheet", () => {
+    // Reported: a photo pinned at 11.16in and then rotated to 20in wide reached 31.16in.
+    const { item: next, scaled, changed } = fit(item(1, 20, 11.25, { posX: 11.16, pinned: true }));
+    expect(changed).toBe(true);
+    expect(scaled).toBe(false);
+    expect(right(next)).toBeLessThanOrEqual(SHEET - MARGIN + 1e-6);
+    expect([next.widthIn, next.heightIn]).toEqual([20, 11.25]);
+  });
+
+  it("scales a piece wider than the printable width down to fit, keeping its proportions", () => {
+    const { item: next, scaled } = fit(item(1, 30, 16.875, { posX: 5 }));
+    expect(scaled).toBe(true);
+    expect(next.widthIn).toBeCloseTo(printable);
+    expect(next.heightIn / next.widthIn).toBeCloseTo(16.875 / 30);
+    expect(next.posX).toBeCloseTo(MARGIN);
+  });
+
+  it("leaves a piece the packer can turn to fit at full size", () => {
+    // 30x10 does not fit across, but fits turned — auto-nest turns it instead.
+    expect(fit(item(1, 30, 10), true).scaled).toBe(false);
+    // Too big either way: shrunk.
+    expect(fit(item(1, 30, 26), true).scaled).toBe(true);
+  });
+
+  it("measures a nested piece by its turned width", () => {
+    const { item: next, changed } = fit(item(1, 20, 11.25, { nestRotation: 90, posX: 20 }));
+    expect(changed).toBe(true);
+    expect(right(next)).toBeLessThanOrEqual(SHEET - MARGIN + 1e-6);
+    expect(next.widthIn).toBe(20);
+  });
+
+  it("re-wraps a copy group whose recorded columns no longer fit", () => {
+    const { item: next } = fit(item(1, 5, 5, { copies: 6, flowCols: 6, posX: MARGIN }));
+    expect(next.flowCols).toBeUndefined();
+    expect(right(next)).toBeLessThanOrEqual(SHEET - MARGIN + 1e-6);
+  });
+
+  it("pushes a piece out of the top margin", () => {
+    // The margin lines are the safe print area; the top one was enforced nowhere.
+    const { item: next, changed, scaled } = fit(item(1, 5, 5, { posY: 0 }));
+    expect(changed).toBe(true);
+    expect(scaled).toBe(false);
+    expect(next.posY).toBeCloseTo(MARGIN);
+  });
+
+  it("leaves a piece further down the sheet where it is", () => {
+    expect(fit(item(1, 5, 5, { posY: 40 })).item.posY).toBe(40);
+  });
+
+  it("returns the same piece when it already fits", () => {
+    const inside = item(1, 10, 10, { posX: 5 });
+    const result = fit(inside);
+    expect(result.changed).toBe(false);
+    expect(result.item).toBe(inside);
+  });
+});
+
+describe("resolveDragPlacement bounds", () => {
+  const drop = (posX: number, posY: number) =>
+    resolveDragPlacement(
+      [{ id: 1, widthIn: 5, heightIn: 5, posX, posY, copies: 1 }],
+      [1],
+      SHEET,
+      MARGIN,
+      0.25,
+    ).valid;
+
+  it("accepts a drop inside the margins", () => {
+    expect(drop(MARGIN, MARGIN)).toBe(true);
+    expect(drop(SHEET - MARGIN - 5, 30)).toBe(true);
+  });
+
+  it("refuses a drop into the top margin, like the sides", () => {
+    expect(drop(MARGIN, 0)).toBe(false);
+    expect(drop(0, MARGIN)).toBe(false);
+    expect(drop(SHEET - MARGIN - 5 + 0.01, MARGIN)).toBe(false);
   });
 });

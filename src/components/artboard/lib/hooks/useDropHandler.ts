@@ -14,7 +14,6 @@ import {
 } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
 import { getSheetWidthIn } from "../../../../lib/utils/pricingRates";
-import { showLargeImageWarning } from "../../../common/LargeImageWarning";
 import {
   showUnsupportedFilesWarning,
   showUnsupportedFileWarning,
@@ -472,9 +471,6 @@ export const useDropHandler = (
     const nextItemId = () => (idCursorRef.current += 1);
 
     let lowDpiImages = 0;
-    // Artwork wider than the printable area. Tallied across the drop so the
-    // notice appears once, however many files were added.
-    let oversizeImages = 0;
 
     const createItemFromUrl = async (
       url: string,
@@ -536,13 +532,6 @@ export const useDropHandler = (
         baseItem.heightIn = cropped.heightIn;
         baseItem.posX = baseItem.posX + deltaX;
         baseItem.posY = baseItem.posY + deltaY;
-      }
-
-      // Oversized artwork is kept at the size it arrived and flagged, not
-      // silently shrunk — the notice tells the customer they may want to resize
-      // it, which would be untrue if it had already been resized for them.
-      if (baseItem.widthIn > (canvasWidth || getSheetWidthIn()) - 2 * marginSize) {
-        oversizeImages++;
       }
 
       return baseItem;
@@ -721,13 +710,13 @@ export const useDropHandler = (
             const gap = CANVAS.GRID_GAP_IN;
             const groupHeightIn =
               copies <= 1 ? itemH : copies * itemH + (copies - 1) * gap;
-            const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupHeightIn);
+            const maxPosY = Math.max(marginSize, MAX_SHEET_HEIGHT_IN - groupHeightIn);
             if (u.posY > maxPosY + 1e-6) didClamp = true;
 
             return {
               ...it,
               posX: u.posX,
-              posY: Math.max(0, Math.min(u.posY, maxPosY)),
+              posY: Math.max(marginSize, Math.min(u.posY, maxPosY)),
               flowCols: u.flowCols,
               flowStartCol: u.flowStartCol,
               flowEndCol: u.flowEndCol,
@@ -933,13 +922,6 @@ export const useDropHandler = (
           }
         }
 
-        // Counted, not clamped. The upload succeeded and the item is usable;
-        // whether to resize it is the customer's call, and the notice below
-        // says so once for the whole drop rather than once per file.
-        if (baseItem.widthIn > (canvasWidth || getSheetWidthIn()) - 2 * marginSize) {
-          oversizeImages++;
-        }
-
         /**
          * The upload already ran the transparency check on the buffer it held,
          * so its verdict is remembered for this URL — no second analysis, and no
@@ -1095,7 +1077,7 @@ export const useDropHandler = (
                 ...(u
                   ? {
                       posX: u.posX,
-                      posY: Math.max(0, Math.min(u.posY, 1200)),
+                      posY: Math.max(marginSize, Math.min(u.posY, 1200)),
                       flowCols: u.flowCols,
                       flowStartCol: u.flowStartCol,
                       flowEndCol: u.flowEndCol,
@@ -1110,15 +1092,9 @@ export const useDropHandler = (
       });
     }
 
-    // Informational, and deliberately last: the upload has completed and the
-    // items are on the sheet by this point, so nothing about it is blocking.
-    if (oversizeImages > 0) {
-      showLargeImageWarning(oversizeImages);
-    }
-
-    // Same queue, same card and same 7s life as the large-image notice above,
-    // so a drop that trips both shows two stacked notices rather than one
-    // merged sentence or two competing surfaces.
+    // Same queue, same card and same 7s life as the resized-to-fit notice (raised
+    // by the layout once the drop settles), so a drop that trips both shows two
+    // stacked notices rather than one merged sentence.
     if (lowDpiImages > 0) {
       showLowDpiWarning(lowDpiImages);
     }

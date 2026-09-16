@@ -319,7 +319,7 @@ export const useItemActions = (
     const value =
       axis === "posX"
         ? Math.min(Math.max(raw, marginSize), Math.max(marginSize, canvasWidth - marginSize - fp.w))
-        : Math.min(Math.max(raw, 0), Math.max(0, MAX_SHEET_HEIGHT_IN - fp.h));
+        : Math.min(Math.max(raw, marginSize), Math.max(marginSize, MAX_SHEET_HEIGHT_IN - fp.h));
     if (Math.abs(value - item[axis]) < 1e-6) return;
 
     const projected = items.map((it) => (it.id === id ? { ...it, [axis]: value } : it));

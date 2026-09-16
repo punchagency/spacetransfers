@@ -459,13 +459,14 @@ export const executeBoardCommands = async (
       case "nudge": {
         const context = ctx();
         const count = mutate((item) =>
+          // Inside the margins, like every other way a piece is placed.
           pinAt(
             item,
             Math.min(
-              Math.max(0, item.posX + command.dxIn),
-              Math.max(0, context.canvasWidth - item.widthIn),
+              Math.max(context.marginSize, item.posX + command.dxIn),
+              Math.max(context.marginSize, context.canvasWidth - context.marginSize - item.widthIn),
             ),
-            Math.max(0, item.posY + command.dyIn),
+            Math.max(context.marginSize, item.posY + command.dyIn),
           ),
         );
         if (!count) {
@@ -485,9 +486,12 @@ export const executeBoardCommands = async (
           pinAt(
             item,
             command.xIn != null
-              ? Math.min(Math.max(0, command.xIn), Math.max(0, context.canvasWidth - item.widthIn))
+              ? Math.min(
+                  Math.max(context.marginSize, command.xIn),
+                  Math.max(context.marginSize, context.canvasWidth - context.marginSize - item.widthIn),
+                )
               : item.posX,
-            command.yIn != null ? Math.max(0, command.yIn) : item.posY,
+            command.yIn != null ? Math.max(context.marginSize, command.yIn) : item.posY,
           ),
         );
         if (!count) {

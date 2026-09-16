@@ -196,17 +196,17 @@ describe("low dpi notice", () => {
     expect(await screen.findByText("Low DPI")).toBeTruthy();
   });
 
-  it("stands alongside the large-image notice instead of replacing it", async () => {
+  it("stands alongside the resized-to-fit notice instead of replacing it", async () => {
     // The headline requirement: two conditions from one drop are two
     // notifications. Distinct toast ids are what keep both alive — react-hot-
     // toast treats a repeated id as an update, so sharing one would silently
     // collapse them into whichever fired last.
     render(<Toaster />);
-    showLargeImageWarning(3);
+    showLargeImageWarning(3, 23.2);
     showLowDpiWarning(2);
 
     expect(await screen.findByText("Low DPI")).toBeTruthy();
-    expect(screen.getByText("3 Large Images Detected")).toBeTruthy();
+    expect(screen.getByText("3 Images Resized to Fit")).toBeTruthy();
   });
 
   it("carries no outer margin, so toast stacking can measure it", () => {
