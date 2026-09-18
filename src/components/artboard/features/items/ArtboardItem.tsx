@@ -8,6 +8,9 @@ import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { computeGroupDims, computeRenderCopies } from "../../lib/utils/layoutHelpers";
 import { shouldWarn, transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
+import { readImageInfo } from "../../lib/utils/imageUtils";
+import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
+import type { SelectionSummary } from "../../types";
 
 let hasShownMaxHeightToast = false;
 
@@ -49,16 +52,17 @@ interface ArtboardItemProps {
    */
   transparency?: FadeVerdict;
   showProperties: boolean;
-  addedToCart: boolean;
   onSelect: (multi?: boolean) => void;
   onToggleProperties: () => void;
-  onLink: () => void;
+  onGroup: () => void;
+  groupAction: "group" | "ungroup" | null;
   onRotate: () => void;
   onToggleLock: () => void;
   onFlip: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
-  onIncreaseDpi: (scale?: number) => Promise<void>;
+  /** Upscales every selected image below 300 DPI; reports progress per image. */
+  onIncreaseDpi: (onProgress?: (phase: string) => void) => Promise<PixelBatchResult>;
   onToggleAutoCrop: () => void;
   onSetCopies: (n: number) => void;
   onToggleLinked: () => void;
@@ -66,9 +70,11 @@ interface ArtboardItemProps {
   onSetHeightIn: (n: number) => void;
   onSetPosX: (n: number) => void;
   onSetPosY: (n: number) => void;
-  onAddToCart: () => void;
   onCloseProperties: () => void;
-  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<void>;
+  /** Removes the background from every selected image that has one. */
+  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
+  /** The whole selection, for the toolbar this piece shows when it is the primary. */
+  selection?: SelectionSummary;
   onDragStart: (e: React.MouseEvent) => void;
   onResizeStart: (e: React.MouseEvent) => void;
   isDragging: boolean;
@@ -96,13 +102,14 @@ function ArtboardItem({
   item,
   isSelected,
   isPrimary,
+  selection,
   isDpiHighlighted = false,
   transparency,
   showProperties,
-  addedToCart,
   onSelect,
   onToggleProperties,
-  onLink,
+  onGroup,
+  groupAction,
   onRotate,
   onToggleLock,
   onFlip,
@@ -116,7 +123,6 @@ function ArtboardItem({
   onSetHeightIn,
   onSetPosX,
   onSetPosY,
-  onAddToCart,
   onCloseProperties,
   onRemoveBg,
   onDragStart,
@@ -141,6 +147,7 @@ function ArtboardItem({
   const [naturalWidthPx, setNaturalWidthPx] = useState<number | null>(null);
   const [naturalHeightPx, setNaturalHeightPx] = useState<number | null>(null);
   const [isDpiEnhancing, setIsDpiEnhancing] = useState(false);
+  const [dpiProgress, setDpiProgress] = useState<string | null>(null);
   const [dpiEnhanced, setDpiEnhanced] = useState(false);
   const [bgJustRemoved, setBgJustRemoved] = useState(false);
   const [panelInitialPos, setPanelInitialPos] = useState({ x: 0, y: 0 });
@@ -174,43 +181,53 @@ function ArtboardItem({
     setNaturalHeightPx(null);
     setDpiEnhanced(false);
     setBgJustRemoved(false);
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      setNaturalWidthPx(img.naturalWidth);
-      setNaturalHeightPx(img.naturalHeight);
-      try {
-        const size = 64;
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { setBgStatus('has-bg'); return; }
-        ctx.drawImage(img, 0, 0, size, size);
-        const corners = [
-          ctx.getImageData(0, 0, 1, 1).data[3],
-          ctx.getImageData(size - 1, 0, 1, 1).data[3],
-          ctx.getImageData(0, size - 1, 1, 1).data[3],
-          ctx.getImageData(size - 1, size - 1, 1, 1).data[3],
-        ];
-        const avgAlpha = corners.reduce((s, a) => s + a, 0) / corners.length;
-        setBgStatus(avgAlpha < 10 ? 'no-bg' : 'has-bg');
-      } catch {
-        setBgStatus('has-bg');
-      }
-    };
-    img.onerror = () => setBgStatus('has-bg');
-    img.src = item.url;
+    let cancelled = false;
+    readImageInfo(item.url).then((info) => {
+      if (cancelled) return;
+      if (!info) { setBgStatus('has-bg'); return; }
+      setNaturalWidthPx(info.widthPx);
+      setNaturalHeightPx(info.heightPx);
+      setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
+    });
+    return () => { cancelled = true; };
   }, [item.url]);
+
+  /**
+   * One toast for a run over the selection: what changed, what was skipped
+   * and why, and the first error if any image failed.
+   */
+  const reportBatch = (
+    r: PixelBatchResult,
+    words: { done: (n: number) => string; skipped: string; nothing: string },
+  ) => {
+    const notes: string[] = [];
+    if (r.skipped > 0) notes.push(`${r.skipped} ${words.skipped}`);
+    if (r.locked > 0) notes.push(`${r.locked} locked`);
+    const tail = notes.length > 0 ? ` (${notes.join(", ")} left as is)` : "";
+    if (r.failed > 0) {
+      const prefix = r.done > 0 ? `${words.done(r.done)}, but ${r.failed} failed: ` : "";
+      toast.error(prefix + (r.firstError ?? "Something went wrong. Please try again."));
+    } else if (r.done > 0) {
+      toast.success(words.done(r.done) + tail);
+    } else {
+      toast(words.nothing + tail, { icon: "ℹ️" });
+    }
+  };
+
+  const plural = (n: number) => `${n} image${n === 1 ? "" : "s"}`;
 
   const handleRemoveBg = async () => {
     setIsRemovingBg(true);
     setBgJustRemoved(false);
     setBgProgress({ phase: "Starting...", pct: 0 });
     try {
-      await onRemoveBg((phase, pct) => setBgProgress({ phase, pct }));
-      setBgJustRemoved(true);
-      toast.success("Background removed successfully!");
+      const result = await onRemoveBg((phase, pct) => setBgProgress({ phase, pct }));
+      if (result.done > 0 && result.failed === 0) setBgJustRemoved(true);
+      reportBatch(result, {
+        done: (n) => (n === 1 ? "Background removed" : `Backgrounds removed from ${plural(n)}`),
+        skipped: "already transparent",
+        nothing: "Nothing to remove — the selected images are already transparent.",
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Background removal failed";
       toast.error(msg);
@@ -221,26 +238,23 @@ function ArtboardItem({
   };
 
   const handleIncreaseDpi = async () => {
-    if (isDpiEnhancing || dpiEnhanced) return;
-    // Compute the scale factor needed to reach 300 DPI at the current print size.
-    // effectiveDpi is pixelWidth / widthIn, the most accurate available value.
-    const currentDpi = (typeof effectiveDpi === "number" && effectiveDpi > 0)
-      ? effectiveDpi
-      : (typeof item.dpi === "number" && item.dpi > 0 ? item.dpi : 72);
-    // Round up to the nearest scale that gets us to ≥ 300 DPI (max 8×).
-    const neededScale = Math.ceil(300 / currentDpi);
-    const scale = Math.min(8, Math.max(2, neededScale));
-
+    if (isDpiEnhancing) return;
+    // Each image's upscale factor is worked out from its own DPI in the action.
     setIsDpiEnhancing(true);
     try {
-      await onIncreaseDpi(scale);
-      setDpiEnhanced(true);
-      toast.success("Image enhanced to 300 DPI!");
+      const result = await onIncreaseDpi((phase) => setDpiProgress(phase));
+      if (result.done > 0 && result.failed === 0) setDpiEnhanced(true);
+      reportBatch(result, {
+        done: (n) => (n === 1 ? "Image enhanced to 300 DPI" : `${plural(n)} enhanced to 300 DPI`),
+        skipped: "already at 300 DPI",
+        nothing: "Nothing to enhance — the selected images are already at 300 DPI.",
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "DPI enhancement failed. Please try again.";
       toast.error(msg);
     } finally {
       setIsDpiEnhancing(false);
+      setDpiProgress(null);
     }
   };
 
@@ -433,7 +447,6 @@ function ArtboardItem({
           return createPortal(
             <PropertiesPanel
               item={item}
-              addedToCart={addedToCart}
               initialPos={panelInitialPos}
               onClose={onCloseProperties}
               onToggleAutoCrop={onToggleAutoCrop}
@@ -443,7 +456,6 @@ function ArtboardItem({
               onSetHeightIn={onSetHeightIn}
               onSetPosX={onSetPosX}
               onSetPosY={onSetPosY}
-              onAddToCart={onAddToCart}
             />,
             portal,
           );
@@ -515,7 +527,8 @@ function ArtboardItem({
         return createPortal(
           <ItemToolbar
             locked={item.locked}
-            onLink={onLink}
+            onGroup={onGroup}
+            groupAction={groupAction}
             onRotate={onRotate}
             onToggleLock={onToggleLock}
             onFlip={onFlip}
@@ -525,6 +538,7 @@ function ArtboardItem({
             currentDpi={effectiveDpi ?? item.dpi}
             isDpiUnknown={isDpiUnknown}
             isDpiEnhancing={isDpiEnhancing}
+            dpiProgress={dpiProgress}
             dpiEnhanced={dpiEnhanced}
             onRemoveBg={handleRemoveBg}
             bgStatus={bgStatus}
@@ -537,6 +551,7 @@ function ArtboardItem({
                 : undefined
             }
             aiActive={aiOpen}
+            selection={selection}
           />,
           portal,
         );

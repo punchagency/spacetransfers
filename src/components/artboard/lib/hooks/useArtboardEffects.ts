@@ -13,6 +13,7 @@ import {
   sheetContentLengthIn,
   separateCrowdedItems,
   fitItemToPrintableArea,
+  fitGroupsToPrintableArea,
 } from "../utils";
 import { showLargeImageWarning } from "../../../common/LargeImageWarning";
 import { snapToGridPoint } from "../utils";
@@ -178,10 +179,13 @@ export const useArtboardEffects = (
        */
       const resizedIds = new Set<number>();
       const fitChangedIds = new Set<number>();
-      const board = items.map((it) => {
+      // Groups first, as whole units, so the per-piece pass finds them already inside.
+      const groupFit = fitGroupsToPrintableArea(items, canvasWidth, effectiveMargin, spacing);
+      for (const id of groupFit.movedIds) fitChangedIds.add(id);
+      const board = groupFit.items.map((it) => {
         const canNestRotate = autoNestStickers && !it.pinned && !it.locked;
         const fit = fitItemToPrintableArea(it, canvasWidth, effectiveMargin, spacing, canNestRotate);
-        if (!fit.changed) return it;
+        if (!fit.changed) return fitChangedIds.has(it.id) ? { ...it } : it;
         fitChangedIds.add(it.id);
         if (fit.scaled) resizedIds.add(it.id);
         return autoNestStickers && fit.item.pinned && !fit.item.locked ? { ...fit.item, pinned: false } : fit.item;

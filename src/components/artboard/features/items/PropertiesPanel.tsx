@@ -9,12 +9,12 @@ interface PropertiesPanelProps {
     autoCrop: boolean;
     copies: number;
     linked: boolean;
+    locked?: boolean;
     widthIn: number;
     heightIn: number;
     posX: number;
     posY: number;
   };
-  addedToCart: boolean;
   initialPos: { x: number; y: number };
   onClose: () => void;
   onToggleAutoCrop: () => void;
@@ -24,7 +24,6 @@ interface PropertiesPanelProps {
   onSetHeightIn: (n: number) => void;
   onSetPosX: (n: number) => void;
   onSetPosY: (n: number) => void;
-  onAddToCart: () => void;
 }
 
 const fmt = (n: number) => parseFloat(n.toFixed(2)).toString();
@@ -39,11 +38,13 @@ function DimInput({
    * nothing. It is applied and then clamped to the margin, like any other move.
    */
   min = 0.01,
+  disabled = false,
 }: {
   label: string;
   value: number;
   onChange: (n: number) => void;
   min?: number;
+  disabled?: boolean;
 }) {
   const [local, setLocal] = useState(fmt(value));
 
@@ -62,6 +63,7 @@ function DimInput({
         type="text"
         inputMode="decimal"
         value={local}
+        disabled={disabled}
         // Applied on Enter or leaving the field, not per keystroke: typing "12"
         // used to make the piece 1in first, and auto-nest re-packed around it.
         onChange={(e) => setLocal(e.target.value)}
@@ -74,13 +76,13 @@ function DimInput({
         onKeyDown={(e) => {
           if (e.key === "Enter") (e.target as HTMLInputElement).blur();
         }}
-        className="w-full h-7 px-2 rounded-md text-[11px] font-semibold bg-[#F3F3F5]"
+        className="w-full h-7 px-2 rounded-md text-[11px] font-semibold bg-[#F3F3F5] disabled:opacity-50 disabled:cursor-not-allowed"
       />
     </div>
   );
 }
 
-function CopiesInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+function CopiesInput({ value, onChange, disabled = false }: { value: number; onChange: (n: number) => void; disabled?: boolean }) {
   const [local, setLocal] = useState(String(value));
 
   useEffect(() => {
@@ -96,6 +98,7 @@ function CopiesInput({ value, onChange }: { value: number; onChange: (n: number)
       type="text"
       inputMode="numeric"
       value={local}
+      disabled={disabled}
       // Applied on Enter or leaving the field, like the dimensions.
       onChange={(e) => setLocal(e.target.value)}
       onBlur={() => {
@@ -106,7 +109,7 @@ function CopiesInput({ value, onChange }: { value: number; onChange: (n: number)
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      className="w-full h-7 px-2 rounded-md text-[11px] bg-[#F3F3F5]"
+      className="w-full h-7 px-2 rounded-md text-[11px] bg-[#F3F3F5] disabled:opacity-50 disabled:cursor-not-allowed"
     />
   );
 }
@@ -277,10 +280,17 @@ export default function PropertiesPanel({
         </button>
       </div>
 
+      {item.locked && (
+        <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 text-[11px] text-gray-600">
+          🔒 This image is locked. Unlock it from the toolbar to make changes.
+        </div>
+      )}
       {/* Auto Crop */}
       <div
-        className="px-3 py-2.5 border-b border-gray-200 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer"
-        onClick={onToggleAutoCrop}
+        className={`px-3 py-2.5 border-b border-gray-200 flex items-center justify-between transition-colors ${
+          item.locked ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50 cursor-pointer"
+        }`}
+        onClick={item.locked ? undefined : onToggleAutoCrop}
       >
         <div>
           <div className="font-medium text-gray-900 text-[12px]">Auto Crop</div>
@@ -303,7 +313,7 @@ export default function PropertiesPanel({
       {/* Number of Copies */}
       <div className="px-3 py-2.5 border-b border-gray-200">
         <div className="text-[12px] font-medium text-gray-900 mb-2">Number of Copies</div>
-        <CopiesInput value={item.copies} onChange={onSetCopies} />
+        <CopiesInput value={item.copies} onChange={onSetCopies} disabled={item.locked} />
       </div>
 
       {/* Dimensions */}
@@ -314,15 +324,16 @@ export default function PropertiesPanel({
             className={`text-[12px] font-medium transition-colors hover:underline ${
               item.linked ? "text-blue-600" : "text-gray-400"
             }`}
-            onClick={onToggleLinked}
+            onClick={item.locked ? undefined : onToggleLinked}
+            disabled={item.locked}
             title={item.linked ? "Width and height change together — click to size them separately" : "Click to keep width and height in proportion"}
           >
             {item.linked ? "Unlink" : "Link"}
           </button>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <DimInput label="Width (in)" value={item.widthIn} onChange={onSetWidthIn} />
-          <DimInput label="Height (in)" value={item.heightIn} onChange={onSetHeightIn} />
+          <DimInput label="Width (in)" value={item.widthIn} onChange={onSetWidthIn} disabled={item.locked} />
+          <DimInput label="Height (in)" value={item.heightIn} onChange={onSetHeightIn} disabled={item.locked} />
         </div>
       </div>
 
@@ -330,8 +341,8 @@ export default function PropertiesPanel({
       <div className="px-3 py-2.5">
         <div className="text-[12px] font-medium text-gray-900 mb-2">Position</div>
         <div className="grid grid-cols-2 gap-2">
-          <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} min={0} />
-          <DimInput label="Y Long" value={item.posY} onChange={onSetPosY} min={0} />
+          <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} min={0} disabled={item.locked} />
+          <DimInput label="Y Long" value={item.posY} onChange={onSetPosY} min={0} disabled={item.locked} />
         </div>
       </div>
     </div>

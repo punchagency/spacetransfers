@@ -97,9 +97,21 @@ export const executeBoardCommands = async (
   const ctx = (): BoardContext => caps.getContext();
 
   /** Applies `fn` to every targeted item. Returns how many were touched. */
-  const mutate = (fn: (item: ArtboardItem, ctx: BoardContext) => ArtboardItem): number => {
+  /**
+   * Applies `fn` to the targeted pieces. Locked pieces are skipped: a lock holds
+   * against the AI box exactly as it does against the toolbar — except for the
+   * lock command itself, which is how a piece gets unlocked.
+   */
+  const mutate = (
+    fn: (item: ArtboardItem, ctx: BoardContext) => ArtboardItem,
+    options: { includeLocked?: boolean } = {},
+  ): number => {
     const context = ctx();
-    const ids = new Set(context.targetIds);
+    const ids = new Set(
+      context.targetIds.filter(
+        (id) => options.includeLocked || !context.items.find((it) => it.id === id)?.locked,
+      ),
+    );
     if (ids.size === 0) return 0;
     commitOnce();
     caps.setItems((prev) => prev.map((it) => (ids.has(it.id) ? fn(it, context) : it)));
@@ -158,29 +170,46 @@ export const executeBoardCommands = async (
 
       case "delete": {
         const context = ctx();
+        // Locked pieces survive a delete, from here as from the toolbar.
+        const lockedKept = (ids: number[]) =>
+          ids.filter((id) => context.items.find((it) => it.id === id)?.locked).length;
+        const keptNote = (kept: number) =>
+          kept ? ` ${plural(kept, "locked image")} kept — unlock ${kept === 1 ? "it" : "them"} to delete.` : "";
         if (command.scope === "all") {
           if (!context.items.length) {
             receipts.push("The board is already empty.");
             break;
           }
+          const kept = lockedKept(context.items.map((it) => it.id));
+          const count = context.items.length - kept;
+          if (count === 0) {
+            receipts.push(`Everything on the board is locked.${keptNote(kept)}`);
+            break;
+          }
           commitOnce();
-          const count = context.items.length;
-          caps.setItems([]);
+          caps.setItems((prev) => prev.filter((it) => it.locked));
           caps.select([]);
           changed = true;
-          receipts.push(`Cleared the board — ${plural(count, "image")} removed.`);
+          receipts.push(`Cleared the board — ${plural(count, "image")} removed.${keptNote(kept)}`);
           break;
         }
-        const ids = new Set(context.targetIds);
-        if (!ids.size) {
+        if (!context.targetIds.length) {
           receipts.push("Nothing is selected.");
+          break;
+        }
+        const kept = lockedKept(context.targetIds);
+        const ids = new Set(
+          context.targetIds.filter((id) => !context.items.find((it) => it.id === id)?.locked),
+        );
+        if (!ids.size) {
+          receipts.push(`Nothing deleted.${keptNote(kept)}`);
           break;
         }
         commitOnce();
         caps.setItems((prev) => prev.filter((it) => !ids.has(it.id)));
         caps.select([]);
         changed = true;
-        receipts.push(`Deleted ${plural(ids.size, "image")}.`);
+        receipts.push(`Deleted ${plural(ids.size, "image")}.${keptNote(kept)}`);
         break;
       }
 
@@ -381,7 +410,7 @@ export const executeBoardCommands = async (
       }
 
       case "lock": {
-        const count = mutate((item) => ({ ...item, locked: command.value }));
+        const count = mutate((item) => ({ ...item, locked: command.value }), { includeLocked: true });
         if (!count) {
           receipts.push("Select an image first.");
           break;

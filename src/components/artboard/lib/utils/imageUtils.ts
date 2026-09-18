@@ -205,3 +205,42 @@ export const loadImageSize = (file: File): Promise<{ widthPx: number; heightPx: 
     img.src = url;
   });
 };
+
+/**
+ * Loads an image by URL and reports its pixel size and whether it has a solid
+ * background. The background test samples the four corners of a 64px copy:
+ * corners that are (almost) fully transparent mean the art is already cut out.
+ * Used by the toolbar to label a single image and by the BG remover / DPI
+ * enhancer to decide which of several selected images to process.
+ */
+export const readImageInfo = (
+  url: string,
+): Promise<{ widthPx: number; heightPx: number; hasBackground: boolean } | null> =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const info = { widthPx: img.naturalWidth, heightPx: img.naturalHeight, hasBackground: true };
+      try {
+        const size = 64;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return resolve(info);
+        ctx.drawImage(img, 0, 0, size, size);
+        const corners = [
+          ctx.getImageData(0, 0, 1, 1).data[3],
+          ctx.getImageData(size - 1, 0, 1, 1).data[3],
+          ctx.getImageData(0, size - 1, 1, 1).data[3],
+          ctx.getImageData(size - 1, size - 1, 1, 1).data[3],
+        ];
+        const avgAlpha = corners.reduce((s, a) => s + a, 0) / corners.length;
+        resolve({ ...info, hasBackground: avgAlpha >= 10 });
+      } catch {
+        resolve(info);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });

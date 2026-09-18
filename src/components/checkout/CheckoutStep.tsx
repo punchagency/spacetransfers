@@ -1,6 +1,8 @@
 import { BsPerson } from "react-icons/bs";
 import { IoLocationOutline } from "react-icons/io5";
 import { IoMdCheckmarkCircleOutline } from "react-icons/io";
+import { DPI, UPLOAD_FORMAT_LABELS } from "../../config/artboard.config";
+import { usePricingSettings } from "../../lib/utils/pricingRates";
 
 const REGION_BY_STATE: Record<string, string> = {
   WA:"West",OR:"West",CA:"West",NV:"West",ID:"West",MT:"West",WY:"West",
@@ -45,6 +47,9 @@ export default function CheckoutStep({
   setFormData,
   errors,
 }: CheckoutStepProps) {
+  // The roll and the minimum are admin settings; the copy reads them rather than
+  // stating numbers that go stale the moment either changes.
+  const { sheetWidthIn, minSheetLengthIn } = usePricingSettings();
   const detectedRegion =
     formData.state.trim().length === 2
       ? REGION_BY_STATE[formData.state.trim().toUpperCase()] ?? null
@@ -259,25 +264,26 @@ export default function CheckoutStep({
         <hr className="border-gray-200 mb-4" />
         <div className="space-y-2">
           <h4 className="font-normal text-[11px]">DTF Printing Guidelines</h4>
+          {/*
+            Every line here is read from where the rule actually lives. This used
+            to promise a 12 x 16in print area (sheets are the roll width by any
+            length), list four formats of the twelve accepted, ask for CMYK (the
+            editor converts CMYK to RGB) and set a 150 DPI minimum the editor
+            flags as low.
+          */}
           <div className="space-y-2.5 text-sm text-gray-700">
-            <div className="flex items-center text-[10px] gap-2">
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>Minimum resolution: 150 DPI (300 DPI recommended)</span>
-            </div>
-            <div className="flex items-center text-[10px] gap-2">                                                                                                             
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>Maximum print area: 12" x 16" for standard transfers</span>
-            </div>
-            <div className="flex items-center text-[10px] gap-2">
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>
-                Supported formats: PNG, PSD, AI, PDF with transparency
-              </span>
-            </div>
-            <div className="flex items-center text-[10px] gap-2">
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>Color mode: CMYK preferred, RGB will be converted</span>
-            </div>
+            {[
+              `Sheet size: ${sheetWidthIn}" wide (the roll width), any length — billed from ${minSheetLengthIn}" minimum`,
+              `Resolution: ${DPI.THRESHOLD} DPI for sharp prints — anything lower is flagged on your sheet`,
+              `Formats: ${UPLOAD_FORMAT_LABELS.join(", ")}`,
+              "Transparency: fades and see-through areas don't print as shown — they're flagged on your sheet",
+              "Color: RGB — CMYK files are converted to RGB automatically",
+            ].map((line) => (
+              <div key={line} className="flex items-center text-[10px] gap-2">
+                <IoMdCheckmarkCircleOutline className="w-4 h-4 shrink-0 text-green-600" />
+                <span>{line}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>

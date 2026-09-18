@@ -31,6 +31,7 @@ export const getGangsheetSnapshot = (items: any[]): string => {
       flipped: Boolean(it.flipped),
       locked: Boolean(it.locked),
       expanded: Boolean(it.expanded),
+      groupId: it.groupId || null,
     })),
   );
 };

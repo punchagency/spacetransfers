@@ -1,8 +1,17 @@
 import { ArtboardItem } from "../../types";
-import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
-import { computeRenderCopies, getItemFootprint, isSheetFull, resolveDragPlacement } from "../utils/layoutHelpers";
+import { CANVAS, DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import {
+  computeEffectiveDpi,
+  computeRenderCopies,
+  flipGroupHorizontally,
+  getItemFootprint,
+  isSheetFull,
+  resolveDragPlacement,
+  rotateGroupClockwise,
+} from "../utils/layoutHelpers";
 import { autoCropImage } from "../utils/autoCrop";
 import { afterPixelEdit, uncroppedSourceOf } from "../utils/imageState";
+import { readImageInfo } from "../utils/imageUtils";
 import type { CommitHistory } from "./useHistory";
 import toast from "react-hot-toast";
 
@@ -17,10 +26,24 @@ const naturalSizeOf = (url: string) =>
     img.src = url;
   });
 
+/** What a BG-removal or DPI run over the selection did, for the summary toast. */
+export interface PixelBatchResult {
+  /** Images changed. */
+  done: number;
+  /** Images that did not need it (already transparent / already 300 DPI). */
+  skipped: number;
+  /** Locked images left alone. */
+  locked: number;
+  failed: number;
+  firstError?: string;
+}
+
 export const useItemActions = (
   items: ArtboardItem[],
   setItems: React.Dispatch<React.SetStateAction<ArtboardItem[]>>,
   selectedId: number | null,
+  /** Everything selected. Toolbar actions apply to all of it, not just the piece last clicked. */
+  selectedIds: ReadonlySet<number>,
   snapToGrid: boolean,
   snapToGridPoint: (value: number) => number,
   canvasWidth: number,
@@ -40,12 +63,93 @@ export const useItemActions = (
   };
   const commit = (tag?: string) => commitHistory?.(tag);
 
+  /**
+   * The pieces an action applies to: everything selected, the clicked one first.
+   *
+   * Toolbar actions used to touch `selectedId` alone, so with three pieces
+   * selected — all showing handles — Delete removed one of them and left two.
+   */
+  const targetIds = (): number[] => {
+    const ids = selectedId == null ? [] : [selectedId];
+    for (const id of selectedIds) if (id !== selectedId) ids.push(id);
+    return ids.filter((id) => items.some((it) => it.id === id));
+  };
+
+  /**
+   * A locked piece is fully locked: it cannot be moved, resized, turned,
+   * flipped, edited or deleted until it is unlocked. Lock used to stop dragging
+   * and nothing else, so a "locked" piece still rotated, took a typed width and
+   * went on being editable.
+   */
+  const UNLOCK_TO_EDIT = "This image is locked. Unlock it to make changes.";
+  const isLocked = (id: number | null) => id != null && Boolean(items.find((it) => it.id === id)?.locked);
+
+  /** Targets that may be changed, with a note when locked ones were left alone. */
+  const editableTargets = (): number[] => {
+    const all = targetIds();
+    const editable = all.filter((id) => !isLocked(id));
+    if (all.length > 0 && editable.length === 0) toast.error(UNLOCK_TO_EDIT, { id: "locked" });
+    else if (editable.length < all.length) {
+      const kept = all.length - editable.length;
+      toast(`${kept} locked ${kept === 1 ? "image was" : "images were"} left unchanged.`, { id: "locked", icon: "🔒" });
+    }
+    return editable;
+  };
+
+  /** Guards a single-piece action (typed size, crop, copies, BG, DPI) against the lock. */
+  const blockedByLock = () => {
+    if (!isLocked(selectedId)) return false;
+    toast.error(UNLOCK_TO_EDIT, { id: "locked" });
+    return true;
+  };
+
+  /**
+   * Splits the pieces an action applies to into whole groups and loose pieces.
+   * A group is only acted on as one when every member is part of the action —
+   * selecting a member selects its group, so in practice that is always.
+   */
+  const splitUnits = (ids: Set<number>) => {
+    const groups = new Map<string, ArtboardItem[]>();
+    const loose = new Set<number>();
+    for (const it of items) {
+      if (!ids.has(it.id)) continue;
+      if (it.groupId) {
+        const list = groups.get(it.groupId) ?? [];
+        list.push(it);
+        groups.set(it.groupId, list);
+      } else loose.add(it.id);
+    }
+    for (const [groupId, members] of groups) {
+      const whole = items.filter((it) => it.groupId === groupId).length === members.length;
+      if (!whole || members.length < 2) {
+        for (const m of members) loose.add(m.id);
+        groups.delete(groupId);
+      }
+    }
+    return { groups: [...groups.values()], loose };
+  };
+
+  /** Applies a whole-group transform to each group, replacing its members in place. */
+  const applyToGroups = (
+    prev: ArtboardItem[],
+    groups: ArtboardItem[][],
+    transform: (members: ArtboardItem[]) => ArtboardItem[],
+  ) => {
+    const replaced = new Map<number, ArtboardItem>();
+    for (const members of groups) {
+      for (const m of transform(members)) replaced.set(m.id, { ...m, gravityActive: !m.pinned });
+    }
+    return prev.map((it) => replaced.get(it.id) ?? it);
+  };
+
   const rotateSelected = () => {
-    if (selectedId == null) return;
+    const targets = new Set(editableTargets());
+    if (targets.size === 0) return;
+    const { groups, loose: ids } = splitUnits(targets);
     commit();
     setItems((prev) =>
-      prev.map((it) => {
-        if (it.id !== selectedId) return it;
+      applyToGroups(prev, groups, (members) => rotateGroupClockwise(members, canvasWidth, marginSize, spacing)).map((it) => {
+        if (!ids.has(it.id)) return it;
         // Each 90° step swaps the visual footprint so the bounding box always
         // matches the rotated orientation. originalWidth/Height are swapped too
         // so autoCrop restore remains consistent after rotation.
@@ -62,31 +166,33 @@ export const useItemActions = (
     );
     emit({
       type: "rotate",
-      id: selectedId,
+      id: selectedId ?? undefined,
       payload: { delta: 90 },
     });
   };
 
+  /** Locks everything selected; if everything already is, unlocks it all. */
   const toggleLockSelected = () => {
-    if (selectedId == null) return;
+    const ids = targetIds();
+    if (ids.length === 0) return;
+    const lock = ids.some((id) => !isLocked(id));
+    const set = new Set(ids);
     commit();
-    setItems((prev) =>
-      prev.map((it) =>
-        it.id === selectedId ? { ...it, locked: !it.locked } : it
-      )
-    );
-    emit({ type: "toggleLock", id: selectedId });
+    setItems((prev) => prev.map((it) => (set.has(it.id) ? { ...it, locked: lock } : it)));
+    emit({ type: "toggleLock", id: selectedId ?? undefined });
   };
 
   const flipSelected = () => {
-    if (selectedId == null) return;
+    const targets = new Set(editableTargets());
+    if (targets.size === 0) return;
+    const { groups, loose: ids } = splitUnits(targets);
     commit();
     setItems((prev) =>
-      prev.map((it) =>
-        it.id === selectedId ? { ...it, flipped: !it.flipped } : it
-      )
+      applyToGroups(prev, groups, (members) => flipGroupHorizontally(members, canvasWidth, marginSize, spacing)).map(
+        (it) => (ids.has(it.id) ? { ...it, flipped: !it.flipped } : it),
+      ),
     );
-    emit({ type: "flip", id: selectedId });
+    emit({ type: "flip", id: selectedId ?? undefined });
   };
 
   /**
@@ -110,7 +216,7 @@ export const useItemActions = (
    * width axis, which a quarter turn leaves alone.
    */
   const toggleAutoCrop = async () => {
-    if (selectedId == null) return;
+    if (selectedId == null || blockedByLock()) return;
     const id = selectedId;
     const item = items.find((it) => it.id === id);
     if (!item) return;
@@ -213,7 +319,7 @@ export const useItemActions = (
   };
 
   const setCopies = (n: number) => {
-    if (selectedId == null) return;
+    if (selectedId == null || blockedByLock()) return;
     const current = items.find((it) => it.id === selectedId);
     if (!current) return;
     const requested = Math.max(1, Math.floor(n));
@@ -255,7 +361,7 @@ export const useItemActions = (
    * the customer is entitled to make while laying out.
    */
   const setWidthIn = (n: number) => {
-    if (selectedId == null) return;
+    if (selectedId == null || blockedByLock()) return;
     commit(`setWidthIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
@@ -279,7 +385,7 @@ export const useItemActions = (
   // Same reasoning as setWidthIn: a linked height that implies an oversized
   // width is permitted rather than rejected.
   const setHeightIn = (n: number) => {
-    if (selectedId == null) return;
+    if (selectedId == null || blockedByLock()) return;
     commit(`setHeightIn-${selectedId}`);
     setItems((prev) =>
       prev.map((it) => {
@@ -310,7 +416,7 @@ export const useItemActions = (
    * aside if they can, and a spot that cannot be cleared is refused.
    */
   const moveSelected = (axis: "posX" | "posY", n: number) => {
-    if (selectedId == null) return;
+    if (selectedId == null || blockedByLock()) return;
     const id = selectedId;
     const item = items.find((it) => it.id === id);
     if (!item) return;
@@ -322,14 +428,18 @@ export const useItemActions = (
         : Math.min(Math.max(raw, marginSize), Math.max(marginSize, MAX_SHEET_HEIGHT_IN - fp.h));
     if (Math.abs(value - item[axis]) < 1e-6) return;
 
-    const projected = items.map((it) => (it.id === id ? { ...it, [axis]: value } : it));
+    // A grouped piece takes its group with it: members keep their places.
+    const moving = item.groupId ? items.filter((it) => it.groupId === item.groupId) : [item];
+    const movingIds = new Set(moving.map((it) => it.id));
+    const delta = value - item[axis];
+    const projected = items.map((it) => (movingIds.has(it.id) ? { ...it, [axis]: it[axis] + delta } : it));
     const { moves, valid } = resolveDragPlacement(
       projected,
-      [id],
+      [...movingIds],
       canvasWidth,
       marginSize,
       spacing,
-      new Map([[id, { posX: item.posX, posY: item.posY }]]),
+      new Map(moving.map((it) => [it.id, { posX: it.posX, posY: it.posY }])),
     );
     if (!valid) {
       toast.error("That position overlaps other artwork. Try a clear spot.");
@@ -339,7 +449,7 @@ export const useItemActions = (
     commit(`${axis === "posX" ? "setPosX" : "setPosY"}-${id}`);
     setItems((prev) =>
       prev.map((it) => {
-        if (it.id === id) return { ...it, [axis]: value, pinned: true };
+        if (movingIds.has(it.id)) return { ...it, [axis]: it[axis] + delta, pinned: true };
         const mv = moves.get(it.id);
         return mv ? { ...it, posX: mv.posX, posY: mv.posY, pinned: true } : it;
       }),
@@ -361,100 +471,157 @@ export const useItemActions = (
     emit({ type: "toggleExpand", id: selectedId });
   };
 
-  const removeBg = async (onProgress?: (phase: string, pct: number) => void) => {
-    if (selectedId == null) return;
-    const item = items.find((it) => it.id === selectedId);
-    if (!item) return;
-    commit();
+  /**
+   * Runs a pixel edit over every selected, unlocked image, one after another,
+   * so several images can be cleaned up in one click. `needsIt` inspects an
+   * image and says whether the edit applies; `run` does it and hands the
+   * result to `apply`. The whole run is one undo step (history is committed
+   * once, just before the first change lands), and one image failing does not
+   * stop the rest.
+   */
+  const runPixelBatch = async (
+    needsIt: (it: ArtboardItem) => Promise<boolean>,
+    run: (it: ArtboardItem, label: string, apply: (update: (it: ArtboardItem) => ArtboardItem) => void) => Promise<void>,
+  ): Promise<PixelBatchResult> => {
+    const all = targetIds();
+    const locked = all.filter((id) => isLocked(id)).length;
+    if (all.length > 0 && locked === all.length) throw new Error(UNLOCK_TO_EDIT);
+    const result: PixelBatchResult = { done: 0, skipped: 0, locked, failed: 0 };
 
-    const { removeBackgroundAI } = await import("../utils/bgRemover");
-    const result = await removeBackgroundAI(item.url, onProgress);
+    const queue: ArtboardItem[] = [];
+    for (const id of all) {
+      const it = items.find((x) => x.id === id);
+      if (!it || it.locked) continue;
+      if (await needsIt(it)) queue.push(it);
+      else result.skipped += 1;
+    }
 
-    setItems((prev) =>
-      prev.map((it) => {
-        if (it.id !== selectedId) return it;
-        // The cutout is trimmed to the subject's bounding box, so the box
-        // shrinks by the trim ratio while the SUBJECT keeps its exact
-        // physical print size and stays centered where it was — nothing
-        // visually jumps or rescales. At odd rotations widthIn/heightIn are
-        // swapped relative to the image's own axes (see rotateSelected), so
-        // the trim ratios are applied along the correct axis.
-        const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
-        const scaleW = result.originalWidthPx > 0 ? result.widthPx / result.originalWidthPx : 1;
-        const scaleH = result.originalHeightPx > 0 ? result.heightPx / result.originalHeightPx : 1;
-        const newWidthIn = it.widthIn * (rotOdd ? scaleH : scaleW);
-        const newHeightIn = it.heightIn * (rotOdd ? scaleW : scaleH);
-        return {
-          ...it,
-          // The full-resolution cutout is shown, printed, and becomes the
-          // uncropped source, with its real pixel counts so DPI stays truthful.
-          ...afterPixelEdit(result.dataUrl, result.widthPx, result.heightPx),
-          widthIn: newWidthIn,
-          heightIn: newHeightIn,
-          posX: it.posX + (it.widthIn - newWidthIn) / 2,
-          posY: it.posY + (it.heightIn - newHeightIn) / 2,
-          // originalUrl must stay as the pre-removal Cloudinary URL so the
-          // checkout assetId resolves to the original DB record, not a data URL.
-          originalUrl: it.originalUrl || it.url,
-          originalWidthIn: it.widthIn,
-          originalHeightIn: it.heightIn,
-          autoCrop: true,
-        };
-      })
-    );
-    emit({ type: "removeBg", id: selectedId });
-  };
-
-  const deleteSelected = () => {
-    if (selectedId == null) return;
-    commit();
-    setItems((prev) => {
-      const snapshot = prev.find((it) => it.id === selectedId);
-      const next = prev.filter((it) => it.id !== selectedId);
-      if (snapshot) {
-        emit({
-          type: "delete",
-          id: selectedId,
-          payload: { item: snapshot },
-        });
-      } else {
-        emit({ type: "delete", id: selectedId });
+    let committed = false;
+    for (let i = 0; i < queue.length; i++) {
+      const target = queue[i];
+      const label = queue.length > 1 ? `Image ${i + 1} of ${queue.length} · ` : "";
+      const apply = (update: (it: ArtboardItem) => ArtboardItem) => {
+        if (!committed) { commit(); committed = true; }
+        setItems((prev) => prev.map((it) => (it.id === target.id ? update(it) : it)));
+      };
+      try {
+        await run(target, label, apply);
+        result.done += 1;
+      } catch (err) {
+        result.failed += 1;
+        result.firstError ??= err instanceof Error ? err.message : String(err);
       }
-      return next;
-    });
+    }
+    return result;
   };
 
-  const increaseDpi = async (scale = 2) => {
-    if (selectedId == null) return;
-    const item = items.find((it) => it.id === selectedId);
-    if (!item) return;
-
-    const { upscaleImageAI } = await import("../utils/upscaler");
-    const result = await upscaleImageAI(item.url, Math.max(2, Math.round(scale)));
-
-    commit(`increaseDpi-${selectedId}`);
-    setItems((prev) =>
-      prev.map((it) => {
-        if (it.id !== selectedId) return it;
-        // Physical placement is unchanged — only the image source and DPI
-        // metadata are updated so the item stays in place on the artboard.
-        // At odd rotations the image's width axis is displayed along heightIn
-        // (rotateSelected swaps the dims), so measure against that axis.
-        const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
-        const widthAxisIn = rotOdd ? it.heightIn : it.widthIn;
-        const newDpi = widthAxisIn > 0 ? Math.round(result.widthPx / widthAxisIn) : 300;
-        return {
-          ...it,
-          // Shown, printed (checkout sends croppedUrl), and the new uncropped
-          // source — without all three the print or a later crop toggle would
-          // go back to the lower-resolution image.
-          ...afterPixelEdit(result.upscaledUrl, result.widthPx, result.heightPx),
-          dpi: newDpi,
-          originalUrl: it.originalUrl || it.url,
-        };
-      }),
+  /** Removes the background from every selected image that has one. */
+  const removeBg = async (onProgress?: (phase: string, pct: number) => void) => {
+    const { removeBackgroundAI } = await import("../utils/bgRemover");
+    return runPixelBatch(
+      async (it) => (await readImageInfo(it.url))?.hasBackground ?? true,
+      async (item, label, apply) => {
+        const result = await removeBackgroundAI(item.url, (phase, pct) => onProgress?.(label + phase, pct));
+        apply((it) => {
+          // The cutout is trimmed to the subject's bounding box, so the box
+          // shrinks by the trim ratio while the SUBJECT keeps its exact
+          // physical print size and stays centered where it was — nothing
+          // visually jumps or rescales. At odd rotations widthIn/heightIn are
+          // swapped relative to the image's own axes (see rotateSelected), so
+          // the trim ratios are applied along the correct axis.
+          const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
+          const scaleW = result.originalWidthPx > 0 ? result.widthPx / result.originalWidthPx : 1;
+          const scaleH = result.originalHeightPx > 0 ? result.heightPx / result.originalHeightPx : 1;
+          const newWidthIn = it.widthIn * (rotOdd ? scaleH : scaleW);
+          const newHeightIn = it.heightIn * (rotOdd ? scaleW : scaleH);
+          return {
+            ...it,
+            // The full-resolution cutout is shown, printed, and becomes the
+            // uncropped source, with its real pixel counts so DPI stays truthful.
+            ...afterPixelEdit(result.dataUrl, result.widthPx, result.heightPx),
+            widthIn: newWidthIn,
+            heightIn: newHeightIn,
+            posX: it.posX + (it.widthIn - newWidthIn) / 2,
+            posY: it.posY + (it.heightIn - newHeightIn) / 2,
+            // originalUrl must stay as the pre-removal Cloudinary URL so the
+            // checkout assetId resolves to the original DB record, not a data URL.
+            originalUrl: it.originalUrl || it.url,
+            originalWidthIn: it.widthIn,
+            originalHeightIn: it.heightIn,
+            autoCrop: true,
+          };
+        });
+        emit({ type: "removeBg", id: item.id });
+      },
     );
-    emit({ type: "increaseDpi", id: selectedId, payload: { scale: result.scale, widthPx: result.widthPx } });
+  };
+
+  /** Deletes everything selected except locked pieces. Returns how many went. */
+  const deleteSelected = (): number => {
+    const ids = new Set(editableTargets());
+    if (ids.size === 0) return 0;
+    commit();
+    const removed = items.filter((it) => ids.has(it.id));
+    setItems((prev) => prev.filter((it) => !ids.has(it.id)));
+    for (const snapshot of removed) {
+      emit({ type: "delete", id: snapshot.id, payload: { item: snapshot } });
+    }
+    return ids.size;
+  };
+
+  /**
+   * Effective DPI of an image at its current print size, measured from the
+   * loaded pixels (as the item's own badge does), falling back to stored sizes.
+   */
+  const measuredDpi = async (it: ArtboardItem): Promise<number | null> => {
+    const info = await readImageInfo(it.url);
+    const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
+    const widthAxisIn = rotOdd ? it.heightIn : it.widthIn;
+    if (info && widthAxisIn > 0) return Math.round(info.widthPx / widthAxisIn);
+    return computeEffectiveDpi(it);
+  };
+
+  /**
+   * Upscales every selected image that prints below 300 DPI, each by the
+   * factor it needs to reach 300 at its current size (2x–8x). Images already
+   * at 300 or more are left alone.
+   */
+  const increaseDpi = async (onProgress?: (phase: string) => void) => {
+    const { upscaleImageAI } = await import("../utils/upscaler");
+    const dpiOf = new Map<number, number | null>();
+    return runPixelBatch(
+      async (it) => {
+        const dpi = await measuredDpi(it);
+        dpiOf.set(it.id, dpi);
+        // Unknown DPI is offered the enhancer too — the badge flags it as a risk.
+        return dpi == null || dpi < DPI.THRESHOLD;
+      },
+      async (item, label, apply) => {
+        onProgress?.(label + "Enhancing…");
+        const current = dpiOf.get(item.id) || 72;
+        const scale = Math.min(8, Math.max(2, Math.ceil(DPI.THRESHOLD / current)));
+        const result = await upscaleImageAI(item.url, scale);
+        apply((it) => {
+          // Physical placement is unchanged — only the image source and DPI
+          // metadata are updated so the item stays in place on the artboard.
+          // At odd rotations the image's width axis is displayed along heightIn
+          // (rotateSelected swaps the dims), so measure against that axis.
+          const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
+          const widthAxisIn = rotOdd ? it.heightIn : it.widthIn;
+          const newDpi = widthAxisIn > 0 ? Math.round(result.widthPx / widthAxisIn) : DPI.THRESHOLD;
+          return {
+            ...it,
+            // Shown, printed (checkout sends croppedUrl), and the new uncropped
+            // source — without all three the print or a later crop toggle would
+            // go back to the lower-resolution image.
+            ...afterPixelEdit(result.upscaledUrl, result.widthPx, result.heightPx),
+            dpi: newDpi,
+            originalUrl: it.originalUrl || it.url,
+          };
+        });
+        emit({ type: "increaseDpi", id: item.id, payload: { scale: result.scale, widthPx: result.widthPx } });
+      },
+    );
   };
 
   return {

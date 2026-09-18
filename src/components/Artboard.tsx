@@ -46,7 +46,6 @@ export default function Artboard({
   onUpdateSetting,
   onDataChange,
   initialData,
-  onAddToCart,
   onHistoryChange,
 }: ArtboardProps) {
   const [zoom, setZoom] = useState(1);
@@ -57,7 +56,6 @@ export default function Artboard({
   const [showProperties, setShowProperties] = useState<Record<number, boolean>>(
     {},
   );
-  const [addedToCart, setAddedToCart] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   /*
@@ -250,6 +248,7 @@ export default function Artboard({
     items,
     setItems,
     selectedId,
+    selectedIds,
     snapToGrid,
     snapToGridPoint,
     canvasWidth,
@@ -258,6 +257,36 @@ export default function Artboard({
     onActionPerformed,
     history.commit,
   );
+
+  /**
+   * Deletes the selection. Selection is only cleared when something went —
+   * locked pieces stay, and stay selected so it is clear which ones they are.
+   */
+  const deleteSelection = useCallback(() => {
+    const removed = itemActions.deleteSelected();
+    if (removed > 0) {
+      setSelectedId(null);
+      setSelectedIds(new Set());
+    }
+  }, [itemActions]);
+
+  /*
+   * Delete and Backspace remove the selection — what every design tool does.
+   * There was no keyboard delete at all.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (!shortcutsEnabled || isTypingTarget(e.target)) return;
+      if (selectedId == null && selectedIds.size === 0) return;
+      e.preventDefault();
+      deleteSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteSelection, shortcutsEnabled, selectedId, selectedIds]);
+
   const {
     handleResizeStart,
     handleDragStart,
@@ -402,18 +431,20 @@ export default function Artboard({
   // open at a time.
   const [aiPanelItemId, setAiPanelItemId] = useState<number | null>(null);
 
-  // Close the panel (and cancel any run) whenever the primary selection changes
-  // or the item disappears, so a stale panel can never linger on a deselected
-  // or deleted image. Opening for a fresh image starts a clean transcript.
+  // Close the panel (and cancel any run) whenever the primary selection changes,
+  // the item disappears, or a second image joins the selection (AI edits one
+  // image at a time), so a stale panel can never linger on a deselected or
+  // deleted image. Opening for a fresh image starts a clean transcript.
+  const multiSelected = selectedIds.size > 1;
   useEffect(() => {
-    if (aiPanelItemId != null && aiPanelItemId !== selectedId) {
+    if (aiPanelItemId != null && (aiPanelItemId !== selectedId || multiSelected)) {
       setAiPanelItemId(null);
       ai.cancel();
     }
     // Only the selection change should trigger this; reading the latest
     // aiPanelItemId/ai from the closure is exactly what we want.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
+  }, [selectedId, multiSelected]);
 
   // The item the panel is open for, resolved once here so the bridge can carry
   // its image and edit chain without the panel needing to look items up.
@@ -445,75 +476,102 @@ export default function Artboard({
     },
   };
 
+  /**
+   * Duplicates everything selected, and selects the copies.
+   *
+   * It used to duplicate only the piece last clicked, however many were
+   * selected. A locked piece may be duplicated — the copy starts unlocked, since
+   * it is a new piece the customer has not locked.
+   */
   const duplicateSelected = () => {
-    if (selectedId == null) return;
+    const sourceIds = [
+      ...(selectedId == null ? [] : [selectedId]),
+      ...[...selectedIds].filter((id) => id !== selectedId),
+    ];
+    const sources = sourceIds
+      .map((id) => items.find((it) => it.id === id))
+      .filter((it): it is NonNullable<typeof it> => Boolean(it));
+    if (sources.length === 0) return;
     if (isSheetFull(items as any)) {
       toast.error(
         `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
       );
       return;
     }
-    const target = items.find((it) => it.id === selectedId);
-    if (!target) return;
     history.commit();
-    const newId = counter + 1;
-    setCounter(newId);
-    const copy = {
-      ...target,
-      id: newId,
-      posX: target.posX + 0.5,
-      posY: target.posY + 0.5,
-      gravityActive: true,
+    let nextId = counter;
+    const newGroupIds = new Map<string, string>();
+    const copyGroupId = (groupId?: string) => {
+      if (!groupId) return undefined;
+      if (!newGroupIds.has(groupId)) newGroupIds.set(groupId, `g-${Date.now().toString(36)}-${newGroupIds.size}`);
+      return newGroupIds.get(groupId);
     };
+    const copies = sources.map((source) => ({
+      ...source,
+      id: ++nextId,
+      groupId: copyGroupId(source.groupId),
+      posX: source.posX + 0.5,
+      posY: source.posY + 0.5,
+      locked: false,
+      pinned: false,
+      gravityActive: true,
+    }));
+    setCounter(nextId);
     setItems((prev) => {
-      const idx = prev.findIndex((it) => it.id === selectedId);
       const next = [...prev];
-      next.splice(idx === -1 ? next.length : idx + 1, 0, copy);
+      // Each copy right after its source, so it stacks where you expect.
+      for (const copy of copies) {
+        const sourceIndex = next.findIndex((it) => it.id === sources[copies.indexOf(copy)].id);
+        next.splice(sourceIndex === -1 ? next.length : sourceIndex + 1, 0, copy);
+      }
       return next;
     });
-    // The copy alone is selected. Setting only the primary left the original in
+    // The copies alone are selected. Setting only the primary left the original in
     // the multi-selection too, so both showed handles.
-    setSelectedId(newId);
-    setSelectedIds(new Set([newId]));
+    setSelectedId(copies[0].id);
+    setSelectedIds(new Set(copies.map((c) => c.id)));
   };
 
-  const handleLinkSelected = () => {
-    const selectedItems = items.filter(
-      (it) => selectedIds.has(it.id) || it.id === selectedId,
-    );
-    // De-dupe by ID
-    const uniqueSelected = Array.from(
-      new Map(selectedItems.map((item) => [item.id, item])).values(),
-    );
+  /** Everything selected, the clicked piece first. */
+  const selectionIds = [
+    ...(selectedId == null ? [] : [selectedId]),
+    ...[...selectedIds].filter((id) => id !== selectedId),
+  ];
+  const selectedPieces = selectionIds
+    .map((id) => items.find((it) => it.id === id))
+    .filter((it): it is NonNullable<typeof it> => Boolean(it));
 
-    if (uniqueSelected.length < 2) return;
+  /**
+   * What the toolbar's Group button would do: bundle the selection, split the
+   * group it is, or nothing (a single loose piece has nothing to group with).
+   *
+   * This button was "Link", and merged two selected copies of one image into a
+   * single piece with copies — a second meaning for a word the properties panel
+   * already used for keeping proportions, and with one piece selected it did
+   * nothing at all.
+   */
+  const groupAction: "group" | "ungroup" | null = (() => {
+    if (selectedPieces.length === 0) return null;
+    const groupIds = new Set(selectedPieces.map((it) => it.groupId ?? `loose-${it.id}`));
+    if (groupIds.size === 1 && selectedPieces[0].groupId) return "ungroup";
+    return selectedPieces.length >= 2 ? "group" : null;
+  })();
 
-    // Check if all are the same image URL
-    const firstUrl = uniqueSelected[0].url;
-    const allSame = uniqueSelected.every((it) => it.url === firstUrl);
+  const groupSelection = () => {
+    if (selectedPieces.length < 2) return;
+    const groupId = `g-${Date.now().toString(36)}`;
+    const ids = new Set(selectedPieces.map((it) => it.id));
+    history.commit();
+    setItems((prev) => prev.map((it) => (ids.has(it.id) ? { ...it, groupId } : it)));
+    toast.success(`${ids.size} images grouped — they now move as one.`, { id: "group" });
+  };
 
-    if (allSame) {
-      history.commit();
-      const totalCopies = uniqueSelected.reduce(
-        (sum, it) => sum + it.copies,
-        0,
-      );
-      const primary = uniqueSelected[0];
-
-      const mergedItem = {
-        ...primary,
-        copies: totalCopies,
-        id: Date.now(),
-        linked: false, // Reset link state
-      };
-
-      const selectedIdSet = new Set(uniqueSelected.map((it) => it.id));
-      const remainingItems = items.filter((it) => !selectedIdSet.has(it.id));
-
-      setItems([...remainingItems, mergedItem]);
-      setSelectedId(mergedItem.id);
-      setSelectedIds(new Set([mergedItem.id]));
-    }
+  const ungroupSelection = () => {
+    const ids = new Set(selectedPieces.map((it) => it.id));
+    if (ids.size === 0) return;
+    history.commit();
+    setItems((prev) => prev.map((it) => (ids.has(it.id) ? { ...it, groupId: undefined } : it)));
+    toast.success("Ungrouped.", { id: "group" });
   };
 
   return (
@@ -572,7 +630,6 @@ export default function Artboard({
           selectedId={selectedId}
           selectedIds={selectedIds}
           showProperties={showProperties}
-          addedToCart={addedToCart}
           onWheel={(e) => {
             // Zoom disabled
             if (e.ctrlKey || e.metaKey) e.preventDefault();
@@ -586,17 +643,25 @@ export default function Artboard({
             setShowProperties({});
           }}
           onItemSelect={(id, multi) => {
+            const clicked = items.find((it) => it.id === id);
+            const unit = clicked?.groupId
+              ? items.filter((it) => it.groupId === clicked.groupId).map((it) => it.id)
+              : [id];
             if (multi) {
-              setSelectedIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id);
-                else next.add(id);
-                return next;
-              });
-              setSelectedId(id); // Update primary focus to latest clicked
+              const next = new Set(selectedIds);
+              if (selectedId != null) next.add(selectedId);
+              const removing = unit.every((u) => next.has(u));
+              for (const u of unit) {
+                if (removing) next.delete(u);
+                else next.add(u);
+              }
+              setSelectedIds(next);
+              // Deselecting used to leave the deselected piece as the one the
+              // toolbar acted on.
+              setSelectedId(removing ? ([...next][0] ?? null) : id);
             } else {
               setSelectedId(id);
-              setSelectedIds(new Set([id]));
+              setSelectedIds(new Set(unit));
             }
             setShowProperties({});
           }}
@@ -604,27 +669,10 @@ export default function Artboard({
             setShowProperties((prev) => ({ ...prev, [id]: true }))
           }
           itemActions={itemActions}
-          onLink={handleLinkSelected}
+          groupAction={groupAction}
+          onGroup={groupAction === "ungroup" ? ungroupSelection : groupSelection}
           onDuplicate={duplicateSelected}
-          onDelete={() => {
-            itemActions.deleteSelected();
-            setSelectedId(null);
-            setSelectedIds(new Set());
-          }}
-          onAddToCart={(it) => {
-            if (onAddToCart && !addedToCart.has(it.id)) {
-              onAddToCart({
-                id: it.id,
-                name: it.name,
-                widthIn: it.widthIn,
-                heightIn: it.heightIn,
-                copies: it.copies,
-                price: it.price,
-                url: it.url,
-              });
-              setAddedToCart((prev) => new Set(prev).add(it.id));
-            }
-          }}
+          onDelete={deleteSelection}
           onCloseProperties={() => setShowProperties({})}
           onRemoveBg={itemActions.removeBg}
           onDragStart={handleDragStart}

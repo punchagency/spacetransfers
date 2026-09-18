@@ -610,6 +610,8 @@ export default function Editor() {
       flowCols: typeof it.flowCols === "number" && it.flowCols >= 1 ? it.flowCols : undefined,
       pinned: Boolean(it.pinned),
       locked: Boolean(it.locked),
+      // Pieces bundled to act as one reopen as a group.
+      groupId: typeof it.groupId === "string" && it.groupId ? it.groupId : undefined,
     }));
     return { normalizedItems, mappedItems };
   };
@@ -830,6 +832,7 @@ export default function Editor() {
               flowCols: typeof it.flowCols === "number" && it.flowCols >= 1 ? it.flowCols : undefined,
               pinned: Boolean(it.pinned),
               linked: Boolean(it.linked),
+              groupId: typeof it.groupId === "string" && it.groupId ? it.groupId : undefined,
               price: 0,
               originalUrl,
               uncroppedUrl,
@@ -1674,7 +1677,6 @@ export default function Editor() {
         onDataChange={setArtboardData}
         initialData={loadedDesignData}
         onHistoryChange={setHistoryState}
-        onAddToCart={(item) => setCartItems((prev) => [...prev, item])}
       />
       <Sidebar
         isOpen={isSidebarOpen}

@@ -128,7 +128,8 @@ export const useMouseInteractions = (
   const handleResizeStart = (e: React.MouseEvent, itemId: number) => {
     e.stopPropagation();
     const item = itemsRef.current.find((it) => it.id === itemId);
-    if (!item) return;
+    // A locked piece keeps its size, like its position.
+    if (!item || item.locked) return;
     commitHistory?.();
     const startData = {
       x: e.clientX,
@@ -159,11 +160,18 @@ export const useMouseInteractions = (
     if (sel && sel.size > 1 && sel.has(itemId)) {
       ids = current.filter((it) => sel.has(it.id) && !it.locked).map((it) => it.id);
       setSelectedId?.(itemId);
+    } else if (item.groupId) {
+      // Grabbing any member of a group takes the whole group, selected or not.
+      ids = current.filter((it) => it.groupId === item.groupId && !it.locked).map((it) => it.id);
+      setSelectedId?.(itemId);
+      setSelectedIds?.(new Set(current.filter((it) => it.groupId === item.groupId).map((it) => it.id)));
     } else {
       ids = [itemId];
       setSelectedId?.(itemId);
       setSelectedIds?.(new Set([itemId]));
     }
+    // A group with a locked member stays put, like the member.
+    if (item.groupId && current.some((it) => it.groupId === item.groupId && it.locked)) return;
     if (ids.length === 0) return;
 
     /**

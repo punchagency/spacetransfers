@@ -79,6 +79,8 @@ export interface ArtboardItem {
    * autoNestStickers is enabled; cleared to 0 when auto-nest is turned off.
    */
   nestRotation?: 0 | 90;
+  /** Pieces sharing a group id are selected, moved, nested, turned and flipped as one. */
+  groupId?: string;
   /**
    * Trail of AI edits applied to this item, oldest first (capped at 10). Each
    * entry stores the prompt and the image as it was *before* that edit — its
@@ -87,6 +89,16 @@ export interface ArtboardItem {
    * useHistory's item snapshots.
    */
   aiHistory?: Array<{ prompt: string; url: string; at: number; snapshot?: ImageSnapshot }>;
+}
+
+/** The selection as the image toolbar sees it. */
+export interface SelectionSummary {
+  /** Pieces selected. */
+  count: number;
+  /** Selected pieces that are not locked. */
+  editable: number;
+  /** Unlocked selected pieces below 300 DPI or with no measurable DPI. */
+  lowDpi: number;
 }
 
 export interface HistoryState {
@@ -118,7 +130,6 @@ export interface ArtboardProps {
   onUpdateSetting?: (key: string, value: boolean | number | string) => void;
   onDataChange?: (data: any) => void;
   initialData?: any;
-  onAddToCart?: (item: any) => void;
   onActionPerformed?: (action: { type: string; id?: number; payload?: any }) => void;
   onHistoryChange?: (state: HistoryState) => void;
   /** Visual-only artboard background. 'transparent' = checkerboard; a hex/named

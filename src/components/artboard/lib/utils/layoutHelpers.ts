@@ -182,6 +182,10 @@ export interface LayoutItem {
   pinned?: boolean;
   locked?: boolean;
   nestRotation?: 0 | 90;
+  /** Pieces sharing a group id move, nest and turn as one. */
+  groupId?: string;
+  /** A collapsed group standing in for its members during layout: never turned by the packer. */
+  rigid?: boolean;
 }
 
 export const getRenderedGroupSize = (
@@ -992,6 +996,7 @@ function freeRectPack(
      * cannot — never on a tie.
      */
     const canRotate =
+      !item.rigid &&
       Math.abs(item.widthIn - item.heightIn) >= 1e-4 &&
       (rotation === "free" || item.widthIn > maxWidth + 1e-6);
 
@@ -1078,7 +1083,218 @@ function freeRectPack(
   return items.map((it) => updatesById.get(it.id) ?? it);
 }
 
+/**
+ * Groups, seen by the layout as single pieces.
+ *
+ * A group is a set of pieces the customer bundled to act as one. Every layout
+ * pass — auto-nest, the displacement that makes room during a drag, the
+ * re-spacing after a spacing change — places pieces one at a time, and would
+ * scatter a group across the sheet. So each group is collapsed into one rigid
+ * block the size of its members' combined footprint, laid out like any other
+ * piece (never turned), and then every member is moved by exactly the offset
+ * its block moved. The arrangement inside a group is never touched.
+ */
+export interface GroupCollapse<T extends LayoutItem> {
+  /** Ungrouped pieces as they are, and one rigid block per group. */
+  items: T[];
+  /** The id the layout sees for a piece: its own, or its group block's. */
+  unitOf: (id: number) => number;
+  /** True when there was a group to collapse. */
+  hasGroups: boolean;
+  /** Pieces after a layout of `items`: members moved by their block's offset. */
+  expand: (laidOut: LayoutItem[]) => T[];
+  /** Per-piece moves from moves keyed by `unitOf` ids. */
+  expandMoves: (
+    moves: Map<number, { posX: number; posY: number }>,
+  ) => Map<number, { posX: number; posY: number }>;
+}
+
+export function collapseGroups<T extends LayoutItem>(
+  items: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): GroupCollapse<T> {
+  const members = new Map<string, T[]>();
+  for (const it of items) {
+    if (!it.groupId) continue;
+    const list = members.get(it.groupId) ?? [];
+    list.push(it);
+    members.set(it.groupId, list);
+  }
+  // A group of one is just a piece.
+  for (const [id, list] of members) if (list.length < 2) members.delete(id);
+
+  if (members.size === 0) {
+    return {
+      items,
+      unitOf: (id) => id,
+      hasGroups: false,
+      expand: (laidOut) => laidOut as T[],
+      expandMoves: (moves) => moves,
+    };
+  }
+
+  const unitIdOfGroup = new Map<string, number>();
+  const boxOfUnit = new Map<number, FootprintBox>();
+  const groupOfUnit = new Map<number, string>();
+  let nextUnit = -1;
+  const units: T[] = [];
+  for (const [groupId, list] of members) {
+    const boxes = list.map((it) => getItemFootprint(it, canvasWidthIn, marginIn, gapIn));
+    const x = Math.min(...boxes.map((b) => b.x));
+    const y = Math.min(...boxes.map((b) => b.y));
+    const w = Math.max(...boxes.map((b) => b.x + b.w)) - x;
+    const h = Math.max(...boxes.map((b) => b.y + b.h)) - y;
+    const unitId = nextUnit--;
+    unitIdOfGroup.set(groupId, unitId);
+    boxOfUnit.set(unitId, { x, y, w, h });
+    groupOfUnit.set(unitId, groupId);
+    units.push({
+      ...(list[0] as T),
+      id: unitId,
+      widthIn: w,
+      heightIn: h,
+      posX: x,
+      posY: y,
+      copies: 1,
+      flowCols: undefined,
+      flowStartCol: undefined,
+      flowEndCol: undefined,
+      nestRotation: 0,
+      // A member held in place holds the whole group.
+      pinned: list.some((it) => it.pinned),
+      locked: list.some((it) => it.locked),
+      rigid: true,
+    });
+  }
+
+  const unitOf = (id: number) => {
+    const it = items.find((candidate) => candidate.id === id);
+    return it?.groupId && unitIdOfGroup.has(it.groupId) ? unitIdOfGroup.get(it.groupId)! : id;
+  };
+
+  const shiftMembers = (unitId: number, posX: number, posY: number) => {
+    const box = boxOfUnit.get(unitId)!;
+    const dx = posX - box.x;
+    const dy = posY - box.y;
+    return members.get(groupOfUnit.get(unitId)!)!.map((m) => ({ ...m, posX: m.posX + dx, posY: m.posY + dy }));
+  };
+
+  return {
+    items: [...items.filter((it) => !(it.groupId && members.has(it.groupId))), ...units],
+    unitOf,
+    hasGroups: true,
+    expand: (laidOut) => {
+      const out: T[] = [];
+      for (const it of laidOut) {
+        if (boxOfUnit.has(it.id)) out.push(...shiftMembers(it.id, it.posX, it.posY));
+        else out.push(it as T);
+      }
+      // Keep the caller's order, so nothing downstream sees pieces reshuffled.
+      const byId = new Map(out.map((it) => [it.id, it]));
+      return items.map((it) => byId.get(it.id) ?? it);
+    },
+    expandMoves: (moves) => {
+      const out = new Map<number, { posX: number; posY: number }>();
+      for (const [id, move] of moves) {
+        if (!boxOfUnit.has(id)) {
+          out.set(id, move);
+          continue;
+        }
+        for (const m of shiftMembers(id, move.posX, move.posY)) out.set(m.id, { posX: m.posX, posY: m.posY });
+      }
+      return out;
+    },
+  };
+}
+
+/** The combined footprint of some pieces. */
+export function footprintBounds(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): FootprintBox {
+  const boxes = items.map((it) => getItemFootprint(it, canvasWidthIn, marginIn, gapIn));
+  const x = Math.min(...boxes.map((b) => b.x));
+  const y = Math.min(...boxes.map((b) => b.y));
+  return {
+    x,
+    y,
+    w: Math.max(...boxes.map((b) => b.x + b.w)) - x,
+    h: Math.max(...boxes.map((b) => b.y + b.h)) - y,
+  };
+}
+
+/**
+ * A group turned a quarter clockwise, as one.
+ *
+ * Every member turns in place and its centre swings around the group's centre,
+ * so the arrangement turns with it — turning each member where it stood would
+ * leave the group pointing one way and its pieces another.
+ */
+export function rotateGroupClockwise<T extends LayoutItem & { rotation?: number; originalWidthIn?: number; originalHeightIn?: number }>(
+  members: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): T[] {
+  const box = footprintBounds(members, canvasWidthIn, marginIn, gapIn);
+  const gcx = box.x + box.w / 2;
+  const gcy = box.y + box.h / 2;
+  return members.map((m) => {
+    const fp = getItemFootprint(m, canvasWidthIn, marginIn, gapIn);
+    const dx = fp.x + fp.w / 2 - gcx;
+    const dy = fp.y + fp.h / 2 - gcy;
+    const turned: T = {
+      ...m,
+      rotation: ((m.rotation ?? 0) + 90) % 360,
+      widthIn: m.heightIn,
+      heightIn: m.widthIn,
+      originalWidthIn: m.originalHeightIn,
+      originalHeightIn: m.originalWidthIn,
+      // Columns were chosen for the old shape.
+      flowCols: undefined,
+      flowStartCol: undefined,
+      flowEndCol: undefined,
+    };
+    const next = getItemFootprint(turned, canvasWidthIn, marginIn, gapIn);
+    // Screen coordinates run downward, so a clockwise quarter maps (dx, dy) to (-dy, dx).
+    return { ...turned, posX: gcx - dy - next.w / 2, posY: gcy + dx - next.h / 2 };
+  });
+}
+
+/**
+ * A group mirrored left to right, as one: every member is flipped, and its
+ * position mirrored across the group's centre line.
+ */
+export function flipGroupHorizontally<T extends LayoutItem & { flipped?: boolean }>(
+  members: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): T[] {
+  const box = footprintBounds(members, canvasWidthIn, marginIn, gapIn);
+  return members.map((m) => {
+    const fp = getItemFootprint(m, canvasWidthIn, marginIn, gapIn);
+    return { ...m, flipped: !m.flipped, posX: box.x + box.x + box.w - fp.x - fp.w + (m.posX - fp.x) };
+  });
+}
+
 export const calculateGridLayout = (
+  items: LayoutItem[],
+  canvasWidth: number,
+  spacing: number,
+  autoNestStickers: boolean,
+  margin: number = 0.15
+): LayoutItem[] => {
+  const groups = collapseGroups(items, canvasWidth, margin, Math.max(0, spacing));
+  const laidOut = calculateGridLayoutFlat(groups.items, canvasWidth, spacing, autoNestStickers, margin);
+  return groups.hasGroups ? groups.expand(laidOut) : laidOut;
+};
+
+const calculateGridLayoutFlat = (
   items: LayoutItem[],
   canvasWidth: number,
   spacing: number,
@@ -1403,6 +1619,52 @@ export function fitItemToPrintableArea<T extends LayoutItem>(
   return { item: next, scaled, changed: next !== item };
 }
 
+/**
+ * Groups brought inside the margins as one.
+ *
+ * The per-piece check clamps each piece on its own, which would pull one member
+ * of a group back from the edge and leave the rest where they were. Each group
+ * is moved by a single offset instead, so its arrangement survives. Returns the
+ * same array when nothing moved.
+ */
+export function fitGroupsToPrintableArea<T extends LayoutItem>(
+  items: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): { items: T[]; movedIds: Set<number> } {
+  const margin = Math.max(0, marginIn);
+  const movedIds = new Set<number>();
+  const groups = new Map<string, T[]>();
+  for (const it of items) {
+    if (!it.groupId) continue;
+    const list = groups.get(it.groupId) ?? [];
+    list.push(it);
+    groups.set(it.groupId, list);
+  }
+  const shift = new Map<number, { dx: number; dy: number }>();
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const box = footprintBounds(members, canvasWidthIn, margin, gapIn);
+    const maxX = Math.max(margin, canvasWidthIn - margin - box.w);
+    const dx = Math.max(margin, Math.min(box.x, maxX)) - box.x;
+    const dy = Math.max(margin, box.y) - box.y;
+    if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) continue;
+    for (const m of members) {
+      shift.set(m.id, { dx, dy });
+      movedIds.add(m.id);
+    }
+  }
+  if (shift.size === 0) return { items, movedIds };
+  return {
+    items: items.map((it) => {
+      const d = shift.get(it.id);
+      return d ? { ...it, posX: it.posX + d.dx, posY: it.posY + d.dy } : it;
+    }),
+    movedIds,
+  };
+}
+
 const boxesCollide = (a: FootprintBox, b: FootprintBox, gap: number, eps = 1e-4) =>
   a.x < b.x + b.w + gap - eps &&
   a.x + a.w > b.x - gap + eps &&
@@ -1464,6 +1726,42 @@ function findNearestGap(
  * resolution on drop / resize / rotate.
  */
 export function planLocalDisplacement(
+  items: LayoutItem[],
+  activeIds: number[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+  activeOriginById?: Map<number, { posX: number; posY: number }>,
+): Map<number, { posX: number; posY: number }> {
+  const groups = collapseGroups(items, canvasWidthIn, marginIn, Math.max(0, gapIn));
+  if (!groups.hasGroups) {
+    return planLocalDisplacementFlat(items, activeIds, canvasWidthIn, marginIn, gapIn, activeOriginById);
+  }
+  const activeUnits = [...new Set(activeIds.map(groups.unitOf))];
+  // A group's origin is its block at the members' pick-up positions.
+  let unitOrigins: Map<number, { posX: number; posY: number }> | undefined;
+  if (activeOriginById) {
+    unitOrigins = new Map();
+    for (const unitId of activeUnits) {
+      if (unitId >= 0) {
+        const origin = activeOriginById.get(unitId);
+        if (origin) unitOrigins.set(unitId, origin);
+        continue;
+      }
+      const memberOrigins = items
+        .filter((it) => groups.unitOf(it.id) === unitId)
+        .map((it) => activeOriginById.get(it.id) ?? { posX: it.posX, posY: it.posY });
+      unitOrigins.set(unitId, {
+        posX: Math.min(...memberOrigins.map((o) => o.posX)),
+        posY: Math.min(...memberOrigins.map((o) => o.posY)),
+      });
+    }
+  }
+  const moves = planLocalDisplacementFlat(groups.items, activeUnits, canvasWidthIn, marginIn, gapIn, unitOrigins);
+  return groups.expandMoves(moves);
+}
+
+function planLocalDisplacementFlat(
   items: LayoutItem[],
   activeIds: number[],
   canvasWidthIn: number,
@@ -1645,6 +1943,17 @@ export function separateCrowdedItems(
   marginIn: number,
   gapIn: number,
 ): Map<number, { posX: number; posY: number }> {
+  const groups = collapseGroups(items, canvasWidthIn, marginIn, Math.max(0, gapIn));
+  if (!groups.hasGroups) return separateCrowdedItemsFlat(items, canvasWidthIn, marginIn, gapIn);
+  return groups.expandMoves(separateCrowdedItemsFlat(groups.items, canvasWidthIn, marginIn, gapIn));
+}
+
+function separateCrowdedItemsFlat(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): Map<number, { posX: number; posY: number }> {
   const margin = Math.max(0, marginIn);
   const gap = Math.max(0, gapIn);
   const ordered = [...items].sort(
@@ -1760,10 +2069,14 @@ export function resolveDragPlacement(
     }
   }
 
-  // Overlap: no box may sit within `gap` of another once the plan is applied.
+  // Overlap: no box may sit within `gap` of another once the plan is applied —
+  // except two members of one group, whose spacing is the customer's own.
+  const groupOf = new Map(projected.map((it) => [it.id, it.groupId]));
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
       if (!changed.has(boxes[i].id) && !changed.has(boxes[j].id)) continue;
+      const gi = groupOf.get(boxes[i].id);
+      if (gi && gi === groupOf.get(boxes[j].id)) continue;
       if (boxesCollide(boxes[i], boxes[j], gap, eps)) {
         return { moves: new Map(), valid: false };
       }

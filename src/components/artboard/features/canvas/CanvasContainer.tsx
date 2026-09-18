@@ -8,10 +8,11 @@ import EmptyState from "./EmptyState";
 import BulkLoadOverlay from "./BulkLoadOverlay";
 import QueueBadge from "./QueueBadge";
 import ArtboardItem from "../items/ArtboardItem";
-import { ArtboardItem as ArtboardItemType } from "../../types";
+import { ArtboardItem as ArtboardItemType, type SelectionSummary } from "../../types";
 import { CANVAS, UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
-import { getItemVerticalExtent } from "../../lib/utils/layoutHelpers";
+import { footprintBounds, getItemVerticalExtent, isDpiFlagged } from "../../lib/utils/layoutHelpers";
 import type { DropIndicator, PreviewOffset } from "../../lib/hooks/useMouseInteractions";
+import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
 import type { AiPanelBridge } from "../ai";
 import type { FadeVerdict } from "../../lib/utils/fadeCheck";
 
@@ -30,7 +31,6 @@ interface CanvasContainerProps {
   selectedId: number | null;
   selectedIds: Set<number>;
   showProperties: Record<number, boolean>;
-  addedToCart: Set<number>;
   onWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
   onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
   onDragLeave: () => void;
@@ -39,12 +39,14 @@ interface CanvasContainerProps {
   onItemSelect: (id: number, multi?: boolean) => void;
   onToggleProperties: (id: number) => void;
   itemActions: any;
-  onLink: () => void;
+  /** Groups the selection, or ungroups the group it is. */
+  onGroup: () => void;
+  /** What Group would do right now; null when there is nothing to group. */
+  groupAction: "group" | "ungroup" | null;
   onDuplicate: () => void;
   onDelete: () => void;
-  onAddToCart: (item: any) => void;
   onCloseProperties: () => void;
-  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<void>;
+  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
@@ -103,7 +105,6 @@ export default function CanvasContainer({
   selectedId,
   selectedIds,
   showProperties,
-  addedToCart,
   onWheel,
   onDragOver,
   onDragLeave,
@@ -112,10 +113,10 @@ export default function CanvasContainer({
   onItemSelect,
   onToggleProperties,
   itemActions,
-  onLink,
+  onGroup,
+  groupAction,
   onDuplicate,
   onDelete,
-  onAddToCart,
   onCloseProperties,
   onRemoveBg,
   onDragStart,
@@ -356,6 +357,21 @@ export default function CanvasContainer({
    *  - everything, while the viewport height is still unmeasured (first paint),
    *    since a zero-height viewport would cull the entire sheet.
    */
+  /**
+   * What the toolbar needs to know about the whole selection, not just the
+   * piece it hangs off: BG removal and DPI+ act on every selected image, AI on
+   * one image only.
+   */
+  const selectionSummary = useMemo<SelectionSummary>(() => {
+    const picked = items.filter((it) => it.id === selectedId || selectedIds.has(it.id));
+    const editable = picked.filter((it) => !it.locked);
+    return {
+      count: picked.length,
+      editable: editable.length,
+      lowDpi: editable.filter((it) => isDpiFlagged(it)).length,
+    };
+  }, [items, selectedId, selectedIds]);
+
   const visibleItems = useMemo(() => {
     if (items.length < VIRTUALIZE_THRESHOLD) return items;
     if (viewportHeight <= 0) return items;
@@ -554,17 +570,54 @@ export default function CanvasContainer({
                   }}
                 />
               ) : null}
+              {/*
+                A selected group gets one outline around all of it, so it reads
+                as a single thing rather than several separately selected pieces.
+              */}
+              {(() => {
+                const selectedGroups = new Set(
+                  items
+                    .filter((it) => it.groupId && (it.id === selectedId || selectedIds.has(it.id)))
+                    .map((it) => it.groupId as string),
+                );
+                return [...selectedGroups].map((groupId) => {
+                  const members = items.filter((it) => it.groupId === groupId);
+                  if (members.length < 2) return null;
+                  const box = footprintBounds(members, canvasWidth, marginSize, spacing);
+                  const pad = 0.08;
+                  return (
+                    <div
+                      key={`group-${groupId}`}
+                      className="absolute pointer-events-none rounded-md"
+                      style={{
+                        left: `${(box.x - pad) * ppi}px`,
+                        top: `${(box.y - pad) * ppi}px`,
+                        width: `${(box.w + 2 * pad) * ppi}px`,
+                        height: `${(box.h + 2 * pad) * ppi}px`,
+                        border: "2px dashed rgba(37,99,235,0.85)",
+                        zIndex: 5,
+                      }}
+                      aria-hidden
+                    >
+                      <span className="absolute -top-5 left-0 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                        Group · {members.length}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
               {visibleItems.map((it) => (
                 <ArtboardItem
                   key={it.id}
                   item={it}
                   isSelected={selectedId === it.id || selectedIds.has(it.id)}
                   isPrimary={selectedId === it.id}
+                  selection={selectionSummary}
                   showProperties={showProperties[it.id] || false}
-                  addedToCart={addedToCart.has(it.id)}
                   onSelect={(multi) => onItemSelect(it.id, multi)}
                   onToggleProperties={() => onToggleProperties(it.id)}
-                  onLink={onLink}
+                  onGroup={onGroup}
+                  groupAction={groupAction}
                   onRotate={itemActions.rotateSelected}
                   onToggleLock={itemActions.toggleLockSelected}
                   onFlip={itemActions.flipSelected}
@@ -578,7 +631,6 @@ export default function CanvasContainer({
                   onSetHeightIn={itemActions.setHeightIn}
                   onSetPosX={itemActions.setPosX}
                   onSetPosY={itemActions.setPosY}
-                  onAddToCart={() => onAddToCart(it)}
                   onCloseProperties={onCloseProperties}
                   onRemoveBg={onRemoveBg}
                   onDragStart={(e) => onDragStart(e, it.id)}
