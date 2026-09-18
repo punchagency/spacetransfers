@@ -23,6 +23,8 @@ export interface IDesignItem {
   /** Placed by hand — auto-nest leaves it where it is. */
   pinned?: boolean;
   locked?: boolean;
+  /** Pieces sharing a group id were bundled in the editor to act as one. */
+  groupId?: string;
 }
 
 export interface IDesign extends Document {
@@ -102,7 +104,8 @@ const designItemSchema = new Schema<IDesignItem>({
   nestRotation: { type: Number, enum: [0, 90], default: 0 },
   flowCols: { type: Number, min: 1 },
   pinned: { type: Boolean, default: false },
-  locked: { type: Boolean, default: false }
+  locked: { type: Boolean, default: false },
+  groupId: { type: String }
 });
 
 const designSchema = new Schema<IDesign>(
