@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { useProfileStore, type AvailabilityStatus } from "../../state/ProfileStore";
 import { apiFetch } from "../../utils/api";
+import { fetchAvailability } from "../../utils/availability";
 
 /* ── Keyframe animations injected once ─────────────────────────────────── */
 const STYLE_ID = "availability-badge-styles";
@@ -48,20 +49,11 @@ const STATUS_CONFIG: Record<AvailabilityStatus, Cfg> = {
     dotClass:  "avail-dot-paused",
     check:     "text-amber-600",
   },
-  stopped: {
-    label:     "Stopped",
-    pill:      "bg-red-50    text-red-700    border-red-200    shadow-red-100",
-    pillHover: "hover:bg-red-100 hover:border-red-300",
-    dotBg:     "bg-red-500",
-    dotClass:  "",
-    check:     "text-red-600",
-  },
 };
 
 const OPTIONS: { value: AvailabilityStatus; label: string; description: string }[] = [
-  { value: "open",    label: "Open",    description: "Accepting auto-assigned orders" },
-  { value: "paused",  label: "Paused",  description: "Temporarily not accepting new orders" },
-  { value: "stopped", label: "Stopped", description: "Offline — no new orders" },
+  { value: "open",   label: "Open",   description: "Accepting auto-assigned orders" },
+  { value: "paused", label: "Paused", description: "Not accepting new orders" },
 ];
 
 /* ── Component ──────────────────────────────────────────────────────────── */
@@ -70,14 +62,24 @@ export const AvailabilityStatusBadge = () => {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [capacityLocked, setCapacityLocked] = useState(false);
+  /*
+   * Distinct from `capacityLocked`, which is only "at the limit right now".
+   * This is "the system paused you and will unpause you" — the promise of
+   * automatic recovery holds for a pause the monitor made, and not for one you
+   * chose. Both used to read the same flag, so pausing yourself while at your
+   * limit told you you would be reopened automatically. You would not have been.
+   */
+  const [capacityPaused, setCapacityPaused] = useState(false);
   const [maxJobs, setMaxJobs] = useState<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    apiFetch("/printer/availability")
+    // Shared with the sidebar's capacity meter — see `fetchAvailability`.
+    fetchAvailability()
       .then((r: any) => {
         if (r?.availabilityStatus) setAvailabilityStatus(r.availabilityStatus as AvailabilityStatus);
         setCapacityLocked(Boolean(r?.capacityLocked));
+        setCapacityPaused(Boolean(r?.capacityPaused));
         setMaxJobs(typeof r?.maxJobs === "number" ? r.maxJobs : null);
       })
       .catch(() => {});
@@ -90,11 +92,24 @@ export const AvailabilityStatusBadge = () => {
       const detail = (e as CustomEvent).detail || {};
       if (detail.availabilityStatus) setAvailabilityStatus(detail.availabilityStatus as AvailabilityStatus);
       setCapacityLocked(Boolean(detail.capacityLocked));
+      setCapacityPaused(Boolean(detail.capacityPaused));
       if (typeof detail.maxJobs === "number") setMaxJobs(detail.maxJobs);
       if (detail.reason === "capacity_reached") {
         toast(`Maximum job capacity reached — status set to Paused.`, { icon: "⏸️" });
       } else if (detail.reason === "capacity_recovered") {
         toast.success("You're available again — status set back to Open.");
+      } else if (detail.reason === "admin_changed") {
+        /*
+         * An admin can now change this too, and the change lands here live. It
+         * used to arrive with no explanation at all — the pill simply moved on
+         * its own, which reads as a bug rather than as someone acting.
+         */
+        const who = typeof detail.changedBy === "string" && detail.changedBy ? detail.changedBy : "An administrator";
+        if (detail.availabilityStatus === "paused") {
+          toast(`${who} set your availability to Paused.`, { icon: "⏸️" });
+        } else {
+          toast.success(`${who} set your availability back to Open.`);
+        }
       }
     };
     window.addEventListener("st:availability_changed", handler);
@@ -133,16 +148,18 @@ export const AvailabilityStatusBadge = () => {
         body: JSON.stringify({ status }),
       });
       setCapacityLocked(Boolean(res?.capacityLocked));
+      setCapacityPaused(Boolean(res?.capacityPaused));
       toast.success(`Status set to ${STATUS_CONFIG[status].label}`);
     } catch (err: any) {
       setAvailabilityStatus(previous);
       toast.error(err?.message || "Failed to update status");
       // Re-sync from the server (authoritative) — e.g. an Open switch rejected
       // with 409 because the partner is at capacity.
-      apiFetch("/printer/availability")
+      fetchAvailability()
         .then((r: any) => {
           if (r?.availabilityStatus) setAvailabilityStatus(r.availabilityStatus as AvailabilityStatus);
           setCapacityLocked(Boolean(r?.capacityLocked));
+          setCapacityPaused(Boolean(r?.capacityPaused));
           if (typeof r?.maxJobs === "number") setMaxJobs(r.maxJobs);
         })
         .catch(() => {});
@@ -243,15 +260,25 @@ export const AvailabilityStatusBadge = () => {
           </div>
 
           <div className="px-4 py-2 border-t border-gray-100 bg-gray-50/50">
-            {capacityLocked ? (
+            {capacityPaused ? (
               <p className="text-[10px] text-amber-600 leading-relaxed font-medium">
                 Paused automatically — you've reached your maximum active job limit
                 {maxJobs != null ? ` (${maxJobs})` : ""}. You'll switch back to Open automatically
                 once your active job count drops below the limit.
               </p>
+            ) : capacityLocked ? (
+              /*
+               * At the limit, but this pause was not the monitor's doing — so
+               * there is no automatic reopen coming, and saying there was one
+               * would have someone waiting for it.
+               */
+              <p className="text-[10px] text-amber-600 leading-relaxed font-medium">
+                You're at your maximum active job limit{maxJobs != null ? ` (${maxJobs})` : ""}, so
+                you can't switch back to Open until one of your active jobs finishes.
+              </p>
             ) : (
               <p className="text-[10px] text-gray-400 leading-relaxed">
-                Paused &amp; Stopped removes you from auto-assignment. Existing jobs are unaffected.
+                Paused removes you from auto-assignment. Existing jobs are unaffected.
               </p>
             )}
           </div>

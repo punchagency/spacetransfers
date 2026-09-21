@@ -10,7 +10,6 @@ const DEFAULT_PREFS: NotificationEmailPrefs = {
   orderUpdates: true,
   payoutAlerts: true,
   accountUpdates: true,
-  systemAlerts: true,
 };
 
 const EMAIL_EVENTS: { key: keyof NotificationEmailPrefs; label: string; description: string }[] = [
@@ -34,11 +33,13 @@ const EMAIL_EVENTS: { key: keyof NotificationEmailPrefs; label: string; descript
     label: "Account Updates",
     description: "Email verification, profile or account setting changes",
   },
-  {
-    key: "systemAlerts",
-    label: "System Alerts",
-    description: "Important system messages from the Space Transfers team",
-  },
+  /*
+   * "System Alerts" was removed. No notification anywhere in the server is sent
+   * with `settingsKey: "systemAlerts"`, so the toggle silenced nothing — the
+   * system-category messages a partner actually receives (email verified,
+   * availability changed by an admin) ride on Account Updates. A switch that
+   * changes nothing teaches people the rest of them do nothing either.
+   */
 ];
 
 const NotificationsSection = ({ initialPrefs }: NotificationsSectionProps) => {

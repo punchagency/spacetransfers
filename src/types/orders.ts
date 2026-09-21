@@ -12,7 +12,6 @@ export interface Order {
   displayId?: string;
   customerName: string;
   isUrgent: boolean;
-  hasWarning: boolean;
   thumbnail: string;
   sheetSize: string;
   filmType: string;
@@ -24,7 +23,9 @@ export interface Order {
 
 export type OrdersTabLabel =
   | "All Jobs"
-  | "Pending"
+  // "Pending Review", matching PRINTER_STATUS_LABEL — the tab alone said
+  // "Pending" while every other surface named the same state in full.
+  | "Pending Review"
   | "In Progress - Printing"
   | "Print Shipping Label"
   | "Order Shipped"

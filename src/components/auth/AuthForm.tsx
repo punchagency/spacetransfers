@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaCheck } from "react-icons/fa";
 import { setAuth } from "../../utils/auth";
+import { isValidPhone } from "../../utils/validators";
 import { HiOutlineLocationMarker } from "react-icons/hi";
 import {
   HiOutlineMail,
@@ -33,6 +34,9 @@ const REGION_BY_STATE: Record<string, string> = {
   PA:"Northeast",NY:"Northeast",VT:"Northeast",ME:"Northeast",
   NH:"Northeast",MA:"Northeast",RI:"Northeast",CT:"Northeast",NJ:"Northeast",
 };
+
+/** Matches the server's minimum, so the form and the API agree. */
+const MIN_PASSWORD_LENGTH = 8;
 
 const REGION_COLORS: Record<string, string> = {
   West:      "bg-blue-50 text-blue-700 border-blue-200",
@@ -70,6 +74,8 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
   const [contentResponsibilityAccepted, setContentResponsibilityAccepted] =
     useState(false);
   const [isLoading, setIsLoading]         = useState(false);
+  const [sendingReset, setSendingReset]   = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   // Region detection state
   const [detectedRegion, setDetectedRegion]   = useState<string | null>(null);
@@ -153,9 +159,54 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
   const resetForm = () => {
     setFullName(""); setCompanyName(""); setPhone(""); setWebsite("");
     setStreet(""); setCity(""); setStateProv(""); setPostalCode("");
-    setCountry("United States"); setEmail(""); setPassword("");
+    setCountry("United States"); setEmail(""); setPassword(""); setConfirmPassword("");
     setTermsAccepted(false); setDetectedRegion(null);
     setRegionValidated(false); setNonUSWarning(false);
+    /*
+     * Cleared with the rest of the form.
+     *
+     * Every mode toggle called `setTermsAccepted(false)` and `resetForm()` but
+     * nothing reset this one, so ticking it, switching to sign-in and switching
+     * back left it still ticked on a blank form. Consent that survives a reset
+     * is precisely what the acceptance record exists to rule out — the user
+     * would not have seen the statement they were recorded as agreeing to.
+     */
+    setContentResponsibilityAccepted(false);
+  };
+
+  /**
+   * Starts a password reset.
+   *
+   * There was no way to reach this from the printer app at all: the endpoint and
+   * the set-password screen both existed, but nothing linked to them, so a
+   * partner who forgot their password had no route back into their account.
+   */
+  const handleForgotPassword = async () => {
+    const address = email.trim();
+    if (!address) {
+      toast.error("Enter your email address first, then choose 'Forgot password'.");
+      return;
+    }
+
+    setSendingReset(true);
+    try {
+      await apiFetch("/auth/forgot-password", {
+        method: "POST",
+        // Scoped, so a partner's reset never mints a token for their admin or
+        // customer account instead.
+        body: JSON.stringify({ email: address, role: "PRINTER" }),
+      });
+      /*
+       * Deliberately the same message whether or not the address is registered.
+       * The server answers identically for both, and saying "no such account"
+       * here would turn this form into a way to test which emails exist.
+       */
+      toast.success("If that email has an account, a reset link is on its way.");
+    } catch (error: any) {
+      toast.error(error?.message || "Could not start a password reset");
+    } finally {
+      setSendingReset(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -165,7 +216,9 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
       if (isSignIn) {
         const response = await apiFetch("/auth/login", {
           method: "POST",
-          body: JSON.stringify({ email, password }),
+          // Says which of this address's accounts we mean: one email can now
+          // hold a partner, a customer and an admin account independently.
+          body: JSON.stringify({ email, password, role: "PRINTER" }),
         });
         if (response.user.role !== "PRINTER") {
           throw new Error("Access denied. Printer account required.");
@@ -183,8 +236,36 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           setIsLoading(false);
           return;
         }
+        /*
+         * Shape checked, not just presence — mirrors `isValidPhone` on the
+         * server. Only truthiness was ever tested here, so "1" or "abc" passed
+         * straight through and became a print partner's stored contact
+         * number, which is the number an admin or a customer calls when a job
+         * goes wrong.
+         */
+        if (!isValidPhone(phone)) {
+          toast.error("Enter a valid phone number.");
+          setIsLoading(false);
+          return;
+        }
         if (nonUSWarning) {
           toast.error("Only US addresses are supported at this time.");
+          setIsLoading(false);
+          return;
+        }
+        /*
+         * Checked here rather than left to the server, which never sees the
+         * second field: a typo in a password nobody can read back would create
+         * an account whose owner cannot sign into it, and — until SendGrid is
+         * configured — cannot recover it either.
+         */
+        if (password.length < MIN_PASSWORD_LENGTH) {
+          toast.error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+          setIsLoading(false);
+          return;
+        }
+        if (password !== confirmPassword) {
+          toast.error("Both passwords must match.");
           setIsLoading(false);
           return;
         }
@@ -414,6 +495,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
                 placeholder="demo@spacetransfers.com"
                 className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
               />
@@ -431,7 +513,15 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="demo123"
+                /*
+                 * Tells the browser which field this is, which is what makes it
+                 * offer a generated password on sign-up and the saved one on
+                 * sign-in. Without it the confirm field — which does declare
+                 * itself — got the suggestion and the real password field did
+                 * not, so the offer appeared on the wrong box.
+                 */
+                autoComplete={isSignIn ? "current-password" : "new-password"}
+                placeholder="Your password"
                 className="w-full pl-11 pr-11 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
               />
               <button
@@ -442,7 +532,47 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 {showPassword ? <HiOutlineEyeOff className="text-lg" /> : <HiOutlineEye className="text-lg" />}
               </button>
             </div>
+            {!isSignIn && password.length > 0 && password.length < MIN_PASSWORD_LENGTH && (
+              <p className="text-xs text-red-600 ml-1">
+                Must be at least {MIN_PASSWORD_LENGTH} characters.
+              </p>
+            )}
+            {isSignIn && (
+              <div className="flex justify-end pt-0.5">
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={sendingReset}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {sendingReset ? "Sending…" : "Forgot password?"}
+                </button>
+              </div>
+            )}
           </div>
+
+          {/* Confirm password — sign-up only. */}
+          {!isSignIn && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 ml-1 block">Confirm password</label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <HiOutlineLockClosed className="text-slate-400 text-lg" />
+                </div>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="Type it again"
+                  className="w-full pl-11 pr-11 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
+                />
+              </div>
+              {confirmPassword.length > 0 && password !== confirmPassword && (
+                <p className="text-xs text-red-600 ml-1">Both passwords must match.</p>
+              )}
+            </div>
+          )}
 
           {/* Legal acknowledgements. Both are required by the server. */}
           {!isSignIn && (
@@ -493,9 +623,30 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           {/* Submit */}
           <button
             type="submit"
-            disabled={isLoading || (!isSignIn && !(termsAccepted && contentResponsibilityAccepted))}
+            /*
+             * Sign-up also waits on a password that is long enough and typed
+             * the same twice. The submit handler re-checks both — this only
+             * stops the button looking available before it can succeed.
+             */
+            disabled={
+              isLoading ||
+              (!isSignIn &&
+                !(
+                  termsAccepted &&
+                  contentResponsibilityAccepted &&
+                  password.length >= MIN_PASSWORD_LENGTH &&
+                  password === confirmPassword
+                ))
+            }
             className={`w-full py-3 px-4 rounded-xl text-white font-semibold shadow-lg shadow-blue-500/30 flex items-center justify-center gap-2 transition-all transform active:scale-[0.98] ${
-              isLoading || (!isSignIn && !(termsAccepted && contentResponsibilityAccepted))
+              isLoading ||
+              (!isSignIn &&
+                !(
+                  termsAccepted &&
+                  contentResponsibilityAccepted &&
+                  password.length >= MIN_PASSWORD_LENGTH &&
+                  password === confirmPassword
+                ))
                 ? "bg-blue-400 cursor-not-allowed opacity-70"
                 : "bg-[#3B82F6] hover:bg-blue-600"
             }`}

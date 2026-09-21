@@ -5,7 +5,6 @@ import {
   FiLayers,
   FiPrinter,
 } from "react-icons/fi";
-import { BsExclamationTriangleFill } from "react-icons/bs";
 import type { Order } from "../../types/orders";
 
 interface JobCardProps {
@@ -137,13 +136,12 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
               alt="thumbnail"
               className={job.thumbnail ? "w-full h-full object-cover" : "w-12 h-12 opacity-80"}
             />
-            {job.hasWarning && (
-              <div className="absolute top-1 right-1">
-                <div className="bg-red-500 text-white p-0.5 rounded-full shadow-sm">
-                  <BsExclamationTriangleFill className="w-3 h-3" />
-                </div>
-              </div>
-            )}
+            {/*
+              A red warning badge sat here on `job.hasWarning`. The server
+              hardcoded that to `false` at its only producer, so the badge was
+              unreachable — a warning affordance that could never warn. Urgency
+              is carried by the Urgent flag, which is real.
+            */}
           </div>
 
           <div className="flex flex-col items-start gap-1 pt-1">

@@ -29,15 +29,21 @@ export const ProfileHeader = ({ profile, onUpdate }: ProfileHeaderProps) => {
 
   const isVerified = Boolean(profile.verificationStatus?.email);
 
-  const responseMinutes = profile.performance?.responseTime || 0;
-  const responseTimeLabel =
-    responseMinutes <= 0
-      ? "< 2 hours"
-      : responseMinutes < 60
-      ? `< ${responseMinutes} mins`
-      : responseMinutes <= 120
-      ? "< 2 hours"
-      : `${Math.round(responseMinutes / 60)} hours`;
+  /*
+   * Average time from being given a job to shipping it.
+   *
+   * This tile used to read a stored `responseTime` that nothing ever set, and
+   * its zero fell through to `"< 2 hours"` — so every partner was told they
+   * responded in under two hours, measured from nothing. This is computed from
+   * their own orders, and says so plainly when there is nothing to measure.
+   */
+  const hours = profile.performance?.averageProductionHours ?? null;
+  const productionLabel =
+    hours === null ? "No data yet" : hours < 24 ? `${hours} hrs` : `${(hours / 24).toFixed(1)} days`;
+  const sampleNote =
+    profile.performance?.sampleSize
+      ? `Across ${profile.performance.sampleSize} shipped job${profile.performance.sampleSize === 1 ? "" : "s"}`
+      : "Starts once you have shipped a job";
 
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -134,12 +140,12 @@ export const ProfileHeader = ({ profile, onUpdate }: ProfileHeaderProps) => {
               <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-white/90">
                 <FiClock className="w-5 h-5" />
               </div>
-              <div>
+              <div title={sampleNote}>
                 <div className="text-lg font-semibold leading-tight">
-                  {responseTimeLabel}
+                  {productionLabel}
                 </div>
                 <div className="text-xs text-blue-100 mt-0.5">
-                  Response Time
+                  Avg. Production Time
                 </div>
               </div>
             </div>

@@ -11,27 +11,36 @@ import { StatusBadge } from "../components/common/StatusBadge";
 import { DeadlineCountdown } from "../components/common/DeadlineCountdown";
 import type { DashboardJob } from "../types/dashboard";
 import { apiFetch } from "../utils/api";
+import { useProfileStore } from "../state/ProfileStore";
+import toast from "react-hot-toast";
 
 interface DashboardCard {
   label: string;
   value: string;
-  trend: string;
-  trendUp?: boolean;
+  /** What the figure covers, in place of the "vs yesterday" trend that measured nothing. */
+  note: string;
+  /** Whether this card follows the period control, or is current-state. */
+  scoped: boolean;
 }
 
-interface PayoutSummary {
-  totalEarnings: number;
-  availableBalance: number;
-  pendingEarnings: number;
-  paidOutAmount: number;
-}
+/** The same four periods the admin dashboard offers, so the two compare. */
+const RANGES = [
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
+  { value: "ytd", label: "Year to date" },
+] as const;
+
+type Range = (typeof RANGES)[number]["value"];
 
 // Map API card labels to icons and accent colours, matching Earnings card style.
 const CARD_META: Record<string, { icon: React.ElementType; color: string }> = {
-  "Today's Earnings": { icon: TbCurrencyDollar,        color: "bg-blue-50 text-blue-600"   },
-  "Completed Orders": { icon: FiCheckCircle,           color: "bg-green-50 text-green-600" },
+  "Earnings":         { icon: TbCurrencyDollar,        color: "bg-blue-50 text-blue-600"   },
+  "Jobs Completed":   { icon: FiCheckCircle,           color: "bg-green-50 text-green-600" },
   "Pending Orders":   { icon: MdOutlinePendingActions, color: "bg-orange-50 text-orange-600" },
-  "Total Revenue":    { icon: HiArrowTrendingUp,       color: "bg-purple-50 text-purple-600" },
+  // "Total Earned", not "Total Revenue" — revenue is what the company takes;
+  // this is the partner's own page and their own money.
+  "Total Earned":     { icon: HiArrowTrendingUp,       color: "bg-purple-50 text-purple-600" },
 };
 const FALLBACK_META = { icon: FiClock, color: "bg-gray-50 text-gray-500" };
 
@@ -40,62 +49,85 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cards, setCards] = useState<DashboardCard[]>([]);
-  const [urgentJobs, setUrgentJobs] = useState<DashboardJob[]>([]);
   const [assignedJobs, setAssignedJobs] = useState<DashboardJob[]>([]);
-  const [, setPayoutSummary] = useState<PayoutSummary | null>(null);
+  /*
+   * No separate urgent list. Urgent jobs are already in the assigned table —
+   * the server now sorts them to the top so they can never be the rows the cap
+   * cuts off — and they carry an Urgent badge there. A second list of the same
+   * jobs was one more place to disagree with the first.
+   */
+  /*
+   * The true totals, which are not the lengths of the lists above — the server
+   * caps those for the page. Rendering `assignedJobs.length` told a partner with
+   * 20 live jobs that they had 12.
+   */
+  const [assignedTotal, setAssignedTotal] = useState(0);
+  const [urgentTotal, setUrgentTotal] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [range, setRange] = useState<Range>("30d");
 
+  /*
+   * The same name the top bar shows. This read `name` while `UserMenu` reads
+   * `companyName || name`, so one screen greeted you by two different names.
+   *
+   * Read from the profile store rather than localStorage directly, so editing
+   * your name on Profile updates the greeting instead of leaving it stale until
+   * the next sign-in.
+   */
+  const { name: storeName } = useProfileStore();
   const userName = useMemo(() => {
+    if (storeName?.trim()) return storeName.trim();
     try {
       const raw = localStorage.getItem("printer_user");
-      if (!raw) return "Printer";
+      if (!raw) return "there";
       const u = JSON.parse(raw);
-      return String(u?.name || "Printer");
+      return String(u?.companyName || u?.name || "there");
     } catch {
-      return "Printer";
+      return "there";
     }
-  }, []);
+  }, [storeName]);
 
-  const fmtMoney = (n: number) =>
-    `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fetchData = useCallback(async (forRange: Range) => {
+    const r = await apiFetch(`/printer/dashboard/stats?range=${forRange}`);
 
-  const fetchData = useCallback(async () => {
-    const [r, summary] = await Promise.all([
-      apiFetch("/printer/dashboard/stats"),
-      apiFetch("/payouts/printer/summary"),
-    ]);
-
-    const nextCards: DashboardCard[] = Array.isArray(r?.cards)
-      ? r.cards.map((c: any) => ({
-          label:   String(c.label   || ""),
-          value:   String(c.value   || ""),
-          trend:   String(c.trend   || "0%"),
-          trendUp: c.trendUp !== false,
-        }))
-      : [];
-
-    // Override "Total Revenue" with the exact payout-summary totalEarnings so both
-    // pages always show the identical number from the same source of truth.
-    if (summary?.totalEarnings !== undefined) {
-      const idx = nextCards.findIndex((c) => c.label === "Total Revenue");
-      if (idx >= 0) {
-        nextCards[idx] = { ...nextCards[idx], value: fmtMoney(Number(summary.totalEarnings)) };
-      }
-    }
-
-    setCards(nextCards);
-    setPayoutSummary(summary ?? null);
-    setUrgentJobs(Array.isArray(r?.urgentJobs)   ? r.urgentJobs   : []);
+    setCards(
+      Array.isArray(r?.cards)
+        ? r.cards.map((c: any) => ({
+            label: String(c.label || ""),
+            value: String(c.value || ""),
+            note: String(c.note || ""),
+            scoped: c.scoped !== false,
+          }))
+        : [],
+    );
     setAssignedJobs(Array.isArray(r?.assignedJobs) ? r.assignedJobs : []);
+    setAssignedTotal(Number(r?.assignedTotal ?? 0));
+    setUrgentTotal(Number(r?.urgentTotal ?? 0));
+    setLoadError(null);
   }, []);
 
   useEffect(() => {
-    fetchData().finally(() => setLoading(false));
-  }, [fetchData]);
+    /*
+     * Recorded, not swallowed. A failed load used to leave empty cards and an
+     * empty table with nothing saying so — a partner would read "$0.00 earned,
+     * no jobs" as fact rather than as a request that never returned.
+     */
+    fetchData(range)
+      .catch((e: any) => setLoadError(e?.message || "Could not load your dashboard"))
+      .finally(() => setLoading(false));
+  }, [fetchData, range]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await fetchData(); } finally { setRefreshing(false); }
-  }, [fetchData]);
+    try {
+      await fetchData(range);
+    } catch (e: any) {
+      setLoadError(e?.message || "Could not refresh your dashboard");
+      toast.error(e?.message || "Could not refresh your dashboard");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchData, range]);
 
   const columns = [
     {
@@ -117,11 +149,14 @@ const Dashboard = () => {
     {
       header: "Action",
       className: "text-center",
+      /*
+       * A span, not a button. It never had an onClick — it worked only because
+       * the click bubbled to the row's navigate handler, so it looked
+       * interactive while being inert on its own. The row is the control.
+       */
       render: () => (
         <div className="flex justify-center">
-          <button className="text-gray-500 hover:text-gray-700 cursor-pointer">
-            <FiEye className="w-4 h-4" />
-          </button>
+          <FiEye className="w-4 h-4 text-gray-400 group-hover:text-gray-600" aria-hidden />
         </div>
       ),
     },
@@ -135,12 +170,34 @@ const Dashboard = () => {
           <h1 className="text-3xl font-bold text-gray-900">Welcome back, {userName}!</h1>
           <p className="text-gray-500 mt-1">
             Here's your fulfillment overview for today. You have{" "}
-            <span className="text-blue-600 font-medium cursor-pointer hover:underline">
-              {assignedJobs.length} jobs
-            </span>{" "}
-            assigned to you{urgentJobs.length ? ` • ${urgentJobs.length} urgent` : ""}.
+            {/*
+              A real link. It was styled as one — blue, underlined on hover,
+              cursor-pointer — with no handler at all, so it invited a click and
+              did nothing. And it rendered the length of the capped list rather
+              than the true total.
+            */}
+            <button
+              type="button"
+              onClick={() => navigate("/orders")}
+              className="text-blue-600 font-medium hover:underline focus:outline-none focus:underline"
+            >
+              {assignedTotal} job{assignedTotal === 1 ? "" : "s"}
+            </button>{" "}
+            assigned to you{urgentTotal ? ` • ${urgentTotal} urgent` : ""}.
           </p>
         </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={range}
+            onChange={(e) => setRange(e.target.value as Range)}
+            disabled={loading}
+            aria-label="Reporting period"
+            className="px-3 py-2 bg-white border border-gray-200 text-gray-700 font-medium rounded-2xl text-sm outline-none focus:border-blue-500 disabled:opacity-60"
+          >
+            {RANGES.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
         <button
           onClick={handleRefresh}
           disabled={refreshing || loading}
@@ -149,14 +206,23 @@ const Dashboard = () => {
         >
           <FiRefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
         </button>
+        </div>
       </div>
 
-      {/* Alert Banner */}
-      {urgentJobs.length > 0 && (
+      {/* Counts the true total, not the five the list is capped to. */}
+      {urgentTotal > 0 && (
         <AlertBanner
           title="Urgent Jobs Alert"
-          message={`You have ${urgentJobs.length} urgent job${urgentJobs.length === 1 ? "" : "s"} assigned. Please review and start processing to avoid delays.`}
+          message={`You have ${urgentTotal} urgent job${urgentTotal === 1 ? "" : "s"} assigned. Please review and start processing to avoid delays.`}
           variant="warning"
+        />
+      )}
+
+      {loadError && (
+        <AlertBanner
+          title="Could not load your dashboard"
+          message={`${loadError} — the figures below may be missing or out of date. Try Refresh.`}
+          variant="error"
         />
       )}
 
@@ -171,7 +237,6 @@ const Dashboard = () => {
             {cards.map((card, index) => {
               const meta = CARD_META[card.label] ?? FALLBACK_META;
               const Icon = meta.icon;
-              const isNeg = card.trend.trim().startsWith("-");
               return (
                 <div key={index} className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
                   <div className="flex items-center justify-between mb-3">
@@ -182,9 +247,16 @@ const Dashboard = () => {
                   </div>
                   <div>
                     <span className="text-3xl font-bold text-gray-900 tracking-tight">{card.value}</span>
-                    <p className={`text-xs mt-1 font-medium ${isNeg ? "text-red-500" : "text-green-600"}`}>
-                      {card.trend} vs yesterday
-                    </p>
+                    {card.note && (
+                      <p className="text-xs mt-1 text-gray-400">
+                        {card.note}
+                        {/* Set apart so the period control is never ambiguous:
+                            two of these four are current-state, not period figures. */}
+                        {!card.scoped && (
+                          <span className="ml-1 text-gray-300">· not filtered by period</span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
               );
@@ -192,13 +264,29 @@ const Dashboard = () => {
           </div>
 
           {/* Assigned Jobs Table */}
-          <GenericTable
-            title="Assigned Jobs"
-            data={assignedJobs}
-            columns={columns}
-            itemsPerPage={10}
-            onRowClick={(row) => navigate(`/orders/${encodeURIComponent(row.id)}`)}
-          />
+          <div className="space-y-3">
+            <GenericTable
+              title="Assigned Jobs"
+              data={assignedJobs}
+              columns={columns}
+              itemsPerPage={10}
+              onRowClick={(row) => navigate(`/orders/${encodeURIComponent(row.id)}`)}
+            />
+            {/* Says so when there is more than this page holds, rather than
+                letting the table read as the whole workload. */}
+            {assignedTotal > assignedJobs.length && (
+              <p className="text-xs text-gray-500 text-center">
+                Showing your {assignedJobs.length} most recent of {assignedTotal} active jobs.{" "}
+                <button
+                  type="button"
+                  onClick={() => navigate("/orders")}
+                  className="text-blue-600 font-medium hover:underline"
+                >
+                  See all
+                </button>
+              </p>
+            )}
+          </div>
         </>
       )}
     </div>

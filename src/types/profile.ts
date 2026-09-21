@@ -38,14 +38,17 @@ export interface PrinterProfile {
     verificationCode?: string;
     documentUrl?: string;
   }[];
-  badges: {
-    name: string;
-    icon: string;
-    dateEarned: string;
-  }[];
+  /**
+   * Derived from this partner's own orders, not stored.
+   *
+   * Nulls mean "nothing finished yet to measure" — distinct from zero, which
+   * would read as a bad score. The old shape (`completionRate`, `responseTime`,
+   * `customerRating`) came from a stored object the server never wrote.
+   */
   performance: {
-    completionRate: number;
-    responseTime: number;
-    customerRating: number;
+    averageProductionHours: number | null;
+    onTimeDeliveryRate: number | null;
+    sampleSize: number;
+    rating: number | null;
   };
 }

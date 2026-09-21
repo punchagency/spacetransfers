@@ -15,6 +15,12 @@ interface StripeStatus {
   onboarded: boolean;
   payoutsEnabled: boolean;
   accountId: string | null;
+  /**
+   * Whether the platform's payment provider is set up at all — distinct from
+   * whether *this partner* has connected. Absent on older responses, so it is
+   * treated as configured unless the server explicitly says otherwise.
+   */
+  configured?: boolean;
   details: {
     email: string | null;
     country: string | null;
@@ -27,6 +33,9 @@ interface StripeStatus {
 const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus | null }) => {
   const [status, setStatus] = useState<StripeStatus | null>(initialStatus);
   const [connecting, setConnecting] = useState(false);
+
+  // Only false when the server says so outright.
+  const platformReady = status?.configured !== false;
 
   const fetchStatus = async () => {
     try {
@@ -79,13 +88,19 @@ const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus 
             Stripe Connect (test mode) — bank transfers only
           </p>
         </div>
-        {status?.onboarded && (
+        {!platformReady && (
+          <span className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-gray-100 px-2.5 py-1 rounded-full border border-gray-200">
+            <FiInfo className="w-3.5 h-3.5" />
+            Coming soon
+          </span>
+        )}
+        {platformReady && status?.onboarded && (
           <span className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-green-700 bg-green-50 px-2.5 py-1 rounded-full border border-green-200">
             <FiCheckCircle className="w-3.5 h-3.5" />
             Connected
           </span>
         )}
-        {status && !status.onboarded && (
+        {platformReady && status && !status.onboarded && (
           <span className="ml-auto flex items-center gap-1.5 text-xs font-semibold text-orange-700 bg-orange-50 px-2.5 py-1 rounded-full border border-orange-200">
             <FiAlertCircle className="w-3.5 h-3.5" />
             Not connected
@@ -123,28 +138,43 @@ const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus 
             </div>
           )}
 
-          {/* Connect / Update button */}
-          <button
-            type="button"
-            onClick={handleConnect}
-            disabled={connecting}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-60 text-sm"
-          >
-            {connecting ? (
-              <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-            ) : (
-              <FiExternalLink className="w-4 h-4" />
-            )}
-            {status?.onboarded ? "Update Stripe Account Details" : "Connect Stripe Account"}
-          </button>
+          {/*
+            The button is not offered while the platform's payment provider is
+            unconfigured. Pressing it used to reach Stripe with a placeholder
+            key, come back 401, and sign the partner out of a perfectly valid
+            session. Saying so plainly beats a control that punishes the press.
+          */}
+          {!platformReady ? (
+            <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 leading-relaxed">
+              <span className="font-semibold text-gray-900">Payouts aren&rsquo;t open yet.</span> Our
+              payment provider is still being set up. You&rsquo;ll be able to link your bank account
+              here as soon as it is — nothing is needed from you until then, and your earnings are
+              still being tracked in the meantime.
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handleConnect}
+              disabled={connecting}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-60 text-sm"
+            >
+              {connecting ? (
+                <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+              ) : (
+                <FiExternalLink className="w-4 h-4" />
+              )}
+              {status?.onboarded ? "Update Stripe Account Details" : "Connect Stripe Account"}
+            </button>
+          )}
 
           {/* Payout schedule info */}
           <div className="pt-3 border-t border-dashed border-gray-200">
             <div className="flex items-start gap-2 text-xs text-gray-500">
               <FiCalendar className="w-3.5 h-3.5 mt-0.5 text-blue-500 flex-shrink-0" />
               <span>
-                Payouts are processed automatically every Friday via Stripe Connect (test mode).
-                Bank transfers typically arrive within 1–3 business days.
+                {platformReady
+                  ? "Payouts are processed automatically every Friday via Stripe Connect (test mode). Bank transfers typically arrive within 1–3 business days."
+                  : "Once payouts open, they run automatically every Friday and bank transfers typically arrive within 1–3 business days."}
               </span>
             </div>
             <div className="flex items-start gap-2 text-xs text-gray-500 mt-2">

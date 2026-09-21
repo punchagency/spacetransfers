@@ -1,6 +1,11 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 
-export type AvailabilityStatus = "open" | "paused" | "stopped";
+/*
+ * Two states. "Stopped" existed alongside "Paused" and did exactly the same
+ * thing — the assignment gate only asks whether the value is "open" — so it was
+ * a choice that changed nothing.
+ */
+export type AvailabilityStatus = "open" | "paused";
 
 interface ProfileContextValue {
   name: string;

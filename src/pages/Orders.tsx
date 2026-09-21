@@ -15,7 +15,7 @@ const Orders = () => {
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<OrdersTabLabel>(() => {
     const tab = searchParams.get("tab") as OrdersTabLabel | null;
-    const valid: OrdersTabLabel[] = ["All Jobs", "Pending", "In Progress - Printing", "Print Shipping Label", "Order Shipped", "Completed", "Cancelled"];
+    const valid: OrdersTabLabel[] = ["All Jobs", "Pending Review", "In Progress - Printing", "Print Shipping Label", "Order Shipped", "Completed", "Cancelled"];
     return tab && valid.includes(tab) ? tab : "All Jobs";
   });
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
@@ -34,7 +34,7 @@ const Orders = () => {
   const cancelReasonRef = useRef<HTMLTextAreaElement>(null);
   const [tabs, setTabs] = useState<OrdersTab[]>([
     { label: "All Jobs", count: 0 },
-    { label: "Pending", count: 0 },
+    { label: "Pending Review", count: 0 },
     { label: "In Progress - Printing", count: 0 },
     { label: "Print Shipping Label", count: 0 },
     { label: "Order Shipped", count: 0 },
@@ -53,7 +53,6 @@ const Orders = () => {
       displayId,
       customerName,
       isUrgent: Boolean(o.isUrgent),
-      hasWarning: Boolean(o.hasWarning),
       thumbnail: typeof o.thumbnail === "string" ? o.thumbnail : "/space.svg",
       sheetSize: String(o.sheetSize || ""),
       filmType: String(o.filmType || "DTF"),
@@ -66,7 +65,7 @@ const Orders = () => {
 
   const statusParam = useMemo(() => {
     if (activeTab === "All Jobs") return null;
-    if (activeTab === "Pending") return "Pending Review";
+    // The tab labels ARE the server's labels now, so no translation step.
     return activeTab;
   }, [activeTab]);
 
@@ -76,7 +75,7 @@ const Orders = () => {
     setUrgentCount(Number(c.urgent || 0));
     setTabs([
       { label: "All Jobs", count: Number(c.all || 0) },
-      { label: "Pending", count: Number(c.pending || 0) },
+      { label: "Pending Review", count: Number(c.pending || 0) },
       { label: "In Progress - Printing", count: Number(c.inProgress || 0) },
       { label: "Print Shipping Label", count: Number(c.ready || 0) },
       { label: "Order Shipped", count: Number(c.shipped || 0) },
@@ -283,7 +282,7 @@ const Orders = () => {
 
   const getTabActiveStyles = (label: string) => {
     switch (label) {
-      case "Pending":
+      case "Pending Review":
         return {
           text: "text-orange-600",
           border: "border-orange-600",
@@ -330,9 +329,9 @@ const Orders = () => {
             <h1 className="text-3xl font-bold text-gray-900">Jobs & Orders</h1>
             <p className="text-gray-500 mt-1 text-sm">
               Manage and track all your fulfillment jobs.
-              {!loading && (tabs.find((t) => t.label === "Pending")?.count || urgentCount) ? (
+              {!loading && (tabs.find((t) => t.label === "Pending Review")?.count || urgentCount) ? (
                 <span className="text-red-600 font-medium">
-                  {" "}{tabs.find((t) => t.label === "Pending")?.count || 0} jobs awaiting your action •{" "}
+                  {" "}{tabs.find((t) => t.label === "Pending Review")?.count || 0} jobs awaiting your action •{" "}
                   {urgentCount} urgent
                 </span>
               ) : null}

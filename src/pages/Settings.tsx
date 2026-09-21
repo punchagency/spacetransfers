@@ -1,7 +1,5 @@
 import { useState, useEffect } from "react";
 import SettingsHeader from "../components/settings/SettingsHeader";
-import BusinessHoursSection from "../components/settings/BusinessHoursSection";
-import JobCapacitySection from "../components/settings/JobCapacitySection";
 import NotificationsSection from "../components/settings/NotificationsSection";
 import PayoutSettingsSection from "../components/settings/PayoutSettingsSection";
 import { apiFetch } from "../utils/api";
@@ -33,14 +31,24 @@ const Settings = () => {
         </div>
       ) : (
         <div className="space-y-8">
-          <div id="business-hours">
-            <BusinessHoursSection initialData={settingsData} />
-          </div>
-
-          <div id="job-capacity">
-            <JobCapacitySection autoAcceptInitial={settingsData?.jobCapacity?.autoAccept !== false} />
-          </div>
-
+          {/*
+            Business Hours was removed alongside Job Capacity.
+            
+            It set a recurring schedule that silently dropped you out of
+            automatic assignment, and separately refused you permission to
+            accept a job you had already been given — while that job's clock
+            kept running. It was compared against the server's clock rather than
+            yours, so the window was wrong for anyone outside the server's
+            timezone. Pausing is how you stop taking work.
+          */}
+          {/*
+            Job Capacity / Auto-Accept was removed. It did one thing — take you
+            out of automatic assignment — which is exactly what the Paused pill
+            in the top bar does, and that one tells the admin, records why, and
+            syncs both portals. Two switches for one outcome meant your Settings
+            page could read "Auto-Accept ON" while you were Paused and taking
+            nothing. Pause is the switch now.
+          */}
           <div id="notifications">
             <NotificationsSection
               initialPrefs={settingsData?.notifications?.email ?? null}
