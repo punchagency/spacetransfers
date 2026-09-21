@@ -65,6 +65,11 @@ describe("classifyPrompt", () => {
     expect(classifyPrompt("remove the white from the logo")).toBe("remove-color");
     expect(classifyPrompt("remove red and blue")).toBe("remove-color");
     expect(classifyPrompt("remove the white background")).toBe("remove-bg");
+    // The DTF classics are colour removals, not objects to generate away.
+    expect(classifyPrompt("remove the white border")).toBe("remove-color");
+    expect(classifyPrompt("remove the white outline")).toBe("remove-color");
+    expect(classifyPrompt("get rid of the black edges")).toBe("remove-color");
+    expect(classifyPrompt("remove the white space around it")).toBe("remove-color");
   });
 
   it("reads a swap as a replacement rather than as half of one", () => {

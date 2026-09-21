@@ -436,6 +436,9 @@ export default function Artboard({
   useEffect(() => {
     if (aiPanelItemId != null && aiPanelItemId !== selectedId) {
       setAiPanelItemId(null);
+      // Both halves: a prompt still being read would otherwise carry on and
+      // edit whichever image is selected now.
+      aiConversation.stopThinking();
       ai.cancel();
     }
     // Only the selection change should trigger this; reading the latest
@@ -457,6 +460,7 @@ export default function Artboard({
       setAiPanelItemId(id);
     },
     onClose: () => {
+      aiConversation.stopThinking();
       ai.cancel();
       // A staged edit belongs to the panel session — leaving it behind would
       // pop the review dialog back up over a closed panel with no context.

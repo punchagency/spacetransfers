@@ -146,7 +146,7 @@ const RULES: Array<{ intent: AiIntentId; test: RegExp }> = [
   // white from the logo", "red and blue"), is still a colour removal.
   {
     intent: "remove-object",
-    test: /\b(remove|delete|erase|get rid of)\b[^.]*\b(?:white|black|green|blue|red|yellow|orange|purple|pink|gr[ae]y|gold|silver|brown|magenta|cyan|teal|navy|beige|cream)\s+(?!(?:colou?rs?|background|backdrop|bg|parts?|areas?|pixels?|bits?|tones?|shades?|from|in|on|of|and|or|with|around|behind)\b)[a-z]{3,}/i,
+    test: /\b(remove|delete|erase|get rid of)\b[^.]*\b(?:white|black|green|blue|red|yellow|orange|purple|pink|gr[ae]y|gold|silver|brown|magenta|cyan|teal|navy|beige|cream)\s+(?!(?:colou?rs?|background|backdrop|bg|parts?|areas?|pixels?|bits?|tones?|shades?|borders?|outlines?|edges?|fringes?|halos?|glow|spaces?|gaps?|from|in|on|of|and|or|with|around|behind)\b)[a-z]{3,}/i,
   },
   // Ahead of change-color: "remove the white" and "make the white transparent"
   // are colour *removals*, and change-color would repaint instead of stripping.
