@@ -57,8 +57,8 @@ export default function IntroAnimation({ onComplete }: IntroAnimationProps) {
 
         {currentFrame === 2 && (
           <div className="px-10 text-center">
-            <h1 className="text-3xl md:text-[63px] font-extrabold text-white drop-shadow-lg leading-tight shimmer-text fade-in-out-3s-effects whitespace-nowrap">
-              DTF Transfer that are out of this world
+            <h1 className="text-3xl md:text-[63px] font-extrabold text-white drop-shadow-lg leading-tight shimmer-text fade-in-out-3s-effects md:whitespace-nowrap">
+              DTF Transfers that are out of this world
             </h1>
           </div>
         )}

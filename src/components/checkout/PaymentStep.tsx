@@ -349,16 +349,21 @@ export default function PaymentStep({
  * presentational — PaymentStep clears the card handler and the complete flag,
  * which is what actually keeps checkout blocked.
  */
+/**
+ * Shown only when the site has no Stripe key, so no payment can be taken.
+ * Written for the customer: it used to tell them to "set a Stripe key on the
+ * server", an operator's instruction on a customer's screen.
+ */
 function CardUnavailable() {
   return (
     <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
       <div className="font-medium text-amber-900 text-sm">
-        Card payments are unavailable
+        Online payment isn't switched on yet
       </div>
       <p className="mt-1 text-sm text-amber-800">
-        This environment has no payment provider configured, so card details
-        can't be taken and no order can be placed. Set a Stripe key on the
-        server and reload to continue.
+        Your gang sheet is saved and stays in your cart, so nothing is lost.
+        You'll be able to complete this order as soon as card payments are
+        turned on.
       </p>
     </div>
   );

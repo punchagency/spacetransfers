@@ -838,7 +838,9 @@ export default function CheckoutModal({
                         (step === 2 && !isPaymentValid)
                       }
                       nextLabel={
-                        step === 2 && !isPaymentValid
+                        step === 2 && !stripePromise
+                          ? "Payment not available yet"
+                          : step === 2 && !isPaymentValid
                           ? "Enter card details"
                           : step === 3
                             ? "Place Order"
