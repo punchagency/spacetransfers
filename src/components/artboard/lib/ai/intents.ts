@@ -139,6 +139,15 @@ const RULES: Array<{ intent: AiIntentId; test: RegExp }> = [
   { intent: "sketch-to-photo", test: /\b(sketch|drawing|line ?art|doodle|outline)\b[^.]*\b(realistic|photo|photograph|real life|lifelike)\b|\bmake (this|it) (a )?(realistic|real) (photo|photograph)\b/i },
   { intent: "replace-bg", test: /\b(replace|change|swap|put|set|make)\b[^.]*\b(background|backdrop|sky|scene)\b/i },
   { intent: "remove-bg", test: /\b(remove|delete|erase|cut ?out|strip|get rid of)\b[^.]*\b(background|backdrop|bg)\b/i },
+  // A colour naming a *thing* — "remove the red circle", "delete the blue car" —
+  // is an object removal. Without this the colour-removal rule below claimed it
+  // and would have erased every red pixel in the artwork. A colour followed by
+  // nothing, or by colour/area words or a connective ("remove the red", "the
+  // white from the logo", "red and blue"), is still a colour removal.
+  {
+    intent: "remove-object",
+    test: /\b(remove|delete|erase|get rid of)\b[^.]*\b(?:white|black|green|blue|red|yellow|orange|purple|pink|gr[ae]y|gold|silver|brown|magenta|cyan|teal|navy|beige|cream)\s+(?!(?:colou?rs?|background|backdrop|bg|parts?|areas?|pixels?|bits?|tones?|shades?|from|in|on|of|and|or|with|around|behind)\b)[a-z]{3,}/i,
+  },
   // Ahead of change-color: "remove the white" and "make the white transparent"
   // are colour *removals*, and change-color would repaint instead of stripping.
   {
@@ -156,6 +165,14 @@ const RULES: Array<{ intent: AiIntentId; test: RegExp }> = [
   { intent: "upscale", test: /\b(upscale|scale up|enlarge|\b[24]k\b|\b8k\b|higher resolution|more pixels)\b/i },
   { intent: "enhance", test: /\b(enhance|improve|sharpen|clean up|higher quality|increase (the )?quality|print[- ]ready|dpi)\b/i },
   { intent: "generative-fill", test: /\b(fill (in )?|inpaint|patch)\b[^.]*\b(area|region|gap|hole|space|spot)\b/i },
+  // A recolour phrased as a change — "change the colour to green", the
+  // Change color chip's own wording, or "turn it gold". Ahead of the swap rule
+  // below, whose "change … to" claimed it as an object replacement and then
+  // asked what the object should become.
+  {
+    intent: "change-color",
+    test: /\b(change|switch|set)\b[^.]*\bcolou?rs?\b[^.]*\b(to|into)\b|\b(turn|make|change|paint)\b[^.]*\b(?:white|black|green|blue|red|yellow|orange|purple|pink|gr[ae]y|gold|silver|brown|magenta|cyan|teal|navy|beige|cream)\s*[.!]?\s*$/i,
+  },
   // Before the bare remove/add rules — a swap is a removal *and* an addition,
   // and treating it as either half alone loses the other.
   { intent: "replace-object", test: /\b(replace|swap|change|turn|convert)\b[^.]*\b(with|for|into|to)\b/i },
@@ -223,12 +240,12 @@ export const analyzePrompt = (prompt: string): PromptAnalysis => {
   }
 
   // A colour removal needs a colour, and unlike the other intents it has a
-  // second, better way to supply one — so the ask points at the eyedropper
+  // second, better way to supply one — so the ask points at the swatches
   // rather than asking the customer to name a shade they'd have to guess at.
   if (intent === "remove-color" && !COLOUR_WORD.test(text) && !/#[0-9a-f]{3,8}\b/i.test(text)) {
     return {
       intent,
-      clarification: "Which colour? Click one in the image with the eyedropper, or name it — “remove the white”.",
+      clarification: "Which colour? Click one of the swatches above, or name it — “remove the white”.",
     };
   }
 

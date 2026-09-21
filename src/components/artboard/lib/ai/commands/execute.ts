@@ -119,6 +119,21 @@ export const executeBoardCommands = async (
     return ids.size;
   };
 
+  /**
+   * Why a command touched nothing. A selected piece that is locked used to get
+   * "Select an image first." — wrong, and no hint that Unlock is the fix.
+   */
+  const noTargetsMessage = () => {
+    const context = ctx();
+    const selected = context.items.filter((it) => context.targetIds.includes(it.id));
+    if (selected.length > 0 && selected.every((it) => it.locked)) {
+      return selected.length === 1
+        ? "This image is locked. Unlock it to make changes."
+        : "These images are locked. Unlock them to make changes.";
+    }
+    return "Select an image first.";
+  };
+
   const printableWidth = (context: BoardContext) =>
     Math.max(ITEM.MIN_SIZE, context.canvasWidth - 2 * context.marginSize);
 
@@ -234,7 +249,7 @@ export const executeBoardCommands = async (
           return { ...item, ...clamped, gravityActive: true };
         });
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         const maxW = printableWidth(context);
@@ -255,7 +270,7 @@ export const executeBoardCommands = async (
           gravityActive: true,
         }));
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(
@@ -272,7 +287,7 @@ export const executeBoardCommands = async (
           gravityActive: true,
         }));
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(`Scaled ${plural(count, "image")} to ${Math.round(command.factor * 100)}%.`);
@@ -292,7 +307,7 @@ export const executeBoardCommands = async (
           };
         });
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(`${plural(count, "image")} stretched to ${inch(maxW)} — full printable width.`);
@@ -303,32 +318,44 @@ export const executeBoardCommands = async (
       case "copies-delta": {
         const context = ctx();
         if (!context.targetIds.length) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
-        let applied = 0;
+        // Worked out here, from the board as it stands, rather than inside the
+        // state updater: React runs that later, after the reply below has been
+        // written, which is why this said "Now 0 copies." after every change.
+        // Locked pieces are left alone, as every other command does.
+        const next = new Map<number, number>();
         let limited = false;
-        const ids = new Set(context.targetIds);
+        for (const it of context.items) {
+          if (!context.targetIds.includes(it.id) || it.locked) continue;
+          const requested =
+            command.kind === "copies" ? command.value : it.copies + command.delta;
+          const wanted = Math.max(1, Math.floor(requested));
+          // The layout engine knows how many actually fit across the film;
+          // asking for more than that would render copies off the sheet.
+          const maxFit = computeRenderCopies(
+            { ...it, copies: wanted },
+            context.canvasWidth,
+            context.marginSize,
+            context.spacing,
+          );
+          const value = Math.min(wanted, maxFit);
+          if (value !== wanted) limited = true;
+          next.set(it.id, value);
+        }
+        if (next.size === 0) {
+          receipts.push(noTargetsMessage());
+          break;
+        }
+        const applied = [...next.values()].pop()!;
         commitOnce();
         caps.setItems((prev) =>
-          prev.map((it) => {
-            if (!ids.has(it.id)) return it;
-            const requested =
-              command.kind === "copies" ? command.value : it.copies + command.delta;
-            const wanted = Math.max(1, Math.floor(requested));
-            // The layout engine knows how many actually fit across the film;
-            // asking for more than that would render copies off the sheet.
-            const maxFit = computeRenderCopies(
-              { ...it, copies: wanted },
-              context.canvasWidth,
-              context.marginSize,
-              context.spacing,
-            );
-            const value = Math.min(wanted, maxFit);
-            if (value !== wanted) limited = true;
-            applied = value;
-            return { ...it, copies: value, gravityActive: true, skipAnimation: true };
-          }),
+          prev.map((it) =>
+            next.has(it.id)
+              ? { ...it, copies: next.get(it.id)!, gravityActive: true, skipAnimation: true }
+              : it,
+          ),
         );
         changed = true;
         receipts.push(
@@ -343,7 +370,7 @@ export const executeBoardCommands = async (
         const context = ctx();
         const targets = context.items.filter((it) => context.targetIds.includes(it.id));
         if (!targets.length) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         // Safety ceiling only — whether artwork actually fits is decided by
@@ -392,7 +419,7 @@ export const executeBoardCommands = async (
         }
         const count = mutate((item) => rotateItem(item, turns));
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(`Rotated ${plural(count, "image")} by ${turns * 90}°.`);
@@ -402,7 +429,7 @@ export const executeBoardCommands = async (
       case "flip": {
         const count = mutate((item) => ({ ...item, flipped: !item.flipped }));
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(`Flipped ${plural(count, "image")}.`);
@@ -412,7 +439,7 @@ export const executeBoardCommands = async (
       case "lock": {
         const count = mutate((item) => ({ ...item, locked: command.value }), { includeLocked: true });
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(`${plural(count, "image")} ${command.value ? "locked" : "unlocked"}.`);
@@ -426,7 +453,7 @@ export const executeBoardCommands = async (
         }
         const context = ctx();
         if (!context.targetIds.length) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         commitOnce();
@@ -472,7 +499,7 @@ export const executeBoardCommands = async (
           }
         });
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(
@@ -499,7 +526,7 @@ export const executeBoardCommands = async (
           ),
         );
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         const parts: string[] = [];
@@ -524,7 +551,7 @@ export const executeBoardCommands = async (
           ),
         );
         if (!count) {
-          receipts.push("Select an image first.");
+          receipts.push(noTargetsMessage());
           break;
         }
         receipts.push(`Placed at ${inch(command.xIn ?? 0)}, ${inch(command.yIn ?? 0)}.`);

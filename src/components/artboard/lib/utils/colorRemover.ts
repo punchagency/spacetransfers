@@ -15,13 +15,15 @@
  *    as the same as 30 in blue, which the eye does not. Distances are measured
  *    in CIE L*a*b* instead, so one tolerance value behaves consistently whether
  *    the user picked a pale sky or a deep navy.
- *  - **Soft edges.** A binary keep/drop decision produces the jagged, aliased
- *    outline that makes a cutout look cheap, and on a transfer it shows as a
- *    hard fringe. Alpha ramps across a band near the tolerance boundary, so
- *    anti-aliased edges and soft shadows fall off smoothly.
- *  - **Spill suppression.** Pixels that partially matched keep a tint of the
- *    removed colour — the classic green-screen halo. Their residual is scaled
- *    back in proportion to how much they matched.
+ *  - **A clean cut.** A removed pixel becomes fully transparent and every
+ *    other pixel keeps its exact colour and opacity. This used to ramp alpha
+ *    across a band near the tolerance boundary for softer edges, but DTF film
+ *    cannot print partial transparency: those pixels printed solid, and on a
+ *    Wide pick of a gradient the ramp covered whole areas and tripped the
+ *    see-through flag. The BG remover made the same change for the same reason.
+ *  - **Blended replacement.** Replacing one colour with another still
+ *    cross-fades across the band — opacity is untouched there, so soft edges
+ *    cost nothing in print.
  */
 
 export interface RemoveColorOptions {
@@ -284,9 +286,9 @@ export const removeColor = async (
 
         const strength = matchStrength(data[i], data[i + 1], data[i + 2]);
         if (strength === 0) continue;
-        affected++;
 
         if (replacement) {
+          affected++;
           // Substitution: cross-fade toward the new colour by match strength so
           // anti-aliased edges blend instead of stepping.
           data[i] = Math.round(data[i] + (replacement.r - data[i]) * strength);
@@ -295,18 +297,11 @@ export const removeColor = async (
           continue;
         }
 
-        // Removal: scale alpha down by how much this pixel matched.
-        data[i + 3] = Math.round(alpha * (1 - strength));
-
-        // Spill suppression. A partially-matched pixel still carries a tint of
-        // the colour being removed, which is what leaves a coloured halo around
-        // a cutout. Pull its channels away from the target in proportion to the
-        // match so the surviving fringe reads neutral.
-        if (strength > 0 && strength < 1 && data[i + 3] > 0) {
-          data[i] = Math.round(data[i] - (target.r - data[i]) * strength * 0.5);
-          data[i + 1] = Math.round(data[i + 1] - (target.g - data[i + 1]) * strength * 0.5);
-          data[i + 2] = Math.round(data[i + 2] - (target.b - data[i + 2]) * strength * 0.5);
-        }
+        // Removal: all or nothing, cut at the middle of the match band, so the
+        // result has no partly transparent pixels for the film to print solid.
+        if (strength < 0.5) continue;
+        data[i + 3] = 0;
+        affected++;
       }
     }
 
@@ -388,11 +383,57 @@ export const extractDominantColors = async (
   if (counted === 0) return [];
 
   const hex = (v: number) => Math.round(v).toString(16).padStart(2, "0");
-  return [...buckets.values()]
+
+  /**
+   * Folds shades the eye reads as one colour into the bigger swatch.
+   *
+   * The grid above still splits a flat colour that straddles a bucket edge, so
+   * a JPEG logo came back as two whites, two reds and two blues — six slots,
+   * three real choices. ΔE 10 is well past "just noticeable" (≈2.3) and well
+   * short of two colours anyone would pick between.
+   */
+  const MERGE_DELTA_E = 10;
+  const picked: Array<{ r: number; g: number; b: number; n: number; lab: Lab }> = [];
+  for (const bucket of [...buckets.values()].sort((a, b) => b.n - a.n)) {
+    const rgb = { r: bucket.r / bucket.n, g: bucket.g / bucket.n, b: bucket.b / bucket.n };
+    const lab = rgbToLab(rgb);
+    const twin = picked.find((p) => labDistance(p.lab, lab) < MERGE_DELTA_E);
+    if (twin) twin.n += bucket.n;
+    else picked.push({ ...rgb, n: bucket.n, lab });
+  }
+
+  return picked
     .sort((a, b) => b.n - a.n)
     .slice(0, count)
-    .map((bucket) => ({
-      hex: `#${hex(bucket.r / bucket.n)}${hex(bucket.g / bucket.n)}${hex(bucket.b / bucket.n)}`,
-      ratio: bucket.n / counted,
+    .map((c) => ({
+      hex: `#${hex(c.r)}${hex(c.g)}${hex(c.b)}`,
+      ratio: c.n / counted,
     }));
+};
+
+/**
+ * The artwork's own colour closest to a named one, if any is close enough.
+ *
+ * "Remove the red" names a colour family, not a hex. Matched against one fixed
+ * red (#ef4444) at the normal tolerance it missed the logo's actual red
+ * (#da2525) entirely and reported the colour absent. Snapping to the nearest
+ * dominant colour — the same set the swatches show — removes what the customer
+ * meant. ΔE 45 keeps "red" from snapping to an orange or a pink.
+ */
+export const nearestImageColor = async (
+  imageUrl: string,
+  hex: string,
+  maxDeltaE = 45,
+): Promise<string | null> => {
+  const target = parseHexColor(hex);
+  if (!target) return null;
+  const targetLab = rgbToLab(target);
+  let best: { hex: string; d: number } | null = null;
+  for (const color of await extractDominantColors(imageUrl, 12)) {
+    const rgb = parseHexColor(color.hex);
+    if (!rgb) continue;
+    const d = labDistance(rgbToLab(rgb), targetLab);
+    if (d <= maxDeltaE && (!best || d < best.d)) best = { hex: color.hex, d };
+  }
+  return best?.hex ?? null;
 };

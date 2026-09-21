@@ -139,6 +139,9 @@ export const serverProvider: AiEditProvider = {
       // fetch surfaces an aborted request as AbortError — translate it so the
       // caller treats a cancel as a no-op rather than a failed generation.
       if (error?.name === "AbortError" || signal?.aborted) throw new AiEditAbortedError();
+      // The server said the model can't serve edits right now — drop the cached
+      // "enabled" so the panel greys the model-only actions on its next check.
+      if (error?.status === 503) resetServerCapabilities();
       throw error;
     } finally {
       window.clearInterval(ticker);

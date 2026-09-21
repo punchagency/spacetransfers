@@ -348,18 +348,13 @@ export default function Artboard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
-  // AI editing targets: every selected item still on the board. Every item is a
-  // raster image — PDFs are rendered to PNG pages before they are placed.
-  const aiTargetIds = useMemo(() => {
-    const ids = new Set<number>(selectedIds);
-    if (selectedId != null) ids.add(selectedId);
-    return items.filter((it) => ids.has(it.id)).map((it) => it.id);
-  }, [items, selectedId, selectedIds]);
-
+  // AI image edits apply to one image: the one the panel is open on, which is
+  // always the primary selection (the panel closes when the primary changes).
+  // Board commands typed into the panel still act on the whole selection.
   const ai = useAiEdit(
     items,
     setItems,
-    aiTargetIds,
+    selectedId,
     history.commit,
     onActionPerformed,
   );
@@ -401,7 +396,10 @@ export default function Artboard({
       canRedo: state.history.canRedo,
       select: (ids) => {
         setSelectedIds(new Set(ids));
-        setSelectedId(ids.length ? ids[ids.length - 1] : null);
+        // Keep the current primary when it is still selected, so "select all"
+        // typed into an image's AI panel doesn't close that panel.
+        const current = boardStateRef.current.selectedId;
+        setSelectedId(ids.length ? (current != null && ids.includes(current) ? current : ids[ids.length - 1]) : null);
       },
       // Delegated rather than reimplemented: auto-crop does real image work
       // (server trim, or a canvas alpha/border scan) and only ever applies to
@@ -431,20 +429,19 @@ export default function Artboard({
   // open at a time.
   const [aiPanelItemId, setAiPanelItemId] = useState<number | null>(null);
 
-  // Close the panel (and cancel any run) whenever the primary selection changes,
-  // the item disappears, or a second image joins the selection (AI edits one
-  // image at a time), so a stale panel can never linger on a deselected or
-  // deleted image. Opening for a fresh image starts a clean transcript.
-  const multiSelected = selectedIds.size > 1;
+  // Close the panel (and cancel any run) whenever the primary selection changes
+  // or the item disappears, so a stale panel can never linger on a deselected
+  // or deleted image. Opening for a fresh image starts a clean transcript.
+  // (Shift-clicking another image closes it too — that click lands outside it.)
   useEffect(() => {
-    if (aiPanelItemId != null && (aiPanelItemId !== selectedId || multiSelected)) {
+    if (aiPanelItemId != null && aiPanelItemId !== selectedId) {
       setAiPanelItemId(null);
       ai.cancel();
     }
     // Only the selection change should trigger this; reading the latest
     // aiPanelItemId/ai from the closure is exactly what we want.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, multiSelected]);
+  }, [selectedId]);
 
   // The item the panel is open for, resolved once here so the bridge can carry
   // its image and edit chain without the panel needing to look items up.
@@ -452,7 +449,7 @@ export default function Artboard({
 
   const aiPanel: AiPanelBridge = {
     openItemId: aiPanelItemId,
-    isRunning: ai.isRunning,
+    isRunning: ai.isRunning || aiConversation.isThinking,
     status: ai.status,
     messages: aiConversation.messages,
     onOpen: (id) => {
@@ -467,7 +464,10 @@ export default function Artboard({
       setAiPanelItemId(null);
     },
     onSend: aiConversation.send,
-    onCancel: ai.cancel,
+    onCancel: () => {
+      aiConversation.stopThinking();
+      ai.cancel();
+    },
     imageUrl: aiPanelItem?.croppedUrl || aiPanelItem?.url,
     editHistory: aiPanelItem?.aiHistory,
     onRevertHistory: (entryIndex) => {
@@ -709,9 +709,9 @@ export default function Artboard({
           // customer is asking for another sample of what they asked for, and
           // re-planning may also read the request better the second time.
           onRetry={() => {
-            const { prompt } = ai.preview!;
+            const { prompt, request } = ai.preview!;
             ai.discardPreview();
-            aiConversation.send(prompt);
+            aiConversation.send(prompt, request);
           }}
         />
       )}

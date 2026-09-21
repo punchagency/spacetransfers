@@ -25,76 +25,37 @@ export interface AiMessage {
 let messageSeq = 0;
 const nextId = () => `m${Date.now().toString(36)}-${messageSeq++}`;
 
-/**
- * Completion lines, per intent.
- *
- * Two problems with a single fixed string. It says nothing — "your image is
- * updated" is true of every edit, so it confirms the request was received
- * rather than what came back. And repeating it verbatim down the thread makes
- * successive edits indistinguishable at a glance, which is exactly when the
- * user is scanning for which attempt did what.
- *
- * So: name the operation, and rotate phrasing so consecutive runs of the same
- * intent don't stack identical lines. Rotation is by index rather than random —
- * random repeats itself roughly a third of the time on a three-item list.
- */
-const COMPLETION_COPY: Record<AiIntentId, string[]> = {
-  "remove-bg": ["Background removed.", "Cut out — background is gone.", "Subject isolated."],
-  "remove-color": ["Colour removed.", "That colour is gone.", "Stripped that colour out."],
-  "make-transparent": ["Background is transparent now.", "Dropped to transparency."],
-  "to-sticker": ["Sticker cut, border added.", "Die-cut sticker ready.", "Contour border applied."],
-  "isolate-subject": ["Everything else removed.", "Just the subject now.", "Scene cleared around it."],
-  upscale: ["Upscaled.", "Resolution increased.", "Bigger, with detail intact."],
-  enhance: ["Quality lifted.", "Sharpened and cleaned up.", "Detail enhanced."],
-  "replace-bg": ["Background replaced.", "New scene dropped in behind.", "Backdrop swapped."],
-  "change-color": ["Recoloured.", "New colour applied.", "Colour swapped."],
-  "remove-object": ["Object removed.", "Erased, and the gap filled in.", "Gone — area rebuilt."],
-  "replace-object": ["Swapped out.", "Replaced.", "New one's in its place."],
-  "add-object": ["Added.", "That's in the image now.", "Dropped it in."],
-  "add-shadow": ["Shadow added.", "Drop shadow applied.", "Grounded with a shadow."],
-  relight: ["Relit.", "New lighting applied.", "Light reworked."],
-  outpaint: ["Image expanded.", "Scene extended outwards.", "More canvas generated."],
-  "generative-fill": ["Filled in.", "Area rebuilt.", "Gap generated."],
-  "style-transfer": ["Restyled.", "New style applied.", "Reimagined."],
-  "sketch-to-photo": ["Rendered as a photo.", "Sketch made photoreal.", "Now photographic."],
-  cartoon: ["Restyled.", "New style applied.", "Reimagined."],
-  custom: ["Done.", "Edit applied.", "That's in."],
-};
-
 /** Intents whose whole point is resolution — worth quoting the actual number. */
 const REPORTS_PIXELS: AiIntentId[] = ["upscale", "enhance"];
 
-const buildCompletionText = (
-  intent: AiIntentId,
-  variantIndex: number,
-  outcome: AiEditOutcome,
-): string => {
-  const { editedCount = 1, widthPx, heightPx, stepCount = 1, awaitingReview, upsampled } = outcome;
-  const options = COMPLETION_COPY[intent] ?? COMPLETION_COPY.custom;
-  const parts: string[] = [];
-
-  // A staged result is not yet on the sheet, and saying "done" about something
-  // the customer still has to accept is how an edit gets lost — they read the
-  // confirmation, close the panel, and the work is discarded.
-  if (awaitingReview) {
-    parts.push(
-      stepCount > 1
-        ? `Both changes are ready — compare them and hit Apply.`
-        : `Ready — compare it and hit Apply.`,
-    );
-  } else {
-    parts.push(options[variantIndex % options.length]);
-    if (stepCount > 1) parts.push(`${stepCount} changes applied in order.`);
-    if (editedCount > 1) parts.push(`${editedCount} images updated.`);
-  }
+/**
+ * The reply once an edit is ready. Every edit is staged for review, so this
+ * never says "done": the result is not on the sheet until the customer applies
+ * it, and a "done" is how an edit gets lost — they read it, close the panel,
+ * and the work is discarded.
+ */
+const buildCompletionText = (intent: AiIntentId, outcome: AiEditOutcome): string => {
+  const { widthPx, heightPx, stepCount = 1, upsampled, droppedSteps } = outcome;
+  const parts: string[] = [
+    stepCount > 1
+      ? `${stepCount === 2 ? "Both" : `All ${stepCount}`} changes are ready — compare them and hit Apply.`
+      : "Ready — compare it and hit Apply.",
+  ];
 
   if (REPORTS_PIXELS.includes(intent) && widthPx && heightPx) {
-    parts.push(`Now ${widthPx.toLocaleString()} × ${heightPx.toLocaleString()} px.`);
+    parts.push(`The result is ${widthPx.toLocaleString()} × ${heightPx.toLocaleString()} px.`);
   }
 
-  // The one quality caveat worth interrupting a success message for: the pixel
-  // count is right but the detail behind it is not, and it is invisible on
-  // screen at artboard zoom.
+  // Surfaced rather than swallowed: a customer who asked for five things and
+  // got four needs to know which one to ask for again.
+  if (droppedSteps) {
+    parts.push(
+      `I ran the first ${stepCount} changes — that's the most I can chain at once. Send the remaining ${droppedSteps} as a follow-up.`,
+    );
+  }
+
+  // The one quality caveat worth interrupting for: the pixel count is right but
+  // the detail behind it is not, and it is invisible at artboard zoom.
   if (upsampled) {
     parts.push("The model rendered below print resolution, so it was scaled back up — run Enhance if it looks soft.");
   }
@@ -120,6 +81,17 @@ export const useAiConversation = (
 ) => {
   const [messages, setMessages] = useState<AiMessage[]>([]);
   /**
+   * True from the moment a prompt is sent until it is fully handled — including
+   * the planning round trip before any edit starts. That trip can take seconds
+   * (up to the planner's timeout), and while it ran the panel showed nothing:
+   * the box cleared, no message appeared and there was no Stop button, so the
+   * prompt looked lost and could be sent twice.
+   */
+  const [isThinking, setIsThinking] = useState(false);
+  // Bumped by every send and by `stopThinking`; a send whose number is no longer
+  // current was stopped (or superseded) and must not act on its plan.
+  const sendSeqRef = useRef(0);
+  /**
    * The thread, for the planner.
    *
    * Held in a ref alongside the state because `send` must read the history as
@@ -134,9 +106,6 @@ export const useAiConversation = (
   }, [messages]);
   // Id of the assistant placeholder currently awaiting a result.
   const pendingIdRef = useRef<string | null>(null);
-  // How many times each intent has completed, so repeat runs of the same
-  // operation advance to the next phrasing instead of echoing the last line.
-  const variantSeqRef = useRef<Map<AiIntentId, number>>(new Map());
 
   const patch = useCallback((id: string, changes: Partial<AiMessage>) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...changes } : m)));
@@ -147,6 +116,10 @@ export const useAiConversation = (
       const trimmed = prompt.trim();
       if (!trimmed) return;
       const { intentOverride, options } = sendOptions;
+      const seq = ++sendSeqRef.current;
+      const stale = () => seq !== sendSeqRef.current;
+      setIsThinking(true);
+      try {
 
       const userMessage: AiMessage = {
         id: nextId(),
@@ -240,12 +213,33 @@ export const useAiConversation = (
        * makes follow-ups work — "now make it pink" is meaningless without the
        * turn that established what "it" is.
        */
+      // The prompt and a working line go up before planning, not after it.
+      let thinkingId: string | null = null;
+      if (!intentOverride) {
+        const thinking: AiMessage = {
+          id: nextId(),
+          role: "assistant",
+          text: "Reading your request…",
+          status: "pending",
+          at: Date.now(),
+        };
+        thinkingId = thinking.id;
+        pendingIdRef.current = thinking.id;
+        // Read now: React runs the updater later, after the flag below is set.
+        const added = userAlreadyPosted ? [thinking] : [userMessage, thinking];
+        setMessages((prev) => [...prev, ...added]);
+        userAlreadyPosted = true;
+      }
+
       const plan = intentOverride
         ? null
         : await planEdit(
             imagePrompt,
-            historyRef.current.map((m) => ({ role: m.role, text: m.text })),
+            historyRef.current
+              .filter((m) => m.id !== thinkingId && m.id !== userMessage.id)
+              .map((m) => ({ role: m.role, text: m.text })),
           );
+      if (stale()) return;
 
       const analysis = analyzePrompt(imagePrompt);
       const intent = intentOverride ?? plan?.steps[0]?.intent ?? analysis.intent;
@@ -255,16 +249,21 @@ export const useAiConversation = (
       // result than making the model invent a colour, object, or scene.
       const conversational = plan?.reply || plan?.clarification || analysis.reply || analysis.clarification;
       if (!intentOverride && conversational) {
-        const assistantMessage: AiMessage = {
-          id: nextId(),
-          role: "assistant",
-          text: conversational,
-          status: "done",
-          at: Date.now(),
-        };
-        setMessages((prev) =>
-          userAlreadyPosted ? [...prev, assistantMessage] : [...prev, userMessage, assistantMessage],
-        );
+        pendingIdRef.current = null;
+        if (thinkingId) {
+          patch(thinkingId, { text: conversational, status: "done" });
+        } else {
+          const assistantMessage: AiMessage = {
+            id: nextId(),
+            role: "assistant",
+            text: conversational,
+            status: "done",
+            at: Date.now(),
+          };
+          setMessages((prev) =>
+            userAlreadyPosted ? [...prev, assistantMessage] : [...prev, userMessage, assistantMessage],
+          );
+        }
         return;
       }
 
@@ -275,7 +274,7 @@ export const useAiConversation = (
       // decomposition is what makes that wait legible rather than a stall, and
       // it also surfaces a misread plan before any model time is spent on it.
       const placeholder: AiMessage = {
-        id: nextId(),
+        id: thinkingId ?? nextId(),
         role: "assistant",
         text:
           steps && steps.length > 1
@@ -286,9 +285,11 @@ export const useAiConversation = (
       };
 
       pendingIdRef.current = placeholder.id;
-      setMessages((prev) =>
-        userAlreadyPosted ? [...prev, placeholder] : [...prev, userMessage, placeholder],
-      );
+      if (thinkingId) patch(thinkingId, { text: placeholder.text });
+      else
+        setMessages((prev) =>
+          userAlreadyPosted ? [...prev, placeholder] : [...prev, userMessage, placeholder],
+        );
 
       const outcome = await generate(imagePrompt, { steps, intentOverride, options });
       pendingIdRef.current = null;
@@ -308,13 +309,14 @@ export const useAiConversation = (
       // Prefer the intent the run actually resolved to; the local fallback only
       // matters if a provider returned without reporting one.
       const resolvedIntent = outcome.intent ?? intent;
-      const variantIndex = variantSeqRef.current.get(resolvedIntent) ?? 0;
-      variantSeqRef.current.set(resolvedIntent, variantIndex + 1);
 
       patch(placeholder.id, {
-        text: buildCompletionText(resolvedIntent, variantIndex, outcome),
+        text: buildCompletionText(resolvedIntent, outcome),
         status: "done",
       });
+      } finally {
+        if (!stale()) setIsThinking(false);
+      }
     },
     [generate, patch, runBoardCommands],
   );
@@ -322,9 +324,16 @@ export const useAiConversation = (
   const clear = useCallback(() => {
     setMessages([]);
     pendingIdRef.current = null;
-    // A fresh thread starts from the first phrasing again.
-    variantSeqRef.current.clear();
   }, []);
 
-  return { messages, send, clear };
+  /** Stop pressed while the request is still being read (before any edit runs). */
+  const stopThinking = useCallback(() => {
+    sendSeqRef.current++;
+    const id = pendingIdRef.current;
+    if (id) patch(id, { text: "Canceled.", status: "canceled" });
+    pendingIdRef.current = null;
+    setIsThinking(false);
+  }, [patch]);
+
+  return { messages, send, clear, isThinking, stopThinking };
 };
