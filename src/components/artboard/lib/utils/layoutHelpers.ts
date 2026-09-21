@@ -2188,3 +2188,37 @@ export function remainingSheetHeightIn(items: LayoutItem[]): number {
 export function isSheetFull(items: LayoutItem[]): boolean {
   return sheetContentBottomIn(items) >= MAX_SHEET_HEIGHT_IN - 1;
 }
+
+/**
+ * Whether auto-nest would turn a rotated piece straight back.
+ *
+ * With auto-nest on, the layout pass lays each piece whichever way uses the
+ * least film. A quarter turn the packer disagrees with is undone by its own
+ * quarter turn on top, so the footprint stays put and the artwork shows (and
+ * prints) upside down. Rotate asks this first, on a copy of the board, and
+ * declines with an explanation instead of applying a turn that won't stick.
+ *
+ * Mirrors the per-piece step of `rotateSelected` (rotation +90, width and
+ * height swapped) and the auto-nest pass in `useArtboardEffects`. Groups are
+ * never turned by the packer, so callers leave them out.
+ */
+export function autoNestWouldUndoRotation<T extends LayoutItem & { rotation?: number }>(
+  items: T[],
+  ids: ReadonlySet<number>,
+  canvasWidth: number,
+  spacing: number,
+  margin: number,
+): boolean {
+  // Which way the piece's footprint lies on the sheet: 0 as uploaded, 1 turned.
+  const lies = (it: { rotation?: number; nestRotation?: number }) =>
+    ((Math.round(((it.rotation ?? 0) + (it.nestRotation ?? 0)) / 90) % 2) + 2) % 2;
+  const before = new Map(items.filter((it) => ids.has(it.id)).map((it) => [it.id, lies(it)]));
+  if (before.size === 0) return false;
+  const rotated = items.map((it) =>
+    ids.has(it.id)
+      ? { ...it, rotation: ((it.rotation ?? 0) + 90) % 360, widthIn: it.heightIn, heightIn: it.widthIn }
+      : it,
+  );
+  const laidOut = calculateGridLayout(rotated, canvasWidth, spacing, true, margin) as Array<T>;
+  return laidOut.some((it) => before.has(it.id) && lies(it) === before.get(it.id));
+}

@@ -23,7 +23,7 @@ import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
 import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
-import { isSheetFull } from "./artboard/lib/utils";
+import { autoNestWouldUndoRotation, isSheetFull } from "./artboard/lib/utils";
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -481,6 +481,40 @@ export default function Artboard({
   };
 
   /**
+   * Rotate, unless auto-nest would turn the piece straight back.
+   *
+   * Auto-nest lays each piece whichever way uses the least film, so a quarter
+   * turn it disagrees with was undone on the next layout pass — the footprint
+   * stayed put and the artwork flipped upside down. The turn is tried on a copy
+   * of the board first; if auto-nest would undo it, nothing changes and the
+   * customer is told to switch auto-nest off to rotate. Everything else about
+   * auto-nest is exactly as before.
+   */
+  const rotateSelected = () => {
+    if (autoNestStickers) {
+      const state = boardStateRef.current;
+      const selected = new Set<number>(state.selectedIds);
+      if (state.selectedId != null) selected.add(state.selectedId);
+      // Locked pieces are refused by the action itself; groups are never
+      // turned by auto-nest, so neither can conflict.
+      const loose = new Set(
+        state.items.filter((it) => selected.has(it.id) && !it.locked && !it.groupId).map((it) => it.id),
+      );
+      if (autoNestWouldUndoRotation(state.items, loose, state.canvasWidth, state.spacing, state.marginSize)) {
+        toast("Auto-nest is on and keeps this piece turned the way that uses the least film. Turn auto-nest off (press N) to rotate it.", {
+          id: "rotate-auto-nest",
+          icon: "↻",
+          duration: 6000,
+          // Clear of the image toolbar, which sits at the top of the sheet.
+          position: "bottom-center",
+        });
+        return;
+      }
+    }
+    itemActions.rotateSelected();
+  };
+
+  /**
    * Duplicates everything selected, and selects the copies.
    *
    * It used to duplicate only the piece last clicked, however many were
@@ -672,7 +706,7 @@ export default function Artboard({
           onToggleProperties={(id) =>
             setShowProperties((prev) => ({ ...prev, [id]: true }))
           }
-          itemActions={itemActions}
+          itemActions={{ ...itemActions, rotateSelected }}
           groupAction={groupAction}
           onGroup={groupAction === "ungroup" ? ungroupSelection : groupSelection}
           onDuplicate={duplicateSelected}
