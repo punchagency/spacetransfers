@@ -102,6 +102,11 @@ app.use(
 );
 // Prefix mount, so a route added to this family later inherits the right limit
 // instead of silently falling to the 2 MB tier.
+// Stripe signs the exact bytes it sends, so its webhook must reach the handler
+// unparsed. The route's own `express.raw` ran after the global JSON parser below
+// and found the body already consumed, so every genuine event failed signature
+// verification with a 400 — payout and Connect account updates never landed.
+app.use("/api/payouts/webhook", express.raw({ type: "application/json", limit: STANDARD_BODY_LIMIT }));
 app.use("/api/customer/assets", express.json({ limit: IMAGE_JSON_LIMIT }));
 app.use(express.json({ limit: STANDARD_BODY_LIMIT }));
 app.use(express.urlencoded({ limit: STANDARD_BODY_LIMIT, extended: true }));
