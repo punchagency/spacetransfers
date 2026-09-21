@@ -26,11 +26,19 @@ import sharp from "sharp";
 export type StoredObject = { url: string; publicId: string };
 
 /**
- * All four are required. A half-configured R2 is the dangerous state — it would
+ * All five are required. A half-configured R2 is the dangerous state — it would
  * take the no-downscale path and then fail to store anything.
+ *
+ * The public base URL is one of them. Without it there is no address a browser
+ * can load the artwork from: the account endpoint (`<account>.r2.cloudflarestorage.com`)
+ * is R2's S3 API and answers only signed requests, so an upload would succeed
+ * and then show as a broken image everywhere. It used to be optional, with that
+ * endpoint as a fallback described as working.
  */
 export const isR2Configured = (): boolean =>
-  Boolean(env.r2AccountId && env.r2AccessKeyId && env.r2SecretAccessKey && env.r2Bucket);
+  Boolean(
+    env.r2AccountId && env.r2AccessKeyId && env.r2SecretAccessKey && env.r2Bucket && env.r2PublicBaseUrl,
+  );
 
 let client: S3Client | null = null;
 
@@ -115,11 +123,10 @@ export const legacyCloudinaryThumbUrl = (url: string): string =>
 /** Public URL for a stored key, honouring a custom domain when one is set. */
 export const publicUrlForKey = (key: string): string => {
   const base = env.r2PublicBaseUrl?.replace(/\/+$/, "");
-  if (base) return `${base}/${key}`;
-  // No custom domain configured yet: the bucket's own endpoint. Works, but a
-  // custom domain is worth adding — this one leaks the account id in every
-  // artwork URL a customer sees.
-  return `https://${env.r2AccountId}.r2.cloudflarestorage.com/${env.r2Bucket}/${key}`;
+  // Unreachable in practice — storeArtwork refuses first — but a URL no browser
+  // can load must never be written into a design or an order.
+  if (!base) throw new Error("R2_PUBLIC_BASE_URL is not set");
+  return `${base}/${key}`;
 };
 
 /**
@@ -178,7 +185,7 @@ export const storeArtwork = async (
      */
     console.error(
       "[storage] artwork storage is not configured — set R2_ACCOUNT_ID, " +
-        "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET",
+        "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET and R2_PUBLIC_BASE_URL",
     );
     const error = new Error(
       "We can't accept uploads at the moment. Nothing you did caused this — please try again shortly.",

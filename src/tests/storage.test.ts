@@ -55,23 +55,28 @@ describe("which backend serves", () => {
     // It would take the no-downscale path and then fail to store anything.
     const saved = {
       a: env.r2AccountId, k: env.r2AccessKeyId, s: env.r2SecretAccessKey, b: env.r2Bucket,
+      u: env.r2PublicBaseUrl,
     };
     try {
-      const set = (a?: string, k?: string, s?: string, b?: string) => {
+      const set = (a?: string, k?: string, s?: string, b?: string, u?: string) => {
         (env as any).r2AccountId = a; (env as any).r2AccessKeyId = k;
         (env as any).r2SecretAccessKey = s; (env as any).r2Bucket = b;
+        (env as any).r2PublicBaseUrl = u;
       };
-      set("acc", "key", "secret", "bucket");
+      const full = ["acc", "key", "secret", "bucket", "https://cdn.example.com"];
+      set(...(full as [string, string, string, string, string]));
       assert.equal(isR2Configured(), true);
-      for (const missing of [0, 1, 2, 3]) {
-        const vals: (string | undefined)[] = ["acc", "key", "secret", "bucket"];
+      // The public URL counts: without it nothing stored could be loaded.
+      for (const missing of [0, 1, 2, 3, 4]) {
+        const vals: (string | undefined)[] = [...full];
         vals[missing] = undefined;
-        set(vals[0], vals[1], vals[2], vals[3]);
+        set(vals[0], vals[1], vals[2], vals[3], vals[4]);
         assert.equal(isR2Configured(), false, `missing index ${missing}`);
       }
     } finally {
       (env as any).r2AccountId = saved.a; (env as any).r2AccessKeyId = saved.k;
       (env as any).r2SecretAccessKey = saved.s; (env as any).r2Bucket = saved.b;
+      (env as any).r2PublicBaseUrl = saved.u;
     }
   });
 
@@ -111,18 +116,15 @@ describe("public URLs", () => {
     }
   });
 
-  it("falls back to the bucket endpoint, which exposes the account id", () => {
+  it("never falls back to the account endpoint, which browsers cannot load from", () => {
     const saved = { base: env.r2PublicBaseUrl, acc: env.r2AccountId, b: env.r2Bucket };
     try {
       (env as any).r2PublicBaseUrl = undefined;
       (env as any).r2AccountId = "acc123";
       (env as any).r2Bucket = "space-transfers";
-      // Worth a custom domain before launch: this account id ends up in every
-      // artwork URL a customer can see.
-      assert.equal(
-        publicUrlForKey("art/x.png"),
-        "https://acc123.r2.cloudflarestorage.com/space-transfers/art/x.png",
-      );
+      // <account>.r2.cloudflarestorage.com is the signed S3 API; a URL on it
+      // would be written into designs and orders and never display.
+      assert.throws(() => publicUrlForKey("art/x.png"), /R2_PUBLIC_BASE_URL/);
     } finally {
       (env as any).r2PublicBaseUrl = saved.base;
       (env as any).r2AccountId = saved.acc;

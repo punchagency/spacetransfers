@@ -49,10 +49,12 @@ import { sendEmail } from "../services/email.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import {
   editImageWithGemini,
+  GeminiDeclinedError,
   geminiImageModel,
   geminiPlanningReady,
   geminiReady,
   geminiStatus,
+  verifyGeminiKey,
   geminiUnavailableReason,
   hasGemini,
   planEditWithGemini,
@@ -714,6 +716,10 @@ export const buildEditRequest = (
  * guaranteed to 503.
  */
 export const aiEditCapabilities = async (_req: Request, res: Response) => {
+  // Once per server start (and after a key block lapses): answers truthfully
+  // from the first request instead of only after an edit has failed.
+  await verifyGeminiKey();
+
   // One provider now, so the array is a list of one or of none. Kept as an
   // array because the client reads `tiers[0]` to name the model it is about to
   // use, and that contract has not changed.
@@ -797,6 +803,7 @@ export const aiEditPlan = async (req: Request, res: Response, next: NextFunction
       return next(Object.assign(new Error("prompt is required"), { statusCode: 400 }));
     }
 
+    await verifyGeminiKey();
     if (!geminiPlanningReady()) {
       // 200, not 503. An absent planner is a missing enhancement, not a failed
       // request — the client is expected to proceed on its local classifier, and
@@ -850,6 +857,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return next(Object.assign(new Error("prompt is required"), { statusCode: 400 }));
     }
+    await verifyGeminiKey();
     if (!geminiReady()) {
       // Distinguished so the operator reading logs — and the customer reading
       // the panel — can tell a capped free tier from an unfunded paid one from
@@ -869,6 +877,8 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
           ? "The image model is handling a lot of requests right now. Try again in a moment." + stillWorks
           : status === "retired"
           ? "The configured image model is no longer available." + stillWorks
+          : status === "invalid_key"
+          ? "AI image editing isn't set up correctly on this server yet." + stillWorks
           : "AI editing isn't configured on this server yet.";
 
       const detail = geminiUnavailableReason();
@@ -915,6 +925,17 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
         providerUsed = "gemini";
         modelUsed = result.model;
       } catch (geminiErr: any) {
+        // A refusal is an answer, not an outage — say what the model said, and
+        // don't tell the customer the service is down or that they should retry.
+        if (geminiErr instanceof GeminiDeclinedError) {
+          const said = String(geminiErr.message).replace(/\s+/g, " ").trim().slice(0, 300);
+          console.warn(`[AI-EDIT] declined for intent "${intent}" — ${said}`);
+          return next(
+            Object.assign(new Error(`The AI couldn't make this edit: ${said} Try rewording it.`), {
+              statusCode: 422,
+            }),
+          );
+        }
         console.warn(`[AI-EDIT] Gemini failed (${geminiErr?.message}) — falling back`);
         lastTierError = `Gemini: ${geminiErr?.message}`;
         editedBuffer = undefined;
@@ -941,9 +962,10 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       const detail = geminiUnavailableReason() ?? lastTierError;
       console.warn(`[AI-EDIT] all tiers failed for intent "${intent}" — ${detail ?? "no detail"}`);
 
+      // Only Gemini is wired now; the Cloudflare tier this once also named is gone.
       const advice =
         geminiStatus() === "billing_required"
-          ? " Generative editing needs either billing enabled on the Gemini key or the free Cloudflare tier configured."
+          ? " Generative editing needs billing enabled on the Gemini key."
           : "";
 
       return next(

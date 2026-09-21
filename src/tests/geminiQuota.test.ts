@@ -93,6 +93,20 @@ describe("Gemini failure classification", () => {
     assert.equal(classifyFailure(404, RETIRED_BODY), "retired");
   });
 
+  it("reads a rejected API key as invalid_key, so the feature reports itself off", () => {
+    // The exact body Google returned for the staging key on 2026-09-18.
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: "API key not valid. Please pass a valid API key.",
+        status: "INVALID_ARGUMENT",
+        details: [{ reason: "API_KEY_INVALID" }],
+      },
+    });
+    assert.equal(classifyFailure(400, body), "invalid_key");
+    assert.equal(classifyFailure(403, "PERMISSION_DENIED"), "invalid_key");
+  });
+
   it("ignores failures that say nothing about availability", () => {
     // A 500 or a malformed request must not park a working model.
     assert.equal(classifyFailure(500, "internal error"), null);
