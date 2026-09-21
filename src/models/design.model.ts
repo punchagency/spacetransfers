@@ -3,7 +3,10 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface IDesignItem {
   id: number;
   assetId: string;
+  /** The image the piece shows and prints, cropped or not. */
   croppedUrl?: string;
+  /** The auto-crop switch's source, when an edit has replaced the upload. */
+  uncroppedUrl?: string;
   autoCrop?: boolean;
   widthIn: number;
   heightIn: number;
@@ -12,6 +15,16 @@ export interface IDesignItem {
   rotation: number;
   copies: number;
   linked: boolean;
+  flipped?: boolean;
+  /** 90 when auto-nest turned the piece to fit it. */
+  nestRotation?: number;
+  /** Columns auto-nest wrapped the copies into. */
+  flowCols?: number;
+  /** Placed by hand — auto-nest leaves it where it is. */
+  pinned?: boolean;
+  locked?: boolean;
+  /** Pieces sharing a group id were bundled in the editor to act as one. */
+  groupId?: string;
 }
 
 export interface IDesign extends Document {
@@ -28,6 +41,13 @@ export interface IDesign extends Document {
   };
   artboardData: {
     items: IDesignItem[];
+    /**
+     * The sheet's own settings, so a reopened design lays out exactly as it was
+     * saved. Absent on designs saved before they were recorded.
+     */
+    itemSpacingIn?: number;
+    sheetMarginIn?: number;
+    autoNest?: boolean;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +63,9 @@ const designItemSchema = new Schema<IDesignItem>({
     required: true
   },
   croppedUrl: {
+    type: String
+  },
+  uncroppedUrl: {
     type: String
   },
   autoCrop: {
@@ -76,7 +99,13 @@ const designItemSchema = new Schema<IDesignItem>({
   linked: {
     type: Boolean,
     default: false
-  }
+  },
+  flipped: { type: Boolean, default: false },
+  nestRotation: { type: Number, enum: [0, 90], default: 0 },
+  flowCols: { type: Number, min: 1 },
+  pinned: { type: Boolean, default: false },
+  locked: { type: Boolean, default: false },
+  groupId: { type: String }
 });
 
 const designSchema = new Schema<IDesign>(
@@ -116,7 +145,10 @@ const designSchema = new Schema<IDesign>(
       }
     },
     artboardData: {
-      items: [designItemSchema]
+      items: [designItemSchema],
+      itemSpacingIn: { type: Number, min: 0, max: 6 },
+      sheetMarginIn: { type: Number, min: 0, max: 2 },
+      autoNest: { type: Boolean }
     }
   },
   {

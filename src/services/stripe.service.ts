@@ -8,6 +8,28 @@ export const stripe = new Stripe(stripeSecretKey, {
   apiVersion: "2025-08-27.basil",
 });
 
+/** Whether a real key is present, as opposed to the placeholder above. */
+export const isStripeConfigured = (): boolean => Boolean(env.stripeSecretKey);
+
+/**
+ * Refuse before calling out, rather than letting the placeholder key be
+ * rejected upstream.
+ *
+ * Calling Stripe with `sk_test_placeholder` produced a 401 that read as an
+ * expired session and signed the partner out. Failing here says the true thing
+ * — payouts are not set up yet — and says it as a 503, which is what an
+ * unconfigured dependency is.
+ */
+export const assertStripeConfigured = (): void => {
+  if (isStripeConfigured()) return;
+  const error = new Error(
+    "Payouts are not set up yet. Once our payment provider is connected you'll be able to link your account here.",
+  ) as Error & { statusCode?: number; code?: string };
+  error.statusCode = 503;
+  error.code = "STRIPE_NOT_CONFIGURED";
+  throw error;
+};
+
 export const MINIMUM_PAYOUT_AMOUNT_CENTS = 1000; // $10.00 minimum
 
 /**

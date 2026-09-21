@@ -69,7 +69,7 @@ const VISION_TIMEOUT_MS = 45_000;
  * and it keeps re-probing a model that cannot succeed. So `limit: 0` parks the
  * model for a long window and reports a message naming the actual fix.
  */
-type ModelBlock = "rate_limited" | "daily_cap" | "billing_required" | "retired";
+type ModelBlock = "rate_limited" | "daily_cap" | "billing_required" | "retired" | "invalid_key";
 
 const BLOCK_DURATION_MS: Record<ModelBlock, number> = {
   // A per-minute burst clears in about a minute.
@@ -91,6 +91,14 @@ const BLOCK_DURATION_MS: Record<ModelBlock, number> = {
   billing_required: 5 * 60_000,
   // A retired model id is permanent for this deploy; the fallback list covers it.
   retired: 6 * 60 * 60_000,
+  /**
+   * Google rejected the key itself. Every model fails identically until the key
+   * is replaced, so they are all parked — the capabilities probe then reports
+   * the feature as off instead of "enabled", which is what it said while every
+   * edit and every plan failed with a 400. Short, like billing: nothing tells
+   * the server when the key is fixed.
+   */
+  invalid_key: 5 * 60_000,
 };
 
 interface BlockState {
@@ -137,7 +145,7 @@ export const resetGeminiBlocks = () => {
 const worstBlock = (candidates: string[]): ModelBlock | null => {
   // Ordered by how much operator action each needs: billing first, since it is
   // the only one a human has to act on.
-  const priority: ModelBlock[] = ["billing_required", "retired", "daily_cap", "rate_limited"];
+  const priority: ModelBlock[] = ["invalid_key", "billing_required", "retired", "daily_cap", "rate_limited"];
   for (const reason of priority) {
     if (candidates.some((m) => blocked.get(m)?.reason === reason)) return reason;
   }
@@ -145,6 +153,43 @@ const worstBlock = (candidates: string[]): ModelBlock | null => {
 };
 
 export const hasGemini = (): boolean => Boolean(env.geminiApiKey);
+
+/**
+ * Checks the key once, with Google's model list — a free call that spends no
+ * quota — so a rejected key is known before any customer tries an edit.
+ *
+ * Without this the server only learned the key was bad from the first failed
+ * edit or plan: until then the capabilities probe said "enabled" and the panel
+ * offered every model-only action, each of which failed. Settles within a few
+ * seconds either way; a network failure proves nothing, so it is ignored and
+ * the ordinary per-call handling takes over.
+ */
+let keyCheck: Promise<void> | null = null;
+export const verifyGeminiKey = (): Promise<void> => {
+  if (!hasGemini()) return Promise.resolve();
+  keyCheck ??= (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const response = await fetch(`${GEMINI_BASE}?pageSize=1`, {
+        headers: { "x-goog-api-key": env.geminiApiKey! },
+        signal: controller.signal,
+      });
+      if (response.ok) return;
+      const text = await response.text().catch(() => "");
+      if (classifyFailure(response.status, text) === "invalid_key") {
+        for (const m of [...IMAGE_MODELS, ...TEXT_MODELS]) blockModel(m, "invalid_key");
+        // Re-checked after the block lapses, in case the key was replaced.
+        setTimeout(() => { keyCheck = null; }, BLOCK_DURATION_MS.invalid_key).unref?.();
+      }
+    } catch {
+      // Unreachable is not invalid.
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  return keyCheck;
+};
 
 /** True when a key is set and at least one image model is currently usable. */
 export const geminiReady = (): boolean =>
@@ -161,7 +206,8 @@ export const geminiStatus = ():
   | "rate_limited"
   | "daily_cap"
   | "billing_required"
-  | "retired" => {
+  | "retired"
+  | "invalid_key" => {
   if (!hasGemini()) return "unconfigured";
   if (availableModels(IMAGE_MODELS).length > 0) return "ready";
   return worstBlock(IMAGE_MODELS) ?? "rate_limited";
@@ -184,6 +230,15 @@ export const classifyFailure = (status: number, body: string): ModelBlock | null
   // A retired model id — the message is "no longer available to new users".
   if (status === 404 || /no longer available|not found for API version/i.test(body)) {
     return "retired";
+  }
+  // The key itself was refused ("API key not valid", API_KEY_INVALID, or a
+  // 401/403). Checked before the quota cases: no model can succeed with it.
+  if (
+    status === 401 ||
+    status === 403 ||
+    (status === 400 && /API_KEY_INVALID|API key not valid|API key expired/i.test(body))
+  ) {
+    return "invalid_key";
   }
   if (status !== 429) return null;
 
@@ -214,12 +269,17 @@ export const geminiUnavailableReason = (): string | null => {
       return (
         "Gemini image editing has no free-tier allowance on this API key — Google reports a quota limit of 0 for its image models. " +
         "Enable billing on the key's Google Cloud project at https://aistudio.google.com/apikey (image edits are ~$0.04 each), " +
-        "or configure the free Cloudflare Workers AI tier by setting CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN."
+        "Gemini is the only image model configured, so there is nothing to fall back to."
       );
     case "retired":
       return (
         "Every configured Gemini image model was rejected as unavailable, which usually means the pinned model id has been retired. " +
         "Clear GEMINI_IMAGE_MODEL to use the built-in fallback list, or set it to a current image model."
+      );
+    case "invalid_key":
+      return (
+        "Google rejected GEMINI_API_KEY as not valid. Set a working key from https://aistudio.google.com/apikey " +
+        "in the server's .env and restart the server."
       );
     case "daily_cap":
       return "Today's Gemini image allowance is used up. It resets on Google's daily quota.";
@@ -229,6 +289,14 @@ export const geminiUnavailableReason = (): string | null => {
       return null;
   }
 };
+
+/**
+ * The model answered but made no image — a refusal (safety, or an edit it
+ * judges impossible). Not an outage: the other models are not tried, since the
+ * same request is refused the same way, and the model's own explanation is what
+ * the customer should read.
+ */
+export class GeminiDeclinedError extends Error {}
 
 interface GeminiPart {
   text?: string;
@@ -263,7 +331,9 @@ const callGemini = async (
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       const block = classifyFailure(response.status, text);
-      if (block) blockModel(model, block);
+      if (block === "invalid_key") {
+        for (const m of [...IMAGE_MODELS, ...TEXT_MODELS]) blockModel(m, block);
+      } else if (block) blockModel(model, block);
       throw new Error(`Gemini ${response.status}: ${text.slice(0, 300)}`);
     }
 
@@ -307,6 +377,7 @@ export const editImageWithGemini = async (
       // A cancel is the caller's decision — stop the whole chain immediately
       // rather than burning the remaining models on work nobody is waiting for.
       if (error?.name === "AbortError" || signal?.aborted) throw error;
+      if (error instanceof GeminiDeclinedError) throw error;
       lastError = error;
       console.warn(`[GEMINI] ${model} failed (${error?.message?.slice(0, 120)}) — trying next model`);
     }
@@ -370,7 +441,7 @@ const editWithModel = async (
   const blockReason =
     payload?.promptFeedback?.blockReason ?? payload?.candidates?.[0]?.finishReason;
 
-  throw new Error(
+  throw new GeminiDeclinedError(
     explanation ||
       (blockReason
         ? `The model declined this edit (${blockReason}).`

@@ -1,14 +1,26 @@
 import { Request, Response, NextFunction } from "express";
-import { getRegionFromState, normalizeRegion } from "../utils/region.js";
+import { rollWidthError } from "../services/pricing.service.js";
+import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
+import {
+  getRegionFromState,
+  normalizeRegion,
+  resolveOrderRegion,
+  resolvePartnerRegion,
+  resolveRegionInfo
+} from "../utils/region.js";
+import { sendEmail } from "../services/email.service.js";
 import mongoose from "mongoose";
 import fs from "fs";
+import sharp from "sharp";
 import path from "path";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { generatePDF } from "pdf-node";
+import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import { Order, IOrder } from "../models/order.model.js";
 import { User, UserRoles, IUser } from "../models/user.model.js";
 import { Settings } from "../models/settings.model.js";
+import { storeArtwork } from "../services/storage.service.js";
+import { computePartnerPerformance } from "../services/partnerPerformance.service.js";
 import { LoginActivity } from "../models/loginActivity.model.js";
 import { Design } from "../models/design.model.js";
 import { AdminNotification } from "../models/adminNotification.model.js";
@@ -16,36 +28,40 @@ import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminN
 import { notifyAllAdmins, createAdminNotification } from "../services/adminNotifications.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import {
+  calculateOrderPartnerEarning,
+  canDerivePartnerEarning,
+  getOrderPartnerCostBreakdown,
+  isPartnerEarningRealized,
+} from "../services/partnerEarnings.service.js";
+import {
+  DEFAULT_GLOBAL_PRICING,
+  getPartnerPayRate,
+  normalizeGlobalPricing,
+  getGlobalPricing as getGlobalPricingRates,
+} from "../services/pricing.service.js";
+import {
   syncPartnerCapacitySafe,
   getAssignmentSettings,
+  normalizeSlaSettings,
   getEffectiveMaxConcurrent,
   countActiveJobs,
   isAtCapacity,
 } from "../services/partnerCapacity.service.js";
 import { exportGangsheetPng24,
   GANGSHEET_SHEET_WIDTH_IN,
+  orderSheetWidthIn,
 } from "../services/gangsheetExport.service.js";
 import { env } from "../config/env.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
-import { computeAssignmentDeadline, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
+import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
+import { changePartnerStatus } from "../services/partnerStatus.service.js";
+import { changePartnerAvailability } from "../services/partnerAvailability.service.js";
+import { computeAssignmentDeadlineFor, resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
 
-const resolveOrderRegion = (
-  order: any,
-  userRegionMap?: Map<string, string | null>
-): string | null => {
-  const userId = order?.user ? String(order.user) : null;
-  const regionFromUser = userId && userRegionMap ? userRegionMap.get(userId) : null;
-  return (
-    normalizeRegion(order?.customer?.region) ||
-    normalizeRegion(regionFromUser || undefined) ||
-    normalizeRegion(getRegionFromState(order?.shippingAddress?.state)) ||
-    null
-  );
-};
 
 export const getAdminDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -107,12 +123,19 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     const currentRevenue = revenueStats[0].current[0]?.total || 0;
     const priorRevenue = revenueStats[0].prior[0]?.total || 0;
 
-    let trendPct = 0;
-    if (priorRevenue > 0) {
-      trendPct = ((currentRevenue - priorRevenue) / priorRevenue) * 100;
-    } else if (currentRevenue > 0) {
-      trendPct = 100;
-    }
+    /**
+     * `trendPct` alone could not express "nothing to compare against".
+     *
+     * With no revenue in the prior window it reported +100%, which reads as
+     * growth rather than "this is the first period with any revenue"; and a
+     * genuine flat period (prior > 0, identical totals) also produced 0, which
+     * the client could not tell apart from two empty periods. `priorAmount` is
+     * returned so the caller can distinguish the cases.
+     */
+    const comparable = priorRevenue > 0;
+    const trendPct = comparable
+      ? ((currentRevenue - priorRevenue) / priorRevenue) * 100
+      : 0;
 
     const partnerStats = await User.aggregate([
       { $match: { role: UserRoles.PRINTER } },
@@ -130,7 +153,7 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     const recentOrdersRaw = await Order.find()
       .sort({ updatedAt: -1 })
       .limit(10)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress");
 
     const recentUserIds = Array.from(
       new Set(
@@ -146,30 +169,57 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
       recentUsers.map((u: any) => [String(u._id), Array.isArray(u.regions) ? (u.regions[0] || null) : null])
     );
 
-        const calculateOrderFinancials = (order: Pick<IOrder, "pricing" | "items">) => {
+    /**
+     * Margin on an order: what the customer paid, minus what the assigned
+     * partner is owed.
+     *
+     * The payout comes from `calculateOrderPartnerEarning` — the same function
+     * that drives real payouts — so this figure matches what actually leaves
+     * the business. It previously assumed a flat $3.50/sq ft for every partner
+     * (and $5.00 for dimensionless items), ignoring each partner's negotiated
+     * base rate, tiers, rush percentage and special-ink fee. For a partner on
+     * $2.50/sq ft that understated margin by a dollar per square foot, and it
+     * overstated for anyone above $3.50.
+     *
+     * With no partner assigned there is no negotiated rate yet, so the shared
+     * default applies and the result is an expected margin rather than a
+     * settled one.
+     */
+    // One rate for the whole network, read once for this response rather than
+    // per order.
+    const partnerPayRate = await getPartnerPayRate();
+
+    const calculateOrderFinancials = (order: any) => {
       const customerCharge = order.pricing?.total || 0;
-      
-      const partnerPayout = (order.items || []).reduce((total, item) => {
-        const { widthIn, heightIn, quantity = 1 } = item;
-        if (widthIn && heightIn) {
-          const areaSqFt = (widthIn * heightIn) / 144;
-          return total + (areaSqFt * 3.50 * quantity);
-        }
-        return total + (5.00 * quantity);
-      }, 0);
+      const partnerPricing = partnerPayRate;
 
-      const profit = customerCharge - partnerPayout;
+      // Null, not zero, when there is nothing to derive a cost from — see
+      // `canDerivePartnerEarning`. Subtracting a zero we invented is how an
+      // order with no sheet dimensions came to report 100% margin.
+      if (!canDerivePartnerEarning(order)) {
+        return { customerCharge, partnerPayout: null, profit: null };
+      }
 
-      return { customerCharge, partnerPayout, profit };
+      const partnerPayout = calculateOrderPartnerEarning(order, partnerPricing);
+      return { customerCharge, partnerPayout, profit: customerCharge - partnerPayout };
     };
  
     const recentOrders = recentOrdersRaw.map(order => {
       const { profit } = calculateOrderFinancials(order);
       return {
         id: order._id,
+        // Same canonical order number the Orders table shows. Without it this
+        // table fell back to a slice of the ObjectId, so Home and Orders
+        // displayed different numbers for the same order.
+        displayId: (order as any).displayId || null,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
-        profits: Number(profit.toFixed(2)),
+        // null travels to the client, which renders it as "—". Sending 0 here
+        // would be indistinguishable from a genuinely costless order.
+        profits: profit === null ? null : Number(profit.toFixed(2)),
+        // False until the job ships: partners are not paid before then, and
+        // revenue is counted from placement, so both sides are still a forecast.
+        profitsRealized: isPartnerEarningRealized(order),
         status: order.status,
         createdAt: order.createdAt,
         updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
@@ -188,7 +238,9 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         activePartners: partners.active,
         totalRevenue: {
           amount: Number(currentRevenue.toFixed(2)),
-          trendPct: Number(trendPct.toFixed(1))
+          trendPct: Number(trendPct.toFixed(1)),
+          priorAmount: Number(priorRevenue.toFixed(2)),
+          comparable
         }
       },
       recentOrders
@@ -202,18 +254,16 @@ export const getGlobalPricing = async (req: Request, res: Response, next: NextFu
   try {
     const settings = await Settings.findOne({ key: "global_pricing" });
 
+    // One source for the fallback, so this endpoint and the pricer cannot
+    // drift — they previously agreed only by coincidence.
     if (!settings) {
-      return res.status(200).json({
-        baseRatePerSqFt: 24.00,
-        shipping: {
-          standard: 8.99,
-          express: 24.99
-        },
-        taxRatePct: 8.0
-      });
+      return res.status(200).json(DEFAULT_GLOBAL_PRICING);
     }
 
-    res.status(200).json(settings.value);
+    // Normalised, not raw: a document saved before a field existed must still
+    // come back with that field, or the console would render it blank and then
+    // save the blank over the working default.
+    res.status(200).json(normalizeGlobalPricing(settings.value));
   } catch (error) {
     next(error);
   }
@@ -221,19 +271,33 @@ export const getGlobalPricing = async (req: Request, res: Response, next: NextFu
 
 export const updateGlobalPricing = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { baseRatePerSqFt, shipping, taxRatePct } = req.body;
+    /**
+     * The whole document is rewritten on save, so every field has to be listed
+     * here. It previously named only three, which meant saving from the console
+     * silently deleted the shipping markup and packaging profile — the rates
+     * would keep working, quietly, on defaults nobody chose.
+     *
+     * Normalising the merged result also means a partial request cannot blank a
+     * field: anything absent falls back to what is already stored.
+     */
+    if (req.body && req.body.sheetWidthIn !== undefined) {
+      const problem = rollWidthError(req.body.sheetWidthIn);
+      if (problem) {
+        const error = new Error(problem) as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    const existing = await Settings.findOne({ key: "global_pricing" }).lean();
+    const merged = normalizeGlobalPricing({
+      ...((existing as any)?.value || {}),
+      ...req.body,
+    });
 
     const settings = await Settings.findOneAndUpdate(
       { key: "global_pricing" },
-      {
-        $set: {
-          value: {
-            baseRatePerSqFt,
-            shipping,
-            taxRatePct
-          }
-        }
-      },
+      { $set: { value: merged } },
       { upsert: true, new: true, runValidators: true }
     );
 
@@ -263,8 +327,7 @@ export const getAdminNotificationSettings = async (req: Request, res: Response, 
         orderUpdates: typeof emailPrefs.orderUpdates === "boolean" ? emailPrefs.orderUpdates : true,
         partnerActivity: typeof emailPrefs.partnerActivity === "boolean" ? emailPrefs.partnerActivity : true,
         systemAlerts: typeof emailPrefs.systemAlerts === "boolean" ? emailPrefs.systemAlerts : true
-      },
-      sms: {}
+      }
     });
   } catch (error) {
     next(error);
@@ -309,7 +372,7 @@ export const updateAdminNotificationSettings = async (req: Request, res: Respons
     admin.markModified("settings.notifications");
     await admin.save();
 
-    res.status(200).json({ email: nextPrefs, sms: {} });
+    res.status(200).json({ email: nextPrefs });
   } catch (error) {
     next(error);
   }
@@ -372,21 +435,31 @@ export const listAdminNotifications = async (req: Request, res: Response, next: 
     if (typeof priority === "string" && ["high", "medium", "low"].includes(priority)) {
       query.priority = priority;
     }
+    // Both the text search and the pagination cursor are $or clauses. Assigning
+    // each to `query.$or` meant the cursor silently overwrote the search, so
+    // paging past the first page of a filtered list returned unfiltered rows.
+    // They are combined under $and so both always apply.
+    const conditions: any[] = [];
+
     if (typeof q === "string" && q.trim()) {
       const re = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-      query.$or = [{ title: re }, { message: re }];
+      conditions.push({ $or: [{ title: re }, { message: re }] });
     }
 
     if (typeof cursor === "string" && cursor.includes("_")) {
       const [createdAtMsRaw, idRaw] = cursor.split("_");
       const createdAtMs = Number(createdAtMsRaw);
       if (Number.isFinite(createdAtMs) && mongoose.Types.ObjectId.isValid(idRaw)) {
-        query.$or = [
-          { createdAt: { $lt: new Date(createdAtMs) } },
-          { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } }
-        ];
+        conditions.push({
+          $or: [
+            { createdAt: { $lt: new Date(createdAtMs) } },
+            { createdAt: new Date(createdAtMs), _id: { $lt: new mongoose.Types.ObjectId(idRaw) } }
+          ]
+        });
       }
     }
+
+    if (conditions.length) query.$and = conditions;
 
     const docs = await AdminNotification.find(query)
       .sort({ createdAt: -1, _id: -1 })
@@ -411,6 +484,10 @@ export const listAdminNotifications = async (req: Request, res: Response, next: 
         priority: n.priority,
         title: n.title,
         message: n.message,
+        // Carries orderId / partnerId, so a notification can link to the thing
+        // it is about. It was populated at every call site and then dropped
+        // here, which made every notification a dead end.
+        meta: n.meta ?? null,
         readAt: n.readAt || null,
         createdAt: n.createdAt
       })),
@@ -500,10 +577,9 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
       throw error;
     }
 
-    const security = admin.settings?.security || { twoFactorEnabled: false };
+    const security = admin.settings?.security || {};
 
     res.status(200).json({
-       twoFactorEnabled: security.twoFactorEnabled || false,
        lastPasswordChange: security.lastPasswordChange || admin.updatedAt || new Date()
      });
    } catch (error) {
@@ -511,45 +587,7 @@ export const getAdminSecuritySettings = async (req: Request, res: Response, next
    }
  };
  
- export const updateAdminSecuritySettings = async (req: Request, res: Response, next: NextFunction) => {
-   try {
-     const adminId = req.user?.id;
-     const { twoFactorEnabled } = req.body;
- 
-     if (twoFactorEnabled === undefined) {
-       const error = new Error("twoFactorEnabled is required") as CustomError;
-       error.statusCode = 400;
-       throw error;
-     }
- 
-     const admin = await User.findById(adminId);
-     if (!admin) {
-       const error = new Error("Admin not found") as CustomError;
-       error.statusCode = 404;
-       throw error;
-     }
- 
-    if (!admin.settings) admin.settings = { pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } }, security: { twoFactorEnabled: false } };
-     if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
- 
-     const previous2FA = admin.settings.security.twoFactorEnabled;
-     admin.settings.security.twoFactorEnabled = twoFactorEnabled;
- 
-     admin.markModified("settings.security");
-     await admin.save();
- 
-     if (twoFactorEnabled && !previous2FA) {
-       const mockQrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=otpauth://totp/SpaceTransfers:${admin.email}?secret=MOCKSECRET&issuer=SpaceTransfers`;
-       console.log(`[TOTP MOCK] Setup flow initiated for ${admin.email}. QR Code URL sent: ${mockQrCodeUrl}`);
-     }
- 
-     res.status(200).json({ updated: true });
-   } catch (error) {
-     next(error);
-   }
- };
-
-export const getAdminLoginActivity = async (req: Request, res: Response, next: NextFunction) => {
+ export const getAdminLoginActivity = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
     if (!adminId) {
@@ -598,7 +636,7 @@ export const getAdminLoginActivity = async (req: Request, res: Response, next: N
 export const getAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
-    const admin = await User.findById(adminId).select("name email phone avatarUrl defaultShippingAddress settings.profile");
+    const admin = await User.findById(adminId).select("name email phone avatarUrl");
 
     if (!admin) {
       const error = new Error("Admin not found") as CustomError;
@@ -611,20 +649,16 @@ export const getAdminProfile = async (req: Request, res: Response, next: NextFun
       email: admin.email,
       phone: admin.phone || null,
       avatarUrl: admin.avatarUrl || null,
-      profile: {
-        bio: admin.settings?.profile?.bio || "",
-        gender: admin.settings?.profile?.gender || "",
-        dateOfBirth: admin.settings?.profile?.dateOfBirth || "",
-        nationalId: admin.settings?.profile?.nationalId || "",
-        taxId: admin.settings?.profile?.taxId || ""
-      },
-      address: admin.defaultShippingAddress || {
-        street: "",
-        city: "",
-        state: "",
-        postalCode: "",
-        country: ""
-      }
+      /*
+       * Bio, gender, date of birth, national ID, tax ID and a postal address
+       * are no longer collected or returned. Nothing read any of them — they
+       * were stored, echoed back, and used by nothing.
+       *
+       * Date of birth and national ID are the ones worth naming: holding
+       * identity documents for staff with no purpose is a liability, not a
+       * feature. An admin account needs a name, an email, a phone number and a
+       * picture.
+       */
     });
   } catch (error) {
     next(error);
@@ -634,7 +668,7 @@ export const getAdminProfile = async (req: Request, res: Response, next: NextFun
 export const updateAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = req.user?.id;
-    const { name, email, phone, avatarUrl, profile, address } = req.body;
+    const { name, email, phone, avatarUrl } = req.body;
 
     const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN });
     if (!admin) {
@@ -656,7 +690,8 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
         error.statusCode = 400;
         throw error;
       }
-      const existing = await User.findOne({ email: nextEmail, _id: { $ne: admin._id } }).select("_id");
+      // Scoped to admins: another role holding this address is no longer a clash.
+      const existing = await User.findOne({ email: nextEmail, role: UserRoles.ADMIN, _id: { $ne: admin._id } }).select("_id");
       if (existing) {
         const error = new Error("Email already in use") as CustomError;
         error.statusCode = 409;
@@ -670,33 +705,18 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
       didUpdate = true;
     }
     if (avatarUrl !== undefined) {
+      // Images are uploaded via POST /admin/profile/upload and stored on
+      // storage. Accepting a data: URL here would put the whole image back
+      // on the user document, which `authenticate` reads on every request.
+      if (typeof avatarUrl === "string" && avatarUrl.startsWith("data:")) {
+        const error = new Error("Upload images via /admin/profile/upload — an inline data URL cannot be stored.") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
       admin.avatarUrl = avatarUrl === null ? null : String(avatarUrl);
       didUpdate = true;
     }
 
-    if (profile !== undefined && profile && typeof profile === "object") {
-      if (!admin.settings) (admin as any).settings = {};
-      if (!admin.settings.profile) (admin.settings as any).profile = {};
-
-      if (profile.bio !== undefined) (admin.settings.profile as any).bio = String(profile.bio || "");
-      if (profile.gender !== undefined) (admin.settings.profile as any).gender = String(profile.gender || "");
-      if (profile.dateOfBirth !== undefined) (admin.settings.profile as any).dateOfBirth = String(profile.dateOfBirth || "");
-      if (profile.nationalId !== undefined) (admin.settings.profile as any).nationalId = String(profile.nationalId || "");
-      if (profile.taxId !== undefined) (admin.settings.profile as any).taxId = String(profile.taxId || "");
-      admin.markModified("settings.profile");
-      didUpdate = true;
-    }
-
-    if (address !== undefined && address && typeof address === "object") {
-      admin.defaultShippingAddress = {
-        street: String(address.street || ""),
-        city: String(address.city || ""),
-        state: String(address.state || ""),
-        postalCode: String(address.postalCode || ""),
-        country: String(address.country || "")
-      };
-      didUpdate = true;
-    }
 
     if (!didUpdate) {
       const error = new Error("No update data provided") as CustomError;
@@ -707,6 +727,51 @@ export const updateAdminProfile = async (req: Request, res: Response, next: Next
     await admin.save();
 
     res.status(200).json({ updated: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Avatar upload.
+ *
+ * Mirrors the printer app's `uploadProfileAsset`: the image is resized, encoded
+ * as WebP and stored in R2, and only the URL is kept on the user.
+ *
+ * The admin console previously read the file as a base64 `data:` URL and PATCHed
+ * that onto `avatarUrl`, so the whole image lived on the user document. That is
+ * expensive in a way that is easy to miss: `authenticate` loads the full user on
+ * every authenticated request, so a 400 KB avatar became ~546 KB of base64 read
+ * from Mongo on *every* API call that admin made.
+ */
+export const uploadAdminAvatar = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const adminId = req.user?.id;
+    const file = req.file;
+
+    if (!file) {
+      const error = new Error("No file uploaded") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN });
+    if (!admin) {
+      const error = new Error("Admin not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const optimized = await sharp(file.buffer)
+      .resize(400, 400, { fit: "cover" })
+      .webp({ quality: 80 })
+      .toBuffer();
+
+    const { url } = await storeArtwork(optimized, "space-transfers/avatars");
+    admin.avatarUrl = url;
+    await admin.save();
+
+    res.json({ avatarUrl: url });
   } catch (error) {
     next(error);
   }
@@ -771,10 +836,10 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
     if (!admin.settings) {
       admin.settings = {
         pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } },
-        security: { twoFactorEnabled: false }
+        security: {}
       };
     }
-    if (!admin.settings.security) admin.settings.security = { twoFactorEnabled: false };
+    if (!admin.settings.security) admin.settings.security = {};
     admin.settings.security.lastPasswordChange = new Date();
     admin.markModified("settings.security");
     await admin.save();
@@ -850,6 +915,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const {
       status,
       partnerId,
+      priority,
       search,
       cursor,
       limit = "20"
@@ -860,15 +926,17 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const extraFilters: any[] = [];
 
     if (status) {
-      const statusMap: { [key: string]: string } = {
-        "Pending": "PENDING",
-        "Assigned": "PENDING",
-        "In Progress": "PRINTING",
-        "Shipped": "SHIPPED",
-        "Completed": "COMPLETED",
-        "Cancelled": "CANCELLED"
-      };
-      query.status = statusMap[status as string] || (status as string).toUpperCase();
+      // Shared with updateOrderStatus, so the value that filters a list and the
+      // value that writes a status can never disagree again.
+      query.status = resolveOrderStatusInput(status) ?? String(status).toUpperCase();
+    }
+
+    if (priority) {
+      const resolved = resolveOrderPriorityInput(priority);
+      if (resolved === "URGENT") query.priority = "URGENT";
+      // NORMAL must also match orders placed before priority existed, which
+      // carry no field at all — matching only "NORMAL" would hide them.
+      else if (resolved === "NORMAL") query.priority = { $ne: "URGENT" };
     }
 
     if (partnerId) {
@@ -880,7 +948,11 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       const searchOr: any[] = [
         { "customer.firstName": searchRegex },
         { "customer.lastName": searchRegex },
-        { "customer.email": searchRegex }
+        { "customer.email": searchRegex },
+        // The human-readable id (DTF-0242) is what the UI shows everywhere, so
+        // it is the first thing anyone types into the box. Searching only the
+        // raw ObjectId meant pasting a visible order number returned nothing.
+        { displayId: searchRegex }
       ];
       if (mongoose.Types.ObjectId.isValid(search as string)) {
         searchOr.push({ _id: search as string });
@@ -888,38 +960,94 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       extraFilters.push({ $or: searchOr });
     }
 
-    // Keyset cursor — format: "${updatedAt.getTime()}_${_id}"
-    // updatedAt is bumped on every write (save, updateOne with explicit $set), so it's the
-    // single reliable sort key for "most recently touched first".
+    /*
+     * Unassigned orders come first, then everything else, each block ordered
+     * most-recently-touched first.
+     *
+     * An unassigned order is the only kind that needs an admin to act, so it is
+     * what the table should open on. Sorting the fetched page in the browser
+     * would not achieve it: with keyset pagination an unassigned order sitting
+     * on page three stays on page three, which is exactly where nobody looks.
+     *
+     * MongoDB cannot sort a `find()` on a computed flag, and sorting on
+     * `assignedPrinter` itself would group the assigned block by partner
+     * ObjectId instead of by recency. So the two blocks are paged explicitly —
+     * same filters, same populate — and the cursor records which block it left
+     * off in.
+     *
+     * Cursor: "${block}_${updatedAt.getTime()}_${_id}", block being "u"
+     * (unassigned) or "a" (assigned). updatedAt is bumped on every write, so it
+     * remains the reliable within-block sort key.
+     */
+    const UNASSIGNED: any = { assignedPrinter: null };
+    const ASSIGNED: any = { assignedPrinter: { $ne: null } };
+
+    let cursorBlock: "u" | "a" = "u";
+    let cursorFilter: any = null;
+
     if (cursor && typeof cursor === "string" && cursor.includes("_")) {
-      const underscoreIdx = cursor.lastIndexOf("_");
-      const cursorTsStr = cursor.slice(0, underscoreIdx);
-      const cursorId = cursor.slice(underscoreIdx + 1);
-      const cursorTs = Number(cursorTsStr);
-      if (Number.isFinite(cursorTs) && mongoose.Types.ObjectId.isValid(cursorId)) {
+      const parts = cursor.split("_");
+      // A two-part cursor predates unassigned-first ordering; treated as the
+      // assigned block, which is where the old flat ordering effectively sat.
+      const [blockRaw, tsRaw, idRaw] =
+        parts.length >= 3 ? parts : ["a", parts[0], parts[1]];
+      const cursorTs = Number(tsRaw);
+      if (
+        (blockRaw === "u" || blockRaw === "a") &&
+        Number.isFinite(cursorTs) &&
+        mongoose.Types.ObjectId.isValid(idRaw)
+      ) {
+        cursorBlock = blockRaw;
         const cursorDate = new Date(cursorTs);
-        const cursorObjId = new mongoose.Types.ObjectId(cursorId);
-        extraFilters.push({
+        const cursorObjId = new mongoose.Types.ObjectId(idRaw);
+        cursorFilter = {
           $or: [
             { updatedAt: { $lt: cursorDate } },
             { updatedAt: cursorDate, _id: { $lt: cursorObjId } },
           ],
-        });
+        };
       }
     }
 
-    const finalQuery = extraFilters.length === 0 ? query : { ...query, $and: extraFilters };
-
     const pageSize = parseInt(limit as string);
-    const orders = await Order.find(finalQuery)
-      .select("-items.artboardItems")
-      .sort({ updatedAt: -1, _id: -1 })
-      .limit(pageSize + 1)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions")
-      .lean();
+
+    const buildQuery = (block: any, withCursor: boolean) => {
+      const filters = [...extraFilters, block];
+      if (withCursor && cursorFilter) filters.push(cursorFilter);
+      return { ...query, $and: filters };
+    };
+
+    const fetchBlock = (block: any, withCursor: boolean, take: number) =>
+      Order.find(buildQuery(block, withCursor))
+        .select("-items.artboardItems")
+        .sort({ updatedAt: -1, _id: -1 })
+        .limit(take)
+        .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions settings.pricing defaultShippingAddress businessAddress")
+        .lean();
+
+    // One extra row tells us whether another page exists, without a count().
+    let orders: any[] = [];
+
+    if (cursorBlock === "u") {
+      orders = await fetchBlock(UNASSIGNED, true, pageSize + 1);
+      if (orders.length <= pageSize) {
+        // The unassigned block is exhausted, so top the page up from the start
+        // of the assigned block.
+        const remaining = pageSize + 1 - orders.length;
+        const assigned = await fetchBlock(ASSIGNED, false, remaining);
+        if (assigned.length > 0) orders = [...orders, ...assigned];
+      }
+    } else {
+      orders = await fetchBlock(ASSIGNED, true, pageSize + 1);
+    }
 
     const hasNextPage = orders.length > pageSize;
     const results = hasNextPage ? orders.slice(0, pageSize) : orders;
+
+    // The block the final returned row belongs to is what the next cursor must
+    // continue from — not necessarily the block the request started in.
+    const lastRow: any = results[results.length - 1];
+    const lastRowBlock: "u" | "a" = lastRow && lastRow.assignedPrinter ? "a" : "u";
 
     const userIds = Array.from(
       new Set(
@@ -935,30 +1063,30 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       users.map((u: any) => [String(u._id), Array.isArray(u.regions) ? (u.regions[0] || null) : null])
     );
 
+    const partnerPayRate = await getPartnerPayRate();
+
     const formattedOrders = results.map(order => {
       const firstItem = order.items?.[0] || {};
       const sheetSize = firstItem.widthIn && firstItem.heightIn 
         ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
         : "N/A";
 
+      // Same source as the dashboard and as real payouts — see
+      // calculateOrderFinancials above for why the flat rate was wrong.
       const customerCharge = order.pricing?.total || 0;
-      const partnerPayout = (order.items || []).reduce((total: number, item: any) => {
-        const widthIn = Number(item.widthIn || 0);
-        const heightIn = Number(item.heightIn || 0);
-        const quantity = Number(item.quantity || 1);
-        if (widthIn > 0 && heightIn > 0) {
-          const areaSqFt = (widthIn * heightIn) / 144;
-          return total + (areaSqFt * 3.5 * quantity);
-        }
-        return total;
-      }, 0);
-      const profits = customerCharge - partnerPayout;
+      const regionInfo = resolveRegionInfo(order, userRegionMap);
+      const derivable = canDerivePartnerEarning(order);
+      const profits = derivable
+        ? customerCharge -
+          calculateOrderPartnerEarning(order, partnerPayRate)
+        : null;
   
       return {
         id: order._id,
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
-        profits: Number(profits.toFixed(2)),
+        profits: profits === null ? null : Number(profits.toFixed(2)),
+        profitsRealized: isPartnerEarningRealized(order),
         status: order.status,
         createdAt: order.createdAt,
         updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
@@ -971,7 +1099,20 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         assignedPartner: (order.assignedPrinter as any)?.companyName || null,
         sheetSize,
         isUrgent: order.priority === "URGENT",
-        region: resolveOrderRegion(order, userRegionMap)
+        // The canonical human-readable id (DTF-0244) — the one on invoices,
+        // notifications and ShipStation. The table used to derive its own
+        // "#ORD-9CA3" from the ObjectId, which meant the number an admin could
+        // see was not the number search would match.
+        displayId: (order as any).displayId || null,
+        region: regionInfo.customerRegion,
+        // Surfaced so the orders table can badge a fallback assignment rather
+        // than the fact being buried in a timeline message.
+        crossRegion: regionInfo.crossRegion
+          ? {
+              customerRegion: regionInfo.customerRegion,
+              assignedRegion: regionInfo.printerRegion,
+            }
+          : null
       };
     });
 
@@ -979,7 +1120,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     if (hasNextPage) {
       const lastOrder = results[results.length - 1];
       const lastUpdatedAt = (lastOrder as any).updatedAt ?? lastOrder.createdAt;
-      nextCursor = `${new Date(lastUpdatedAt).getTime()}_${lastOrder._id}`;
+      nextCursor = `${lastRowBlock}_${new Date(lastUpdatedAt).getTime()}_${lastOrder._id}`;
     }
 
     res.status(200).json({
@@ -991,84 +1132,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
   }
 };
 
-export const getPartnerPricing = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { partnerId } = req.params;
 
-    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
-    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
-      const error = new Error("Invalid Partner ID") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
-      .select("settings.pricing")
-      .lean();
-
-    if (!partner) {
-      const error = new Error("Partner not found or is not a printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const pricing = partner.settings?.pricing || {
-      baseRatePerSqFt: 2.5,
-      tiered: [
-        { minSqFt: 0, maxSqFt: 2, rate: 20.00 },
-        { minSqFt: 2, maxSqFt: 5, rate: 18.50 },
-        { minSqFt: 5, maxSqFt: null, rate: 17.00 }
-      ],
-      surcharges: {
-        rushPct: 10,
-        specialInkFlat: 5.00
-      }
-    };
-
-    res.status(200).json(pricing);
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updatePartnerPricing = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { partnerId } = req.params;
-    const { baseRatePerSqFt, tiered, surcharges } = req.body;
-
-    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
-    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
-      const error = new Error("Invalid Partner ID") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const updateData: any = {};
-    if (baseRatePerSqFt !== undefined) updateData["settings.pricing.baseRatePerSqFt"] = baseRatePerSqFt;
-    if (tiered !== undefined) updateData["settings.pricing.tiered"] = tiered;
-    if (surcharges !== undefined) updateData["settings.pricing.surcharges"] = surcharges;
-
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: updateData },
-      { new: true, runValidators: true }
-    ).select("settings.pricing").lean();
-
-    if (!partner) {
-      const error = new Error("Partner not found or is not a printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    res.status(200).json({
-      id: partner._id,
-      updated: true,
-      pricing: partner.settings?.pricing
-    });
-  } catch (error) {
-    next(error);
-  }
-};
 
 export const getPartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -1082,7 +1146,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
     }
 
     const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
-      .select("settings")
+      .select("settings shipStationWarehouseId")
       .lean();
 
     if (!partner) {
@@ -1093,21 +1157,21 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 
     const settings = partner.settings || {};
 
-    const notifications = {
-      orderAssigned: settings.notifications?.email?.newJobs || false,
-      jobCompleted: settings.notifications?.email?.orderUpdates || false
-    };
-
-    const capabilities = {
-      maxSheetSizeIn: settings.printingCapabilities?.maxSheetSizeIn || { width: 0, height: 0 },
-      formats: settings.printingCapabilities?.supportedFormats || [],
-      maxDPI: settings.printingCapabilities?.maxResolutionDPI || 0
-    };
-
     res.status(200).json({
-      jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0 },
-      notifications,
-      capabilities
+      // autoAccept was missing from this fallback, so a partner with no
+      // jobCapacity document came back without it and the toggle defaulted
+      // blind.
+      jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0, autoAccept: true },
+      // Lives on the user, not in settings — it identifies this partner inside
+      // the client's ShipStation account rather than configuring the platform.
+      shipStationWarehouseId: (partner as any).shipStationWarehouseId ?? null,
+      /*
+       * `notifications` and `capabilities` are no longer returned. The console
+       * does not render either: notification preferences belong to the partner,
+       * and printing capabilities (sheet size, inks, films, DPI) are read by
+       * nothing in the platform — no assignment or pricing decision consults
+       * them.
+       */
     });
   } catch (error) {
     next(error);
@@ -1117,7 +1181,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 export const updatePartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { jobCapacity, notifications, capabilities } = req.body;
+    const { jobCapacity, shipStationWarehouseId } = req.body;
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -1131,18 +1195,44 @@ export const updatePartnerSettings = async (req: Request, res: Response, next: N
     if (jobCapacity) {
       if (jobCapacity.maxConcurrent !== undefined) updateData["settings.jobCapacity.maxConcurrent"] = jobCapacity.maxConcurrent;
       if (jobCapacity.dailyMax !== undefined) updateData["settings.jobCapacity.dailyMax"] = jobCapacity.dailyMax;
+      /*
+       * Auto-accept had no branch at all, so the toggle in the console never
+       * saved anything: it moved, reported success, and reverted on reload.
+       */
+      if (jobCapacity.autoAccept !== undefined) updateData["settings.jobCapacity.autoAccept"] = jobCapacity.autoAccept;
     }
 
-    if (notifications) {
-      if (notifications.orderAssigned !== undefined) updateData["settings.notifications.email.newJobs"] = notifications.orderAssigned;
-      if (notifications.jobCompleted !== undefined) updateData["settings.notifications.email.jobUpdates"] = notifications.jobCompleted;
+    /**
+     * Null clears it deliberately — a partner whose warehouse was removed in
+     * ShipStation must fall back to HQ rather than keep stamping a dead id.
+     */
+    if (shipStationWarehouseId !== undefined) {
+      const raw = shipStationWarehouseId;
+      if (raw === null || raw === "") {
+        updateData["shipStationWarehouseId"] = null;
+      } else {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n <= 0) {
+          const error = new Error(
+            "ShipStation warehouse ID must be a positive whole number — it is the number in the warehouse's URL",
+          ) as CustomError;
+          error.statusCode = 400;
+          throw error;
+        }
+        updateData["shipStationWarehouseId"] = n;
+      }
     }
 
-    if (capabilities) {
-      if (capabilities.maxDPI !== undefined) updateData["settings.printingCapabilities.maxResolutionDPI"] = capabilities.maxDPI;
-      if (capabilities.maxSheetSizeIn !== undefined) updateData["settings.printingCapabilities.maxSheetSizeIn"] = capabilities.maxSheetSizeIn;
-      if (capabilities.formats !== undefined) updateData["settings.printingCapabilities.supportedFormats"] = capabilities.formats;
-    }
+    /*
+     * An admin can no longer write a partner's notification preferences.
+     *
+     * These set `settings.notifications.email.*` — the very switches the partner
+     * owns on their own Settings page. Worse, `notifyPrinter` skips the in-app
+     * notification as well as the email when a preference is off, so an admin
+     * turning off "Email: Order Assigned" stopped the partner learning about new
+     * jobs entirely. Removed rather than guarded: there is no occasion on which
+     * one account should be silencing another's alerts.
+     */
 
     const partner = await User.findOneAndUpdate(
       { _id: partnerIdString, role: UserRoles.PRINTER },
@@ -1234,16 +1324,11 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
-    const statusMap: { [key: string]: string } = {
-      "Pending": "PENDING",
-      "Assigned": "PENDING",
-      "In Progress": "PRINTING",
-      "Shipped": "SHIPPED",
-      "Completed": "COMPLETED",
-      "Cancelled": "CANCELLED"
-    };
+    // One shared map — see `utils/orderStatusInput`. This and the list filter
+    // were separate copies that drifted apart.
+    const resolved = resolveOrderStatusInput(status);
 
-    const dbStatus = statusMap[status] as any;
+    const dbStatus = resolved as any;
     if (!dbStatus) {
       const error = new Error(`Invalid status value: ${status}`) as CustomError;
       error.statusCode = 400;
@@ -1324,7 +1409,7 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const { partnerId, priority = "Normal", force = false } = req.body;
+    const { partnerId, force = false } = req.body;
 
     if (!partnerId) {
       const error = new Error("partnerId is required") as CustomError;
@@ -1397,7 +1482,14 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     }
 
     order.assignedPrinter = partnerId;
-    order.priority = priority.toUpperCase() as any;
+    /*
+     * Priority is deliberately not touched here.
+     *
+     * It is fixed at checkout by the customer's shipping choice and holds for
+     * the order's whole life. Assignment used to overwrite it — defaulting to
+     * "Normal" and writing unconditionally — which stripped rushes customers
+     * had paid for.
+     */
     // (Re)start the 24h fulfilment clock from this assignment moment. A no-op
     // re-assign to the printer who already holds the order keeps its existing
     // deadline (nothing changed); a first assignment or a hand-off to a different
@@ -1405,10 +1497,16 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     if (!alreadyHoldsThisOrder || !order.assignmentDeadline) {
       const assignedAt = new Date();
       order.assignedAt = assignedAt;
-      order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
+      order.assignmentDeadline = computeAssignmentDeadlineFor(
+      assignedAt,
+      (order as any).priority,
+      (await getAssignmentSettings()).sla.acceptHours,
+    );
     }
-    if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
-      order.status = "PENDING";
+    // Same rule as auto-assignment: attaching a partner moves PENDING to
+    // PROCESSING, and never drags a further-along order backwards.
+    if (String(order.status || "").toUpperCase() === "PENDING") {
+      order.status = "PROCESSING";
     }
 
     const message = isReassignment 
@@ -1496,7 +1594,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     }
 
     const order = await Order.findById(orderIdString)
-      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName email regions")
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName email regions defaultShippingAddress businessAddress")
       .lean();
 
     if (!order) {
@@ -1521,14 +1619,21 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     const partner = assignedPrinterId ? await User.findById(assignedPrinterId).select("settings.pricing").lean() : null;
     const breakdown = computePartnerCostBreakdown({
       items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: (partner as any)?.settings?.pricing || {},
+      partnerPricing: await getPartnerPayRate(),
       priority: (order as any).priority,
       adjustments: (order as any)?.pricing?.adjustments || []
     });
-    const totalPartnerCost = breakdown.subtotal;
+    /**
+     * Null when there is nothing to derive a cost from — the fourth surface
+     * that needed this. An order whose items carry no sheet dimensions has an
+     * unknown partner cost, not a zero one, and `customerPaid - 0` reported
+     * 100% margin on orders with no cost data at all.
+     */
+    const costDerivable = canDerivePartnerEarning(order);
+    const totalPartnerCost = costDerivable ? breakdown.subtotal : null;
 
     const customerPaid = order.pricing?.total || 0;
-    const adminProfit = customerPaid - totalPartnerCost;
+    const adminProfit = totalPartnerCost === null ? null : customerPaid - totalPartnerCost;
 
     const gangsheetOrderItem = (order.items || []).find((it: any) => it?.type === "gangsheet") as any | null;
     const designId = gangsheetOrderItem?.designId || order.items?.[0]?.designId || null;
@@ -1621,7 +1726,11 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     const orderSummary = {
       id: order._id,
+      // The canonical human-readable order number, so every surface shows the
+      // same identifier instead of deriving its own from the ObjectId.
+      displayId: (order as any).displayId || null,
       status: order.status,
+      priority: String((order as any).priority || "NORMAL").toUpperCase(),
       createdAt: order.createdAt,
       
       customer: {
@@ -1652,8 +1761,24 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
       financials: {
         customerPaid: Number(customerPaid.toFixed(2)),
-        partnerCost: Number(totalPartnerCost.toFixed(2)),
-        adminProfit: Number(adminProfit.toFixed(2)),
+        /**
+         * The rush surcharge, broken out.
+         *
+         * URGENT adds the partner's `rushPct` to what they are owed — 10% on
+         * every seeded partner — and it was folded silently into partnerCost.
+         * An admin could raise a payout by a tenth and see only the new total,
+         * with nothing on screen saying why.
+         */
+        rushFee: costDerivable ? Number(breakdown.rushFee.toFixed(2)) : null,
+        baseCost: costDerivable ? Number(breakdown.base.toFixed(2)) : null,
+        partnerCost: totalPartnerCost === null ? null : Number(totalPartnerCost.toFixed(2)),
+        adminProfit: adminProfit === null ? null : Number(adminProfit.toFixed(2)),
+        // False until the job ships: the partner is not paid before then, so
+        // the margin is a forecast — same rule the Orders table uses.
+        profitRealized: isPartnerEarningRealized(order),
+        unavailableReason: costDerivable
+          ? undefined
+          : "This order has no sheet dimensions, so no partner cost can be worked out.",
         currency: order.pricing?.currency || "USD"
       },
 
@@ -1663,21 +1788,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         email: (order.assignedPrinter as unknown as IUser).email
       } : null,
 
-      regionInfo: (() => {
-        const orderCustomerRegion = resolveOrderRegion(order, oneUserRegionMap);
-        const printerDoc = order.assignedPrinter as unknown as IUser | null;
-        const orderPrinterRegion = printerDoc
-          ? normalizeRegion(getRegionFromState((printerDoc.defaultShippingAddress as any)?.state || ""))
-            || normalizeRegion(getRegionFromState((printerDoc as any).businessAddress?.state || ""))
-            || printerDoc.regions?.[0]
-            || null
-          : null;
-        return {
-          customerRegion: orderCustomerRegion,
-          printerRegion: orderPrinterRegion,
-          crossRegion: Boolean(orderCustomerRegion && orderPrinterRegion && orderCustomerRegion !== orderPrinterRegion),
-        };
-      })(),
+      regionInfo: resolveRegionInfo(order, oneUserRegionMap),
 
       preview: {
         designId,
@@ -1723,6 +1834,7 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
               widthIn: "$$item.widthIn",
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
+              rollWidthIn: "$$item.rollWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
               artboardItems: {
                 $map: {
@@ -1736,7 +1848,12 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
                     posX: "$$ai.posX",
                     posY: "$$ai.posY",
                     rotation: "$$ai.rotation",
+                    // Flip and the auto-nest layout fields were not projected, so
+                    // the admin preview drew mirrored and nested pieces wrongly.
+                    flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },
@@ -1761,22 +1878,13 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
     }
 
     /**
-     * The sheet is always the full artboard width — never a value read off the
-     * order item.
+     * The roll width this order was built on — see `orderSheetWidthIn`.
      *
-     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
-     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
-     * `max(bounds.maxX)`), because that is the area partner pricing charges
-     * for — see `computePartnerCostBreakdown`, which multiplies it into the
-     * square footage a partner is paid on. It is therefore load-bearing as a
-     * pricing figure and is deliberately left alone.
-     *
-     * Rendering onto it was the bug: item `posX` values are absolute against a
-     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
-     * x-coordinate in the wrong place and clipped whatever fell past the new
-     * right edge. That is the artboard/preview mismatch.
+     * Never the artwork's bounding width: item `posX` values are absolute
+     * against the roll, so a canvas sized to anything else puts every
+     * x-coordinate in the wrong place and clips what falls past its edge.
      */
-    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
+    const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
@@ -1834,15 +1942,9 @@ export const exportOrders = async (req: Request, res: Response, next: NextFuncti
       if (to) query.createdAt.$lte = new Date(to as string);
     }
     if (status) {
-      const statusMap: { [key: string]: string } = {
-        "Pending": "PENDING",
-        "Assigned": "PENDING",
-        "In Progress": "PRINTING",
-        "Shipped": "SHIPPED",
-        "Completed": "COMPLETED",
-        "Cancelled": "CANCELLED"
-      };
-      query.status = statusMap[status as string] || (status as string).toUpperCase();
+      // Same shared map as the list and the writer — this was a third and
+      // fourth copy, both still mapping "Assigned" to PENDING.
+      query.status = resolveOrderStatusInput(status) ?? String(status).toUpperCase();
     }
 
     const filename = `orders-export-${new Date().toISOString().split('T')[0]}.csv`;
@@ -1897,7 +1999,7 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       email,
       phone,
       regions,
-      capabilities,
+      address,
       status
     } = req.body;
 
@@ -1915,11 +2017,6 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    if (!resolvedContactName) {
-      const error = new Error("contactName is required") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
 
     if (typeof email !== "string" || !email.trim()) {
       const error = new Error("email is required") as CustomError;
@@ -1927,56 +2024,283 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    if (typeof phone !== "string" || !phone.trim()) {
-      const error = new Error("phone is required") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
+    /*
+     * Name and email are the whole requirement.
+     *
+     * Everything else — phone, address, service areas — is the
+     * partner's own information, and they know it better than whoever is typing
+     * the form. They fill it in after they set their password. Nothing can be
+     * assigned to them before an admin approves them anyway, which is where
+     * completeness is checked.
+     */
 
-    if (!Array.isArray(regions) || regions.length === 0) {
-      const error = new Error("regions must be a non-empty array") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const existingUser = await User.findOne({ email });
+    /*
+     * Scoped to partners. One address may hold an account per role now, so an
+     * admin adding a print partner must not be blocked because that person also
+     * shops on the store — which is exactly the case an unscoped check refused.
+     */
+    const existingUser = await User.findOne({ email, role: UserRoles.PRINTER });
     if (existingUser) {
       const error = new Error("Partner with this email already exists") as CustomError;
       error.statusCode = 409;
       throw error;
     }
 
-    const tempPassword = crypto.randomBytes(8).toString('hex');
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    /**
+     * No temporary password is issued.
+     *
+     * This used to mint one, hash it, and then `console.log` it in plaintext —
+     * a live credential written to the server logs — while sending nothing at
+     * all, so the partner could never actually use it. The account now gets an
+     * unusable random secret and the partner sets their own via an invite link,
+     * which means there is no shared credential to leak in the first place.
+     */
+    const unusableSecret = crypto.randomBytes(32).toString("hex");
+    const passwordHash = await bcrypt.hash(unusableSecret, 10);
 
+    const inviteToken = crypto.randomBytes(32).toString("hex");
+    const inviteTokenHash = crypto.createHash("sha256").update(inviteToken).digest("hex");
+
+    /**
+     * Validated here, not only in the form.
+     *
+     * The console checks all of this, but the endpoint accepted anything: a
+     * region of "Atlantis", an email of "not-an-email", no address, a state of
+     * "ZZ", a negative sheet size. None of it errors — it produces a partner
+     * that is quietly broken:
+     *
+     *  - a region that does not normalize makes them unassignable, because
+     *    `normalizeRegion` returns null and a null region blocks assignment
+     *  - an unresolvable state means no region and an infinite distance, so
+     *    they rank last in their own region forever
+     *  - a malformed email means they can never be contacted or sign in
+     *
+     * A form is a convenience, not a boundary. This is the boundary.
+     */
+    // The shared validator, so this rule and public registration's cannot drift.
+    if (!isValidEmail(String(email).trim())) {
+      const error = new Error("A valid email address is required") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    /*
+     * Same shape check as public signup. This endpoint required phone to be
+     * present but never checked what was in it, so "1" or "abc" created a
+     * partner with an unreachable contact number.
+     */
+    if (typeof phone === "string" && phone.trim() && !isValidPhone(phone)) {
+      const error = new Error("Enter a valid phone number") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const suppliedRegions = Array.isArray(regions) ? regions : [];
+    const normalizedRegions = suppliedRegions
+      .map((r: any) => normalizeRegion(String(r).trim()))
+      .filter(Boolean) as string[];
+    if (normalizedRegions.length !== suppliedRegions.length) {
+      const unknown = suppliedRegions.filter((r: any) => !normalizeRegion(String(r).trim()));
+      const error = new Error(
+        `Unrecognised service area(s): ${unknown.join(", ")}. Must be one of West, Midwest, South, Northeast.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    /*
+     * The address is optional now, but if one is given it must be usable: a
+     * state that resolves to no region means no ranking distance and no
+     * shipping origin, which is worse than having no address at all because it
+     * looks complete.
+     */
+    const hasAddress = Boolean(address && typeof address === "object" && String(address.street || "").trim());
+    if (hasAddress) {
+      if (!getRegionFromState(String(address.state || ""))) {
+        const error = new Error(
+          `'${address.state}' is not a US state this platform serves`,
+        ) as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      if (!String(address.city || "").trim() || !String(address.postalCode || "").trim()) {
+        const error = new Error("Business address needs a city and a postal code") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    /*
+     * An admin adding a partner IS the approval — they already vouched for them
+     * off-platform. Defaulting to Pending made the invitation a dead end: the
+     * partner set their password from the invite email and then hit "Your
+     * account is pending approval" at sign-in, with no way to fill in the
+     * business details the admin deliberately left for them to complete.
+     *
+     * Partners who sign up on their own still land in Pending (see
+     * `registerUser`) and still need approving — that is the Approvals queue.
+     */
     const allowedStatuses = ["Active", "Pending", "Suspended", "Under Review"];
-    const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Pending";
+    const resolvedStatus = (typeof status === "string" && allowedStatuses.includes(status)) ? status : "Active";
+
+    /**
+     * A partner created without an address is quietly degraded, not broken —
+     * which is worse, because nothing reports it:
+     *
+     *  - `predictShippingOrigin` needs a postcode, so rates for their region
+     *    fall back to the configured warehouse instead of shipping from them.
+     *  - `createShipStationLabel` uses `businessAddress` as the ship-from, so
+     *    their labels declare the wrong origin.
+     *  - candidate ranking sorts nearest-first on a state centroid; with no
+     *    state the distance is Infinity, so they are always chosen last within
+     *    their own region.
+     *
+     * Stored in both fields because both are read: `businessAddress` for the
+     * label, `defaultShippingAddress` for region and distance.
+     */
+    /*
+     * Geocoded through the same resolver self-signup uses.
+     *
+     * This used to store the address exactly as typed, while signup normalised
+     * it through Census and recorded coordinates and a `detectedRegion`. Two
+     * partners at the same address therefore held different records: one with
+     * "SAN FRANCISCO" and a region on their profile, one with "San Francisco"
+     * and a blank one — and `detectedRegion` is read on the partner detail page
+     * and on the partner's own profile screen.
+     */
+    const resolvedPartnerAddress =
+      address && typeof address === "object"
+        ? await resolveAddress({
+            street: String(address.street || "").trim(),
+            city: String(address.city || "").trim(),
+            state: String(address.state || "").trim().toUpperCase(),
+            postalCode: String(address.postalCode || "").trim(),
+            country: String(address.country || "US").trim(),
+          })
+        : null;
+
+    const partnerAddress = resolvedPartnerAddress
+      ? {
+          ...resolvedPartnerAddress.address,
+          ...(resolvedPartnerAddress.coordinates
+            ? { coordinates: resolvedPartnerAddress.coordinates }
+            : {}),
+        }
+      : null;
+
+    /*
+     * The admin picks service areas explicitly, so those stay authoritative.
+     * `detectedRegion` records what the address itself resolves to, which is a
+     * different fact and the one both profile screens display.
+     */
+    const partnerDetectedRegion = resolvedPartnerAddress?.region ?? null;
 
     const newPartner = new User({
       name: resolvedContactName,
       companyName: resolvedCompanyName,
       email: String(email).trim(),
       phone: String(phone).trim(),
-      regions: regions.map((r: any) => String(r).trim()).filter(Boolean),
+      regions: normalizedRegions,
       role: UserRoles.PRINTER,
       status: resolvedStatus,
       passwordHash,
+      /*
+       * Stored in the reset-password fields rather than a new pair, so the
+       * existing `POST /auth/reset-password` consumes an invite unchanged. A
+       * 7-day window because this is an invitation, not a password recovery —
+       * the 15 minutes used for recovery would expire before most people read
+       * their email.
+       */
+      resetPasswordTokenHash: inviteTokenHash,
+      resetPasswordExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      /*
+       * Opens the trail, recording that this partner exists because an admin
+       * added them rather than because they applied — which is also why they
+       * start Active rather than Pending.
+       */
+      statusHistory: [
+        {
+          from: null,
+          to: resolvedStatus,
+          reason: "Added by an admin",
+          at: new Date(),
+          byId: req.user?.id || null,
+          byName: req.user?.name || req.user?.email || null,
+          notified: false,
+        },
+      ],
+      ...(partnerAddress
+        ? { businessAddress: partnerAddress, defaultShippingAddress: partnerAddress }
+        : {}),
+      ...(partnerDetectedRegion ? { detectedRegion: partnerDetectedRegion } : {}),
       settings: {
-        printingCapabilities: {
-          maxSheetSizeIn: capabilities?.maxSheetSizeIn || { width: 24, height: 19.5 },
-          supportedFormats: capabilities?.formats || ["PNG", "PDF", "TIFF"],
-          maxResolutionDPI: capabilities?.maxDPI || 1200
-        }
+        /*
+         * No per-partner pricing is written. Every partner is paid at the one
+         * network rate from Settings -> General, resolved at payout time by
+         * `getPartnerPayRate`. A copy stored here would be a second source of
+         * truth free to drift from it.
+         */
+        /*
+         * `printingCapabilities` is no longer seeded. Nothing in the platform
+         * reads sheet size, formats or DPI — no assignment or pricing decision
+         * consults them — and both editors for them have been removed, so these
+         * were defaults nobody could change and nothing would use.
+         */
       }
     });
 
     await newPartner.save();
 
-    console.log(`[EMAIL MOCK] Welcome email sent to ${email} with temporary password: ${tempPassword}`);
+    /**
+     * A real send, through the shared `sendEmail` — which already tries
+     * SendGrid first and falls back to SMTP, so this needs credentials, not
+     * code. Until they exist it fails and says so; it no longer pretends.
+     */
+    const inviteUrl = `${env.printerAppUrl.replace(/\/$/, "")}/set-password?inviteToken=${encodeURIComponent(inviteToken)}`;
+    const invite = await sendEmail({
+      to: String(email).trim(),
+      subject: "You have been added to Space Transfers",
+      html: `
+        <p>Hello ${resolvedContactName || resolvedCompanyName},</p>
+        <p>${resolvedCompanyName} has been added to Space Transfers as a print partner.</p>
+        <p>Set your password to get started — the link is valid for 7 days:</p>
+        <p><a href="${inviteUrl}">Set your password</a></p>
+        <p>Once you are in, please check that your business address is correct — we
+          route work by region, so it decides which orders reach you. We cannot send you
+          work until your account has been approved.</p>
+      `,
+    }).catch((e: any) => ({ sent: false, messageId: null, error: e?.message || "send failed" }));
+
+    if (!invite.sent) {
+      // Loud, because the partner cannot sign in until this reaches them — and
+      // silence here is exactly how the previous version hid the same problem.
+      console.error(
+        `[PARTNER_INVITE] could not email ${email} — they cannot set a password until this is fixed. ` +
+          `Reason: ${invite.error || "no email transport configured"}`,
+      );
+    } else {
+      console.log(`[PARTNER_INVITE] invite sent to ${email}`);
+    }
 
     res.status(201).json({
       id: newPartner._id,
-      status: newPartner.status
+      status: newPartner.status,
+      /*
+       * Whether the invitation actually reached them, and the link itself when
+       * it did not.
+       *
+       * A failed send was written to the server log and nowhere else: the
+       * console showed "Partner created", the admin had no idea the email had
+       * not gone out, and the link existed only inside an email that was never
+       * sent — so the partner could never set a password and nothing on screen
+       * said why. The URL is returned only on failure, so it is there exactly
+       * when someone needs to pass it on by hand and not in the ordinary case.
+       */
+      invite: {
+        sent: invite.sent === true,
+        reason: invite.sent ? undefined : invite.error || "no email transport configured",
+        url: invite.sent ? undefined : inviteUrl,
+      },
     });
   } catch (error) {
     next(error);
@@ -1999,7 +2323,9 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
     }
 
     if (search) {
-      const searchRegex = new RegExp(search as string, "i");
+      // Escaped: the raw value was compiled straight into a RegExp, so a single
+      // "[" typed into the search box threw and returned a 500.
+      const searchRegex = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
       matchQuery.$or = [
         { name: searchRegex },
         { companyName: searchRegex },
@@ -2007,9 +2333,6 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
       ];
     }
 
-    const globalPricingSetting = await Settings.findOne({ key: "global_pricing" }).lean();
-    const globalPricing = (globalPricingSetting as any)?.value;
-    const saleRatePerSqFt = typeof globalPricing?.baseRatePerSqFt === "number" ? globalPricing.baseRatePerSqFt : 24.0;
 
     const pipeline: any[] = [
       { $match: matchQuery },
@@ -2034,8 +2357,36 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
         }
       },
       {
+        /*
+         * How many jobs this partner is holding right now.
+         *
+         * Replaces the base/sale/profit columns, which became the same three
+         * numbers on every row once pricing went network-wide. This one differs
+         * per partner and is what an admin needs when deciding who to assign to.
+         */
+        $lookup: {
+          from: "orders",
+          let: { partnerId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$assignedPrinter", "$$partnerId"] },
+                    { $in: ["$status", ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"]] }
+                  ]
+                }
+              }
+            },
+            { $count: "count" }
+          ],
+          as: "activeCountArr"
+        }
+      },
+      {
         $addFields: {
-          ordersCompleted: { $ifNull: [{ $arrayElemAt: ["$completedCountArr.count", 0] }, 0] }
+          ordersCompleted: { $ifNull: [{ $arrayElemAt: ["$completedCountArr.count", 0] }, 0] },
+          ordersInProgress: { $ifNull: [{ $arrayElemAt: ["$activeCountArr.count", 0] }, 0] }
         }
       },
       {
@@ -2045,10 +2396,11 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
           email: 1,
           status: 1,
           availabilityStatus: 1,
+          capacityPaused: 1,
           regions: 1,
           rating: 1,
           ordersCompleted: 1,
-          "settings.pricing.baseRatePerSqFt": 1
+          ordersInProgress: 1,
         }
       },
       { $sort: { ordersCompleted: -1, _id: -1 } }
@@ -2082,12 +2434,20 @@ export const listPartners = async (req: Request, res: Response, next: NextFuncti
       email: p.email,
       status: p.status,
       availabilityStatus: p.availabilityStatus ?? "open",
+      // Carried alongside it so the console can distinguish a partner who
+      // paused themselves from one the capacity monitor paused — the first
+      // needs a conversation, the second clears itself.
+      capacityPaused: Boolean(p.capacityPaused),
       regions: p.regions || [],
       rating: p.rating || 5.0,
       ordersCompleted: p.ordersCompleted,
-      basePrice: `$${Number(p.settings?.pricing?.baseRatePerSqFt ?? 18).toFixed(2)}`,
-      salePrice: `$${Number(saleRatePerSqFt).toFixed(2)}`,
-      profit: `$${(Number(saleRatePerSqFt) - Number(p.settings?.pricing?.baseRatePerSqFt ?? 18)).toFixed(2)}`,
+      /*
+       * Base price, sale price and profit removed. With one network-wide rate
+       * they were the same three numbers on every row, and "profit" was a
+       * per-sq-ft margin rather than this partner's contribution — which read
+       * like a partner-level figure and was not one.
+       */
+      ordersInProgress: Number(p.ordersInProgress ?? 0).toLocaleString(),
       orders: Number(p.ordersCompleted ?? 0).toLocaleString()
     }));
 
@@ -2132,6 +2492,15 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       status: "COMPLETED"
     });
 
+    /*
+     * Moved to `partnerPerformance.service`. The partner's own Profile page
+     * showed invented figures for these same two ideas — a stored
+     * `user.performance` object nothing ever writes — so both sides read one
+     * computation now.
+     */
+    const { averageProductionHours, onTimeDeliveryRate, sampleSize: performanceSamples } =
+      await computePartnerPerformance(partnerIdString);
+
     const detectedRegion =
       (partner as any).detectedRegion ||
       normalizeRegion(getRegionFromState((partner as any).businessAddress?.state || "")) ||
@@ -2144,13 +2513,75 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
       companyName: partner.companyName || partner.name,
       contactName: partner.name,
       status: partner.status,
+      /*
+       * Operational availability, distinct from account status above. The
+       * console rendered neither this nor the live broadcast the server was
+       * already sending, so a partner who paused themselves looked fully
+       * available to the admin deciding where to route work.
+       */
+      availabilityStatus: (partner as any).availabilityStatus ?? "open",
+      capacityPaused: Boolean((partner as any).capacityPaused),
+      /*
+       * Why the partner is in the state they are in.
+       *
+       * A suspended or rejected partner used to show a status and nothing else,
+       * so the reason existed only in whatever the admin remembered. Newest
+       * first, capped — the detail page wants the recent decisions, not an
+       * unbounded log.
+       */
+      statusHistory: [...(((partner as any).statusHistory || []) as any[])]
+        .reverse()
+        .slice(0, 20)
+        .map((h) => ({
+          from: h.from || null,
+          to: h.to,
+          reason: h.reason || null,
+          at: h.at,
+          by: h.byName || null,
+          notified: h.notified === true,
+        })),
       regions: partner.regions || [],
       detectedRegion,
+      /*
+       * Where they print from. The detail page rendered a hardcoded "N/A" here
+       * and the endpoint never sent an address at all, so a partner who gave a
+       * full address at signup was shown as having none — on the same screen
+       * that decides whether they can be routed work.
+       *
+       * `businessAddress` first: that is the ship-from on a label. It falls back
+       * to the shipping address, which is what signup fills in.
+       */
+      address: (() => {
+        const a = (partner as any).businessAddress || (partner as any).defaultShippingAddress || null;
+        if (!a) return null;
+        return {
+          street: a.street || null,
+          city: a.city || null,
+          state: a.state || null,
+          postalCode: a.postalCode || null,
+          country: a.country || null,
+        };
+      })(),
       ordersCompleted,
+      averageProductionHours,
+      onTimeDeliveryRate,
+      // Measured against how many finished jobs, so the console can say "from
+      // 3 orders" rather than presenting one data point as a track record.
+      performanceSampleSize: performanceSamples,
       rating: partner.rating || 5.0,
       email: partner.email,
       phone: partner.phone || "N/A",
-      website: partner.website || "N/A"
+      website: partner.website || "N/A",
+      /*
+       * How the partner is incorporated. Collected on their own Profile and
+       * previously never sent here, so the console showed the business name
+       * with no indication of what kind of business it was.
+       *
+       * Certifications are deliberately not returned. They are the partner's
+       * own record, nothing in the platform reads them, and an admin does not
+       * need them to make any decision this console offers.
+       */
+      businessType: (partner as any).businessDetails?.businessType || null
     });
   } catch (error) {
     next(error);
@@ -2172,15 +2603,9 @@ export const getPartnerOrders = async (req: Request, res: Response, next: NextFu
     const query: any = { assignedPrinter: partnerIdString };
 
     if (status) {
-      const statusMap: { [key: string]: string } = {
-        "Pending": "PENDING",
-        "Assigned": "PENDING",
-        "In Progress": "PRINTING",
-        "Shipped": "SHIPPED",
-        "Completed": "COMPLETED",
-        "Cancelled": "CANCELLED"
-      };
-      query.status = statusMap[status as string] || (status as string).toUpperCase();
+      // Same shared map as the list and the writer — this was a third and
+      // fourth copy, both still mapping "Assigned" to PENDING.
+      query.status = resolveOrderStatusInput(status) ?? String(status).toUpperCase();
     }
 
     if (cursor) {
@@ -2205,6 +2630,7 @@ export const getPartnerOrders = async (req: Request, res: Response, next: NextFu
 
     const formattedOrders = results.map(order => ({
       id: order._id,
+      displayId: (order as any).displayId || null,
       status: order.status,
       customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
       total: order.pricing?.total || 0,
@@ -2237,14 +2663,44 @@ export const updatePartner = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    const updateData = req.body;
+    /**
+     * An allowlist, not a denylist.
+     *
+     * This took `req.body` wholesale, deleted `passwordHash` and `role`, and
+     * `$set` the rest — so anything else in the body was written straight to
+     * the partner document. A single PATCH could set their `rating`, or their
+     * `settings.pricing.baseRatePerSqFt`, rewriting a commercial term without
+     * going near the Pricing tab. Verified: a request setting the pay rate to
+     * $99/sq ft was accepted.
+     *
+     * Service areas are the only thing this endpoint is for. They are the one
+     * genuinely platform-owned field on a partner — routing policy, not the
+     * partner's own information — and everything else has its own endpoint:
+     * status, capacity settings, and pricing.
+     */
+    const { regions } = req.body ?? {};
 
-    delete updateData.passwordHash;
-    delete updateData.role;
+    if (!Array.isArray(regions) || regions.length === 0) {
+      const error = new Error("regions must be a non-empty array") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalizedRegions = regions
+      .map((r: any) => normalizeRegion(String(r).trim()))
+      .filter(Boolean) as string[];
+    if (normalizedRegions.length !== regions.length) {
+      const unknown = regions.filter((r: any) => !normalizeRegion(String(r).trim()));
+      const error = new Error(
+        `Unrecognised service area(s): ${unknown.join(", ")}. Must be one of West, Midwest, South, Northeast.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
     const partner = await User.findOneAndUpdate(
       { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: updateData },
+      { $set: { regions: normalizedRegions } },
       { new: true, runValidators: true }
     ).select("-passwordHash");
 
@@ -2257,6 +2713,69 @@ export const updatePartner = async (req: Request, res: Response, next: NextFunct
     res.status(200).json({
       id: partner._id,
       updated: true
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * An admin setting a partner's availability.
+ *
+ * Distinct from `updatePartnerStatus`: that is an account judgement that blocks
+ * sign-in, this is operational — whether the partner is currently taking work.
+ * An admin needs it to pull someone out of rotation without suspending them,
+ * for instance while a quality issue is being discussed.
+ *
+ * Unlike the partner's own endpoint, an admin may reopen someone who is at
+ * capacity: that is a deliberate act by a person who can see the whole network,
+ * not a partner accidentally over-committing themselves.
+ */
+export const updatePartnerAvailability = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { partnerId } = req.params;
+    const { status, reason } = req.body || {};
+
+    const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : (partnerId as string);
+    if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
+      const error = new Error("Invalid Partner ID") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (status !== "open" && status !== "paused") {
+      const error = new Error("status must be one of: open, paused") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const result = await changePartnerAvailability({
+      partnerId: partnerIdString,
+      to: status,
+      reason: typeof reason === "string" ? reason : null,
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email, kind: "admin" },
+    });
+
+    if (!result) {
+      const error = new Error("Partner not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    res.status(200).json({
+      partnerId: partnerIdString,
+      availabilityStatus: result.availabilityStatus,
+      capacityLocked: result.capacityLocked,
+      // Always false after a manual change — the console reads it to decide
+      // whether to label the pill "at capacity", and an absent field there
+      // would quietly become `false` by accident rather than by fact.
+      capacityPaused: result.capacityPaused,
+      activeJobs: result.activeJobs,
+      maxJobs: result.maxJobs,
+      // Whether the partner's in-app notification was created, so the console
+      // can say plainly if they were not told.
+      notified: result.partnerNotified,
+      notifyError: result.partnerNotifyError,
     });
   } catch (error) {
     next(error);
@@ -2266,7 +2785,7 @@ export const updatePartner = async (req: Request, res: Response, next: NextFunct
 export const updatePartnerStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { status } = req.body;
+    const { status, reason } = req.body;
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -2275,27 +2794,70 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
       throw error;
     }
 
+    /*
+     * "Rejected" is deliberately not settable here. It is the outcome of
+     * declining a pending application, not a state to move a real partner into
+     * — that is what Suspended is for. Offering both on one dropdown would make
+     * the difference a matter of which word an admin happened to pick.
+     */
     if (!["Active", "Suspended", "Under Review", "Pending"].includes(status)) {
       const error = new Error("Invalid status. Allowed values: Active, Suspended, Under Review, Pending") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: { status } },
-      { new: true, runValidators: true }
-    ).select("-passwordHash");
+    /*
+     * And rejection is terminal. A suspension is a pause the network can lift;
+     * a rejection is a declined application, and reinstating one through a
+     * status dropdown would quietly undo an approval decision without ever
+     * passing back through the approvals queue.
+     */
+    const existingPartner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
+      .select("status")
+      .lean();
+    if (existingPartner?.status === "Rejected") {
+      const error = new Error(
+        "This application was rejected and cannot be reinstated here. They can re-apply from the partner sign-up page, which starts a fresh application."
+      ) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
 
-    if (!partner) {
+    /*
+     * Suspension needs a reason for the same reason rejection does: it stops a
+     * working partner from receiving any work and locks them out, and it used to
+     * happen through a toggle that recorded nothing and told them nothing. They
+     * would simply find themselves unable to sign in.
+     *
+     * Reinstating does not require one — restoring someone needs no
+     * justification to the person being restored.
+     */
+    if (status === "Suspended" && (typeof reason !== "string" || reason.trim().length < 3)) {
+      const error = new Error("A reason is required when suspending a partner") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const result = await changePartnerStatus({
+      partnerId: partnerIdString,
+      to: status,
+      reason: typeof reason === "string" ? reason : null,
+      // Anything but Rejected, which the check above already refuses.
+      expectedFrom: ["Active", "Suspended", "Under Review", "Pending"],
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email },
+    });
+
+    if (!result) {
       const error = new Error("Partner not found") as CustomError;
       error.statusCode = 404;
       throw error;
     }
 
     res.status(200).json({
-      id: partner._id,
-      status: partner.status,
+      id: result.partner._id,
+      status: result.partner.status,
+      notified: result.notified,
+      notifyError: result.notifyError,
       updated: true
     });
   } catch (error) {
@@ -2305,19 +2867,95 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
 
 export const listPendingPrinters = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    /*
+     * Location and region come back too. Registration already requires a full
+     * address and geocodes it into a region, but the queue used to show only a
+     * name, an email and a date — so an admin approved a print partner without
+     * seeing where they print from or which region they would serve, which is
+     * the one fact `autoAssignOrder` actually routes on.
+     */
     const printers = await User.find({ role: UserRoles.PRINTER, status: "Pending" })
-      .select("name companyName email phone createdAt")
+      .select("name companyName email phone createdAt regions defaultShippingAddress businessAddress statusHistory")
       .sort({ createdAt: -1 })
       .lean();
 
-    const formattedPrinters = printers.map(p => ({
-      id: p._id,
-      name: p.name,
-      companyName: p.companyName,
-      email: p.email,
-      phone: p.phone,
-      createdAt: p.createdAt
-    }));
+    /*
+     * Who else is already registered at each of these addresses.
+     *
+     * Sharing one is not itself wrong — industrial units and co-working
+     * buildings hold several businesses — so this does not block a signup. But
+     * it is the shape both duplicate registration and rejection-evasion take,
+     * and the approval screen is the one moment a person is deciding about this
+     * applicant. Three accounts for the same company already sit at one address
+     * in this database, all approved, because nothing ever surfaced it.
+     *
+     * Fetched in one query keyed by street and postcode rather than per row.
+     */
+    const addressKey = (a: any) =>
+      a && a.street && a.postalCode
+        ? `${String(a.street).trim().toLowerCase()}|${String(a.postalCode).trim().toLowerCase()}`
+        : null;
+
+    const pendingKeys = printers
+      .map((p: any) => addressKey(p.defaultShippingAddress || p.businessAddress))
+      .filter(Boolean) as string[];
+
+    const neighboursByKey = new Map<string, Array<{ companyName: string; status: string }>>();
+    if (pendingKeys.length > 0) {
+      const others = await User.find({
+        role: UserRoles.PRINTER,
+        _id: { $nin: printers.map((p: any) => p._id) },
+      })
+        .select("companyName name status defaultShippingAddress businessAddress")
+        .lean();
+
+      for (const other of others as any[]) {
+        const key = addressKey(other.defaultShippingAddress || other.businessAddress);
+        if (!key || !pendingKeys.includes(key)) continue;
+        const list = neighboursByKey.get(key) || [];
+        list.push({
+          companyName: other.companyName || other.name || "Unnamed partner",
+          status: other.status || "Unknown",
+        });
+        neighboursByKey.set(key, list);
+      }
+    }
+
+    const formattedPrinters = printers.map(p => {
+      const address = (p as any).defaultShippingAddress || (p as any).businessAddress || null;
+      const key = addressKey(address);
+      return {
+        id: p._id,
+        name: p.name,
+        companyName: p.companyName,
+        email: p.email,
+        phone: p.phone,
+        createdAt: p.createdAt,
+        // Null rather than a guess: geocoding can fail, and registration stores
+        // no region when it does. "Unknown" on screen is honest; a wrong region
+        // would route real work to the wrong side of the country.
+        region: resolvePartnerRegion(p),
+        location: address ? [address.city, address.state].filter(Boolean).join(", ") || null : null,
+        /** Other partners at the same street and postcode. Empty when none. */
+        sameAddressPartners: (key && neighboursByKey.get(key)) || [],
+        /*
+         * A previous rejection of this same account, now that a declined
+         * applicant can re-apply with the address they used before. Without it
+         * a re-application is indistinguishable from a first one, and the
+         * approver repeats a decision someone already made.
+         */
+        priorRejection: (() => {
+          const history = ((p as any).statusHistory || []) as any[];
+          const last = [...history].reverse().find((h) => h.to === "Rejected");
+          if (!last) return null;
+          return {
+            at: last.at,
+            reason: last.reason || null,
+            by: last.byName || null,
+          };
+        })()
+      };
+    });
 
     res.status(200).json(formattedPrinters);
   } catch (error) {
@@ -2328,6 +2966,7 @@ export const listPendingPrinters = async (req: Request, res: Response, next: Nex
 export const approvePrinter = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
+    const { reason } = req.body || {};
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -2336,31 +2975,38 @@ export const approvePrinter = async (req: Request, res: Response, next: NextFunc
       throw error;
     }
 
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: { status: "Active" } },
-      { new: true }
-    );
+    /*
+     * Scoped to Pending, and routed through `changePartnerStatus` so the
+     * approval is recorded and the partner is actually told. This used to flip
+     * the status and log a fake "[EMAIL MOCK] Activation email sent" that no
+     * code ever backed with a real send.
+     */
+    const result = await changePartnerStatus({
+      partnerId: partnerIdString,
+      to: "Active",
+      reason: typeof reason === "string" ? reason : null,
+      expectedFrom: "Pending",
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email },
+    });
 
-    if (!partner) {
-      const error = new Error("Printer not found") as CustomError;
-      error.statusCode = 404;
+    if (!result) {
+      const existing = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
+        .select("status")
+        .lean();
+      const error = new Error(
+        existing
+          ? `This printer is already ${existing.status}, not awaiting approval. Refresh the queue.`
+          : "Printer not found"
+      ) as CustomError;
+      error.statusCode = existing ? 409 : 404;
       throw error;
     }
 
-    console.log(`[EMAIL MOCK] Activation email sent to ${partner.email}`);
-
-    notifyAllAdmins({
-      category: "partners",
-      priority: "medium",
-      title: "Printer approved",
-      message: `${partner.companyName || partner.name} • ${partner.email}`,
-      meta: { partnerId: String(partner._id), status: "Active" }
-    }).catch(() => {});
-
     res.status(200).json({
-      id: partner._id,
-      status: partner.status,
+      id: result.partner._id,
+      status: result.partner.status,
+      notified: result.notified,
+      notifyError: result.notifyError,
       message: "Printer approved successfully"
     });
   } catch (error) {
@@ -2371,6 +3017,7 @@ export const approvePrinter = async (req: Request, res: Response, next: NextFunc
 export const rejectPrinter = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
+    const { reason } = req.body || {};
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -2379,29 +3026,45 @@ export const rejectPrinter = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
-    const partner = await User.findOneAndUpdate(
-      { _id: partnerIdString, role: UserRoles.PRINTER },
-      { $set: { status: "Suspended" } },
-      { new: true }
-    );
-
-    if (!partner) {
-      const error = new Error("Printer not found") as CustomError;
-      error.statusCode = 404;
+    /*
+     * A reason is required. Rejection is permanent and the applicant may come
+     * back months later under a different email — the approver facing that
+     * second application needs to know whether the first was turned down for
+     * print quality or because a colleague had already signed up. Previously
+     * nothing was recorded at all.
+     */
+    if (typeof reason !== "string" || reason.trim().length < 3) {
+      const error = new Error("A reason is required when rejecting an application") as CustomError;
+      error.statusCode = 400;
       throw error;
     }
 
-    notifyAllAdmins({
-      category: "partners",
-      priority: "medium",
-      title: "Printer rejected",
-      message: `${partner.companyName || partner.name} • ${partner.email}`,
-      meta: { partnerId: String(partner._id), status: "Suspended" }
-    }).catch(() => {});
+    const result = await changePartnerStatus({
+      partnerId: partnerIdString,
+      to: "Rejected",
+      reason,
+      expectedFrom: "Pending",
+      actor: { id: req.user?.id, name: req.user?.name || req.user?.email },
+    });
+
+    if (!result) {
+      const existing = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
+        .select("status")
+        .lean();
+      const error = new Error(
+        existing
+          ? `This printer is already ${existing.status}, not awaiting approval. Refresh the queue.`
+          : "Printer not found"
+      ) as CustomError;
+      error.statusCode = existing ? 409 : 404;
+      throw error;
+    }
 
     res.status(200).json({
-      id: partner._id,
-      status: partner.status,
+      id: result.partner._id,
+      status: result.partner.status,
+      notified: result.notified,
+      notifyError: result.notifyError,
       message: "Printer registration rejected"
     });
   } catch (error) {
@@ -2484,7 +3147,7 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
       : null;
     const breakdown = computePartnerCostBreakdown({
       items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: (partner as any)?.settings?.pricing || {},
+      partnerPricing: await getPartnerPayRate(),
       priority: (order as any).priority,
       adjustments: (order as any)?.pricing?.adjustments || []
     });
@@ -2501,6 +3164,7 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
   }
 };
 
+
 export const getOrderFinancials = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderId } = req.params;
@@ -2512,7 +3176,9 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    const order = await Order.findById(orderIdString).lean();
+    const order = await Order.findById(orderIdString)
+      .populate<{ assignedPrinter: IUser }>("assignedPrinter", "settings.pricing")
+      .lean();
 
     if (!order) {
       const error = new Error("Order not found") as CustomError;
@@ -2522,23 +3188,36 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
 
     const customerCharge = order.pricing?.total || 0;
 
-    const calculateItemCost = (item: any) => {
-      const { widthIn, heightIn, quantity = 1 } = item;
-      if (widthIn && heightIn) {
-        const areaSqFt = (widthIn * heightIn) / 144;
-        const costPerSqFt = 3.50; 
-        return areaSqFt * costPerSqFt * quantity;
-      }
-      return 5.00 * quantity;
-    };
-
-    const partnerPayout = (order.items || []).reduce((total, item) => total + calculateItemCost(item), 0);
-    const margin = customerCharge - partnerPayout;
+    // The assigned partner's own negotiated rates, via the same function that
+    // drives real payouts. This used to assume a flat $3.50/sq ft regardless of
+    // partner, so the financials panel disagreed with what was actually paid.
+    const derivable = canDerivePartnerEarning(order);
+    const breakdown = derivable
+      ? getOrderPartnerCostBreakdown(order, await getPartnerPayRate())
+      : null;
+    const partnerPayout = breakdown ? breakdown.subtotal : null;
+    const margin = partnerPayout === null ? null : customerCharge - partnerPayout;
 
     res.status(200).json({
       customerCharge: Number(customerCharge.toFixed(2)),
-      partnerPayout: Number(partnerPayout.toFixed(2)),
-      margin: Number(margin.toFixed(2)),
+      partnerPayout: partnerPayout === null ? null : Number(partnerPayout.toFixed(2)),
+      margin: margin === null ? null : Number(margin.toFixed(2)),
+      // Says why the two above are absent, so the panel can explain itself
+      // rather than showing a blank with no reason.
+      marginUnavailableReason: derivable ? undefined : "This order has no sheet dimensions to derive a partner cost from.",
+      marginRealized: isPartnerEarningRealized(order),
+      priority: (order as any).priority || "NORMAL",
+      // Broken out so an URGENT order shows what the rush actually costs
+      // instead of burying it in the payout total.
+      partnerCostBreakdown: breakdown
+        ? {
+            base: breakdown.base,
+            rushFee: breakdown.rushFee,
+            specialInkFee: breakdown.specialInkFee,
+            ratePerSqFt: breakdown.appliedRatePerSqFt,
+            totalSqFt: breakdown.totalSqFt,
+          }
+        : null,
       currency: order.pricing?.currency || "USD"
     });
   } catch (error) {
@@ -2565,8 +3244,6 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const invoiceTemplatePath = path.join(process.cwd(), "src", "templates", "invoice.html");
-    const htmlTemplate = fs.readFileSync(invoiceTemplatePath, "utf8");
 
     const formattedItems = (order.items || []).map((item) => {
       let description = "";
@@ -2598,7 +3275,9 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
     }
 
     const data = {
-      orderId: order._id,
+      // The invoice is the most customer-visible document there is, so it
+      // carries the canonical DTF-#### number rather than the raw ObjectId.
+      orderId: (order as any).displayId || String(order._id),
       date: (order.createdAt || new Date()).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -2616,21 +3295,12 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
       }
     };
 
-    const pdfOptions = {
-      format: "A4",
-      printBackground: true
-    };
-
-    const result = await generatePDF({
-      html: htmlTemplate,
-      data: data,
-      buffer: true,
-      pdfOptions: pdfOptions
-    });
+    const pdfBuffer = await renderInvoicePdf(data);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="invoice-${order._id}.pdf"`);
-    res.send(result.buffer);
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${data.orderId}.pdf"`);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.send(pdfBuffer);
 
   } catch (error) {
     next(error);
@@ -2677,9 +3347,6 @@ export const getOrderTimeline = async (req: Request, res: Response, next: NextFu
           message = `Assigned to ${(order.assignedPrinter as unknown as IUser).companyName}`;
         } else if (["PRINTING", "QUALITY_CHECK"].includes(entry.status)) {
           who = "Printer";
-        } else if (entry.status === "REJECTED") {
-          who = "Admin";
-          message = `Order rejected. Reason: ${order.rejectionReason || "Not specified"}`;
         }
 
         events.push({
@@ -2711,226 +3378,265 @@ export const getOrderTimeline = async (req: Request, res: Response, next: NextFu
   }
 };
 
+/**
+ * What the business made over a window, and what it cost to make it.
+ *
+ * The page this feeds answers four questions and nothing else: how much came in,
+ * how much went out to partners, what is left, and how much of that has actually
+ * been earned. Everything here exists to answer one of those.
+ *
+ * Deliberately NOT reported:
+ *
+ *  - A product table. It grouped line items by `item.name`, and every item in
+ *    this business is a gang sheet, so it was permanently a single row — a
+ *    catalogue breakdown for a catalogue of one, with a product-name search box
+ *    above it.
+ *  - Shipping and tax inside the revenue figure. Shipping is collected and owed
+ *    to a carrier; tax is collected and remitted to a state. Counting either as
+ *    revenue overstates what the business keeps, which is what the old profit
+ *    cards did. They are reported separately, as the pass-through they are.
+ */
 export const getEarningsSummary = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { range = "30d" } = req.query;
+    const rangeKey = String(req.query.range || "30d");
+    const now = new Date();
+
+    const RANGES: Record<
+      string,
+      { label: string; priorLabel: string; buckets: number; days?: number }
+    > = {
+      "7d": { label: "Last 7 days", priorLabel: "Previous 7 days", buckets: 7, days: 7 },
+      "30d": { label: "Last 30 days", priorLabel: "Previous 30 days", buckets: 15, days: 30 },
+      "90d": { label: "Last 90 days", priorLabel: "Previous 90 days", buckets: 13, days: 90 },
+      ytd: { label: "Year to date", priorLabel: "Same period last year", buckets: now.getMonth() + 1 }
+    };
+    const range = RANGES[rangeKey] || RANGES["30d"];
 
     let startDate: Date;
     let priorStartDate: Date;
     let priorEndDate: Date;
-    const now = new Date();
 
-    if (range === "7d") {
-      startDate = new Date(new Date().setDate(now.getDate() - 7));
-      priorStartDate = new Date(new Date().setDate(now.getDate() - 14));
-      priorEndDate = startDate;
-    } else if (range === "90d") {
-      startDate = new Date(new Date().setDate(now.getDate() - 90));
-      priorStartDate = new Date(new Date().setDate(now.getDate() - 180));
-      priorEndDate = startDate;
-    } else if (range === "ytd") {
-      startDate = new Date(new Date().getFullYear(), 0, 1);
-      priorStartDate = new Date(new Date().getFullYear() - 1, 0, 1);
-      priorEndDate = new Date(new Date().getFullYear() - 1, now.getMonth(), now.getDate());
+    if (rangeKey === "ytd") {
+      startDate = new Date(now.getFullYear(), 0, 1);
+      priorStartDate = new Date(now.getFullYear() - 1, 0, 1);
+      priorEndDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
     } else {
-      startDate = new Date(new Date().setDate(now.getDate() - 30));
-      priorStartDate = new Date(new Date().setDate(now.getDate() - 60));
+      const days = range.days as number;
+      startDate = new Date(new Date().setDate(now.getDate() - days));
+      priorStartDate = new Date(new Date().setDate(now.getDate() - days * 2));
       priorEndDate = startDate;
     }
+
+    /*
+     * CANCELLED is the only excluded status. "REJECTED" was also listed here but
+     * no order has ever held it — the enum is PENDING/PROCESSING/PRINTING/
+     * QUALITY_CHECK/SHIPPED/COMPLETED/CANCELLED — so it filtered on a state that
+     * does not exist.
+     */
+    const EXCLUDED_STATUSES = ["CANCELLED"];
+    const populateFields =
+      "companyName regions settings.pricing defaultShippingAddress businessAddress";
 
     const orders = await Order.find({
       createdAt: { $gte: startDate },
-      status: { $nin: ["CANCELLED", "REJECTED"] }
-    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", "companyName regions");
+      status: { $nin: EXCLUDED_STATUSES }
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", populateFields);
 
     const priorOrders = await Order.find({
       createdAt: { $gte: priorStartDate, $lt: priorEndDate },
-      status: { $nin: ["CANCELLED", "REJECTED"] }
-    });
+      status: { $nin: EXCLUDED_STATUSES }
+    }).populate<{ assignedPrinter: IUser }>("assignedPrinter", populateFields);
 
-    // Cost = what we pay the partner. Use the SAME canonical breakdown as the
-    // order-financials view and the payout system so every screen agrees. Look
-    // up each assigned partner's pricing once.
-    const partnerIds = Array.from(
-      new Set(
-        [...orders, ...priorOrders]
-          .map((o: any) => (o.assignedPrinter?._id ? String(o.assignedPrinter._id) : o.assignedPrinter ? String(o.assignedPrinter) : null))
-          .filter(Boolean) as string[]
-      )
+    // Region attribution falls back to the customer's profile when an order has
+    // no usable shipping address — the same map the orders table builds.
+    const userIds = Array.from(
+      new Set(orders.map((o: any) => (o.user ? String(o.user) : null)).filter(Boolean) as string[])
     );
-    const partnerDocs = partnerIds.length
-      ? await User.find({ _id: { $in: partnerIds } }).select("settings.pricing").lean()
+    const userDocs = userIds.length
+      ? await User.find({ _id: { $in: userIds } }).select("_id regions").lean()
       : [];
-    const partnerPricingMap = new Map<string, any>(
-      partnerDocs.map((p: any) => [String(p._id), p.settings?.pricing || {}])
+    const userRegionMap = new Map<string, string | null>(
+      userDocs.map((u: any) => [String(u._id), Array.isArray(u.regions) ? u.regions[0] || null : null])
     );
 
-    const calcOrderPartnerCost = (o: any): number => {
-      const pid = o.assignedPrinter?._id
-        ? String(o.assignedPrinter._id)
-        : o.assignedPrinter
-          ? String(o.assignedPrinter)
-          : null;
-      const pricing = pid ? partnerPricingMap.get(pid) || {} : {};
-      return computePartnerCostBreakdown({
+    // One rate, from global pricing — the same breakdown the order-financials
+    // view and the payout system use, so no two screens disagree on cost.
+    const payRate = await getPartnerPayRate();
+    const partnerCostOf = (o: any): number =>
+      computePartnerCostBreakdown({
         items: Array.isArray(o.items) ? o.items : [],
-        partnerPricing: pricing,
+        partnerPricing: payRate,
         priority: o.priority,
-        adjustments: o.pricing?.adjustments || [],
+        adjustments: o.pricing?.adjustments || []
       }).subtotal;
-    };
 
-    // Per-item cost approximation for the product-level table (kept aligned to the
-    // canonical default rate so it stays in the same ballpark as the KPI costs).
-    const DEFAULT_RATE_PER_SQFT = 2.5;
-    const calculateItemCost = (item: any) => {
-      const { widthIn, heightIn, quantity = 1 } = item;
-      if (widthIn && heightIn) {
-        const areaSqFt = (widthIn * heightIn) / 144;
-        return areaSqFt * DEFAULT_RATE_PER_SQFT * quantity;
-      }
-      return DEFAULT_RATE_PER_SQFT * quantity;
-    };
-
-    const calculateTotals = (orderList: any[]) => {
+    const totalsFor = (list: any[]) => {
       let revenue = 0;
       let cost = 0;
+      let earned = 0;
+      let earnedOrders = 0;
+      let uncostable = 0;
 
-      orderList.forEach(o => {
-        revenue += (o.pricing?.total || 0);
-        cost += calcOrderPartnerCost(o);
-      });
+      for (const o of list) {
+        const p = o.pricing || {};
+        /*
+         * Everything the customer paid — printing, rush, shipping and tax. This
+         * is money into the company account on the order, which is the figure an
+         * admin reconciles against.
+         *
+         * Note for when tax collection is switched on: tax is collected on
+         * behalf of a state and remitted, so it will inflate both revenue and
+         * margin by the tax line. Every order currently carries $0.00 tax, so
+         * nothing is overstated today.
+         */
+        revenue += p.total || 0;
 
-      return { revenue, cost, profit: revenue - cost };
-    };
-
-    const currentTotals = calculateTotals(orders);
-    const priorTotals = calculateTotals(priorOrders);
-
-    const calculateTrend = (curr: number, prior: number) => {
-      if (prior === 0) return curr > 0 ? 100 : 0;
-      return Number(((curr - prior) / prior * 100).toFixed(1));
-    };
-
-    const regionMap: { [key: string]: number } = {};
-    orders.forEach(o => {
-      const region = (o.assignedPrinter as unknown as IUser)?.regions?.[0] || "Unknown";
-      regionMap[region] = (regionMap[region] || 0) + (o.pricing?.total || 0);
-    });
-    const revenueByRegion = Object.entries(regionMap).map(([region, value]) => ({
-      region,
-      value: Number(value.toFixed(0)),
-      percentage: Number(((value / (currentTotals.revenue || 1)) * 100).toFixed(0))
-    })).sort((a, b) => b.value - a.value);
-
-    const productMap: { [key: string]: any } = {};
-    orders.forEach(o => {
-      o.items.forEach((item: any) => {
-        const key = item.name || "Custom Print";
-        if (!productMap[key]) {
-          productMap[key] = {
-            name: key,
-            sku: `DTF-${o._id.toString().slice(-4).toUpperCase()}`,
-            quantity: 0,
-            totalRevenue: 0,
-            totalCost: 0
-          };
+        /*
+         * An order with no sheet dimensions yields no derivable partner cost.
+         * Treating that as zero would report its whole price as margin — the
+         * same invention the orders table now renders as "—".
+         */
+        if (!canDerivePartnerEarning(o)) {
+          uncostable += 1;
+          continue;
         }
-        productMap[key].quantity += (item.quantity || 1);
-        productMap[key].totalRevenue += (item.subtotal || 0);
-        productMap[key].totalCost += calculateItemCost(item);
-      });
-    });
 
-    const products = Object.values(productMap).map(p => {
-      const profit = p.totalRevenue - p.totalCost;
-      const finalPrice = p.totalRevenue / (p.quantity || 1);
-      const profitMargin = (profit / (p.totalRevenue || 1)) * 100;
-      const baseCost = p.totalCost / (p.quantity || 1);
-      const markup = ((finalPrice - baseCost) / (baseCost || 1)) * 100;
+        const c = partnerCostOf(o);
+        cost += c;
+
+        /*
+         * Realized margin: the same subtraction, restricted to orders that have
+         * actually shipped. Everything else is a forecast, because an order can
+         * still be cancelled or re-costed before it leaves a partner.
+         */
+        if (isPartnerEarningRealized(o)) {
+          earned += (p.total || 0) - c;
+          earnedOrders += 1;
+        }
+      }
 
       return {
-        name: p.name,
-        sku: p.sku,
-        baseCost: Number(baseCost.toFixed(2)),
-        markup: Number(markup.toFixed(1)),
-        quantity: p.quantity,
-        finalPrice: Number(finalPrice.toFixed(2)),
-        totalCost: Number(p.totalCost.toFixed(2)),
-        totalRevenue: Number(p.totalRevenue.toFixed(2)),
-        profit: Number(profit.toFixed(2)),
-        profitMargin: Number(profitMargin.toFixed(2))
+        revenue,
+        cost,
+        margin: revenue - cost,
+        earned,
+        earnedOrders,
+        uncostable
       };
-    });
-
-    const getTimeLabel = (date: Date) => {
-      if (range === "7d") return date.toLocaleDateString("en-US", { weekday: "short" });
-      if (range === "ytd") return date.toLocaleDateString("en-US", { month: "short" });
-      return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     };
 
-    const currentPointsMap: { [key: string]: number } = {};
-    const priorPointsMap: { [key: string]: number } = {};
+    const current = totalsFor(orders);
+    const prior = totalsFor(priorOrders);
 
-    orders.forEach(o => {
-      const label = getTimeLabel(o.createdAt);
-      currentPointsMap[label] = (currentPointsMap[label] || 0) + (o.pricing?.total || 0);
-    });
+    /*
+     * A trend against an empty prior window is not a trend. This used to return
+     * a flat 100, so a first-ever order rendered "+100%" as though it had
+     * doubled something.
+     */
+    const trendFor = (curr: number, prev: number) =>
+      prev === 0
+        ? { trendPct: null as number | null, comparable: false, priorAmount: 0 }
+        : {
+            trendPct: Number((((curr - prev) / Math.abs(prev)) * 100).toFixed(1)),
+            comparable: true,
+            priorAmount: Number(prev.toFixed(2))
+          };
 
-    priorOrders.forEach(o => {
-      const label = getTimeLabel(o.createdAt);
-      priorPointsMap[label] = (priorPointsMap[label] || 0) + (o.pricing?.total || 0);
-    });
-
-    const labels: string[] = [];
-    let tempDate = new Date(startDate);
-    const endChartDate = new Date(now);
-    
-    while (tempDate <= endChartDate) {
-      labels.push(getTimeLabel(tempDate));
-      if (range === "7d") {
-        tempDate.setDate(tempDate.getDate() + 1);
-      } else if (range === "90d") {
-        tempDate.setDate(tempDate.getDate() + 7); 
-      } else if (range === "ytd") {
-        tempDate.setMonth(tempDate.getMonth() + 1);
-      } else {
-        tempDate.setDate(tempDate.getDate() + 2); 
-      }
+    // ── Revenue by region ────────────────────────────────────────────────────
+    /*
+     * Attributed to the CUSTOMER's region — where the demand is — not to the
+     * assigned partner's first served region, which is what this used. Those
+     * differ on any cross-region job, so revenue was credited to whichever
+     * region printed it rather than the one that bought it.
+     */
+    const regionMap: Record<string, number> = {};
+    for (const o of orders) {
+      const region = resolveOrderRegion(o, userRegionMap) || "Unknown";
+      regionMap[region] = (regionMap[region] || 0) + ((o.pricing?.total as number) || 0);
     }
+    const regionTotal = Object.values(regionMap).reduce((a, b) => a + b, 0);
+    const byRegion = Object.entries(regionMap)
+      .map(([region, value]) => ({
+        region,
+        value: Number(value.toFixed(2)),
+        percentage: regionTotal > 0 ? Number(((value / regionTotal) * 100).toFixed(1)) : 0
+      }))
+      .sort((a, b) => b.value - a.value);
 
-    const chartPoints = labels.map(label => ({
-      label,
-      current: Number((currentPointsMap[label] || 0).toFixed(0)),
-      previous: Number((priorPointsMap[label] || 0).toFixed(0))
+    // ── Revenue over time ────────────────────────────────────────────────────
+    /*
+     * Index-aligned buckets.
+     *
+     * Labels were previously generated by stepping the window (every 2 days on
+     * 30d) while orders were bucketed by an exact formatted date string, so an
+     * order on a skipped day matched no label and vanished — with every live
+     * order on 18 August the chart drew a flat zero under a card reading $586.
+     * The comparison series was worse: prior orders were keyed by their own
+     * absolute dates, and "Jul 19" can never equal "Aug 19", so `previous` was
+     * empty on every point of every range except 7d, where weekday names collide
+     * by coincidence.
+     *
+     * Both windows are now cut into the same number of slots and each order is
+     * placed by its offset from its own window start.
+     */
+    const bucketCount = Math.max(1, range.buckets);
+    const bucketMs = (now.getTime() - startDate.getTime()) / bucketCount;
+    const priorBucketMs = (priorEndDate.getTime() - priorStartDate.getTime()) / bucketCount;
+
+    const currentBuckets = new Array(bucketCount).fill(0);
+    const priorBuckets = new Array(bucketCount).fill(0);
+
+    const placeInto = (buckets: number[], windowStart: Date, slotMs: number, when: Date, amount: number) => {
+      if (slotMs <= 0) return;
+      const idx = Math.floor((when.getTime() - windowStart.getTime()) / slotMs);
+      // Clamped so an order on the closing edge counts in the last slot rather
+      // than being written to an unreachable index and disappearing.
+      buckets[Math.min(Math.max(idx, 0), buckets.length - 1)] += amount;
+    };
+
+    const revenueOf = (o: any) => (o.pricing?.total || 0) as number;
+    for (const o of orders) placeInto(currentBuckets, startDate, bucketMs, o.createdAt as Date, revenueOf(o));
+    for (const o of priorOrders) placeInto(priorBuckets, priorStartDate, priorBucketMs, o.createdAt as Date, revenueOf(o));
+
+    const labelFor = (index: number) => {
+      const at = new Date(startDate.getTime() + index * bucketMs);
+      return rangeKey === "ytd"
+        ? at.toLocaleDateString("en-US", { month: "short" })
+        : at.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    };
+
+    const points = currentBuckets.map((value, i) => ({
+      label: labelFor(i),
+      current: Number(value.toFixed(2)),
+      previous: Number(priorBuckets[i].toFixed(2))
     }));
 
     res.json({
+      period: {
+        range: rangeKey,
+        label: range.label,
+        priorLabel: range.priorLabel,
+        orderCount: orders.length
+      },
       kpis: {
-        totalProfits: { 
-          value: Number(currentTotals.profit.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.profit, priorTotals.profit) 
+        revenue: { value: Number(current.revenue.toFixed(2)), ...trendFor(current.revenue, prior.revenue) },
+        partnerCost: { value: Number(current.cost.toFixed(2)), ...trendFor(current.cost, prior.cost) },
+        margin: {
+          value: Number(current.margin.toFixed(2)),
+          pct: current.revenue > 0 ? Number(((current.margin / current.revenue) * 100).toFixed(1)) : 0,
+          ...trendFor(current.margin, prior.margin)
         },
-        totalCosts: { 
-          value: Number(currentTotals.cost.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.cost, priorTotals.cost) 
-        },
-        profitEarned: { 
-          value: Number(currentTotals.profit.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.profit, priorTotals.profit) 
-        },
-        totalRevenue: { 
-          value: Number(currentTotals.revenue.toFixed(0)), 
-          trendPct: calculateTrend(currentTotals.revenue, priorTotals.revenue) 
+        // Distinct from margin, which is the point: it is only earned once the
+        // order has shipped.
+        earned: {
+          value: Number(current.earned.toFixed(2)),
+          orderCount: current.earnedOrders,
+          ...trendFor(current.earned, prior.earned)
         }
       },
-      revenueChart: {
-        currentTotal: Number(currentTotals.revenue.toFixed(0)),
-        previousTotal: Number(priorTotals.revenue.toFixed(0)),
-        points: chartPoints
-      },
-      revenueByRegion,
-      products
+      uncostableOrders: current.uncostable,
+      chart: { points },
+      byRegion
     });
   } catch (error) {
     next(error);
@@ -2946,6 +3652,9 @@ export const getPartnerAssignmentSettings = async (req: Request, res: Response, 
       assignmentRule: value.rule || "nearest-region",
       maxJobsEnabled: value.maxJobsEnabled !== false,
       maxJobsValue: value.maxJobsValue || 10,
+      // Normalised, so a document saved before the SLA existed still comes back
+      // with usable windows instead of blanks the console would save over.
+      sla: normalizeSlaSettings(value.sla),
     });
   } catch (error) {
     next(error);
@@ -2954,16 +3663,26 @@ export const getPartnerAssignmentSettings = async (req: Request, res: Response, 
 
 export const updatePartnerAssignmentSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { assignmentRule, maxJobsEnabled, maxJobsValue } = req.body;
+    const { assignmentRule, maxJobsEnabled, maxJobsValue, sla } = req.body;
 
     if (!assignmentRule || !["nearest-region", "manual"].includes(assignmentRule)) {
       return res.status(400).json({ error: "Invalid assignment rule" });
     }
 
+    /**
+     * Merged over what is stored, not written fresh.
+     *
+     * This replaced the whole value object from three named fields, so saving
+     * the assignment rule would have silently deleted the SLA windows — and the
+     * monitor would have carried on against defaults nobody chose. Same failure
+     * the pricing settings had.
+     */
+    const existing = await Settings.findOne({ key: "partnerAssignment" }).lean();
     const settingValue = {
       rule: assignmentRule,
       maxJobsEnabled: maxJobsEnabled !== false,
       maxJobsValue: maxJobsEnabled ? Math.max(1, parseInt(maxJobsValue, 10)) : null,
+      sla: normalizeSlaSettings(sla ?? (existing as any)?.value?.sla),
     };
 
     let settings = await Settings.findOne({ key: "partnerAssignment" });
@@ -2982,6 +3701,7 @@ export const updatePartnerAssignmentSettings = async (req: Request, res: Respons
       assignmentRule: settingValue.rule,
       maxJobsEnabled: settingValue.maxJobsEnabled,
       maxJobsValue: settingValue.maxJobsValue,
+      sla: settingValue.sla,
     });
   } catch (error) {
     next(error);

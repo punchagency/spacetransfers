@@ -4,7 +4,12 @@ import { PrinterNotification, type PrinterNotificationCategory, type PrinterNoti
 import { publishPrinterNotificationEvent } from "./printerNotificationsHub.js";
 import { sendEmail } from "./email.service.js";
 
-export type EmailSettingsKey = "newJobs" | "orderUpdates" | "payoutAlerts" | "accountUpdates" | "systemAlerts";
+/*
+ * "systemAlerts" removed: no notification anywhere is sent with it, so it
+ * gated nothing. The system-category messages a partner actually receives
+ * (email verified, availability changed by an admin) ride on accountUpdates.
+ */
+export type EmailSettingsKey = "newJobs" | "orderUpdates" | "payoutAlerts" | "accountUpdates";
 
 function buildNotificationEmailHtml(title: string, message: string): string {
   return `

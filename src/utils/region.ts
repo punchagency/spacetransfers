@@ -183,3 +183,72 @@ export const getRegionFromCoords = (
   }
   return closest;
 };
+
+/**
+ * Which region an order belongs to.
+ *
+ * The shipping address wins, because that is where the parcel goes and what
+ * `autoAssignOrder` routes on. The customer's profile region is a weak hint
+ * used only when the address yields nothing — preferring it once made an order
+ * shipping to California, printed by a Californian partner, display as a
+ * cross-region assignment.
+ */
+export const resolveOrderRegion = (
+  order: any,
+  userRegionMap?: Map<string, string | null>
+): string | null => {
+  const fromAddress = normalizeRegion(getRegionFromState(order?.shippingAddress?.state));
+  if (fromAddress) return fromAddress;
+
+  const userId = order?.user ? String(order.user) : null;
+  const regionFromUser = userId && userRegionMap ? userRegionMap.get(userId) : null;
+  return (
+    normalizeRegion(order?.customer?.region) ||
+    normalizeRegion(regionFromUser || undefined) ||
+    null
+  );
+};
+
+/**
+ * Which region a partner prints from.
+ *
+ * Their business address is the truth. `regions` is the list of areas they are
+ * willing to serve, which for a partner covering several says nothing about
+ * where the film actually is — so it is only a fallback.
+ */
+export const resolvePartnerRegion = (printer: any): string | null => {
+  if (!printer) return null;
+  return (
+    normalizeRegion(getRegionFromState(printer?.defaultShippingAddress?.state || "")) ||
+    normalizeRegion(getRegionFromState(printer?.businessAddress?.state || "")) ||
+    normalizeRegion(printer?.regions?.[0]) ||
+    null
+  );
+};
+
+/**
+ * Whether an order is being printed outside the customer's own region.
+ *
+ * Derived from who is assigned *right now*, never from a stored snapshot. The
+ * orders table used to read a `crossRegionAssignment` field written only by the
+ * auto-assign path and cleared by nothing: reassign a cross-region order back
+ * in-region and the badge stayed; assign one cross-region by hand and the badge
+ * never appeared. The details page recomputed live, so the two surfaces
+ * contradicted each other on the same order.
+ *
+ * One function, both surfaces — they cannot disagree now.
+ */
+export const resolveRegionInfo = (
+  order: any,
+  userRegionMap?: Map<string, string | null>
+): { customerRegion: string | null; printerRegion: string | null; crossRegion: boolean } => {
+  const customerRegion = resolveOrderRegion(order, userRegionMap);
+  const printerRegion = resolvePartnerRegion(order?.assignedPrinter);
+  return {
+    customerRegion,
+    printerRegion,
+    // Unknown on either side is a gap, not a crossing. Badging a gap as a
+    // costly fallback would send an admin chasing nothing.
+    crossRegion: Boolean(customerRegion && printerRegion && customerRegion !== printerRegion)
+  };
+};

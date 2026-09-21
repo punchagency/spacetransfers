@@ -14,6 +14,8 @@ export interface IOrderItem {
   sheetHeightIn?: number;
   itemSpacingIn?: number;
   sheetMarginIn?: number;
+  /** The roll width the sheet was built, billed and must be printed on. */
+  rollWidthIn?: number;
   previewImage?: string;
   artboardItems?: Array<{
     id: number;
@@ -28,6 +30,10 @@ export interface IOrderItem {
     flipped?: boolean;
     copies: number;
     linked: boolean;
+    /** 90 when auto-nest turned the piece to fit it. The export draws it that way. */
+    nestRotation?: number;
+    /** Columns auto-nest wrapped the copies into. */
+    flowCols?: number;
   }>;
 }
 
@@ -83,15 +89,27 @@ export interface IOrder extends Document {
   };
   pricing: {
     subtotal?: number;
+    rushSurcharge?: number;
     shippingCost?: number;
     tax?: number;
     total: number;
     currency: string;
     adjustments?: IOrderAdjustment[];
   };
-  status: "PENDING" | "PROCESSING" | "PRINTING" | "QUALITY_CHECK" | "SHIPPED" | "COMPLETED" | "CANCELLED" | "REJECTED" | "PAUSED" | "PAID" | "paid";
+  status: "PENDING" | "PROCESSING" | "PRINTING" | "QUALITY_CHECK" | "SHIPPED" | "COMPLETED" | "CANCELLED";
   rejectionReason?: string;
   trackingNumber?: string;
+  shippingQuote?: {
+    carrierCost?: number;
+    chargedCost?: number;
+    serviceName?: string;
+    serviceCode?: string;
+    source?: "carrier" | "fallback";
+    fallbackReason?: string;
+    originPostalCode?: string;
+    originPartnerRegion?: string;
+    parcel?: { weightLb?: number; lengthIn?: number; widthIn?: number; heightIn?: number };
+  };
   carrier?: string;
   trackingUrl?: string;
   trackingEvents?: ITrackingEvent[];
@@ -116,12 +134,27 @@ export interface IOrder extends Document {
     pressSeconds?: number;
   };
   statusTimeline?: IStatusTimeline[];
+  /**
+   * Set when an order was fulfilled outside the customer's own region.
+   *
+   * Auto-assignment falls back to adjacent regions when nothing in-region is
+   * free, which keeps orders moving but means longer, costlier shipping. The
+   * fact was previously only recoverable by parsing a timeline message, so it
+   * was invisible in the admin UI and impossible to query.
+   */
+  crossRegionAssignment?: {
+    customerRegion: string;
+    assignedRegion: string;
+    at: Date;
+  } | null;
   assignmentHistory?: Array<{
     time: Date;
     mode: "AUTO" | "MANUAL";
     selectedPrinterId?: string | null;
     selectedPrinterName?: string | null;
     customerRegion?: string | null;
+    assignedRegion?: string | null;
+    isCrossRegion?: boolean;
     customerState?: string | null;
     candidatesConsidered?: number;
     candidatesSameRegion?: number;
@@ -174,6 +207,9 @@ const orderItemSchema = new Schema<IOrderItem>(
     sheetMarginIn: {
       type: Number
     },
+    rollWidthIn: {
+      type: Number
+    },
     previewImage: {
       type: String
     },
@@ -191,7 +227,9 @@ const orderItemSchema = new Schema<IOrderItem>(
           rotation: { type: Number, default: 0 },
           flipped: { type: Boolean, default: false },
           copies: { type: Number, default: 1 },
-          linked: { type: Boolean, default: false }
+          linked: { type: Boolean, default: false },
+          nestRotation: { type: Number, enum: [0, 90], default: 0 },
+          flowCols: { type: Number, min: 1 }
         }
       ],
       default: undefined
@@ -239,13 +277,19 @@ const orderSchema = new Schema<IOrder>(
       required: true
     },
     payment: {
-      method: { type: String, required: true },
+      // Defence in depth behind the controller's check: the only method the
+      // platform takes is a Stripe card, and a free-form string here is what let
+      // `method: "bank_transfer"` slip past payment verification entirely.
+      method: { type: String, required: true, enum: ["card"] },
       cardLast4: { type: String },
       cardBrand: { type: String },
       paymentIntentId: { type: String }
     },
     pricing: {
       subtotal: { type: Number },
+      // What the customer paid for the rush, distinct from the partner's rush
+      // surcharge on the cost side.
+      rushSurcharge: { type: Number },
       shippingCost: { type: Number },
       tax: { type: Number },
       total: { type: Number, required: true },
@@ -261,11 +305,45 @@ const orderSchema = new Schema<IOrder>(
     },
     status: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED", "REJECTED", "PAUSED", "PAID", "paid"],
+      /**
+       * REJECTED, PAUSED, PAID and "paid" were removed: nothing reachable wrote
+       * them. REJECTED and PAUSED were only ever set by `executeJobAction`,
+       * which no UI calls; PAID/"paid" were never written at all and the
+       * lower-case duplicate would have split any query that did.
+       *
+       * Declining a job is `cancelPrinterOrder`, which returns the order to
+       * PENDING and reassigns it — better than a terminal rejected state, since
+       * the order gets re-homed instead of stranded.
+       */
+      enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"],
       default: "PENDING"
     },
     rejectionReason: {
       type: String
+    },
+    /**
+     * What the carrier quoted and what we charged, kept apart.
+     *
+     * Neither was recorded before: shipping was a flat $8.99 and the label's
+     * real cost was thrown away, so "are we losing money on shipping?" had no
+     * answer in the data. `source` distinguishes a live quote from the flat
+     * fallback, so fallbacks can be counted rather than assumed rare.
+     */
+    shippingQuote: {
+      carrierCost: { type: Number },
+      chargedCost: { type: Number },
+      serviceName: { type: String },
+      serviceCode: { type: String },
+      source: { type: String, enum: ["carrier", "fallback"] },
+      fallbackReason: { type: String },
+      originPostalCode: { type: String },
+      originPartnerRegion: { type: String },
+      parcel: {
+        weightLb: { type: Number },
+        lengthIn: { type: Number },
+        widthIn: { type: Number },
+        heightIn: { type: Number }
+      }
     },
     trackingNumber: {
       type: String
@@ -326,6 +404,17 @@ const orderSchema = new Schema<IOrder>(
         time: { type: Date, default: Date.now }
       }
     ],
+    crossRegionAssignment: {
+      type: new Schema(
+        {
+          customerRegion: { type: String, required: true },
+          assignedRegion: { type: String, required: true },
+          at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     assignmentHistory: [
       {
         time: { type: Date, default: Date.now },
@@ -333,6 +422,8 @@ const orderSchema = new Schema<IOrder>(
         selectedPrinterId: { type: String },
         selectedPrinterName: { type: String },
         customerRegion: { type: String },
+        assignedRegion: { type: String },
+        isCrossRegion: { type: Boolean },
         customerState: { type: String },
         candidatesConsidered: { type: Number },
         candidatesSameRegion: { type: Number },
@@ -400,7 +491,35 @@ orderSchema.index({ displayId: 1 }, { unique: true, sparse: true });
 orderSchema.index({ assignedPrinter: 1, createdAt: -1 });
 orderSchema.index({ returnedAt: -1, createdAt: -1 });
 orderSchema.index({ updatedAt: -1, _id: -1 });
+/*
+ * Serves the unassigned-first orders list, which pages the unassigned and
+ * assigned blocks separately and sorts each by recency.
+ *
+ * Without it the unassigned block is a blocking in-memory SORT: the planner
+ * picks `assignedPrinter_1_createdAt_-1` for the filter, then re-sorts by
+ * updatedAt in memory. Fine at three orders, slow at thousands, and a hard
+ * failure past MongoDB's 32 MB sort ceiling — the list would simply stop
+ * returning, which is the worst way for it to break.
+ */
+orderSchema.index({ assignedPrinter: 1, updatedAt: -1, _id: -1 });
 orderSchema.index({ createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
+
+/**
+ * One payment cannot buy two orders.
+ *
+ * `verifyCardPayment` looks for an existing order on the same intent, but two
+ * requests arriving together would both find none and both succeed. This is
+ * what actually settles it. Partial, so orders with no `paymentIntentId` — cash,
+ * and every row predating card payments — do not collide on `null`.
+ */
+orderSchema.index(
+  { "payment.paymentIntentId": 1 },
+  {
+    unique: true,
+    partialFilterExpression: { "payment.paymentIntentId": { $type: "string" } },
+    name: "unique_payment_intent",
+  },
+);
 
 export const Order = mongoose.model<IOrder>("Order", orderSchema);

@@ -23,22 +23,15 @@ import {
   updateDesign,
   duplicateDesign,
   searchDesigns,
-  getArtboardDraft,
-  upsertArtboardDraft,
-  clearArtboardDraft,
   getCart,
   updateCart,
   getCartQuote,
+  getPricingConfig,
   sendGangsheetUtilizationWarning,
   downloadInvoice,
-  reorder,
   getOrderTracking
 } from "../controllers/customer.controller.js";
-import {
-  createStripePaymentIntent,
-  createPaypalOrder,
-  capturePaypalOrder
-} from "../controllers/payments.controller.js";
+import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
@@ -61,6 +54,9 @@ router.post("/assets/ai-edit", maybeAuthenticate, aiEditAsset);
 // call on every submit to decompose multi-step requests before editing starts.
 router.post("/assets/ai-edit/plan", maybeAuthenticate, aiEditPlan);
 router.get("/assets", maybeAuthenticate, listAssets);
+// Public pricing rates — the cart is usable before sign-in and must show a
+// total that matches what checkout will charge.
+router.get("/pricing", maybeAuthenticate, getPricingConfig);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));
 
@@ -71,10 +67,6 @@ router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
 router.get("/orders/:orderId/tracking", getOrderTracking);
-router.post("/orders/:orderId/reorder", reorder);
-router.get("/artboard-draft", getArtboardDraft);
-router.put("/artboard-draft", upsertArtboardDraft);
-router.delete("/artboard-draft", clearArtboardDraft);
 router.get("/cart", getCart);
 router.put("/cart", updateCart);
 router.post("/designs", createDesign);
@@ -87,7 +79,5 @@ router.post("/designs/:designId/duplicate", duplicateDesign);
 router.post("/cart/quote", getCartQuote);
 router.post("/notifications/gangsheet-utilization-warning", sendGangsheetUtilizationWarning);
 router.post("/payments/stripe/create-intent", createStripePaymentIntent);
-router.post("/payments/paypal/create-order", createPaypalOrder);
-router.post("/payments/paypal/capture-order", capturePaypalOrder);
 
 export default router;

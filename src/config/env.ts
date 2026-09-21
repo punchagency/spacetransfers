@@ -10,6 +10,7 @@ interface Env {
   jwtExpiresIn: string;
   appUrl: string;
   printerAppUrl: string;
+  adminAppUrl: string;
   smtpHost?: string;
   smtpPort?: number;
   smtpUser?: string;
@@ -26,11 +27,30 @@ interface Env {
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
   minimumPayoutAmountCents: number;
-  // Cloudinary
-  cloudinaryCloudName: string;
-  cloudinaryApiKey: string;
-  cloudinaryApiSecret: string;
   // ShipStation
+  /**
+   * Whether this environment may buy real postage.
+   *
+   * ShipStation has no sandbox: a label is a real purchase against the client's
+   * card, and there is no undo. Staging runs with this false so it can quote
+   * rates and create orders but never spend.
+   *
+   * Defaults to false — an environment that forgets to set it fails safe rather
+   * than silently spending.
+   */
+  /**
+   * Cloudflare R2 — where artwork lives once the client has provisioned it.
+   *
+   * All four are required — this is the only artwork store. Cloudinary, which
+   * preceded it, capped an image at 10MB and downscaled print files on the way
+   * in; the file stored was not the file the customer sent.
+   */
+  r2AccountId?: string;
+  r2AccessKeyId?: string;
+  r2SecretAccessKey?: string;
+  r2Bucket?: string;
+  r2PublicBaseUrl?: string;
+  shipStationLabelsEnabled: boolean;
   shipStationApiKey?: string;
   shipStationApiSecret?: string;
   shipStationCarrierId?: string;   // e.g. "stamps_com" | "ups" | "fedex"
@@ -47,19 +67,8 @@ interface Env {
   shipStationFromState?: string;
   shipStationFromPostalCode?: string;
   shipStationFromCountry?: string;
-  // AI Upscaling — Replicate (best, ~$0.002/img) and/or HuggingFace (free tier)
-  replicateApiToken?: string;
-  anthropicApiKey?: string;
   /** Effort level for the copyright vision pass. Higher = more accurate, slower, costlier. */
   copyrightScanEffort?: string;
-  hfApiToken?: string;
-  /**
-   * Cloudflare Workers AI — the free tier of the generative edit path
-   * (10k neurons/day, no card). Both values are required together; one without
-   * the other is treated as unconfigured.
-   */
-  cloudflareAccountId?: string;
-  cloudflareApiToken?: string;
   /**
    * Google Gemini — the primary (and free) generative editing tier. An AI
    * Studio key needs no card and covers ~500 image edits/day, so it is tried
@@ -91,7 +100,10 @@ export const env: Env = {
   jwtSecret: cleanEnvString(process.env.JWT_SECRET) || "change-me",
   jwtExpiresIn: cleanJwtExpiresIn(process.env.JWT_EXPIRES_IN),
   appUrl: cleanEnvString(process.env.APP_URL) || `http://localhost:${cleanEnvString(process.env.PORT) ? Number(cleanEnvString(process.env.PORT)) : 4000}`,
-  printerAppUrl: cleanEnvString(process.env.PRINTER_APP_URL) || "http://localhost:5173",
+  printerAppUrl: cleanEnvString(process.env.PRINTER_APP_URL) || "http://localhost:5175",
+  // Needed for the CORS allowlist. The console had no configured origin at all,
+  // which is part of why CORS was left open to everything.
+  adminAppUrl: cleanEnvString(process.env.ADMIN_APP_URL) || "http://localhost:5174",
 
   smtpHost: cleanEnvString(process.env.SMTP_HOST),
   smtpPort: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined,
@@ -112,10 +124,14 @@ export const env: Env = {
   minimumPayoutAmountCents: process.env.MINIMUM_PAYOUT_AMOUNT_CENTS
     ? Number(process.env.MINIMUM_PAYOUT_AMOUNT_CENTS)
     : 1000,
-  cloudinaryCloudName: cleanEnvString(process.env.CLOUDINARY_CLOUD_NAME) || "",
-  cloudinaryApiKey: cleanEnvString(process.env.CLOUDINARY_API_KEY) || "",
-  cloudinaryApiSecret: cleanEnvString(process.env.CLOUDINARY_API_SECRET) || "",
   // ShipStation
+  r2AccountId: cleanEnvString(process.env.R2_ACCOUNT_ID),
+  r2AccessKeyId: cleanEnvString(process.env.R2_ACCESS_KEY_ID),
+  r2SecretAccessKey: cleanEnvString(process.env.R2_SECRET_ACCESS_KEY),
+  r2Bucket: cleanEnvString(process.env.R2_BUCKET),
+  r2PublicBaseUrl: cleanEnvString(process.env.R2_PUBLIC_BASE_URL),
+  shipStationLabelsEnabled:
+    String(cleanEnvString(process.env.SHIPSTATION_LABELS_ENABLED) ?? "").toLowerCase() === "true",
   shipStationApiKey: cleanEnvString(process.env.SHIPSTATION_API_KEY),
   shipStationApiSecret: cleanEnvString(process.env.SHIPSTATION_API_SECRET),
   shipStationCarrierId: cleanEnvString(process.env.SHIPSTATION_CARRIER_ID),
@@ -127,12 +143,7 @@ export const env: Env = {
   shipStationMaxPollingDays: process.env.SHIPSTATION_MAX_POLLING_DAYS
     ? Number(process.env.SHIPSTATION_MAX_POLLING_DAYS)
     : 30,
-  replicateApiToken: cleanEnvString(process.env.REPLICATE_API_TOKEN),
-  anthropicApiKey: cleanEnvString(process.env.ANTHROPIC_API_KEY),
   copyrightScanEffort: cleanEnvString(process.env.COPYRIGHT_SCAN_EFFORT),
-  hfApiToken: cleanEnvString(process.env.HF_API_TOKEN),
-  cloudflareAccountId: cleanEnvString(process.env.CLOUDFLARE_ACCOUNT_ID),
-  cloudflareApiToken: cleanEnvString(process.env.CLOUDFLARE_API_TOKEN),
   // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
   // shows on the key page, and copying it verbatim should just work.
   geminiApiKey:

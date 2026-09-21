@@ -6,6 +6,7 @@ import printerRoutes from "./printer.routes.js";
 import adminRoutes from "./admin.routes.js";
 import orderRoutes from "./order.routes.js";
 import healthRoutes from "./health.routes.js";
+import publicRoutes from "./public.routes.js";
 import payoutRoutes from "./payout.routes.js";
 import geocodingRoutes from "./geocoding.routes.js";
 import webhookRoutes from "./webhook.routes.js";
@@ -13,6 +14,7 @@ import webhookRoutes from "./webhook.routes.js";
 const router = express.Router();
 
 router.use("/health", healthRoutes);
+router.use("/public", publicRoutes);
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
 router.use("/geocode", geocodingRoutes);

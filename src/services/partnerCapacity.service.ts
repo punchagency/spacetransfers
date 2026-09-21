@@ -8,27 +8,93 @@ import { broadcastToAllAdmins } from "./adminNotificationsHub.js";
 
 // Statuses that count against a partner's active job capacity. A job in any of
 // these states is "occupying a slot"; once it moves to a terminal state
-// (SHIPPED / COMPLETED / CANCELLED / REJECTED) the slot frees up.
+// (SHIPPED / COMPLETED / CANCELLED) the slot frees up.
+//
+// PAUSED dropped with the status itself — only the orphaned `executeJobAction`
+// PAUSE case ever wrote it, and no UI reached that.
 export const ACTIVE_ORDER_STATUSES = [
   "PENDING",
   "PROCESSING",
   "PRINTING",
-  "PAUSED",
   "QUALITY_CHECK",
 ] as const;
 
 export type AssignmentRule = "nearest-region" | "manual";
 
+/**
+ * Stage deadlines, in hours, per priority.
+ *
+ * Two stages because they fail differently. A job sitting unstarted can be
+ * handed to someone else safely — nothing physical has happened. A job that has
+ * been on the press too long must NOT be reassigned: the partner may have film
+ * loaded, and moving it means printing twice and paying twice. That one is
+ * raised for a human instead.
+ */
+export interface SlaStageHours {
+  normal: number;
+  urgent: number;
+}
+
+export interface SlaSettings {
+  /**
+   * Off by default, deliberately. This moves live jobs between businesses, so
+   * it starts only when an operator turns it on knowingly.
+   */
+  enabled: boolean;
+  /** PROCESSING -> PRINTING. Breach reassigns. */
+  acceptHours: SlaStageHours;
+  /** PRINTING -> QUALITY_CHECK. Breach escalates, never reassigns. */
+  printHours: SlaStageHours;
+  /** Stops a job bouncing between partners forever. */
+  maxAutoReassignments: number;
+}
+
 export interface PartnerAssignmentSettings {
   rule: AssignmentRule;
   maxJobsEnabled: boolean;
   maxJobsValue: number | null;
+  sla: SlaSettings;
 }
+
+export const DEFAULT_SLA_SETTINGS: SlaSettings = {
+  enabled: false,
+  acceptHours: { normal: 24, urgent: 4 },
+  printHours: { normal: 48, urgent: 12 },
+  maxAutoReassignments: 2,
+};
 
 const DEFAULT_SETTINGS: PartnerAssignmentSettings = {
   rule: "nearest-region",
   maxJobsEnabled: true,
   maxJobsValue: 10,
+  sla: DEFAULT_SLA_SETTINGS,
+};
+
+const positiveHours = (value: unknown, fallback: number): number => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+export const normalizeSlaSettings = (value: unknown): SlaSettings => {
+  const v = (value as any) || {};
+  return {
+    enabled: v.enabled === true,
+    acceptHours: {
+      normal: positiveHours(v.acceptHours?.normal, DEFAULT_SLA_SETTINGS.acceptHours.normal),
+      urgent: positiveHours(v.acceptHours?.urgent, DEFAULT_SLA_SETTINGS.acceptHours.urgent),
+    },
+    printHours: {
+      normal: positiveHours(v.printHours?.normal, DEFAULT_SLA_SETTINGS.printHours.normal),
+      urgent: positiveHours(v.printHours?.urgent, DEFAULT_SLA_SETTINGS.printHours.urgent),
+    },
+    // Zero is meaningful — it disables reassignment while leaving escalation on.
+    maxAutoReassignments: (() => {
+      const n = Number(v.maxAutoReassignments);
+      return Number.isFinite(n) && n >= 0
+        ? Math.floor(n)
+        : DEFAULT_SLA_SETTINGS.maxAutoReassignments;
+    })(),
+  };
 };
 
 /**
@@ -43,7 +109,7 @@ export const getAssignmentSettings = async (): Promise<PartnerAssignmentSettings
   const rawMax = Number(value.maxJobsValue);
   const maxJobsValue =
     maxJobsEnabled && Number.isFinite(rawMax) && rawMax > 0 ? Math.floor(rawMax) : maxJobsEnabled ? DEFAULT_SETTINGS.maxJobsValue : null;
-  return { rule, maxJobsEnabled, maxJobsValue };
+  return { rule, maxJobsEnabled, maxJobsValue, sla: normalizeSlaSettings(value.sla) };
 };
 
 /**
@@ -80,7 +146,7 @@ export type CapacityTransition = "paused" | "reopened" | "clear_flag" | null;
 
 export interface CapacityDecision {
   transition: CapacityTransition;
-  availabilityStatus: "open" | "paused" | "stopped";
+  availabilityStatus: "open" | "paused";
   capacityPaused: boolean;
 }
 
@@ -94,10 +160,9 @@ export interface CapacityDecision {
  *  • Below the limit while capacity-paused & currently Paused → auto-reopen.
  *  • Below the limit, capacity-paused, but no longer Paused   → just clear the flag.
  *  • Manual pause (capacityPaused = false) is never auto-reopened.
- *  • "stopped" is never touched.
  */
 export const decideCapacityTransition = (input: {
-  availabilityStatus: "open" | "paused" | "stopped";
+  availabilityStatus: "open" | "paused";
   capacityPaused: boolean;
   activeJobs: number;
   maxJobs: number | null;
@@ -129,8 +194,17 @@ export type CapacitySyncResult = {
   printerId: string;
   activeJobs: number;
   maxJobs: number | null;
-  availabilityStatus: "open" | "paused" | "stopped";
+  availabilityStatus: "open" | "paused";
+  /**
+   * At or over the job limit right now, so the partner cannot switch themselves
+   * back to Open. Independent of *why* they are paused.
+   */
   capacityLocked: boolean;
+  /**
+   * The system paused them, and will reopen them by itself once their load
+   * drops. False for a pause a person chose — which is never auto-reopened.
+   */
+  capacityPaused: boolean;
   changed: boolean;
   transition: "paused" | "reopened" | null;
 };
@@ -144,7 +218,7 @@ export type CapacitySyncResult = {
  *    notify, and broadcast.
  *
  * A manual pause (capacityPaused = false) is never auto-reopened, and a
- * "stopped" partner is left untouched. Best-effort: notification / broadcast
+ * Best-effort: notification / broadcast
  * failures never throw.
  */
 export const syncPartnerCapacity = async (
@@ -160,7 +234,7 @@ export const syncPartnerCapacity = async (
   const settings = preloadedSettings ?? (await getAssignmentSettings());
   const maxJobs = getEffectiveMaxConcurrent(partner as any, settings);
   const activeJobs = await countActiveJobs(id);
-  const currentStatus = ((partner as any).availabilityStatus ?? "open") as "open" | "paused" | "stopped";
+  const currentStatus = ((partner as any).availabilityStatus ?? "open") as "open" | "paused";
   const wasCapacityPaused = Boolean((partner as any).capacityPaused);
 
   const decision = decideCapacityTransition({
@@ -182,13 +256,24 @@ export const syncPartnerCapacity = async (
     await partner.save();
   }
 
-  const capacityLocked = Boolean((partner as any).capacityPaused);
+  /*
+   * These are two different facts and were reported as one.
+   *
+   * `capacityLocked` was `capacityPaused`, so a partner who paused *themselves*
+   * while at their limit was told they could switch back to Open — the server
+   * then answered 409. And the badge read the same flag to say "paused
+   * automatically, you'll reopen automatically", which for a manual pause was
+   * simply untrue: the monitor only auto-reopens a pause it made itself.
+   */
+  const capacityPaused = Boolean((partner as any).capacityPaused);
+  const capacityLocked = isAtCapacity(activeJobs, maxJobs);
   const result: CapacitySyncResult = {
     printerId: id,
     activeJobs,
     maxJobs,
     availabilityStatus: newStatus,
     capacityLocked,
+    capacityPaused,
     changed,
     transition,
   };
@@ -199,12 +284,14 @@ export const syncPartnerCapacity = async (
       partnerId: id,
       availabilityStatus: newStatus,
       capacityLocked,
+      capacityPaused,
       activeJobs,
       maxJobs,
     });
     publishPrinterNotificationEvent(id, "availability.changed", {
       availabilityStatus: newStatus,
       capacityLocked,
+      capacityPaused,
       activeJobs,
       maxJobs,
       reason: transition === "paused" ? "capacity_reached" : "capacity_recovered",

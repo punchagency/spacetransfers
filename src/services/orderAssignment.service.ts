@@ -8,8 +8,8 @@ import {
   normalizeRegion
 } from "../utils/region.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
-import { isPrinterAvailableAt } from "../utils/businessHours.js";
-import { computeAssignmentDeadline } from "../utils/assignmentDeadline.js";
+import { notifyAllAdmins } from "./adminNotifications.service.js";
+import { computeAssignmentDeadlineFor } from "../utils/assignmentDeadline.js";
 import {
   ACTIVE_ORDER_STATUSES,
   getAssignmentSettings,
@@ -37,6 +37,9 @@ export type SelectionResult =
       assigned: true;
       selected: PrinterCandidate;
       customerRegion: string;
+      /** The region the selected printer is in — differs from `customerRegion` on a fallback. */
+      assignedRegion: string;
+      isCrossRegion: boolean;
       candidatesConsidered: number;
       candidatesSameRegion: number;
     }
@@ -49,9 +52,29 @@ export type SelectionResult =
     };
 
 /**
+ * Region fallback order, used when the customer's own region has no available
+ * partner. West is last in every chain so a domestic order only crosses the
+ * continent as a genuine last resort.
+ */
+export const REGION_FALLBACKS: Record<string, string[]> = {
+  West:      ["Midwest", "Northeast", "South"],
+  Midwest:   ["Northeast", "South", "West"],
+  Northeast: ["Midwest", "South", "West"],
+  South:     ["Midwest", "Northeast", "West"],
+};
+
+/**
  * Core matching algorithm — pure function, no I/O.
- * Mirrors exactly what autoAssignOrder does after it builds the candidate list.
- * Returns the best printer for the order, or null with a reason.
+ *
+ * `autoAssignOrder` delegates to this after building its candidate list, so the
+ * rule that runs in production is the rule these tests cover. That was not
+ * previously true: this function blocked cross-region assignment outright while
+ * production fell back to adjacent regions, and a large suite asserted a rule
+ * the system did not enforce.
+ *
+ * Preference order is the customer's own region first, then the fallback chain.
+ * Within whichever pool is used: nearest → lowest utilisation → highest rating
+ * → id, so the result is deterministic.
  */
 export const selectPrinterFromCandidates = (
   customerState: string | null | undefined,
@@ -76,11 +99,27 @@ export const selectPrinterFromCandidates = (
   // Strict same-region filter — cross-region is always blocked.
   const sameRegion = eligible.filter((c) => c.printerRegion === customerRegion);
 
-  if (sameRegion.length === 0) {
+  let pool = sameRegion;
+  let assignedRegion = customerRegion;
+  let isCrossRegion = false;
+
+  if (pool.length === 0) {
+    for (const fallbackRegion of REGION_FALLBACKS[customerRegion] || []) {
+      const regionCandidates = eligible.filter((c) => c.printerRegion === fallbackRegion);
+      if (regionCandidates.length > 0) {
+        pool = regionCandidates;
+        assignedRegion = fallbackRegion;
+        isCrossRegion = true;
+        break;
+      }
+    }
+  }
+
+  if (pool.length === 0) {
     const reason =
       eligible.length === 0
         ? "No available printers"
-        : `No available printers in region (${customerRegion}). Cross-region assignment is disabled.`;
+        : `No available printers in region (${customerRegion}) or any fallback region.`;
     return {
       assigned: false,
       customerRegion,
@@ -91,7 +130,7 @@ export const selectPrinterFromCandidates = (
   }
 
   // Sort: nearest → lowest utilisation → highest rating → stable id
-  const sorted = [...sameRegion].sort((a, b) => {
+  const sorted = [...pool].sort((a, b) => {
     const aDist = Number.isFinite(a.distanceMiles) ? a.distanceMiles : Infinity;
     const bDist = Number.isFinite(b.distanceMiles) ? b.distanceMiles : Infinity;
     if (aDist !== bDist) return aDist - bDist;
@@ -106,6 +145,8 @@ export const selectPrinterFromCandidates = (
     assigned: true,
     selected: sorted[0],
     customerRegion,
+    assignedRegion,
+    isCrossRegion,
     candidatesConsidered: candidates.length,
     candidatesSameRegion: sameRegion.length,
   };
@@ -233,7 +274,7 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
   const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
     .select(
-      "name companyName email regions rating defaultShippingAddress settings.jobCapacity settings.businessHours availabilityStatus"
+      "name companyName email regions rating defaultShippingAddress settings.jobCapacity availabilityStatus"
     )
     .lean();
 
@@ -266,9 +307,25 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
 
       const hasConcurrentCapacity = !isAtCapacity(activeCount, maxConcurrent);
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
-      const withinBusinessHours = isPrinterAvailableAt(p, now);
       const acceptingOrders = !p.availabilityStatus || p.availabilityStatus === "open";
-      const available = acceptingOrders && autoAccept && hasConcurrentCapacity && hasDailyCapacity && withinBusinessHours;
+      /*
+       * Business hours removed as a gate.
+       *
+       * It answered the same question as Pause — "am I taking work right now" —
+       * but did it on a recurring schedule nobody could see: it was invisible in
+       * the admin console, so a partner silently dropped out of assignment with
+       * no way for anyone to work out why.
+       *
+       * It was also wrong. `isPrinterAvailableAt` compared against the SERVER's
+       * clock (`at.getHours()`) and no partner has a timezone stored, so across
+       * four US regions "9am-5pm" meant nine-to-five wherever the server happens
+       * to run. On a UTC host that is 1am-9am for a West-region partner.
+       *
+       * Printing is batch work — a job assigned overnight is picked up in the
+       * morning — so delaying assignment bought nothing and cost the order time
+       * against its SLA. Pause is the control: explicit, notified, admin-visible.
+       */
+      const available = acceptingOrders && autoAccept && hasConcurrentCapacity && hasDailyCapacity;
 
       return {
         printerId,
@@ -313,58 +370,21 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     );
   }
 
-  // Preferred region is the customer's own region. When no printers are available
-  // there, fall back through adjacent regions in priority order, excluding West
-  // as a last resort so domestic assignments avoid cross-continental shipping.
-  const REGION_FALLBACKS: Record<string, string[]> = {
-    "West":      ["Midwest", "Northeast", "South"],
-    "Midwest":   ["Northeast", "South",    "West"],
-    "Northeast": ["Midwest",  "South",     "West"],
-    "South":     ["Midwest",  "Northeast", "West"],
-  };
+  // Selection itself is delegated to the pure `selectPrinterFromCandidates`
+  // above, so the rule that runs here is exactly the rule the unit tests cover.
+  // This block previously reimplemented the region fallback and the sort, and
+  // the two implementations had already drifted apart.
+  const selection = selectPrinterFromCandidates(customerState, eligibleCandidates);
+  const candidatesSameRegion = eligibleCandidates.filter(
+    (c) => c.printerRegion === customerRegion,
+  );
 
-  const candidatesSameRegion = customerRegion
-    ? eligibleCandidates.filter((c) => c.printerRegion === customerRegion)
-    : [];
-
-  let pool = candidatesSameRegion;
-  let assignedRegion: string = customerRegion || "";
-  let isCrossRegion = false;
-
-  if (pool.length === 0) {
-    const fallbackChain = REGION_FALLBACKS[customerRegion || ""] || [];
-    for (const fallbackRegion of fallbackChain) {
-      const regionCandidates = eligibleCandidates.filter((c) => c.printerRegion === fallbackRegion);
-      if (regionCandidates.length > 0) {
-        pool = regionCandidates;
-        assignedRegion = fallbackRegion;
-        isCrossRegion = true;
-        console.log(
-          `[AUTO_ASSIGN] FALLBACK orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
-          `no same-region printers, using fallback region=${fallbackRegion} count=${regionCandidates.length}`
-        );
-        break;
-      }
-    }
-  }
-
-  if (pool.length > 0) {
-    console.log(
-      `[AUTO_ASSIGN] POOL region=${assignedRegion}${isCrossRegion ? " (cross-region fallback)" : ""} count=${pool.length} ` +
-      `printers=[${pool.map((c) => `${c.printerName}(${c.printerState})`).join(",")}]`
-    );
-  }
-
-  if (pool.length === 0) {
+  if (!selection.assigned) {
     const tookMs = Date.now() - startedAt;
-    const noRegionReason =
-      eligibleCandidates.length === 0
-        ? "No available printers"
-        : `No available printers in region (${customerRegion || "unknown"}) or any fallback region.`;
-
     console.log(
       `[AUTO_ASSIGN] UNASSIGNED orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
-      `totalAvailable=${eligibleCandidates.length} sameRegion=0 reason="${noRegionReason}" tookMs=${tookMs}`
+      `totalAvailable=${eligibleCandidates.length} sameRegion=${candidatesSameRegion.length} ` +
+      `reason="${selection.reason}" tookMs=${tookMs}`
     );
 
     order.assignmentHistory = order.assignmentHistory || [];
@@ -377,37 +397,50 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       customerState: customerState || null,
       candidatesConsidered: candidates.length,
       candidatesSameRegion: 0,
-      reason: noRegionReason,
+      reason: selection.reason,
       tookMs
     } as any);
     await order.save();
-    return { assigned: false, orderId: String(order._id), reason: noRegionReason, tookMs };
+    return { assigned: false, orderId: String(order._id), reason: selection.reason, tookMs };
   }
 
-  // Sort within the pool: distance → utilization → rating → id (deterministic)
-  pool.sort((a, b) => {
-    const aDist = Number.isFinite(a.distanceMiles) ? a.distanceMiles : Number.POSITIVE_INFINITY;
-    const bDist = Number.isFinite(b.distanceMiles) ? b.distanceMiles : Number.POSITIVE_INFINITY;
-    if (aDist !== bDist) return aDist - bDist;
+  const assignedRegion = selection.assignedRegion;
+  const isCrossRegion = selection.isCrossRegion;
 
-    const aUtil = a.maxConcurrent ? a.activeCount / a.maxConcurrent : a.activeCount;
-    const bUtil = b.maxConcurrent ? b.activeCount / b.maxConcurrent : b.activeCount;
-    if (aUtil !== bUtil) return aUtil - bUtil;
+  if (isCrossRegion) {
+    console.log(
+      `[AUTO_ASSIGN] FALLBACK orderId=${order._id} customerRegion=${customerRegion || "unknown"} ` +
+      `no same-region printers, assigned in region=${assignedRegion}`
+    );
+  }
 
-    if (a.rating !== b.rating) return b.rating - a.rating;
-    return a.printerId.localeCompare(b.printerId);
-  });
-
-  const selected = pool[0];
+  const selected = eligibleCandidates.find(
+    (c) => c.printerId === selection.selected.printerId,
+  )!;
   const selectedId = selected.printerId;
 
   order.assignedPrinter = new mongoose.Types.ObjectId(selectedId);
   // Start the 24h fulfilment clock from the exact assignment moment.
   const assignedAt = new Date();
   order.assignedAt = assignedAt;
-  order.assignmentDeadline = computeAssignmentDeadline(assignedAt);
-  if (["PENDING", "PROCESSING"].includes(String(order.status || "").toUpperCase())) {
-    order.status = "PENDING";
+  order.assignmentDeadline = computeAssignmentDeadlineFor(
+      assignedAt,
+      (order as any).priority,
+      (await getAssignmentSettings()).sla.acceptHours,
+    );
+  /**
+   * Assignment moves the order to PROCESSING.
+   *
+   * PENDING previously meant two different things — "no partner yet" and
+   * "partner attached, not started" — so the Orders list could not show which
+   * orders still needed a partner, which is the only case an admin has to act
+   * on. It also left the timeline's "Assigned to {partner}" branch unreachable.
+   *
+   * Only from PENDING: re-assigning an order already in PRINTING or beyond must
+   * not drag it backwards.
+   */
+  if (String(order.status || "").toUpperCase() === "PENDING") {
+    order.status = "PROCESSING";
   }
   order.statusTimeline = order.statusTimeline || [];
 
@@ -424,6 +457,24 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     actorName: selected.printerName
   } as any);
 
+  /*
+   * A record of what was true at auto-assign time — NOT current state, and not
+   * what any screen should read.
+   *
+   * The orders table used to badge from this field. Nothing clears it, and only
+   * this path writes it, so it went stale the moment an order was reassigned:
+   * DTF-0239/0240/0241 sat in the console badged "West → Northeast" long after
+   * they were back with a Californian partner, contradicting their own details
+   * page. Both surfaces now derive from `resolveRegionInfo` instead.
+   *
+   * Kept only because it is queryable history — how often the network had to
+   * fall back out of region. `assignmentHistory` carries the same facts per
+   * assignment if this is ever dropped.
+   */
+  (order as any).crossRegionAssignment = isCrossRegion
+    ? { customerRegion: customerRegion || "Unknown", assignedRegion, at: assignedAt }
+    : null;
+
   const tookMs = Date.now() - startedAt;
   order.assignmentHistory = order.assignmentHistory || [];
   order.assignmentHistory.push({
@@ -432,6 +483,8 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     selectedPrinterId: selected.printerId,
     selectedPrinterName: selected.printerName,
     customerRegion,
+    assignedRegion,
+    isCrossRegion,
     customerState: customerState || null,
     candidatesConsidered: candidates.length,
     candidatesSameRegion: candidatesSameRegion.length,
@@ -477,6 +530,30 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     );
   });
 
+  // A cross-region assignment means longer, costlier shipping. It is a
+  // deliberate fallback rather than an error, so this is informational — but it
+  // should never happen silently, because a region that keeps triggering it is
+  // a capacity problem worth acting on.
+  if (isCrossRegion) {
+    notifyAllAdmins({
+      category: "orders",
+      priority: "medium",
+      title: "Order assigned outside its region",
+      message:
+        `Order #${displayId} is a ${customerRegion || "Unknown"} order but no partner there was available, ` +
+        `so it went to ${selected.printerName} in ${assignedRegion}. Expect longer, costlier shipping.`,
+      meta: {
+        orderId: String(order._id),
+        displayId,
+        customerRegion,
+        assignedRegion,
+        printerId: selected.printerId,
+        printerName: selected.printerName,
+        type: "cross_region_assignment",
+      },
+    }).catch(() => {});
+  }
+
   // This assignment may have pushed the printer to their maximum active load —
   // reconcile their availability (auto-pause + notify) if so.
   syncPartnerCapacitySafe(selected.printerId);
@@ -489,4 +566,85 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     reason,
     tookMs
   };
+};
+
+export interface PredictedOrigin {
+  postalCode: string;
+  state: string;
+  city: string;
+  region: string;
+  printerName: string;
+  /** True when no printer serves the customer's own region and a fallback was used. */
+  /**
+   * True when the likely partner is outside the customer's own region.
+   *
+   * Deliberately internal — not surfaced at checkout. It was considered and
+   * decided against: the shipping quote is already taken from this predicted
+   * origin, so a cross-region order is priced and estimated accordingly, and a
+   * notice would tell the customer about a capacity problem they cannot act on.
+   * It stays as an operational signal (admins are alerted separately when a
+   * cross-region assignment actually happens).
+   *
+   * It is also only a prediction: assignment runs after checkout, so a local
+   * partner may free up, or the predicted one may hit capacity.
+   */
+  isFallbackRegion: boolean;
+}
+
+/**
+ * Where an order will most likely ship *from*, worked out before any printer is
+ * assigned.
+ *
+ * Shipping rates were quoted from a single fixed origin in the environment
+ * (`SHIPSTATION_FROM_*`, an Austin postcode) while the label ships from the
+ * assigned partner's own address. Quote and label therefore described different
+ * journeys — and the error was systematic, not random: assignment matches
+ * partners to the customer's region, so real shipments are short local hops
+ * that were being priced as though they crossed the country.
+ *
+ * The exact partner cannot be known at quote time — assignment needs a saved
+ * order, and the customer is charged before one exists. But it does not need to
+ * be: partners are chosen by region, and a region's partners are by definition
+ * clustered, so any partner in the serving region gives the right origin
+ * geography. That is what this returns.
+ *
+ * Deliberately ignores capacity, business hours and load. Those decide *which*
+ * partner, not *where from*, and consulting them here would couple the quote to
+ * state that changes between quoting and assigning.
+ */
+export const predictShippingOrigin = async (
+  customerState: string | null | undefined
+): Promise<PredictedOrigin | null> => {
+  const customerRegion = normalizeRegion(getRegionFromState(customerState));
+  if (!customerRegion) return null;
+
+  const printers = await User.find({ role: UserRoles.PRINTER, status: "Active" })
+    .select("name companyName regions businessAddress defaultShippingAddress")
+    .lean();
+
+  // Same order assignment would try: the customer's own region first, then its
+  // configured fallbacks.
+  for (const region of [customerRegion, ...(REGION_FALLBACKS[customerRegion] || [])]) {
+    for (const p of printers as any[]) {
+      // businessAddress first — it is what `createShipStationLabel` uses as the
+      // ship-from, so the quote and the label agree on the origin.
+      const addr = p.businessAddress?.postalCode ? p.businessAddress : p.defaultShippingAddress;
+      if (!addr?.postalCode) continue;
+
+      const printerRegion =
+        normalizeRegion(getRegionFromState(addr.state)) || normalizeRegion(p.regions?.[0]);
+      if (printerRegion !== region) continue;
+
+      return {
+        postalCode: String(addr.postalCode),
+        state: String(addr.state || ""),
+        city: String(addr.city || ""),
+        region,
+        printerName: String(p.companyName || p.name || "Print Partner"),
+        isFallbackRegion: region !== customerRegion,
+      };
+    }
+  }
+
+  return null;
 };

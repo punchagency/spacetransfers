@@ -16,7 +16,7 @@ import { User } from "../models/user.model.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { sendEmail } from "../services/email.service.js";
 import { recordLoginActivity, extractClientIp, resolveGeo } from "../services/loginActivity.service.js";
-import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { createAdminNotification } from "../services/adminNotifications.service.js";
 
 export const me = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -83,24 +83,43 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
 
 export const login = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, password } = req.body;
-    const result = await loginUser({ email, password });
+    // `role` says which of this address's accounts is meant — one address can
+    // now hold one per role, and each app knows its own.
+    const { email, password, role } = req.body;
+    const result = await loginUser({ email, password, role });
     const userId = String(result.user.id);
 
     // Log the successful sign-in for the Security → Login Activity view.
-    recordLoginActivity({ req, userId, status: "success" }).catch(() => {});
+    const recorded = await recordLoginActivity({ req, userId, status: "success" }).catch(() => null);
 
-    // Send a system alert notification for successful login (especially if from a new location).
+    /**
+     * Alert only on a sign-in from a device and place this account has not used
+     * before.
+     *
+     * This fired on *every* login, and went to `notifyAllAdmins` — so one
+     * sign-in emailed all six admins a message reading "Your admin account was
+     * signed into", which was true for exactly one of them. Between the
+     * frequency and the inaccuracy it trained people to ignore the one channel
+     * that carries security notices.
+     *
+     * Now it goes to the admin whose account it actually was, and only when
+     * there is something worth looking at.
+     */
     try {
-      const ip = extractClientIp(req);
-      const { location } = await resolveGeo(ip);
-      if (result.user.role === "ADMIN") {
-        notifyAllAdmins({
+      if (result.user.role === "ADMIN" && recorded?.isNewContext) {
+        createAdminNotification({
+          adminId: userId,
           category: "system",
-          priority: "low",
-          title: "Sign-in detected",
-          message: `Your admin account was signed into from ${location}`,
-          meta: { userId, ip, location, type: "login_success" }
+          priority: "medium",
+          title: "Sign-in from a new device",
+          message: `Your admin account was signed into from ${recorded.location} on ${recorded.device}. If this was not you, change your password.`,
+          meta: {
+            userId,
+            ip: recorded.ip,
+            location: recorded.location,
+            device: recorded.device,
+            type: "login_success_new_device"
+          }
         }).catch(() => {});
       }
     } catch {
@@ -114,7 +133,16 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     try {
       const email = req.body?.email;
       if (email) {
-        const existing = await User.findOne({ email: String(email).toLowerCase().trim() }).select("_id role");
+        /*
+         * Scoped to the role that was being signed into, so a failed partner
+         * sign-in is recorded against the partner account rather than whichever
+         * account on that address happened to be found first — which would also
+         * have alerted the wrong admin.
+         */
+        const attemptedRole = req.body?.role;
+        const existing = attemptedRole
+          ? await User.findOne({ email: String(email).toLowerCase().trim(), role: attemptedRole }).select("_id role")
+          : await User.findOne({ email: String(email).toLowerCase().trim() }).select("_id role");
         if (existing) {
           const userId = String(existing._id);
           recordLoginActivity({ req, userId, status: "failed" }).catch(() => {});
@@ -124,11 +152,14 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
             try {
               const ip = extractClientIp(req);
               const { location } = await resolveGeo(ip);
-              notifyAllAdmins({
+              // Also was notifyAllAdmins. A failed attempt on one account is
+              // that account holder's business, not a broadcast to everyone.
+              createAdminNotification({
+                adminId: userId,
                 category: "system",
                 priority: "medium",
                 title: "Failed sign-in attempt",
-                message: `A failed sign-in attempt was made from ${location}`,
+                message: `A failed sign-in attempt was made on your admin account from ${location}`,
                 meta: { userId, ip, location, type: "login_failed" }
               }).catch(() => {});
             } catch {
@@ -147,7 +178,7 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
 export const forgotPassword = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email } = req.body;
-    const result = await requestPasswordReset(email);
+    const result = await requestPasswordReset(email, req.body?.role);
     res.json({
       message: "If an account exists for that email, a reset link has been sent.",
       ...result
@@ -159,8 +190,18 @@ export const forgotPassword = async (req: Request, res: Response, next: NextFunc
 
 export const resetPasswordController = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { token, newPassword } = req.body;
-    await resetPassword({ token, newPassword });
+    const { token, newPassword, legalAcceptance } = req.body;
+    await resetPassword({
+      token,
+      newPassword,
+      legalAcceptance,
+      // Same audit context registration records, so an acceptance captured on
+      // an invitation is as evidenced as one captured on the signup form.
+      legalContext: {
+        ip: req.ip,
+        userAgent: req.get("user-agent") || undefined,
+      },
+    });
     res.json({ message: "Password has been reset successfully." });
   } catch (error) {
     next(error);

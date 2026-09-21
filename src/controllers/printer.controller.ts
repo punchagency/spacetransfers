@@ -1,5 +1,13 @@
 import { Request, Response, NextFunction } from "express";
+import {
+  PRINTER_STATUS_LABEL,
+  printerStatusLabel,
+  statusesForPrinterLabel,
+} from "../utils/orderStatusLabels.js";
+import { deriveParcel } from "../services/packaging.service.js";
+import { getGlobalPricing, getPartnerPayRate, totalBillableSqFt } from "../services/pricing.service.js";
 import { Order } from "../models/order.model.js";
+import { Payout } from "../models/payout.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { User } from "../models/user.model.js";
@@ -7,10 +15,10 @@ import { Settings } from "../models/settings.model.js";
 import { PrinterNotification } from "../models/printerNotification.model.js";
 import { addPrinterNotificationClient, publishPrinterNotificationEvent, removePrinterNotificationClient } from "../services/printerNotificationsHub.js";
 import { broadcastToAllAdmins } from "../services/adminNotificationsHub.js";
+import { changePartnerAvailability } from "../services/partnerAvailability.service.js";
 import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
-import { isPrinterAvailableAt } from "../utils/businessHours.js";
 import { resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
@@ -28,10 +36,18 @@ import {
   computeItemVerticalSpansIn,
   computeGangsheetCuts,
   GANGSHEET_SHEET_WIDTH_IN,
+  orderSheetWidthIn,
   GANGSHEET_PRINT_DPI,
 } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
+import {
+  calculateOrderPartnerEarning,
+  getOrderPartnerCostBreakdown,
+  canDerivePartnerEarning,
+  isPartnerEarningRealized,
+  getOrderCompletionDate,
+} from "../services/partnerEarnings.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
 import {
   syncPartnerCapacity,
@@ -39,6 +55,7 @@ import {
   getAssignmentSettings,
   getEffectiveMaxConcurrent,
   countActiveJobs,
+  ACTIVE_ORDER_STATUSES,
 } from "../services/partnerCapacity.service.js";
 import {
   triggerShipStationWorkflow,
@@ -46,9 +63,10 @@ import {
   createShipStationOrder,
   createShipStationLabel,
 } from "../services/shipstation.service.js";
-import { uploadBufferToCloudinary } from "../utils/cloudinary.js";
+import { storeArtwork } from "../services/storage.service.js";
+import { isValidPhone } from "../utils/accountFields.js";
+import { computePartnerPerformance } from "../services/partnerPerformance.service.js";
 import sharp from "sharp";
-import PDFDocument from "pdfkit";
 
 // In-memory export job queue — lets the HTTP response return immediately while
 // the (potentially slow) PNG render runs in the background.
@@ -197,126 +215,132 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
         .resize(400, 400, { fit: "cover" })
         .webp({ quality: 80 })
         .toBuffer();
-      const { url } = await uploadBufferToCloudinary(optimizedBuffer, "space-transfers/avatars");
+      const { url } = await storeArtwork(optimizedBuffer, "space-transfers/avatars");
       user.avatarUrl = url;
       await user.save();
       return res.json({ message: "Avatar uploaded and optimized", url });
     }
 
-    const { url } = await uploadBufferToCloudinary(file.buffer, "space-transfers/certifications");
+    const { url } = await storeArtwork(file.buffer, "space-transfers/certifications");
     res.json({ message: "Document uploaded successfully", url });
   } catch (error) {
     next(error);
   }
 };
 
-const calcEarning = (order: any): number => {
-  const items: any[] = Array.isArray(order.items) ? order.items : [];
-  const fromItems = items.reduce((s: number, item: any) => {
-    const sub = typeof item.subtotal === "number"
-      ? item.subtotal
-      : (typeof item.unitPrice === "number" ? item.unitPrice * (item.quantity || 1) : 0);
-    return s + sub;
-  }, 0);
-  if (fromItems > 0) return fromItems;
-  return typeof order.pricing?.subtotal === "number"
-    ? order.pricing.subtotal
-    : (typeof order.pricing?.total === "number" ? order.pricing.total : 0);
-};
+/*
+ * The local `calcEarning` is gone. It summed item subtotals — the price the
+ * CUSTOMER paid — and was copied verbatim into the payout controller as well.
+ * Nine call sites showed a partner the platform's revenue as their own earnings,
+ * overstated by the whole margin. `partnerEarnings.service` is the single
+ * definition now.
+ */
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
+
+    /*
+     * The same four periods the admin dashboard offers, so the two consoles
+     * report over comparable windows. Two of the four cards are current-state
+     * (what is waiting on you, what you have earned in total) and deliberately
+     * do NOT follow the period — each says so in its own note, which is what
+     * stops the control being ambiguous.
+     */
+    const RANGES: Record<string, number | "ytd"> = { "7d": 7, "30d": 30, "90d": 90, ytd: "ytd" };
+    const rangeKey = typeof req.query.range === "string" && req.query.range in RANGES
+      ? String(req.query.range)
+      : "30d";
 
     const now = new Date();
     const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
 
-    const yesterdayStart = new Date(todayStart);
-    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-    const yesterdayEnd = new Date(todayStart);
-    yesterdayEnd.setMilliseconds(-1);
+    let periodStart: Date;
+    if (rangeKey === "ytd") {
+      periodStart = new Date(now.getFullYear(), 0, 1);
+    } else {
+      periodStart = new Date(todayStart);
+      periodStart.setDate(periodStart.getDate() - (Number(RANGES[rangeKey]) - 1));
+    }
+    const periodLabel =
+      rangeKey === "ytd" ? "year to date" : `the last ${RANGES[rangeKey]} days`;
 
-    const printerOrders = await Order.find({
+    // One resolution of the network-wide partner rate for the whole request.
+    const partnerRate = await getPartnerPayRate();
+    const sumEarnings = (orders: any[]) =>
+      Math.round(orders.reduce((s, o) => s + calculateOrderPartnerEarning(o, partnerRate), 0) * 100) / 100;
+
+    /*
+     * "Completed today" is keyed on when the order actually reached SHIPPED,
+     * read from `statusTimeline` — not on `updatedAt`, which this used before.
+     * Any edit to an old order bumps `updatedAt`, so a month-old job being
+     * touched made it count as completed today and inflated both the count and
+     * the day's earnings. `partnerPerformance` already reads the timeline for
+     * exactly this reason.
+     */
+    const finishedOrders = await Order.find({
       assignedPrinter: printerId,
-      updatedAt: { $gte: yesterdayStart }
+      status: { $in: ["SHIPPED", "COMPLETED"] },
     })
-      .select("displayId status updatedAt createdAt items pricing priority customer")
+      .select("items pricing priority statusTimeline updatedAt")
       .lean();
 
-    const todayCompleted = printerOrders.filter(o =>
-      (o.status === "COMPLETED" || o.status === "SHIPPED") && o.updatedAt >= todayStart
-    );
-    const todayEarnings = todayCompleted.reduce((sum, o) => sum + calcEarning(o), 0);
-
-    const yesterdayCompleted = printerOrders.filter(o =>
-      (o.status === "COMPLETED" || o.status === "SHIPPED") &&
-      o.updatedAt >= yesterdayStart && o.updatedAt <= yesterdayEnd
-    );
-    const yesterdayEarnings = yesterdayCompleted.reduce((sum, o) => sum + calcEarning(o), 0);
-
-    const completedTodayCount = todayCompleted.length;
-    const completedYesterdayCount = yesterdayCompleted.length;
-
-    const totalPendingCount = await Order.countDocuments({ assignedPrinter: printerId, status: "PENDING" });
-    const yesterdayPendingCount = await Order.countDocuments({
-      assignedPrinter: printerId,
-      status: "PENDING",
-      createdAt: { $lt: todayStart }
+    const finishedInPeriod = finishedOrders.filter((o) => {
+      const at = getOrderCompletionDate(o);
+      return at !== null && at >= periodStart;
     });
 
-    // Total revenue = all earnings except cancelled/rejected — matches payout summary totalEarnings
-    const [allActiveOrders, allActiveBeforeToday] = await Promise.all([
-      Order.find({
+    const periodEarnings = sumEarnings(finishedInPeriod);
+
+    /*
+     * Every order still owed or already paid, at the partner's rate. Named
+     * "Total Earned", not "Total Revenue": revenue is what the company takes,
+     * and this is a partner's own page.
+     */
+    const allActiveOrders = await Order.find({
+      assignedPrinter: printerId,
+      status: { $nin: ["CANCELLED"] },
+    })
+      .select("items pricing priority")
+      .lean();
+    const totalEarned = sumEarnings(allActiveOrders);
+
+    // Counted, not derived from the capped list below.
+    const [totalPendingCount, assignedTotal, urgentTotal] = await Promise.all([
+      Order.countDocuments({ assignedPrinter: printerId, status: "PENDING" }),
+      Order.countDocuments({ assignedPrinter: printerId, status: { $in: ACTIVE_ORDER_STATUSES as any } }),
+      Order.countDocuments({
         assignedPrinter: printerId,
-        status: { $nin: ["CANCELLED", "REJECTED"] },
-      })
-        .select("items pricing")
-        .lean(),
-      Order.find({
-        assignedPrinter: printerId,
-        status: { $nin: ["CANCELLED", "REJECTED"] },
-        updatedAt: { $lt: todayStart },
-      })
-        .select("items pricing")
-        .lean(),
+        priority: "URGENT",
+        status: { $in: ["PENDING", "PROCESSING"] },
+      }),
     ]);
 
-    const totalRevenue = allActiveOrders.reduce((sum, o) => sum + calcEarning(o), 0);
-    const totalRevenueBeforeToday = allActiveBeforeToday.reduce((sum, o) => sum + calcEarning(o), 0);
+    const ASSIGNED_LIMIT = 12;
+    const URGENT_LIMIT = 5;
 
-    const getTrend = (current: number, previous: number) => {
-      if (!previous || previous === 0) return { trend: "0%", trendUp: true };
-      const diff = ((current - previous) / previous) * 100;
-      const prefix = diff > 0 ? "+" : "";
-      return {
-        trend: `${prefix}${Math.round(diff)}%`,
-        trendUp: diff >= 0
-      };
-    };
+    // The shared constant, not a second hand-written copy — the sidebar capacity
+    // meter counts the same set and they must not drift apart.
+    /*
+     * Urgent first, then newest.
+     *
+     * Sorted by `createdAt` alone, an urgent job that had been waiting longest
+     * sorted last and fell off the end of the capped list — so the banner could
+     * say "you have 3 urgent jobs" above a table showing none of them. Mongo has
+     * no ordering on an arbitrary string, so priority is projected to a number
+     * to sort on.
+     */
+    const activeAssignedJobs = await Order.aggregate([
+      { $match: { assignedPrinter: new mongoose.Types.ObjectId(String(printerId)), status: { $in: ACTIVE_ORDER_STATUSES as any } } },
+      { $addFields: { _urgentFirst: { $cond: [{ $eq: ["$priority", "URGENT"] }, 0, 1] } } },
+      { $sort: { _urgentFirst: 1, createdAt: -1, _id: -1 } },
+      { $limit: ASSIGNED_LIMIT },
+    ]);
 
-    const earningsTrend = getTrend(todayEarnings, yesterdayEarnings);
-    const completedTrend = getTrend(completedTodayCount, completedYesterdayCount);
-    const revenueTrend = getTrend(totalRevenue, totalRevenueBeforeToday);
-
-    const activeAssignedJobs = await Order.find({
-      assignedPrinter: printerId,
-      status: { $in: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] }
-    })
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(12)
-      .lean();
-
-    const mapStatus = (s: string) => {
-      const v = String(s || "").toUpperCase();
-      if (v === "PENDING") return "Pending Review";
-      if (v === "PROCESSING" || v === "PRINTING") return "In Progress - Printing";
-      if (v === "QUALITY_CHECK") return "Print Shipping Label";
-      if (v === "SHIPPED") return "Order Shipped";
-      if (v === "COMPLETED") return "Completed";
-      if (v === "CANCELLED") return "Cancelled";
-      return "Pending Review";
-    };
+    // One shared map — see `utils/orderStatusLabels`.
+    const mapStatus = printerStatusLabel;
 
     const assignedJobs = activeAssignedJobs.map((job: any) => ({
       id: String(job._id),
@@ -324,59 +348,92 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
       order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
       // ISO deadline (assignment + 24h); the frontend renders a live countdown.
-      deadline: resolveOrderDeadlineIso(job),
+      deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
       assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: mapStatus(String(job.status || "")),
       isUrgent: String(job.priority || "").toUpperCase() === "URGENT",
-      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null
+      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
     }));
 
-    const urgentJobs = await Order.find({ 
+    const urgentJobs = await Order.find({
       assignedPrinter: printerId,
       priority: "URGENT",
-      status: { $in: ["PENDING", "PROCESSING"] }
-    }).select("displayId customer items createdAt assignedAt assignmentDeadline priority status").sort({ createdAt: 1 }).limit(5);
+      status: { $in: ["PENDING", "PROCESSING"] },
+    })
+      .select("displayId customer items createdAt assignedAt assignmentDeadline priority status")
+      .sort({ createdAt: 1 })
+      .limit(URGENT_LIMIT)
+      .lean();
 
-    const formattedUrgentJobs = urgentJobs.map(job => ({
-      id: job.id,
-      displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
-      customerName: `${job.customer.firstName} ${job.customer.lastName}`,
-      order: `${job.items.length} Items`,
-      deadline: resolveOrderDeadlineIso(job),
-      assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
+    const formattedUrgentJobs = urgentJobs.map((job: any) => ({
+      id: String(job._id),
+      displayId: job?.displayId ? String(job.displayId) : null,
+      customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
+      order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
+      deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
+      assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: "Urgent",
       isUrgent: true,
-      createdAt: job.createdAt.toISOString()
+      createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
     }));
 
-    const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const fmtMoney = (n: number) =>
+      `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+    /*
+     * No trends. All four were "vs yesterday" and none of them measured that:
+     * the revenue one compared a lifetime total against itself before today (so
+     * it could only ever rise), the pending one was a raw count with a baseline
+     * of "orders created before today", and a zero baseline returned "0%" — which
+     * the page rendered in green as "no change" when it meant "nothing to
+     * compare". `trendUp` was computed here and ignored by the client entirely.
+     *
+     * Each card carries a `note` instead: a plain statement of what the number
+     * covers, which is what the trend line was pretending to be.
+     */
     res.json({
       cards: [
         {
-          label: "Today's Earnings",
-          value: fmtMoney(todayEarnings),
-          ...earningsTrend
+          label: "Earnings",
+          value: fmtMoney(periodEarnings),
+          note: finishedInPeriod.length
+            ? `From ${finishedInPeriod.length} job${finishedInPeriod.length === 1 ? "" : "s"} shipped in ${periodLabel}`
+            : `No jobs shipped in ${periodLabel}`,
+          scoped: true,
         },
         {
-          label: "Completed Orders",
-          value: completedTodayCount.toLocaleString(),
-          ...completedTrend
+          label: "Jobs Completed",
+          value: finishedInPeriod.length.toLocaleString(),
+          note: `Shipped in ${periodLabel}`,
+          scoped: true,
         },
         {
+          // Current state, not a period figure — it is what is waiting on them
+          // right now, and saying "in the last 30 days" would be nonsense.
           label: "Pending Orders",
           value: totalPendingCount.toLocaleString(),
-          trend: `${totalPendingCount - yesterdayPendingCount > 0 ? "+" : ""}${totalPendingCount - yesterdayPendingCount}`,
-          trendUp: totalPendingCount <= yesterdayPendingCount
+          note: totalPendingCount ? "Awaiting your acceptance now" : "Nothing waiting on you",
+          scoped: false,
         },
         {
-          label: "Total Revenue",
-          value: fmtMoney(totalRevenue),
-          ...revenueTrend
-        }
+          label: "Total Earned",
+          value: fmtMoney(totalEarned),
+          note: `All time, across ${allActiveOrders.length} job${allActiveOrders.length === 1 ? "" : "s"}`,
+          scoped: false,
+        },
       ],
       urgentJobs: formattedUrgentJobs,
-      assignedJobs
+      assignedJobs,
+      /*
+       * The true totals. The lists above are capped for the page, and the client
+       * used to render `assignedJobs.length` as "you have N jobs assigned" — so
+       * past the cap it quietly under-reported a partner's own workload.
+       */
+      assignedTotal,
+      urgentTotal,
+      assignedShown: assignedJobs.length,
+      urgentShown: formattedUrgentJobs.length,
+      period: { range: rangeKey, label: periodLabel },
     });
   } catch (error) {
     next(error);
@@ -385,6 +442,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
 
 export const listPrintQueue = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
     const { status } = req.query;
 
@@ -431,7 +489,7 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
         sheetSize,
         orderDescription: firstItem.name || "N/A",
         status: job.status,
-        deadline: resolveOrderDeadlineIso(job),
+        deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
         assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
         createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
         priority: job.priority
@@ -473,13 +531,9 @@ export const updateJobStatus = async (req: Request, res: Response, next: NextFun
     // Completing (or otherwise moving out of an active state) frees capacity.
     syncPartnerCapacitySafe(String(printerId));
 
-    const pqLabelMap: Record<string, string> = {
-      PENDING: "Pending",
-      PROCESSING: "Processing",
-      PRINTING: "Printing",
-      QUALITY_CHECK: "Quality Check",
-      COMPLETED: "Completed",
-    };
+    // Was a second, disagreeing copy: "Quality Check" here vs "Print Shipping
+    // Label" in the job list, for the same state and the same reader.
+    const pqLabelMap = PRINTER_STATUS_LABEL;
     notifyPrinter({
       printerId: String(printerId),
       category: "jobs",
@@ -500,40 +554,6 @@ export const updateJobStatus = async (req: Request, res: Response, next: NextFun
   }
 };
 
-export const updateJobPriority = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { priority } = req.body;
-    const printerId = req.user?.id;
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    if (priority === "Urgent") {
-      job.priority = "URGENT";
-    } else if (priority === null) {
-      job.priority = "NORMAL";
-    } else {
-      const error = new Error("Invalid priority value. Must be 'Urgent' or null.") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    await job.save();
-
-    res.json({
-      id: job.id,
-      priority: job.priority
-    });
-  } catch (error) {
-    next(error);
-  }
-};
 
 export const getJobDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -694,15 +714,9 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
     const { action, reason } = req.body;
     const printerId = req.user?.id;
 
-    const allowedActions = ["ACCEPT", "REJECT", "START", "PAUSE", "RESUME"];
+    const allowedActions = ["ACCEPT", "START"];
     if (!action || !allowedActions.includes(action)) {
-      const error = new Error("Invalid action. Must be one of: ACCEPT | REJECT | START | PAUSE | RESUME") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    if (action === "REJECT" && !reason) {
-      const error = new Error("REJECT requires a reason field") as CustomError;
+      const error = new Error("Invalid action. Must be one of: ACCEPT | START") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -714,15 +728,16 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
       throw error;
     }
 
-    // Business hours enforcement for ACCEPT and REJECT
-    if (action === "ACCEPT" || action === "REJECT") {
-      const printer = await User.findById(printerId).select("settings.businessHours settings.jobCapacity name companyName email").lean();
-      if (printer && !isPrinterAvailableAt(printer)) {
-        const error = new Error("Action not allowed outside your configured business hours") as CustomError;
-        error.statusCode = 403;
-        throw error;
-      }
-    }
+    /*
+     * The business-hours block on ACCEPT is gone.
+     *
+     * This refused a partner permission to accept a job that had already been
+     * assigned to them — 403, "Action not allowed outside your configured
+     * business hours" — while that job's SLA clock kept running. A partner with
+     * Mon-Wed hours could not accept work on a Thursday at all. And the check
+     * ran on the server's clock, not theirs, so the window was wrong for anyone
+     * outside the server's timezone. Pausing is how a partner declines work.
+     */
 
     let nextStatus: any;
     switch (action) {
@@ -734,34 +749,15 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
         }
         nextStatus = "PROCESSING";
         break;
-      case "REJECT":
-        if (job.status !== "PENDING") {
-          const error = new Error(`Cannot REJECT job in ${job.status} state. REJECT transitions Pending -> Rejected.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "REJECTED";
-        job.rejectionReason = reason;
-        break;
+      /*
+       * REJECT, PAUSE and RESUME removed with the REJECTED and PAUSED statuses.
+       * Declining a job is `cancelPrinterOrder`, which returns the order to
+       * PENDING and reassigns it — the order gets re-homed rather than stranded
+       * in a terminal state, and unlike these it is reachable from the app.
+       */
       case "START":
         if (job.status !== "PROCESSING") {
           const error = new Error(`Cannot START job in ${job.status} state. START transitions Processing -> Printing.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "PRINTING";
-        break;
-      case "PAUSE":
-        if (job.status !== "PRINTING") {
-          const error = new Error(`Cannot PAUSE job in ${job.status} state. PAUSE transitions Printing -> Paused.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "PAUSED";
-        break;
-      case "RESUME":
-        if (job.status !== "PAUSED") {
-          const error = new Error(`Cannot RESUME job in ${job.status} state. RESUME transitions Paused -> Printing.`) as CustomError;
           error.statusCode = 409;
           throw error;
         }
@@ -774,83 +770,27 @@ export const executeJobAction = async (req: Request, res: Response, next: NextFu
     job.statusTimeline.push({
       status: nextStatus as any,
       time: new Date(),
-      ...(action === "REJECT" ? { message: reason } : {}),
     });
     await job.save();
 
-    // REJECT moves the job to a terminal state and frees a capacity slot.
-    if (nextStatus === "REJECTED") syncPartnerCapacitySafe(String(printerId));
-
     const displayId = (job as any).displayId || String(job._id).slice(-6).toUpperCase();
-    const rejectedAt = new Date().toISOString();
 
-    if (action === "REJECT") {
-      // Determine if the job was auto-assigned
-      const lastAssignment = Array.isArray((job as any).assignmentHistory)
-        ? (job as any).assignmentHistory.slice(-1)[0]
-        : null;
-      const wasAutoAssigned = lastAssignment?.mode === "AUTO";
+    const actionLabelMap: Record<string, { title: string; priority: "high" | "medium" | "low" }> = {
+      ACCEPT: { title: "Job accepted",         priority: "medium" },
+      START:  { title: "Job started printing", priority: "low"    },
+    };
+    const { title: actionTitle, priority: actionPriority } =
+      actionLabelMap[action] || { title: `Job action: ${action}`, priority: "low" as const };
 
-      const printerUser = await User.findById(printerId).select("name companyName email").lean();
-      const printerName = (printerUser as any)?.companyName || (printerUser as any)?.name || "Printer";
-      const printerEmail = (printerUser as any)?.email || "";
-
-      // Notify all admins with full details
-      notifyAllAdmins({
-        category: "orders",
-        priority: "high",
-        title: "Job rejected by printer",
-        message: `Order #${displayId} was rejected by ${printerName}${wasAutoAssigned ? " (auto-assigned job)" : ""}. Reason: ${reason}`,
-        meta: {
-          orderId: String(job._id),
-          displayId,
-          printerId: String(printerId),
-          printerName,
-          printerEmail,
-          rejectionReason: reason,
-          rejectedAt,
-          wasAutoAssigned,
-          previousStatus: "PENDING",
-        },
-      }).catch(() => {});
-
-      // Confirm to the printer that the rejection was recorded
-      notifyPrinter({
-        printerId: String(printerId),
-        category: "jobs",
-        priority: "medium",
-        title: "Job rejection confirmed",
-        message: `You successfully rejected Order #${displayId}. Reason: "${reason}". The admin has been notified.`,
-        meta: {
-          orderId: String(job._id),
-          displayId,
-          action: "REJECT",
-          status: nextStatus,
-          rejectionReason: reason,
-          rejectedAt,
-          wasAutoAssigned,
-        },
-        settingsKey: "orderUpdates",
-      }).catch(() => {});
-    } else {
-      // Generic notification for all other actions
-      const actionLabelMap: Record<string, { title: string; priority: "high" | "medium" | "low" }> = {
-        ACCEPT: { title: "Job accepted",         priority: "medium" },
-        START:  { title: "Job started printing", priority: "low"    },
-        PAUSE:  { title: "Job paused",           priority: "low"    },
-        RESUME: { title: "Job resumed",          priority: "low"    },
-      };
-      const { title: actionTitle, priority: actionPriority } = actionLabelMap[action] || { title: `Job action: ${action}`, priority: "low" as const };
-      notifyPrinter({
-        printerId: String(printerId),
-        category: "jobs",
-        priority: actionPriority,
-        title: actionTitle,
-        message: `Order #${displayId} — ${actionTitle.toLowerCase()}.`,
-        meta: { orderId: String(job._id), action, status: nextStatus },
-        settingsKey: "orderUpdates",
-      }).catch(() => {});
-    }
+    notifyPrinter({
+      printerId: String(printerId),
+      category: "jobs",
+      priority: actionPriority,
+      title: actionTitle,
+      message: `Order #${displayId} — ${actionTitle.toLowerCase()}.`,
+      meta: { orderId: String(job._id), action, status: nextStatus },
+      settingsKey: "orderUpdates",
+    }).catch(() => {});
 
     res.json({ id: job.id, status: job.status });
   } catch (error) {
@@ -1223,7 +1163,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       try {
         // Preserve croppedUrl — it holds the trimmedUrl (full-res, server-processed) or
         // a data URL from canvas fallback / AI background removal. Stripping it causes the
-        // export to fall back to the ORIGINAL (untrimmed) Cloudinary URL and resize it into
+        // export to fall back to the ORIGINAL (untrimmed) stored URL and resize it into
         // the trimmed bounding box via fit:"fill", which distorts the image.
         const fullResItems = artboardItems.map((it: any) => ({
           assetId: String(it.assetId || ""),
@@ -1239,6 +1179,8 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           rotation: typeof it.rotation === "number" ? it.rotation : 0,
           flipped: Boolean(it.flipped),
           copies: typeof it.copies === "number" ? it.copies : 1,
+          nestRotation: it.nestRotation,
+          flowCols: it.flowCols,
         }));
 
         // Determine export DPI from the native resolution of the ACTUAL source images.
@@ -1248,7 +1190,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
         //      The canvas output pixel count — always accurate regardless of DB state.
         //      Canvas crop shrinks the image (cropWidth < widthPx), so using widthPx
         //      would produce exportDpi = widthPx/widthIn >> actual, causing upscaling.
-        //   2. trimmedWidthPx from DB (for Cloudinary-trimmed items):
+        //   2. trimmedWidthPx from DB (for server-trimmed items):
         //      The server-trimmed image pixel count. widthIn = trimmedWidthIn so
         //      effectiveDpi = trimmedWidthPx/widthIn is the exact native DPI.
         //   3. widthPx from DB (fallback — original upload, pre-trim):
@@ -1323,11 +1265,9 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
         const rendered = await exportGangsheetPng24({
           jobId: job.id,
           printerId: String(printerId),
-          // Never `gangsheetItem.sheetWidthIn` — that field holds the artwork's
-          // bounding width (checkout writes it for partner pricing), not the
-          // sheet's. Item `posX` values are absolute against a 23.5" sheet, so
-          // this is the only width that places them where the artboard did.
-          sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
+          // The roll this order was built on, so every posX lands where the
+          // artboard put it — see `orderSheetWidthIn`.
+          sheetWidthIn: orderSheetWidthIn(gangsheetItem),
           sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
           artboardItems: fullResItems,
           dpi: exportDpi,
@@ -1476,6 +1416,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
               widthIn: "$$item.widthIn",
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
+              rollWidthIn: "$$item.rollWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
               itemSpacingIn: "$$item.itemSpacingIn",
               sheetMarginIn: "$$item.sheetMarginIn",
@@ -1493,6 +1434,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
                     rotation: "$$ai.rotation",
                     flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },
@@ -1517,22 +1460,13 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
     }
 
     /**
-     * The sheet is always the full artboard width — never a value read off the
-     * order item.
+     * The roll width this order was built on — see `orderSheetWidthIn`.
      *
-     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
-     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
-     * `max(bounds.maxX)`), because that is the area partner pricing charges
-     * for — see `computePartnerCostBreakdown`, which multiplies it into the
-     * square footage a partner is paid on. It is therefore load-bearing as a
-     * pricing figure and is deliberately left alone.
-     *
-     * Rendering onto it was the bug: item `posX` values are absolute against a
-     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
-     * x-coordinate in the wrong place and clipped whatever fell past the new
-     * right edge. That is the artboard/preview mismatch.
+     * Never the artwork's bounding width: item `posX` values are absolute
+     * against the roll, so a canvas sized to anything else puts every
+     * x-coordinate in the wrong place and clips what falls past its edge.
      */
-    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
+    const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
     const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
       ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
       ? gangsheetItem.heightIn : 23.5;
@@ -1541,7 +1475,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
 
     // Preserve croppedUrl — it is the trimmedUrl (server-processed, full-res) for server-trimmed
     // assets, or a lossless data URL for canvas-cropped / AI bg-removed items. Stripping it
-    // forces the export to use the original (untrimmed) Cloudinary URL and resize it into the
+    // forces the export to use the original (untrimmed) stored URL and resize it into the
     // trimmed bounding box via fit:"fill", which squishes the image and causes visible distortion.
     const fullResItems = artboardItems.map((it: any) => ({
       assetId: it.assetId,
@@ -1553,6 +1487,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       rotation: it.rotation,
       flipped: it.flipped,
       copies: it.copies,
+      nestRotation: it.nestRotation,
+      flowCols: it.flowCols,
     }));
 
     // WebP has a hard 16383 px per-dimension limit. For very tall sheets (e.g. a
@@ -1672,169 +1608,6 @@ export const downloadGangsheetExport = async (req: Request, res: Response, next:
   }
 };
 
-export const downloadGangsheetPreviewPdf = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params as any;
-    const printerId = req.user?.id;
-
-    if (!jobId || !mongoose.Types.ObjectId.isValid(String(jobId))) {
-      const error = new Error("Invalid job id") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-    if (!printerId) {
-      const error = new Error("Unauthorized") as CustomError;
-      error.statusCode = 401;
-      throw error;
-    }
-
-    const [jobRaw] = await (Order as any).aggregate([
-      { $match: { _id: new mongoose.Types.ObjectId(String(jobId)), assignedPrinter: new mongoose.Types.ObjectId(String(printerId)) } },
-      { $project: {
-        displayId: 1,
-        items: {
-          $map: {
-            input: { $ifNull: ["$items", []] },
-            as: "item",
-            in: {
-              type: "$$item.type",
-              widthIn: "$$item.widthIn",
-              heightIn: "$$item.heightIn",
-              sheetWidthIn: "$$item.sheetWidthIn",
-              sheetHeightIn: "$$item.sheetHeightIn",
-              itemSpacingIn: "$$item.itemSpacingIn",
-              sheetMarginIn: "$$item.sheetMarginIn",
-              artboardItems: {
-                $map: {
-                  input: { $ifNull: ["$$item.artboardItems", []] },
-                  as: "ai",
-                  in: {
-                    assetId: "$$ai.assetId",
-                    croppedUrl: "$$ai.croppedUrl",
-                    widthIn: "$$ai.widthIn",
-                    heightIn: "$$ai.heightIn",
-                    posX: "$$ai.posX",
-                    posY: "$$ai.posY",
-                    rotation: "$$ai.rotation",
-                    flipped: "$$ai.flipped",
-                    copies: "$$ai.copies",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }},
-    ]);
-
-    if (!jobRaw) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
-    const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
-    if (artboardItems.length === 0) {
-      const error = new Error("No artboard items found for this job") as CustomError;
-      error.statusCode = 422;
-      throw error;
-    }
-
-    /**
-     * The sheet is always the full artboard width — never a value read off the
-     * order item.
-     *
-     * `sheetWidthIn` sounds like the sheet's width and is not. The checkout
-     * writes it as the artwork's *bounding* width (`headerInfo.widthIn`, i.e.
-     * `max(bounds.maxX)`), because that is the area partner pricing charges
-     * for — see `computePartnerCostBreakdown`, which multiplies it into the
-     * square footage a partner is paid on. It is therefore load-bearing as a
-     * pricing figure and is deliberately left alone.
-     *
-     * Rendering onto it was the bug: item `posX` values are absolute against a
-     * 23.5" sheet, so a canvas sized to the artwork's bounding box put every
-     * x-coordinate in the wrong place and clipped whatever fell past the new
-     * right edge. That is the artboard/preview mismatch.
-     */
-    const sheetWidthIn = GANGSHEET_SHEET_WIDTH_IN;
-    const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
-      ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
-      ? gangsheetItem.heightIn : 23.5;
-
-    // Preserve croppedUrl — it is the trimmedUrl (full-res, server-processed) for normally
-    // uploaded assets, or a lossless PNG data URL for canvas-cropped / AI bg-removed items.
-    // Stripping it makes the export download the untrimmed original and squeeze it into the
-    // trimmed bounding box (fit:"fill"), producing a distorted / squished image.
-    const fullResItems = artboardItems.map((it: any) => ({
-      assetId: it.assetId,
-      croppedUrl: typeof it.croppedUrl === "string" ? it.croppedUrl : undefined,
-      widthIn: it.widthIn,
-      heightIn: it.heightIn,
-      posX: it.posX,
-      posY: it.posY,
-      rotation: it.rotation,
-      flipped: it.flipped,
-      copies: it.copies,
-    }));
-
-    // Cap DPI so the rendered PNG stays within PDFKit's safe loading limit (~700 MB raw RGBA).
-    // 175 M pixels × 4 bytes = 700 MB — safely under Node's 4 GB Buffer limit and PDFKit's
-    // internal decompression cap. For a 22"×22" sheet this gives exactly 600 DPI (print grade).
-    // For a 22"×60" roll it gives ~364 DPI. For the 98-foot roll (22"×1179") it gives ~83 DPI.
-    const MAX_PDF_SAFE_PIXELS = 175_000_000;
-    const pdfDpi = Math.max(10, Math.min(600,
-      Math.floor(Math.sqrt(MAX_PDF_SAFE_PIXELS / Math.max(0.01, sheetWidthIn * sheetHeightIn)))
-    ));
-
-    const rendered = await exportGangsheetPng24({
-      jobId: String(jobId),
-      printerId: String(printerId),
-      sheetWidthIn,
-      sheetHeightIn,
-      artboardItems: fullResItems,
-      dpi: pdfDpi,
-      cropToContent: true,
-      format: "png",
-      itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
-      sheetMarginIn: typeof gangsheetItem.sheetMarginIn === "number" ? gangsheetItem.sheetMarginIn : undefined,
-    });
-
-    const displayId = jobRaw.displayId
-      ? String(jobRaw.displayId)
-      : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
-
-    const PAGE_WIDTH_PTS  = rendered.sheet.widthIn  * 72;
-    const PAGE_HEIGHT_PTS = rendered.sheet.heightIn * 72;
-
-    // Build the PDF entirely in memory before sending.
-    // Piping doc directly to res causes ERR_STREAM_WRITE_AFTER_END if doc.image()
-    // throws: Express's error handler writes a JSON response to an already-piped
-    // stream. Buffering means the try/catch above owns the response cleanly.
-    const doc = new PDFDocument({ autoFirstPage: false, margin: 0, compress: false });
-    const pdfChunks: Buffer[] = [];
-    doc.on("data", (chunk: Buffer) => pdfChunks.push(chunk));
-
-    doc.addPage({ size: [PAGE_WIDTH_PTS, PAGE_HEIGHT_PTS], margin: 0 });
-    doc.image(rendered.filePath, 0, 0, { width: PAGE_WIDTH_PTS, height: PAGE_HEIGHT_PTS });
-
-    await new Promise<void>((resolve, reject) => {
-      doc.on("end", resolve);
-      doc.on("error", reject);
-      doc.end();
-    });
-
-    const pdfBuffer = Buffer.concat(pdfChunks);
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="gangsheet_${displayId}_preview.pdf"`);
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Length", String(pdfBuffer.length));
-    res.send(pdfBuffer);
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const exportPngForDownload = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
@@ -1866,6 +1639,7 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
               widthIn: "$$item.widthIn",
               heightIn: "$$item.heightIn",
               sheetWidthIn: "$$item.sheetWidthIn",
+              rollWidthIn: "$$item.rollWidthIn",
               sheetHeightIn: "$$item.sheetHeightIn",
               itemSpacingIn: "$$item.itemSpacingIn",
               sheetMarginIn: "$$item.sheetMarginIn",
@@ -1883,6 +1657,8 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
                     rotation: "$$ai.rotation",
                     flipped: "$$ai.flipped",
                     copies: "$$ai.copies",
+                    nestRotation: "$$ai.nestRotation",
+                    flowCols: "$$ai.flowCols",
                   },
                 },
               },
@@ -1919,15 +1695,11 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
         setProgress(5, "Preparing export...");
 
         /**
-         * The printed sheet is always the full artboard width.
-         *
-         * This used to fall back to `gangsheetItem.widthIn` when
-         * `sheetWidthIn` was absent — the *item's* width, not the sheet's,
-         * which on older orders produced an export a few inches wide with the
-         * artwork packed into it. Positions are stored relative to a 23.5"
-         * sheet, so the width has to be that or every x-coordinate is wrong.
+         * The printed sheet is the full roll width this order was built on —
+         * see `orderSheetWidthIn`. Never the item's own width, which on older
+         * orders produced an export a few inches wide with the artwork packed in.
          */
-        const sheetWidthIn = GANGSHEET_WIDTH_IN;
+        const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
         const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
           ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
           ? gangsheetItem.heightIn : 23.5;
@@ -1942,6 +1714,8 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
           rotation: typeof it.rotation === "number" ? it.rotation : 0,
           flipped: Boolean(it.flipped),
           copies: typeof it.copies === "number" ? it.copies : 1,
+          nestRotation: it.nestRotation,
+          flowCols: it.flowCols,
         }));
 
         setProgress(10, "Generating PNG...");
@@ -2245,7 +2019,9 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
     }));
 
     // Use the printer's business address as the ship-from address.
-    const printer = await User.findById(printerId).select("name companyName phone businessAddress").lean();
+    const printer = await User.findById(printerId)
+      .select("name companyName phone businessAddress shipStationWarehouseId")
+      .lean();
     const bAddr = (printer as any)?.businessAddress;
     const shipFrom = bAddr?.street
       ? {
@@ -2272,6 +2048,25 @@ export const createJobShippingLabel = async (req: Request, res: Response, next: 
       country: addr.country ?? "US",
       items,
       totalAmount: Number((job as any).pricing?.total ?? 0),
+      // This partner's own warehouse when the client has created one for them;
+      // null falls back to the HQ default inside the service.
+      warehouseId: (printer as any)?.shipStationWarehouseId ?? null,
+      // The parcel recorded when the order was placed, so the label declares
+      // the same thing the rate was quoted against. Falls back to deriving it
+      // for orders that predate the field.
+      parcel: (job as any).shippingQuote?.parcel?.weightLb
+        ? {
+            weightLb: Number((job as any).shippingQuote.parcel.weightLb),
+            lengthIn: Number((job as any).shippingQuote.parcel.lengthIn),
+            widthIn: Number((job as any).shippingQuote.parcel.widthIn),
+            heightIn: Number((job as any).shippingQuote.parcel.heightIn),
+          }
+        : await (async () => {
+            // The same roll rule the quote and the invoice use, so a label
+            // printed later describes the parcel the customer actually paid for.
+            const gp = await getGlobalPricing();
+            return deriveParcel(totalBillableSqFt((job as any).items || [], gp), gp.packaging);
+          })(),
     });
 
     const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
@@ -2380,7 +2175,9 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
     if (shippedNow) syncPartnerCapacitySafe(String(printerId));
 
     res.json({
-      orderId: job.id,
+      // `orderId` means the canonical DTF-#### number on every other printer
+      // endpoint; this one returned the raw ObjectId under the same name.
+      orderId: (job as any).displayId ? String((job as any).displayId) : job.id,
       trackingNumber: job.trackingNumber,
       updatedAt: job.updatedAt.toISOString()
     });
@@ -2391,27 +2188,22 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
 
 export const listPrinterOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const printerId = req.user?.id;
     const { status, q, limit = "30", cursor } = req.query;
 
     const query: any = { assignedPrinter: printerId };
 
-    const statusMap: { [key: string]: any } = {
-      "Pending Review": "PENDING",
-      "In Progress - Printing": ["PROCESSING", "PRINTING"],
-      "Print Shipping Label": ["QUALITY_CHECK"],
-      "Order Shipped": ["SHIPPED"],
-      "Completed": ["COMPLETED"],
-      "Cancelled": ["CANCELLED"]
-    };
-
-    if (status && statusMap[status as string]) {
-      const backendStatus = statusMap[status as string];
-      if (Array.isArray(backendStatus)) {
-        query.status = { $in: backendStatus };
-      } else {
-        query.status = backendStatus;
-      }
+    /*
+     * The shared vocabulary, not a second copy. This map had PROCESSING under
+     * "In Progress - Printing" while `PRINTER_STATUS_LABEL` puts it under
+     * "Pending Review" — on purpose, because a partner has not started a
+     * PROCESSING job. So one job read two different ways depending on which page
+     * you were on, and this page told them it was on the press.
+     */
+    const requestedStatuses = statusesForPrinterLabel(status);
+    if (requestedStatuses) {
+      query.status = { $in: requestedStatuses };
     }
 
     if (typeof q === "string" && q.trim()) {
@@ -2472,8 +2264,11 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const statusDescription = (label: string) => {
       if (label === "Pending Review") return "Review artwork and accept this job";
       if (label === "In Progress - Printing") return "Currently printing";
-      if (label === "Print Shipping Label") return "Label being generated via ShipStation";
-      if (label === "Completed") return "Job completed successfully";
+      if (label === "Print Shipping Label") return "Ready to ship — print the label";
+      // "Order Shipped" had no case and fell through to an empty string, so the
+      // one status a partner most wants confirmed said nothing.
+      if (label === "Order Shipped") return "On its way to the customer";
+      if (label === "Completed") return "Delivered and complete";
       if (label === "Cancelled") return "This job has been cancelled";
       return "";
     };
@@ -2482,7 +2277,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const pageOrders = hasNextPage ? orders.slice(0, pageSize) : orders;
 
     const formattedOrders = pageOrders.map((order) => {
-      const firstItem = order.items[0] || {};
+      const firstItem = (Array.isArray(order.items) ? order.items[0] : null) || ({} as any);
       const sheetSize = (firstItem.widthIn && firstItem.heightIn)
         ? `${firstItem.widthIn}x${firstItem.heightIn}`
         : "N/A";
@@ -2491,13 +2286,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         ? `${order.shippingAddress.city}, ${order.shippingAddress.state}`
         : "N/A";
 
-      let displayStatus: any = order.status;
-      for (const [label, val] of Object.entries(statusMap)) {
-        if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
-          displayStatus = label;
-          break;
-        }
-      }
+      const displayStatus = printerStatusLabel(order.status);
 
       const thumbnail = typeof firstItem.previewImage === "string" && firstItem.previewImage
         ? firstItem.previewImage
@@ -2506,12 +2295,12 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       const orderId = String((order as any)._id);
       // Due date follows the fulfilment deadline (assignment + 24h), not the
       // order's creation time.
-      const deadlineIso = resolveOrderDeadlineIso(order as any);
+      const deadlineIso = resolveOrderDeadlineIso(order as any, slaAcceptHours);
       return {
         id: orderId,
         actualId: orderId,
         displayId: (order as any)?.displayId ? String((order as any).displayId) : null,
-        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+        customerName: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "—",
         sheetSize,
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
         location,
@@ -2521,7 +2310,6 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         assignedAt: (order as any).assignedAt ? new Date((order as any).assignedAt).toISOString() : null,
         createdAt: order.createdAt ? new Date(order.createdAt).toISOString() : null,
         isUrgent: order.priority === "URGENT",
-        hasWarning: false,
         statusDescription: statusDescription(displayStatus),
         thumbnail,
       };
@@ -2541,6 +2329,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
 
 export const getPrinterJobOverview = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
     const { jobId } = req.params as any;
     const printerId = req.user?.id;
     const id = Array.isArray(jobId) ? String(jobId[0] || "") : String(jobId || "");
@@ -2610,27 +2399,35 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
     const currency = String(storedPricing.currency || "USD");
 
     // Use the same cost formula the admin sees: printer's configured rate applied to sheet dimensions.
-    const printerUser = await User.findById(printerId).select("settings.pricing").lean();
-    const partnerPricing = (printerUser as any)?.settings?.pricing || {};
-    const breakdown = computePartnerCostBreakdown({
-      items: Array.isArray((job as any).items) ? (job as any).items : [],
-      partnerPricing,
-      priority: (job as any).priority,
-      adjustments: (job as any)?.pricing?.adjustments || [],
-    });
-    const earning = breakdown.subtotal > 0 ? breakdown.subtotal : roundMoney(calcEarning(job));
+    // The partner sees the same rate everyone is paid; they do not set it.
+    const partnerPricing = await getPartnerPayRate();
+    // Same single definition — see `partnerEarnings.service`.
+    const breakdown = getOrderPartnerCostBreakdown(job, partnerPricing);
+    const earning = roundMoney(breakdown.subtotal);
+    // Whether a cost can be derived at all: an order whose items carry no
+    // printable dimensions has an unknown payout, not a zero one.
+    const earningDerivable = canDerivePartnerEarning(job);
 
     res.json({
       id: String((job as any)._id),
       orderId: (job as any)?.displayId ? String((job as any).displayId) : String((job as any)._id),
       displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
       status: String((job as any).status),
+      /*
+       * The label, decided here. The page carried its OWN fourth copy of the
+       * status vocabulary which disagreed with the shared map twice — it called
+       * a PROCESSING job "In Progress - Printing" (the shared map says Pending
+       * Review, because the partner has not started it) and COMPLETED
+       * "Delivered". So one order read differently on Home, on Jobs & Orders,
+       * and on its own detail page.
+       */
+      statusLabel: printerStatusLabel((job as any).status),
       priority: String((job as any).priority || "NORMAL"),
       createdAt: (job as any).createdAt,
       updatedAt: (job as any).updatedAt,
       assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
       // ISO fulfilment deadline (assignment + 24h); frontend renders a countdown.
-      deadline: resolveOrderDeadlineIso(job as any),
+      deadline: resolveOrderDeadlineIso(job as any, slaAcceptHours),
       faceThumbnail,
       customer: {
         name: `${(job as any).customer?.firstName || ""} ${(job as any).customer?.lastName || ""}`.trim(),
@@ -2653,24 +2450,39 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         actorId: t.actorId || null,
         actorName: t.actorName ?? null
       })),
+      /*
+       * `payment.status` used to answer "secured" for every order that was not
+       * cancelled. Nothing on the order records whether the customer's payment
+       * actually succeeded — `payment` holds a method and an unverified
+       * `paymentIntentId` and no captured flag — so "Payment secured" was a
+       * reassurance the server had no basis for. A partner is paid by the
+       * platform regardless of the customer's card, so it was never their
+       * question to begin with; only the method is reported now.
+       */
       payment: {
         method: (job as any).payment?.method || null,
-        status: String((job as any).status || "").toUpperCase() === "CANCELLED" ? "cancelled" : "secured"
       },
+      /*
+       * The real breakdown, not three hardcoded zeros. `rushFee` was reported as
+       * 0 while the rush pay was folded into the total — so an urgent job paid
+       * a surcharge the partner could see in the sum and not in the line, and
+       * the admin's order page named a rush fee this page denied. `tax` and
+       * `commission` were likewise flat zeros dressed as a calculation.
+       */
       pricing: {
-        subtotal: earning,
+        base: roundMoney(breakdown.base),
+        rushFee: roundMoney(breakdown.rushFee),
+        specialInkFee: roundMoney(breakdown.specialInkFee),
         partnerCost: earning,
-        rushFee: 0,
-        shippingCost: null,
-        tax: 0,
         total: earning,
-        currency
+        currency,
       },
       earnings: {
-        gross: earning,
-        commission: 0,
         net: earning,
-        currency
+        // Partners are paid once a job ships, so before that this is a forecast.
+        realized: isPartnerEarningRealized(job),
+        derivable: earningDerivable,
+        currency,
       },
       warnings: { hasWarning },
       // Shipping & ShipStation fields — needed by the printer app to show tracking info
@@ -2714,14 +2526,26 @@ export const getPrinterOrdersSummary = async (req: Request, res: Response, next:
       Order.countDocuments({
         assignedPrinter: printerId,
         priority: "URGENT",
-        status: { $in: ["PENDING", "PROCESSING", "PRINTING"] }
+        // The same "still live" set the capacity meter and Home use.
+        status: { $in: ACTIVE_ORDER_STATUSES as any },
       })
     ]);
 
     const byStatus = new Map<string, number>(counts.map((c: any) => [String(c._id), Number(c.count || 0)]));
-    const pendingReview = (byStatus.get("PENDING") || 0);
-    const inProgress = (byStatus.get("PROCESSING") || 0) + (byStatus.get("PRINTING") || 0);
-    const ready = (byStatus.get("QUALITY_CHECK") || 0);
+
+    /*
+     * Grouped by the same labels the list and every other surface use, so a tab
+     * count and the rows under it can never describe different sets. PROCESSING
+     * counted as "In Progress" here while the shared vocabulary calls it Pending
+     * Review — so the Pending tab under-counted and In Progress over-counted, by
+     * exactly the jobs a partner had been given and not yet started.
+     */
+    const countFor = (label: string) =>
+      (statusesForPrinterLabel(label) || []).reduce((sum, st) => sum + (byStatus.get(st) || 0), 0);
+
+    const pendingReview = countFor("Pending Review");
+    const inProgress = countFor("In Progress - Printing");
+    const ready = countFor("Print Shipping Label");
     const shipped = (byStatus.get("SHIPPED") || 0);
     const completed = (byStatus.get("COMPLETED") || 0);
     const cancelled = (byStatus.get("CANCELLED") || 0);
@@ -2763,7 +2587,11 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     }
 
     const allowedLabels: Record<string, string> = {
-      "Pending Review": "PENDING",
+      // PROCESSING, not PENDING: the job is still assigned to this partner —
+      // they are moving it back to "not started", not releasing it. PENDING now
+      // means "no partner attached", so mapping here would have produced an
+      // order that was pending and assigned at the same time.
+      "Pending Review": "PROCESSING",
       "In Progress": "PRINTING",
       "In Progress - Printing": "PRINTING",
       "Print Shipping Label": "QUALITY_CHECK",
@@ -2852,15 +2680,13 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
       });
     }
 
-    const statusLabelMap: Record<string, string> = {
-      PENDING: "Pending Review",
-      PRINTING: "In Progress - Printing",
-      QUALITY_CHECK: "Print Shipping Label",
-      SHIPPED: "Confirmed for Pickup",
-      COMPLETED: "Completed",
-      CANCELLED: "Cancelled",
-    };
-    const statusLabel = statusLabelMap[next] || next;
+    /*
+     * The shared map again. This copy called SHIPPED "Confirmed for Pickup" and
+     * had no entry for PROCESSING at all — so the notification a partner
+     * received named the new status differently from every screen they could
+     * open to look at it.
+     */
+    const statusLabel = printerStatusLabel(next);
     notifyPrinter({
       printerId: String(printerId),
       category: "jobs",
@@ -3085,22 +2911,9 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
       throw error;
     }
 
-    const statusMap: { [key: string]: any } = {
-      "Pending Review": "PENDING",
-      "In Progress - Printing": ["PROCESSING", "PRINTING"],
-      "Print Shipping Label": ["QUALITY_CHECK"],
-      "Order Shipped": ["SHIPPED"],
-      "Completed": ["COMPLETED"],
-      "Cancelled": ["CANCELLED"]
-    };
-
-    let displayStatus: any = order.status;
-    for (const [label, val] of Object.entries(statusMap)) {
-      if (Array.isArray(val) ? val.includes(order.status) : val === order.status) {
-        displayStatus = label;
-        break;
-      }
-    }
+    // The shared map. This held its own copy with PROCESSING under
+    // "In Progress - Printing" — the same disagreement the job list had.
+    const displayStatus = printerStatusLabel(order.status);
 
     res.json({
       id: order.id,
@@ -3116,199 +2929,197 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
   }
 };
 
-export const getEarningsSummary = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const printerId = req.user?.id;
-    const { range = "30d" } = req.query;
+/*
+ * `getEarningsSummary` was removed from the printer controller.
+ *
+ * No client ever called `/printer/earnings/summary` — the Earnings page reads
+ * `/payouts/printer/summary` for its cards and `/printer/earnings/jobs` for its
+ * table. It also computed with the old customer-price `calcEarning`, so had
+ * anything started calling it, it would have disagreed with both. The admin
+ * controller keeps its own `getEarningsSummary`, which is live and is what
+ * `earningsChartBuckets.test.ts` pins.
+ */
 
-    let startDate: Date;
-    const now = new Date();
-    if (range === "7d") {
-      startDate = new Date(now.setDate(now.getDate() - 7));
-    } else if (range === "all") {
-      startDate = new Date(0);
-    } else {
-      startDate = new Date(now.setDate(now.getDate() - 30));
+/**
+ * The rows behind the earnings table, shared with the CSV export so the file a
+ * partner downloads is the table they are looking at.
+ *
+ * The Export button sat above this table, named its file `earnings-export.csv`,
+ * and called the PAYOUT-history endpoint — which returns a row per Stripe
+ * payout. With no payouts in existence it downloaded a header and nothing else.
+ */
+const buildEarningsRows = async (
+  printerId: string,
+  range: unknown,
+  status: unknown,
+) => {
+
+    const partnerPricing = await getPartnerPayRate();
+
+    /*
+     * Which of this partner's orders are already committed to a payout, and at
+     * what stage. "Paid" used to mean nothing more than SHIPPED — so with no
+     * payouts in existence at all, every shipped job displayed as Paid to a
+     * partner who had never been paid a penny.
+     */
+    const payouts = await Payout.find({
+      printerId: new mongoose.Types.ObjectId(String(printerId)),
+    })
+      .select("orderIds status")
+      .lean();
+
+    const paidOrderIds = new Set<string>();
+    const scheduledOrderIds = new Set<string>();
+    for (const p of payouts as any[]) {
+      const ids = (p.orderIds || []).map((id: any) => String(id));
+      if (p.status === "paid") ids.forEach((id: string) => paidOrderIds.add(id));
+      else if (["pending_review", "approved", "processing"].includes(String(p.status))) {
+        ids.forEach((id: string) => scheduledOrderIds.add(id));
+      }
     }
 
-    const orders = await Order.find({
-      assignedPrinter: printerId,
-      status: { $nin: ["CANCELLED", "REJECTED"] },
-      createdAt: { $gte: startDate }
-    }).select("items pricing status createdAt").lean();
+  const query: any = { assignedPrinter: printerId, status: { $nin: ["CANCELLED"] } };
 
-    let revenue = 0;
-    let paidOut = 0;
-    let pending = 0;
+    const orders = await Order.find(query)
+      .select("displayId items pricing priority status statusTimeline updatedAt createdAt customer")
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .lean();
 
-    const dailyRevenue: { [key: string]: number } = {};
+    const FINISHED = ["SHIPPED", "COMPLETED"];
 
-    orders.forEach(order => {
-      const amount = calcEarning(order);
-      revenue += amount;
+    const rows = orders.map((order: any) => {
+      const id = String(order._id);
+      const isFinished = FINISHED.includes(String(order.status));
 
-      if (["COMPLETED", "SHIPPED"].includes(String(order.status))) {
-        paidOut += amount;
-      } else {
-        pending += amount;
-      }
+      /*
+       * Four states that line up with the four summary cards above the table,
+       * so the rows add up to the totals instead of describing something else:
+       *   Pending   — not shipped yet, so not earned yet
+       *   Available — shipped, not yet in a payout (this is Available Balance)
+       *   Scheduled — in a payout that is being reviewed or processed
+       *   Paid      — in a payout that actually paid out
+       */
+      let payoutStatus: "Paid" | "Scheduled" | "Available" | "Pending";
+      if (paidOrderIds.has(id)) payoutStatus = "Paid";
+      else if (scheduledOrderIds.has(id)) payoutStatus = "Scheduled";
+      else if (isFinished) payoutStatus = "Available";
+      else payoutStatus = "Pending";
 
-      const dateKey = new Date(order.createdAt).toISOString().split("T")[0];
-      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + amount;
+      // The real completion moment from the timeline, not `updatedAt` — which
+      // any later edit bumps, and which is not a completion date at all for a
+      // job that has not shipped.
+      const completedAt = isFinished ? getOrderCompletionDate(order) : null;
+
+      const items: any[] = Array.isArray(order.items) ? order.items : [];
+      const firstName = items[0]?.name || items[0]?.type || "Print Job";
+
+      return {
+        // Both: the real id so a row can link to the job, and the human number.
+        id,
+        displayId: order.displayId ? String(order.displayId) : null,
+        customer:
+          `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "—",
+        details: {
+          title: items.length > 1 ? `${firstName} +${items.length - 1} more` : firstName,
+          sub: `${items.reduce((s: number, i: any) => s + (i.quantity || 1), 0)} item(s)`,
+        },
+        // The partner's rate, the same figure Home and the payout summary use.
+        earning: calculateOrderPartnerEarning(order, partnerPricing),
+        completedAt: completedAt ? completedAt.toISOString() : null,
+        status: payoutStatus,
+        orderStatus: printerStatusLabel(String(order.status || "")),
+      };
     });
 
-    const points: { date: string, revenue: number }[] = [];
-    const dateRange = range === "all" ? 30 : (range === "7d" ? 7 : 30);
-    
-    const tempDate = new Date();
-    for (let i = 0; i < dateRange; i++) {
-      const d = new Date(tempDate);
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      points.push({
-        date: key,
-        revenue: dailyRevenue[key] || 0
-      });
+    /*
+     * Ranges filter on when a job was COMPLETED, not on `updatedAt`. "Today"
+     * meant "touched today" before, so editing a note on an old job pulled it
+     * into today's earnings. Unfinished jobs have no completion date and so sit
+     * outside every dated range, which is correct — they have earned nothing yet.
+     */
+    const now = Date.now();
+    const windowMs = range === "7d" ? 7 * 864e5 : range === "30d" ? 30 * 864e5 : null;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    let filtered = rows;
+    if (range === "today") {
+      filtered = rows.filter((r) => r.completedAt && new Date(r.completedAt) >= todayStart);
+    } else if (range === "ytd") {
+      // Calendar year to date — the same window the dashboard's YTD uses, so
+      // the two pages answer the same question the same way. Not a rolling
+      // 365 days, which would disagree with it every day but 1 January.
+      const yearStart = new Date(new Date().getFullYear(), 0, 1);
+      filtered = rows.filter((r) => r.completedAt && new Date(r.completedAt) >= yearStart);
+    } else if (windowMs) {
+      filtered = rows.filter((r) => r.completedAt && now - new Date(r.completedAt).getTime() <= windowMs);
     }
-    points.reverse();
 
-    res.json({
-      totals: {
-        revenue,
-        paidOut,
-        pending
-      },
-      trend: {
-        period: range,
-        points
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
+    if (status === "Paid") filtered = filtered.filter((r) => r.status === "Paid");
+    else if (status === "Pending") filtered = filtered.filter((r) => r.status === "Pending");
+    else if (status === "Available") filtered = filtered.filter((r) => r.status === "Available");
+    else if (status === "Scheduled") filtered = filtered.filter((r) => r.status === "Scheduled");
+
+  return {
+    jobs: filtered,
+    // So the table's own total can be shown without the client re-deriving it
+    // from formatted strings.
+    total: Math.round(filtered.reduce((s, r) => s + r.earning, 0) * 100) / 100,
+    count: filtered.length,
+  };
 };
 
 export const listEarningsJobs = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user?.id;
-    const { range = "all", status } = req.query;
-
-    const query: any = { assignedPrinter: printerId };
-    const now = new Date();
-    if (range === "today") {
-      const start = new Date(now);
-      start.setHours(0, 0, 0, 0);
-      query.updatedAt = { $gte: start };
-    } else if (range === "7d") {
-      query.updatedAt = { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) };
-    } else if (range === "30d") {
-      query.updatedAt = { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
-    }
-
-    if (status === "Paid") {
-      query.status = { $in: ["SHIPPED", "COMPLETED"] };
-    } else if (status === "Pending") {
-      query.status = { $nin: ["SHIPPED", "COMPLETED", "CANCELLED", "REJECTED"] };
-    } else {
-      query.status = { $nin: ["CANCELLED", "REJECTED"] };
-    }
-
-    const orders = await Order.find(query)
-      .select("displayId items pricing status updatedAt customer")
-      .sort({ updatedAt: -1 })
-      .lean();
-
-    const jobs = orders.map(order => {
-      const items: any[] = Array.isArray((order as any).items) ? (order as any).items : [];
-
-      const earning = calcEarning(order);
-
-      const isPaid = ["SHIPPED", "COMPLETED"].includes(String(order.status));
-
-      const firstName = items[0]?.name || items[0]?.type || "Print Job";
-      const detailsTitle = items.length > 1 ? `${firstName} +${items.length - 1} more` : firstName;
-      const detailsSub = `${items.reduce((s: number, i: any) => s + (i.quantity || 1), 0)} item(s)`;
-
-      return {
-        id: (order as any).displayId || String((order as any)._id),
-        customer: `${(order as any).customer?.firstName || ""} ${(order as any).customer?.lastName || ""}`.trim() || "—",
-        details: { title: detailsTitle, sub: detailsSub },
-        earning: Number(earning.toFixed(2)),
-        completed: new Date((order as any).updatedAt).toISOString().split("T")[0],
-        status: isPaid ? "Paid" : "Pending",
-      };
-    });
-
-    res.json({ jobs });
+    res.json(await buildEarningsRows(String(req.user?.id), req.query.range ?? "all", req.query.status));
   } catch (error) {
     next(error);
   }
 };
 
-export const requestPayout = async (req: Request, res: Response, next: NextFunction) => {
+/** The same rows, as a CSV. */
+export const exportEarningsCsv = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const printerId = req.user?.id;
-    const { amount, method } = req.body;
+    const { jobs, total } = await buildEarningsRows(
+      String(req.user?.id),
+      req.query.range ?? "all",
+      req.query.status,
+    );
 
-    const allowedMethods = ["bank_transfer", "paypal", "check"];
-    if (!method || !allowedMethods.includes(method)) {
-      const error = new Error("Invalid payout method. Must be: bank_transfer | paypal | check") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
+    // Quoted and internally-escaped: customer names carry commas and quotes,
+    // and an unescaped one shifts every later column on that row.
+    const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = [
+      ["Order", "Customer", "Job", "Items", "Completed", "Job status", "Payout status", "Your earning"]
+        .map(cell)
+        .join(","),
+      ...jobs.map((j: any) =>
+        [
+          j.displayId || j.id,
+          j.customer,
+          j.details.title,
+          j.details.sub,
+          j.completedAt ? new Date(j.completedAt).toISOString().split("T")[0] : "",
+          j.orderStatus,
+          j.status,
+          j.earning.toFixed(2),
+        ].map(cell).join(","),
+      ),
+      ["", "", "", "", "", "", "Total", total.toFixed(2)].map(cell).join(","),
+    ].join("\n");
 
-    if (!amount || amount <= 0) {
-      const error = new Error("Payout amount must be greater than zero") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const orders = await Order.find({
-      assignedPrinter: printerId,
-      status: { $in: ["SHIPPED", "COMPLETED"] }
-    }).select("items pricing").lean();
-
-    const totalAvailable = orders.reduce((sum, order) => sum + calcEarning(order), 0);
-
-    if (amount > totalAvailable) {
-      const error = new Error(`Insufficient balance. Available pending earnings: $${totalAvailable.toFixed(2)}`) as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const requestId = `payout_${Math.random().toString(36).substring(2, 9)}`;
-
-    res.status(201).json({
-      requestId,
-      status: "Requested",
-      amount: Number(amount.toFixed(2))
-    });
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="earnings-${new Date().toISOString().split("T")[0]}.csv"`,
+    );
+    res.send(csv);
   } catch (error) {
     next(error);
   }
 };
 
-export const confirmPayoutRequest = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { requestId } = req.params;
-
-    res.json({
-      requestId,
-      status: "Confirmed",
-      confirmedAt: new Date().toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getPrinterEarnings = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    res.json({ message: "Printer earnings blueprint" });
-  } catch (error) {
-    next(error);
-  }
-};
 
 export const getPrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -3321,8 +3132,25 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
-    // Real-time job count
-    const totalJobs = await Order.countDocuments({ assignedPrinter: printerId });
+    /*
+     * Cancelled and rejected orders excluded. This counted every order ever
+     * pointed at the partner, so work that was pulled back or that they turned
+     * down still inflated their "Total Jobs" — a number they are judged on.
+     */
+    const totalJobs = await Order.countDocuments({
+      assignedPrinter: printerId,
+      status: { $nin: ["CANCELLED", "REJECTED"] },
+    });
+
+    /*
+     * The real figures, from the same service the admin's partner page reads.
+     *
+     * `user.performance` was returned here before. Nothing in the server ever
+     * writes it — it is {0, 0, 0} on every partner — and the Profile page
+     * rendered those zeros as "< 2 hours" response time and "Top 10%". A
+     * partner was being shown invented statistics about their own business.
+     */
+    const performance = await computePartnerPerformance(String(printerId));
 
     // Fallback for address synchronization
     const businessAddress: any = user.businessAddress?.street 
@@ -3358,11 +3186,13 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
         verified: (businessAddress as any).verified || false
       },
       certifications: user.certifications || [],
-      badges: user.badges || [],
-      performance: user.performance || {
-        completionRate: 0,
-        responseTime: 0,
-        customerRating: user.rating || 0
+      // Nulls where there is no sample yet, so the client can say "no completed
+      // jobs yet" instead of printing a zero that reads as a bad score.
+      performance: {
+        averageProductionHours: performance.averageProductionHours,
+        onTimeDeliveryRate: performance.onTimeDeliveryRate,
+        sampleSize: performance.sampleSize,
+        rating: typeof user.rating === "number" ? user.rating : null,
       }
     });
   } catch (error) {
@@ -3391,18 +3221,76 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    if (name) user.name = name;
-    if (businessName) user.companyName = businessName;
-    if (phone) user.phone = phone;
-    if (website) user.website = website;
+    /*
+     * Keyed on `undefined`, not on truthiness.
+     *
+     * `if (website)` meant an empty string was skipped, so a partner who
+     * mistyped their website could never remove it — the field was
+     * write-once-then-permanent. Same for name and phone. `undefined` means
+     * "not sent"; an empty string is a deliberate clear.
+     */
+    if (typeof name === "string" && name.trim()) user.name = name.trim();
+    if (typeof businessName === "string" && businessName.trim()) user.companyName = businessName.trim();
+
+    if (phone !== undefined) {
+      const trimmed = String(phone ?? "").trim();
+      /*
+       * The same rule signup and the storefront enforce, from the shared
+       * validator. This endpoint accepted anything, so a partner could sign up
+       * with a valid number and then replace it with "asdf" — and their phone
+       * is what goes on the shipping label.
+       */
+      if (trimmed && !isValidPhone(trimmed)) {
+        const error = new Error("Enter a valid phone number") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      user.phone = trimmed;
+    }
+
+    if (website !== undefined) user.website = String(website ?? "").trim();
     
     if (businessDetails) {
       user.businessDetails = { ...user.businessDetails, ...businessDetails };
     }
     
+    const regionBefore = Array.isArray(user.regions) ? user.regions[0] ?? null : null;
+
     if (businessAddress) {
-      // Merge new fields onto the existing address first
-      const merged = { ...(user.businessAddress as any || {}), ...businessAddress };
+      /*
+       * Merged field by field, not by spreading the stored subdocument.
+       *
+       * `{ ...user.businessAddress }` on a Mongoose subdocument copies
+       * `coordinates` across as an own key holding `undefined`, and the save
+       * then fails casting undefined to an Object:
+       *
+       *   ValidationError: businessAddress.coordinates: Cast to Object failed
+       *   for value "undefined" at path "businessAddress.coordinates"
+       *
+       * So *every* attempt to change a business address answered 500. Nobody
+       * had noticed because no client sends one — but a partner's address sets
+       * their region and the shipping origin on their labels, so this is the
+       * update that matters most.
+       */
+      const existing = (user.businessAddress as any) ?? {};
+      const pick = (next: unknown, current: unknown) =>
+        next === undefined ? current : next === null || next === "" ? "" : String(next).trim();
+
+      const merged: any = {
+        street: pick(businessAddress.street, existing.street),
+        city: pick(businessAddress.city, existing.city),
+        state: pick(businessAddress.state, existing.state),
+        postalCode: pick(businessAddress.postalCode, existing.postalCode),
+        country: pick(businessAddress.country, existing.country),
+        // Any edit invalidates a previous verification — it is no longer the
+        // address that was checked.
+        verified: false,
+      };
+      // Only carried when it actually exists; assigning undefined is the bug above.
+      if (existing.coordinates?.lat != null && existing.coordinates?.lng != null) {
+        merged.coordinates = { lat: existing.coordinates.lat, lng: existing.coordinates.lng };
+      }
+
       user.businessAddress = merged;
 
       // Re-geocode and recalculate region whenever the address changes
@@ -3453,11 +3341,112 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
       }
     }
 
-    if (certifications) {
-      user.certifications = certifications;
+    if (certifications !== undefined) {
+      /*
+       * Validated here, not only in the browser.
+       *
+       * These went straight onto the document, so a bad date reached Mongoose
+       * and came back as an unhandled ValidationError — a 500 and a generic
+       * "Something went wrong" for what is a form mistake. The console
+       * validates the same three fields; this is the half that was missing.
+       */
+      if (!Array.isArray(certifications)) {
+        const error = new Error("Certifications must be a list") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const cleaned = certifications.map((c: any, i: number) => {
+        const name = String(c?.name ?? "").trim();
+        const authority = String(c?.authority ?? "").trim();
+        if (!name || !authority) {
+          const error = new Error(
+            `Certification ${i + 1} needs both a name and an issuing authority`,
+          ) as CustomError;
+          error.statusCode = 400;
+          throw error;
+        }
+
+        const parseDate = (value: unknown, label: string, required: boolean) => {
+          if (value === undefined || value === null || value === "") {
+            if (!required) return undefined;
+            const error = new Error(`Certification ${i + 1} needs a ${label}`) as CustomError;
+            error.statusCode = 400;
+            throw error;
+          }
+          const d = new Date(value as string);
+          if (Number.isNaN(d.getTime())) {
+            const error = new Error(`Certification ${i + 1} has an invalid ${label}`) as CustomError;
+            error.statusCode = 400;
+            throw error;
+          }
+          return d;
+        };
+
+        const date = parseDate(c?.date, "issue date", true)!;
+        const expiryDate = parseDate(c?.expiryDate, "expiry date", false);
+        if (expiryDate && expiryDate < date) {
+          const error = new Error(
+            `Certification ${i + 1} expires before it was issued`,
+          ) as CustomError;
+          error.statusCode = 400;
+          throw error;
+        }
+
+        return {
+          name,
+          authority,
+          date,
+          expiryDate,
+          verificationCode: c?.verificationCode ? String(c.verificationCode).trim() : undefined,
+          documentUrl: c?.documentUrl ? String(c.documentUrl).trim() : undefined,
+        };
+      });
+
+      user.certifications = cleaned as any;
     }
 
     await user.save();
+
+    /*
+     * A partner moving premises changes which region they serve, and therefore
+     * which orders can be routed to them and what origin their labels declare.
+     * That used to happen silently. Admins are told, for the same reason they
+     * are told about an availability change — it alters who work can go to.
+     */
+    const regionAfter = Array.isArray(user.regions) ? user.regions[0] ?? null : null;
+
+    /*
+     * Push the change to every open admin console.
+     *
+     * A partner's company name, phone, website, address and region are all
+     * shown on the admin's partner pages, and all of them are now editable by
+     * the partner. Without this an admin reading a partner's details could be
+     * looking at an address they no longer print from — the console had no way
+     * to learn the record had moved under it.
+     */
+    broadcastToAllAdmins("partner.profile_updated", {
+      partnerId: String(user._id),
+      name: user.companyName || user.name,
+      contactName: user.name,
+      phone: user.phone || null,
+      website: user.website || null,
+      regions: user.regions || [],
+      regionChanged: Boolean(businessAddress) && regionAfter !== regionBefore,
+    });
+
+    if (businessAddress && regionAfter !== regionBefore) {
+      notifyAllAdmins({
+        category: "partners",
+        priority: "medium",
+        title: "Partner changed their service region",
+        message:
+          `${user.companyName || user.name} updated their business address, moving them from ` +
+          `${regionBefore || "no region"} to ${regionAfter || "no region"}. Orders are routed by region, ` +
+          `so this changes what they can be assigned.`,
+        meta: { partnerId: String(user._id), regionBefore, regionAfter },
+      }).catch(() => {});
+    }
 
     res.json({
       message: "Profile updated successfully",
@@ -3490,24 +3479,8 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
     }
 
     const settings = user.settings || {};
-    const paymentMethod = settings.paymentMethod || {};
-
-    const accountMasked = paymentMethod.accountNumber 
-      ? `****${paymentMethod.accountNumber.slice(-4)}`
-      : (paymentMethod.paypalEmail || "N/A");
-
-    const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
 
     res.json({
-      businessHours: settings.businessHours || { 
-        monday: { ...defaultHours, isOpen: true }, 
-        tuesday: { ...defaultHours, isOpen: true }, 
-        wednesday: defaultHours, 
-        thursday: defaultHours, 
-        friday: defaultHours, 
-        saturday: defaultHours, 
-        sunday: defaultHours 
-      },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
       notifications: {
         email: {
@@ -3515,19 +3488,7 @@ export const getPrinterSettings = async (req: Request, res: Response, next: Next
           orderUpdates:   settings.notifications?.email?.orderUpdates   ?? true,
           payoutAlerts:   settings.notifications?.email?.payoutAlerts   ?? true,
           accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
-          systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-      },
-      paymentMethod: {
-        type: paymentMethod.type || "bank_transfer",
-        accountMasked,
-      },
-      printingCapabilities: settings.printingCapabilities || {
-        maxSheetSizeIn: { width: 24, height: 19.5 },
-        supportedInks: ["CMYK", "White", "Neon", "Metallic"],
-        supportedFilms: ["Hot Peel", "Cold Peel", "Super Cold Peel"],
-        supportedFormats: ["PNG", "PDF", "TIFF"],
-        maxResolutionDPI: 1200,
       },
     });
   } catch (error) {
@@ -3559,37 +3520,13 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
       }
     };
 
-    if (updateData.paymentMethod && updateData.paymentMethod.account) {
-      const { routing, number } = updateData.paymentMethod.account;
-      if (!user.settings.paymentMethod) user.settings.paymentMethod = {};
-      if (routing) user.settings.paymentMethod.routingNumber = routing;
-      if (number) user.settings.paymentMethod.accountNumber = number;
-      delete updateData.paymentMethod.account;
-    }
-
     deepMerge(user.settings, updateData);
 
     user.markModified("settings");
     await user.save();
 
     const settings = user.settings || {};
-    const paymentMethod = settings.paymentMethod || {};
-    const accountMasked = paymentMethod.accountNumber 
-      ? `****${paymentMethod.accountNumber.slice(-4)}`
-      : (paymentMethod.paypalEmail || "N/A");
-
-    const defaultHours = { isOpen: false, start: "9:00am", end: "6:00pm" };
-
     res.json({
-      businessHours: settings.businessHours || { 
-        monday: { ...defaultHours, isOpen: true }, 
-        tuesday: { ...defaultHours, isOpen: true }, 
-        wednesday: defaultHours, 
-        thursday: defaultHours, 
-        friday: defaultHours, 
-        saturday: defaultHours,  
-        sunday: defaultHours 
-      },
       jobCapacity: settings.jobCapacity || { maxConcurrent: 5, dailyMax: 50, autoAccept: true },
       notifications: {
         email: {
@@ -3597,19 +3534,7 @@ export const updatePrinterSettings = async (req: Request, res: Response, next: N
           orderUpdates:   settings.notifications?.email?.orderUpdates   ?? true,
           payoutAlerts:   settings.notifications?.email?.payoutAlerts   ?? true,
           accountUpdates: settings.notifications?.email?.accountUpdates ?? true,
-          systemAlerts:   settings.notifications?.email?.systemAlerts   ?? true,
         },
-      },
-      paymentMethod: {
-        type: paymentMethod.type || "bank_transfer",
-        accountMasked,
-      },
-      printingCapabilities: settings.printingCapabilities || {
-        maxSheetSizeIn: { width: 24, height: 19.5 },
-        supportedInks: ["CMYK", "White", "Neon", "Metallic"],
-        supportedFilms: ["Hot Peel", "Cold Peel", "Super Cold Peel"],
-        supportedFormats: ["PNG", "PDF", "TIFF"],
-        maxResolutionDPI: 1200,
       },
     });
   } catch (error) {
@@ -3848,6 +3773,7 @@ export const getAvailabilityStatus = async (req: Request, res: Response, next: N
       return res.json({
         availabilityStatus: sync.availabilityStatus,
         capacityLocked: sync.capacityLocked,
+        capacityPaused: sync.capacityPaused,
         activeJobs: sync.activeJobs,
         maxJobs: sync.maxJobs,
       });
@@ -3859,6 +3785,7 @@ export const getAvailabilityStatus = async (req: Request, res: Response, next: N
     res.json({
       availabilityStatus: (user as any).availabilityStatus ?? "open",
       capacityLocked: false,
+      capacityPaused: false,
       activeJobs: 0,
       maxJobs: null,
     });
@@ -3871,52 +3798,34 @@ export const updateAvailabilityStatus = async (req: Request, res: Response, next
     if (!printerId) { const e = new Error("Unauthorized") as any; e.statusCode = 401; throw e; }
 
     const { status } = req.body as { status?: string };
-    const valid = ["open", "paused", "stopped"] as const;
+    const valid = ["open", "paused"] as const;
     if (!status || !valid.includes(status as any)) {
-      const e = new Error("status must be one of: open, paused, stopped") as any;
+      const e = new Error("status must be one of: open, paused") as any;
       e.statusCode = 400;
       throw e;
     }
 
-    const user = await User.findById(printerId).select("settings.jobCapacity capacityPaused").lean();
-    if (!user) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
-
-    const settings = await getAssignmentSettings();
-    const maxJobs = getEffectiveMaxConcurrent(user as any, settings);
-    const activeJobs = await countActiveJobs(String(printerId));
-    const atCapacity = maxJobs != null && activeJobs >= maxJobs;
-
-    // Block manually switching back to Open while at maximum capacity. A 409 keeps
-    // the session alive and surfaces a clear reason to the printer.
-    if (status === "open" && atCapacity) {
-      return res.status(409).json({
-        code: "AT_MAX_CAPACITY",
-        message:
-          `You're at your maximum of ${maxJobs} active ${maxJobs === 1 ? "job" : "jobs"}. ` +
-          `You'll be set back to Open automatically once your active job count drops below ${maxJobs}.`,
-        availabilityStatus: "paused",
-        capacityLocked: true,
-        activeJobs,
-        maxJobs,
-      });
-    }
-
-    // A manual status change is an explicit override, so clear the capacity-pause
-    // flag — the system won't later auto-reopen a partner who paused themselves.
-    await User.updateOne(
-      { _id: new mongoose.Types.ObjectId(printerId) },
-      { $set: { availabilityStatus: status, capacityPaused: false } }
-    );
-
-    // Keep the admin dashboard's partner list in sync in real time.
-    broadcastToAllAdmins("partner.availability_changed", {
+    /*
+     * Routed through the shared service so a partner pausing themselves reaches
+     * the admin console and their own other sessions. This used to update the
+     * row and broadcast to admins who had no handler for it, and push nothing
+     * back to the partner — so a change made in one tab left every other tab
+     * showing a stale pill until refresh.
+     */
+    const result = await changePartnerAvailability({
       partnerId: String(printerId),
-      availabilityStatus: status,
-      capacityLocked: false,
-      activeJobs,
-      maxJobs,
+      to: status as "open" | "paused",
+      actor: { id: String(printerId), name: (req.user as any)?.name || null, kind: "partner" },
     });
 
-    res.json({ availabilityStatus: status, capacityLocked: false, activeJobs, maxJobs });
+    if (!result) { const e = new Error("Printer not found") as any; e.statusCode = 404; throw e; }
+
+    res.json({
+      availabilityStatus: result.availabilityStatus,
+      capacityLocked: result.capacityLocked,
+      capacityPaused: result.capacityPaused,
+      activeJobs: result.activeJobs,
+      maxJobs: result.maxJobs,
+    });
   } catch (error) { next(error); }
 };

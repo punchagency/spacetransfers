@@ -100,9 +100,8 @@ describe("Same-region assignment succeeds", () => {
 // 2. Cross-region assignments are always rejected
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("Cross-region assignment is always rejected", () => {
+describe("Cross-region assignment happens only as a fallback", () => {
   const crossCases: Array<[string, string, string, string]> = [
-    // [customerState, printerState, customerRegion, printerRegion]
     ["TX", "CA", "South", "West"],
     ["TX", "WA", "South", "West"],
     ["TX", "NY", "South", "Northeast"],
@@ -121,33 +120,66 @@ describe("Cross-region assignment is always rejected", () => {
     ["IL", "FL", "Midwest", "South"],
   ];
 
+  // With nothing in the customer's own region the order is still fulfilled —
+  // an unassigned order helps nobody — but the result says plainly that it
+  // crossed a region, so the fact reaches the caller and the audit trail
+  // instead of being invisible.
   for (const [customerState, printerState, cr, pr] of crossCases) {
-    it(`${customerState} (${cr}) customer must NOT match ${printerState} (${pr}) printer`, () => {
+    it(`${customerState} (${cr}) falls back to ${printerState} (${pr}) when nothing is in-region`, () => {
       const candidates = [makeCandidate("p1", printerState)];
       const result = selectPrinterFromCandidates(customerState, candidates);
 
-      assert.equal(result.assigned, false, `Cross-region ${customerState}→${printerState} must be blocked`);
-      if (!result.assigned) {
+      assert.equal(result.assigned, true, `${customerState}\u2192${printerState} should fall back, not fail`);
+      if (result.assigned) {
         assert.equal(result.customerRegion, cr);
+        assert.equal(result.assignedRegion, pr);
+        assert.equal(result.isCrossRegion, true);
         assert.equal(result.candidatesSameRegion, 0);
-        assert.ok(
-          result.reason.includes("Cross-region") || result.reason.includes("No available"),
-          `Reason should mention cross-region or unavailability, got: "${result.reason}"`
-        );
       }
 
-      // Prove the regions are genuinely different
       assert.notEqual(getRegionFromState(customerState), getRegionFromState(printerState));
     });
   }
+
+  it("prefers the customer's own region whenever one is available", () => {
+    const candidates = [
+      makeCandidate("west", "CA", { distanceMiles: 10 }),
+      makeCandidate("south", "FL", { distanceMiles: 900 }),
+    ];
+    const result = selectPrinterFromCandidates("TX", candidates);
+
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
+      assert.equal(result.selected.printerId, "south");
+      assert.equal(result.isCrossRegion, false);
+      assert.equal(result.assignedRegion, "South");
+    }
+  });
+
+  it("follows the documented fallback order rather than picking the nearest", () => {
+    // South's chain is Midwest -> Northeast -> West. West is nearer here, but
+    // Midwest is earlier in the chain and must win.
+    const candidates = [
+      makeCandidate("west", "CA", { distanceMiles: 5 }),
+      makeCandidate("midwest", "IL", { distanceMiles: 2000 }),
+    ];
+    const result = selectPrinterFromCandidates("TX", candidates);
+
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
+      assert.equal(result.assignedRegion, "Midwest");
+      assert.equal(result.selected.printerId, "midwest");
+    }
+  });
 });
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. No printer available in the customer's region
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("No printer in region — order stays unassigned", () => {
-  it("South customer with only West/Northeast/Midwest printers → unassigned", () => {
+describe("Unassigned only when no candidate is usable at all", () => {
+  it("South customer with West/Northeast/Midwest printers falls back rather than failing", () => {
     const candidates = [
       makeCandidate("p1", "CA"), // West
       makeCandidate("p2", "NY"), // Northeast
@@ -156,48 +188,36 @@ describe("No printer in region — order stays unassigned", () => {
     ];
     const result = selectPrinterFromCandidates("TX", candidates);
 
-    assert.equal(result.assigned, false);
-    if (!result.assigned) {
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
       assert.equal(result.customerRegion, "South");
       assert.equal(result.candidatesConsidered, 4);
       assert.equal(result.candidatesSameRegion, 0);
-      assert.ok(result.reason.includes("No available printers in region (South)"));
+      assert.equal(result.isCrossRegion, true);
+      assert.equal(result.assignedRegion, "Midwest"); // first in South's chain
     }
   });
 
-  it("Northeast customer with only West printers → unassigned", () => {
-    const candidates = [makeCandidate("p1", "CA"), makeCandidate("p2", "OR")];
-    const result = selectPrinterFromCandidates("NY", candidates);
-
-    assert.equal(result.assigned, false);
-    if (!result.assigned) {
-      assert.equal(result.customerRegion, "Northeast");
-      assert.ok(result.reason.includes("Cross-region") || result.reason.includes("No available printers in region"));
-    }
-  });
-
-  it("Midwest customer with empty candidate list → unassigned", () => {
+  it("Midwest customer with an empty candidate list stays unassigned", () => {
     const result = selectPrinterFromCandidates("IL", []);
 
     assert.equal(result.assigned, false);
     if (!result.assigned) {
       assert.equal(result.customerRegion, "Midwest");
-      assert.equal(result.candidatesConsidered, 0);
-      assert.ok(result.reason.includes("No available printers"));
+      assert.match(result.reason, /No available printers/);
     }
   });
 
-  it("West customer with only South printers → unassigned", () => {
-    const candidates = [makeCandidate("p1", "TX"), makeCandidate("p2", "FL"), makeCandidate("p3", "GA")];
-    const result = selectPrinterFromCandidates("CA", candidates);
+  it("a candidate with no resolvable region is never usable", () => {
+    const orphan = makeCandidate("orphan", "TX");
+    orphan.printerRegion = null;
 
+    const result = selectPrinterFromCandidates("IL", [orphan]);
     assert.equal(result.assigned, false);
-    if (!result.assigned) {
-      assert.equal(result.customerRegion, "West");
-      assert.equal(result.candidatesSameRegion, 0);
-    }
   });
 });
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Unknown / non-US state → assignment blocked
@@ -285,10 +305,18 @@ describe("Address update recalculates region correctly", () => {
     // After update: customer is Northeast, printer is still South — must not match
     assert.notEqual(newCustomerRegion, printerRegion);
 
-    // Verify the updated assignment result reflects the new region
+    // Verify the updated assignment result reflects the new region: the TX
+    // printer is no longer an in-region match, so it can only be reached as a
+    // flagged cross-region fallback.
     const candidates = [makeCandidate("p1", "TX")];
     const result = selectPrinterFromCandidates(updatedCustomerState, candidates);
-    assert.equal(result.assigned, false, "TX printer must not match NY customer after address update");
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
+      assert.equal(result.customerRegion, "Northeast");
+      assert.equal(result.candidatesSameRegion, 0, "TX printer is not in-region for an NY customer");
+      assert.equal(result.isCrossRegion, true);
+      assert.equal(result.assignedRegion, "South");
+    }
   });
 
   it("After IL→CA update, CA printer now matches CA customer", () => {
@@ -522,9 +550,15 @@ describe("Backend bypass prevention", () => {
       printerRegion: normalizeRegion(getRegionFromState("TX")), // must be "South"
     };
 
-    // CA customer (West) must NOT match TX printer (South)
+    // CA customer (West) must not treat the TX printer as in-region — it is
+    // South by state, so it is only reachable as a flagged fallback.
     const result = selectPrinterFromCandidates("CA", [txPrinter]);
-    assert.equal(result.assigned, false);
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
+      assert.equal(result.candidatesSameRegion, 0, "TX printer is not in-region for a CA customer");
+      assert.equal(result.assignedRegion, "South");
+      assert.equal(result.isCrossRegion, true);
+    }
     assert.equal(txPrinter.printerRegion, "South", "TX state must always resolve to South");
   });
 
@@ -546,14 +580,15 @@ describe("Backend bypass prevention", () => {
     }
   });
 
-  it("Single-candidate pool: wrong region = no assignment, not a fallback selection", () => {
-    // Ensures the system never falls back to a cross-region printer just because it's the only one
+  it("Single-candidate pool: a lone out-of-region printer is used as a fallback", () => {
     const candidates = [makeCandidate("only-printer", "CA")]; // West only
     const result = selectPrinterFromCandidates("TX", candidates); // South customer
 
-    assert.equal(result.assigned, false, "Must NOT fall back to only cross-region printer");
-    if (!result.assigned) {
+    assert.equal(result.assigned, true);
+    if (result.assigned) {
       assert.equal(result.customerRegion, "South");
+      assert.equal(result.assignedRegion, "West");
+      assert.equal(result.isCrossRegion, true);
       assert.equal(result.candidatesSameRegion, 0);
     }
   });

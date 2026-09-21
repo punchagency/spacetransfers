@@ -1,18 +1,38 @@
 import multer from "multer";
 import { Request } from "express";
 
+/**
+ * Types any upload route will take. Each route may narrow further.
+ *
+ * PDF is here for partner certification documents (`/printer/profile/upload`).
+ * Artwork PDFs are refused by `uploadAsset` itself: the store renders each page
+ * to a PNG before uploading, because a stored PDF cannot be printed.
+ */
 const ALLOWED_TYPES: Record<string, string> = {
   "image/png": ".png",
   "image/jpeg": ".jpg",
   "image/svg+xml": ".svg",
+  "application/pdf": ".pdf",
 };
 
 const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   if (ALLOWED_TYPES[file.mimetype]) {
     cb(null, true);
-  } else {
-    cb(new Error("Unsupported file type. Please use PNG, JPG, or SVG."));
+    return;
   }
+  /*
+   * Carries a statusCode, so the message survives.
+   *
+   * A bare `Error` has none, and the error handler treats anything without one
+   * as an internal fault — so uploading a .txt answered 500 "Something went
+   * wrong. Please try again.", discarding the sentence that said exactly what
+   * was wrong and what to do about it.
+   */
+  const error = new Error(
+    `“${file.originalname}” is a ${file.mimetype || "file of unknown type"}. Please upload a PNG, JPG, SVG or PDF.`,
+  ) as Error & { statusCode?: number };
+  error.statusCode = 400;
+  cb(error);
 };
 
 /**

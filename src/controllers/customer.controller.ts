@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
+import { verifyCardPayment } from "../services/paymentVerification.service.js";
 import { User } from "../models/user.model.js";
+import { isValidPhone } from "../utils/accountFields.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
@@ -9,14 +11,31 @@ import mongoose from "mongoose";
 import crypto from "node:crypto";
 import os from "node:os";
 import { env } from "../config/env.js";
-import { generatePDF } from "pdf-node";
+import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import fs from "fs";
 import path from "path";
-import { alphaTrimToFile, smartTrimToFile } from "../utils/aiCrop.js";
-import { isRembgEnabled, runRembg } from "../utils/rembg.js";
-import { uploadBufferToCloudinary, cloudinaryThumbUrl, isCloudinaryUrl } from "../utils/cloudinary.js";
+import { smartTrimToFile } from "../utils/aiCrop.js";
+import {
+  isLegacyCloudinaryUrl,
+  isStoredArtworkUrl,
+  legacyCloudinaryThumbUrl,
+  storeArtwork,
+} from "../services/storage.service.js";
+import {
+  getGlobalPricing,
+  computeTotals as computeOrderTotals,
+  deriveItemUnitPrice,
+  itemQuantity,
+  sheetUnitPrice,
+  normalizeShippingMethod,
+  priorityForShippingMethod,
+  totalBillableSqFt,
+} from "../services/pricing.service.js";
+import { quoteShipping } from "../services/shipping.service.js";
+import { deriveParcel } from "../services/packaging.service.js";
+import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { exportGangsheetPng24, GANGSHEET_SHEET_WIDTH_IN } from "../services/gangsheetExport.service.js";
+import { exportGangsheetPng24, orderSheetWidthIn, printedSheetExtentIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { assertPersistable } from "../utils/documentSize.js";
@@ -30,33 +49,44 @@ import { sendEmail } from "../services/email.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
 import {
   editImageWithGemini,
+  GeminiDeclinedError,
   geminiImageModel,
   geminiPlanningReady,
   geminiReady,
   geminiStatus,
+  verifyGeminiKey,
   geminiUnavailableReason,
   hasGemini,
   planEditWithGemini,
 } from "../services/gemini.service.js";
 import { conformToSource, readSourceGeometry } from "../utils/generativeImage.js";
-import { detectFade } from "../services/fadeDetection.service.js";
+import { detectFade, TRANSPARENCY_CHECK_VERSION } from "../services/fadeDetection.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
 }
 
-// For Cloudinary URLs use URL transformation; for legacy local URLs derive -thumb200.webp path.
+/*
+ * One rule now: the thumbnail sits beside the original under the same name.
+ *
+ * Cloudinary generated these by URL transformation, which plain storage cannot
+ * do, so `storeArtwork` writes a second object at exactly this path on upload.
+ * The convention already existed for local files — R2 follows it, which is why
+ * the Cloudinary branch could go rather than be replaced.
+ */
 const computeThumbUrl = (assetUrl: string | null | undefined): string | null => {
   if (!assetUrl) return null;
-  if (isCloudinaryUrl(assetUrl)) return cloudinaryThumbUrl(assetUrl);
+  // Legacy Cloudinary assets never had a thumb object written beside them, so
+  // they keep using the transformation that produced their thumbnails before.
+  if (isLegacyCloudinaryUrl(assetUrl)) return legacyCloudinaryThumbUrl(assetUrl);
   const lastSlash = assetUrl.lastIndexOf("/");
   const lastDot = assetUrl.lastIndexOf(".");
   if (lastDot <= lastSlash) return null;
   return assetUrl.substring(0, lastDot) + "-thumb200.webp";
 };
 
-// Trim an image buffer using temp files, optionally running rembg first.
-// Returns the trimmed PNG as a Buffer. Temp files are written to os.tmpdir().
+// Trim an image buffer using temp files. Returns the trimmed PNG as a Buffer.
+// Temp files are written to os.tmpdir().
 const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
   const tmpDir = os.tmpdir();
   const id = crypto.randomUUID();
@@ -68,16 +98,7 @@ const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
   };
   try {
     await sharp(inputBuffer, { limitInputPixels: false }).png().toFile(inputPath);
-    if (isRembgEnabled()) {
-      const rembgPath = path.join(tmpDir, `${id}-rembg.png`);
-      await runRembg(inputPath, rembgPath);
-      const alphaThreshold = parseInt(process.env.TRIM_ALPHA_THRESHOLD || "10", 10) || 10;
-      const maxProbe = parseInt(process.env.TRIM_MAX_PROBE || "800", 10) || 800;
-      await alphaTrimToFile(rembgPath, trimmedPath, { alphaThreshold, maxProbe });
-      fs.unlink(rembgPath, () => {});
-    } else {
-      await smartTrimToFile(inputPath, trimmedPath);
-    }
+    await smartTrimToFile(inputPath, trimmedPath);
     return await fs.promises.readFile(trimmedPath);
   } finally {
     cleanup();
@@ -106,7 +127,7 @@ const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
 export const materializeAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (Buffer.isBuffer(req.body) && req.body.length > 0) {
-      const { url: hostedUrl } = await uploadBufferToCloudinary(
+      const { url: hostedUrl } = await storeArtwork(
         req.body,
         "space-transfers/edited",
       );
@@ -125,7 +146,7 @@ export const materializeAsset = async (req: Request, res: Response, next: NextFu
     }
 
     const buffer = await fetchImageBuffer(url);
-    const { url: hostedUrl } = await uploadBufferToCloudinary(buffer, "space-transfers/edited");
+    const { url: hostedUrl } = await storeArtwork(buffer, "space-transfers/edited");
     res.json({ url: hostedUrl, materialized: true, bytes: buffer.length });
   } catch (error) {
     next(error);
@@ -141,10 +162,16 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       throw error;
     }
   
-    // Accept Cloudinary URLs and legacy local /uploads/ URLs.
+    /*
+     * Accept stored artwork and legacy local /uploads/ paths.
+     *
+     * Matching on the R2 host rather than a bare "is it a URL" keeps this a
+     * real check: it is the guard that stops an arbitrary address being handed
+     * to the server to fetch.
+     */
     const isLocal = url.includes("/uploads/");
-    const isCdn = isCloudinaryUrl(url);
-    if (!isLocal && !isCdn) {
+    const isStored = isStoredArtworkUrl(url);
+    if (!isLocal && !isStored) {
       const error = new Error("Invalid asset url") as CustomError;
       error.statusCode = 400;
       throw error;
@@ -186,7 +213,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
 
     const trimmedBuffer = await trimBuffer(sourceBuffer);
 
-    const { url: trimmedUrl } = await uploadBufferToCloudinary(trimmedBuffer, "space-transfers/trimmed");
+    const { url: trimmedUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
 
     const meta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
     const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
@@ -205,15 +232,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
 
 // ── Upscaling constants ───────────────────────────────────────────────────────
 
-const REPLICATE_ESRGAN_MODEL = "nightmareai/real-esrgan";
-const REPLICATE_POLL_INTERVAL_MS = 2_500;
-const REPLICATE_TIMEOUT_MS = 90_000;
-const VALID_REPLICATE_SCALES = [2, 4, 8] as const;
-
-// SwinIR-realworld 4× — best free model on HuggingFace Inference API.
-const HF_SR_MODEL = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr";
-const HF_MODEL_LOAD_TIMEOUT_MS = 60_000; // wait up to 60 s for cold-start
-const MAX_OUTPUT_PX = 8_000;             // prevent runaway output sizes
+const MAX_OUTPUT_PX = 8_000; // prevent runaway output sizes
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -250,6 +269,17 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
       return assertBufferWithinBounds(await fs.promises.readFile(localPath), "image");
     }
   }
+  /*
+   * Anything else must be a web address. A `blob:` URL (an image that only
+   * exists in the customer's browser, because its upload failed) or a bare id
+   * reached `fetch`, which threw a TypeError that surfaced as an unexplained 500.
+   */
+  if (!/^https?:\/\//i.test(url)) {
+    throw Object.assign(
+      new Error("This image hasn't finished uploading, so it can't be processed yet. Please try again once it has."),
+      { statusCode: 400, code: "IMAGE_NOT_UPLOADED" },
+    );
+  }
   const r = await fetch(url);
   if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
 
@@ -272,12 +302,12 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
  * the pure-sharp fallback gets a stronger pass because interpolation
  * introduces softness that must be compensated.
  */
-// Replicate/HuggingFace scale purely off the requested factor, with no idea
+// A remote upscaler would scale purely off the requested factor, with no idea
 // of the MAX_OUTPUT_PX ceiling the sharp tier already respects — a large
 // `scale` against a sizeable source (e.g. the user enlarging the item a lot
 // before requesting DPI enhancement) can return a multi-hundred-megapixel
-// image that blows well past what fitUnderCloudinaryLimit's bounded resize
-// loop can shrink under Cloudinary's 10MB cap. Clamp every AI tier's output
+// image that blows well past what a bounded resize
+// loop can shrink. Clamp the upscaler's output
 // to the same ceiling so all three tiers produce comparably-sized results.
 async function capOutputPixels(buffer: Buffer, maxPx: number): Promise<Buffer> {
   const meta = await sharp(buffer, { limitInputPixels: false }).metadata();
@@ -306,97 +336,17 @@ async function applySharpening(
     .toBuffer();
 }
 
-// ── Tier 1: Replicate Real-ESRGAN ────────────────────────────────────────────
-
-async function upscaleWithReplicate(
-  publicUrl: string,
-  scale: number,
-  apiToken: string,
-): Promise<Buffer> {
-  const replicateScale =
-    VALID_REPLICATE_SCALES.find((s) => s >= scale) ?? VALID_REPLICATE_SCALES[VALID_REPLICATE_SCALES.length - 1];
-
-  const createRes = await fetch(
-    `https://api.replicate.com/v1/models/${REPLICATE_ESRGAN_MODEL}/predictions`,
-    {
-      method: "POST",
-      headers: { Authorization: `Token ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ input: { image: publicUrl, scale: replicateScale, face_enhance: false } }),
-    },
-  );
-  if (!createRes.ok) {
-    const body = await createRes.text().catch(() => "");
-    throw new Error(`Replicate ${createRes.status}: ${body.slice(0, 200)}`);
-  }
-
-  let prediction: { id: string; status: string; output?: string; error?: string } =
-    await createRes.json();
-
-  const deadline = Date.now() + REPLICATE_TIMEOUT_MS;
-  while (
-    prediction.status !== "succeeded" &&
-    prediction.status !== "failed" &&
-    prediction.status !== "canceled"
-  ) {
-    if (Date.now() > deadline) throw new Error("Replicate AI upscaling timed out (90 s)");
-    await new Promise((r) => setTimeout(r, REPLICATE_POLL_INTERVAL_MS));
-    const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-      headers: { Authorization: `Token ${apiToken}` },
-    });
-    if (!pollRes.ok) throw new Error(`Replicate poll failed (${pollRes.status})`);
-    prediction = await pollRes.json();
-  }
-
-  if (prediction.status !== "succeeded" || !prediction.output) {
-    throw new Error(`Replicate failed: ${prediction.error ?? "unknown"}`);
-  }
-
-  const imgRes = await fetch(prediction.output);
-  if (!imgRes.ok) throw new Error("Could not download upscaled image from Replicate CDN");
-  return Buffer.from(await imgRes.arrayBuffer());
-}
-
-// ── Tier 2: HuggingFace SwinIR-realworld (free) ───────────────────────────────
-
-async function upscaleWithHuggingFace(
-  sourceBuffer: Buffer,
-  apiToken: string,
-  attempt = 0,
-): Promise<Buffer> {
-  const res = await fetch(
-    `https://api-inference.huggingface.co/models/${HF_SR_MODEL}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/octet-stream",
-        "Accept": "image/png",
-      },
-      body: new Uint8Array(sourceBuffer),
-    },
-  );
-
-  // 503 = model is cold-starting — wait the suggested time, then retry once.
-  if (res.status === 503 && attempt === 0) {
-    let waitMs = 20_000;
-    try {
-      const body: any = await res.json();
-      if (typeof body?.estimated_time === "number") {
-        waitMs = Math.min(body.estimated_time * 1_000 + 3_000, HF_MODEL_LOAD_TIMEOUT_MS);
-      }
-    } catch { /* body not JSON */ }
-    console.log(`[UPSCALE] HuggingFace model loading — waiting ${Math.round(waitMs / 1000)}s`);
-    await new Promise((r) => setTimeout(r, waitMs));
-    return upscaleWithHuggingFace(sourceBuffer, apiToken, 1);
-  }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`HuggingFace ${res.status}: ${body.slice(0, 200)}`);
-  }
-
-  return Buffer.from(await res.arrayBuffer());
-}
+/*
+ * Replicate and HuggingFace upscaling tiers removed.
+ *
+ * Neither is provisioned in production — the deployment blueprint declares only
+ * GEMINI_API_KEY — so both were a paid dependency and a free-tier dependency
+ * that would never have had credentials, falling through to sharp on every
+ * request while looking like a working three-tier chain.
+ *
+ * Sharp is now the whole implementation: local, free, no key, and no image
+ * leaving the server to a third party.
+ */
 
 // ── Tier 3: Sharp multi-pass with unsharp mask (no API key needed) ────────────
 //
@@ -456,51 +406,18 @@ export const upscaleAsset = async (req: Request, res: Response, next: NextFuncti
     const originalWidthPx = originalMeta.width ?? 0;
     const originalHeightPx = originalMeta.height ?? 0;
 
-    let upscaledBuffer: Buffer = undefined as any;
-    let tier = "";
-
-    // Each tier falls through to the next if it errors (billing, quota, cold-start failure, etc.)
-    if (env.replicateApiToken) {
-      try {
-        let publicUrl = url;
-        if (url.startsWith("data:") || url.includes("/uploads/")) {
-          const { url: tempUrl } = await uploadBufferToCloudinary(sourceBuffer, "space-transfers/upscale-input");
-          publicUrl = tempUrl;
-        }
-        upscaledBuffer = await upscaleWithReplicate(publicUrl, scale, env.replicateApiToken);
-        upscaledBuffer = await capOutputPixels(upscaledBuffer, MAX_OUTPUT_PX);
-        upscaledBuffer = await applySharpening(upscaledBuffer, "light");
-        tier = "replicate";
-      } catch (replicateErr: any) {
-        console.warn(`[UPSCALE] Replicate failed (${replicateErr?.message}) — falling back`);
-        env.replicateApiToken = undefined; // suppress on future requests this session
-        // fall through to next tier below
-        upscaledBuffer = undefined as any;
-        tier = "";
-      }
-    }
-
-    if (!upscaledBuffer! && env.hfApiToken) {
-      try {
-        upscaledBuffer = await upscaleWithHuggingFace(sourceBuffer, env.hfApiToken);
-        upscaledBuffer = await capOutputPixels(upscaledBuffer, MAX_OUTPUT_PX);
-        upscaledBuffer = await applySharpening(upscaledBuffer, "light");
-        tier = "huggingface";
-      } catch (hfErr: any) {
-        console.warn(`[UPSCALE] HuggingFace failed (${hfErr?.message}) — falling back to sharp`);
-        upscaledBuffer = undefined as any;
-        tier = "";
-      }
-    }
-
-    if (!upscaledBuffer!) {
-      upscaledBuffer = await upscaleWithSharp(sourceBuffer, originalWidthPx, originalHeightPx, scale);
-      tier = "sharp";
-    }
+    // One implementation, so no tier to choose and nothing to fall through to.
+    const upscaledBuffer = await upscaleWithSharp(
+      sourceBuffer,
+      originalWidthPx,
+      originalHeightPx,
+      scale,
+    );
+    const tier = "sharp";
 
     console.log(`[UPSCALE] ${tier} — ${originalWidthPx}×${originalHeightPx} → scale ${scale}`);
 
-    const { url: upscaledUrl } = await uploadBufferToCloudinary(upscaledBuffer, "space-transfers/upscaled");
+    const { url: upscaledUrl } = await storeArtwork(upscaledBuffer, "space-transfers/upscaled");
     const upscaledMeta = await sharp(upscaledBuffer, { limitInputPixels: false }).metadata();
 
     res.json({
@@ -530,7 +447,7 @@ const AI_EDIT_TIMEOUT_MS = 120_000;
 /**
  * Which optional inputs each model actually declares.
  *
- * Replicate validates the whole prediction against the model's schema and
+ * A remote model would validate the whole prediction against its schema and
  * rejects it with a 422 if it receives a field the model does not declare — so
  * an optional input is only ever sent to a model known to accept it. Anything
  * absent from this table falls back to the conservative profile (prompt +
@@ -784,153 +701,14 @@ export const buildEditRequest = (
   return { instruction: parts.join(". ").replace(/\.\.+/g, "."), model, extraInput };
 };
 
-async function editWithReplicate(
-  publicUrl: string,
-  built: BuiltEditRequest,
-  apiToken: string,
-): Promise<Buffer> {
-  const createRes = await fetch(
-    `https://api.replicate.com/v1/models/${built.model}/predictions`,
-    {
-      method: "POST",
-      headers: { Authorization: `Token ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        input: {
-          input_image: publicUrl,
-          prompt: built.instruction,
-          output_format: "png",
-          safety_tolerance: 2,
-          ...built.extraInput,
-        },
-      }),
-    },
-  );
-  if (!createRes.ok) {
-    const body = await createRes.text().catch(() => "");
-    throw new Error(`Replicate ${createRes.status}: ${body.slice(0, 200)}`);
-  }
-
-  let prediction: { id: string; status: string; output?: string | string[]; error?: string } =
-    await createRes.json();
-
-  const deadline = Date.now() + AI_EDIT_TIMEOUT_MS;
-  while (
-    prediction.status !== "succeeded" &&
-    prediction.status !== "failed" &&
-    prediction.status !== "canceled"
-  ) {
-    if (Date.now() > deadline) throw new Error("The AI edit timed out. Try a simpler prompt.");
-    await new Promise((r) => setTimeout(r, REPLICATE_POLL_INTERVAL_MS));
-    const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-      headers: { Authorization: `Token ${apiToken}` },
-    });
-    if (!pollRes.ok) throw new Error(`Replicate poll failed (${pollRes.status})`);
-    prediction = await pollRes.json();
-  }
-
-  if (prediction.status !== "succeeded" || !prediction.output) {
-    throw new Error(`The model could not complete this edit: ${prediction.error ?? "unknown error"}`);
-  }
-
-  // Some models return a bare URL, others a one-element array.
-  const outputUrl = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
-  const imgRes = await fetch(outputUrl);
-  if (!imgRes.ok) throw new Error("Could not download the edited image");
-  return Buffer.from(await imgRes.arrayBuffer());
-}
-
-/**
- * Cloudflare Workers AI — the free tier of the generative path.
+/*
+ * Replicate and Cloudflare Workers AI editing removed.
  *
- * Deliberately second in the chain, not first. This is SDXL-class img2img: it
- * takes an instruction and a source image but has none of flux-kontext's
- * instruction-following, so a "remove the person on the left" lands as a
- * re-imagining rather than a surgical edit. It exists so a credit lapse
- * degrades the result instead of ending the request.
- *
- * `strength` is the whole story for edit fidelity here. At 1.0 the model
- * effectively ignores the input and paints a new picture from the prompt, which
- * on a customer's artwork is indistinguishable from data loss. Held low so the
- * original survives the round-trip.
+ * Neither has credentials in production — the blueprint declares only
+ * GEMINI_API_KEY — so this was a three-provider chain in which two links could
+ * never fire. Gemini is the implementation, and when its billing is off it says
+ * so plainly rather than appearing to fall back to something.
  */
-const CF_EDIT_MODEL = "@cf/runwayml/stable-diffusion-v1-5-img2img";
-const CF_EDIT_STRENGTH = 0.45;
-
-async function editWithCloudflare(
-  sourceBuffer: Buffer,
-  built: BuiltEditRequest,
-  accountId: string,
-  apiToken: string,
-): Promise<Buffer> {
-  // SD 1.5 was trained at 512px and degrades badly off-ratio; sending a 4000px
-  // gang-sheet asset straight in wastes the request and returns mush.
-  const prepared = await sharp(sourceBuffer, { limitInputPixels: false })
-    .resize(768, 768, { fit: "inside", withoutEnlargement: true })
-    .flatten({ background: "#ffffff" })
-    .png()
-    .toBuffer();
-
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${CF_EDIT_MODEL}`,
-    {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt: built.instruction,
-        image_b64: prepared.toString("base64"),
-        strength: CF_EDIT_STRENGTH,
-        guidance: 7.5,
-        num_steps: 20,
-      }),
-      signal: AbortSignal.timeout(AI_EDIT_TIMEOUT_MS),
-    },
-  );
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Cloudflare ${response.status}: ${body.slice(0, 200)}`);
-  }
-
-  // Workers AI returns raw image bytes for image models, but some models answer
-  // with the standard JSON envelope and a base64 payload instead. Both are
-  // accepted so the tier doesn't break on a model-side response change.
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    const payload: any = await response.json();
-    const base64 = payload?.result?.image ?? payload?.result?.response;
-    if (!base64 || typeof base64 !== "string") {
-      throw new Error("Cloudflare returned no image");
-    }
-    return Buffer.from(base64, "base64");
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length === 0) throw new Error("Cloudflare returned an empty image");
-  return bytes;
-}
-
-const hasCloudflareEdit = (): boolean =>
-  Boolean(env.cloudflareAccountId && env.cloudflareApiToken);
-
-/**
- * When Replicate last reported it was out of credit.
- *
- * Held as a timestamp rather than by clearing `env.replicateApiToken`, for two
- * reasons. Destroying the token loses the distinction between "never
- * configured" and "configured but unfunded", which are different messages to
- * the customer. And it is permanent for the life of the process — topping up
- * the account would not bring the model back until someone restarted the
- * server, which is a support ticket nobody would connect to a deploy.
- *
- * The retry window is what makes it self-healing: a billing state can change at
- * any moment, so the tier is skipped for a while and then quietly tried again.
- */
-let replicateOutOfCreditAt = 0;
-const REPLICATE_CREDIT_RETRY_MS = 10 * 60_000;
-
-const replicateEditReady = (): boolean =>
-  Boolean(env.replicateApiToken) &&
-  Date.now() - replicateOutOfCreditAt > REPLICATE_CREDIT_RETRY_MS;
 
 /**
  * Readiness probe. The client caches this for the session and uses it to decide
@@ -938,30 +716,25 @@ const replicateEditReady = (): boolean =>
  * guaranteed to 503.
  */
 export const aiEditCapabilities = async (_req: Request, res: Response) => {
-  // Enabled when *any* tier can serve, so the client keeps generative chips
-  // live on the free provider alone. Reporting only Replicate here would grey
-  // the whole feature out the moment credit ran dry, even with Gemini ready.
-  //
-  // Order matches the dispatch order in `aiEditAsset`, so `tiers[0]` is
-  // genuinely the model that will answer the next request.
-  const tiers = [
-    ...(geminiReady() ? [{ provider: "gemini", model: geminiImageModel() }] : []),
-    ...(replicateEditReady() ? [{ provider: "replicate", model: AI_EDIT_MODEL }] : []),
-    ...(hasCloudflareEdit() ? [{ provider: "cloudflare", model: CF_EDIT_MODEL }] : []),
-  ];
+  // Once per server start (and after a key block lapses): answers truthfully
+  // from the first request instead of only after an edit has failed.
+  await verifyGeminiKey();
+
+  // One provider now, so the array is a list of one or of none. Kept as an
+  // array because the client reads `tiers[0]` to name the model it is about to
+  // use, and that contract has not changed.
+  const tiers = geminiReady()
+    ? [{ provider: "gemini", model: geminiImageModel() }]
+    : [];
 
   // Lets an operator see *why* the feature is dark without reading logs, and
   // distinguishes the three states that look identical from the client:
   // nothing configured, configured but capped, configured but unfunded.
   const geminiState = geminiStatus();
   const reason =
-    tiers.length > 0
+    tiers.length > 0 || geminiState === "unconfigured" || geminiState === "ready"
       ? undefined
-      : geminiState !== "unconfigured" && geminiState !== "ready"
-      ? geminiState
-      : env.replicateApiToken
-      ? "out_of_credit"
-      : undefined;
+      : geminiState;
 
   res.json({
     enabled: tiers.length > 0,
@@ -1030,6 +803,7 @@ export const aiEditPlan = async (req: Request, res: Response, next: NextFunction
       return next(Object.assign(new Error("prompt is required"), { statusCode: 400 }));
     }
 
+    await verifyGeminiKey();
     if (!geminiPlanningReady()) {
       // 200, not 503. An absent planner is a missing enhancement, not a failed
       // request — the client is expected to proceed on its local classifier, and
@@ -1083,7 +857,8 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
       return next(Object.assign(new Error("prompt is required"), { statusCode: 400 }));
     }
-    if (!geminiReady() && !replicateEditReady() && !hasCloudflareEdit()) {
+    await verifyGeminiKey();
+    if (!geminiReady()) {
       // Distinguished so the operator reading logs — and the customer reading
       // the panel — can tell a capped free tier from an unfunded paid one from
       // a server where nothing was ever configured.
@@ -1102,8 +877,8 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
           ? "The image model is handling a lot of requests right now. Try again in a moment." + stillWorks
           : status === "retired"
           ? "The configured image model is no longer available." + stillWorks
-          : env.replicateApiToken
-          ? "The image model is out of credit, so generative edits are paused." + stillWorks
+          : status === "invalid_key"
+          ? "AI image editing isn't set up correctly on this server yet." + stillWorks
           : "AI editing isn't configured on this server yet.";
 
       const detail = geminiUnavailableReason();
@@ -1122,29 +897,16 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       typeof seed === "number" ? seed : undefined,
     );
 
-    /**
-     * Replicate needs a publicly reachable URL, so data URLs and local
-     * /uploads paths have to be staged to Cloudinary. Deferred behind a lazy
-     * getter rather than done up front: Gemini takes raw bytes and is tried
-     * first, so on the common path this upload — a full round trip of a
-     * print-resolution file — now never happens at all.
+    /*
+     * The lazy Cloudinary staging that lived here went with Replicate.
+     *
+     * It existed only because a remote model needed a publicly reachable URL,
+     * which meant uploading a print-resolution file just to have something to
+     * link to. Gemini takes the bytes directly, so nothing is staged and no
+     * extra copy of a customer's artwork is made as a side effect of an edit.
      */
-    let stagedUrl: string | null = null;
-    const publicSourceUrl = async (): Promise<string> => {
-      if (!url.startsWith("data:") && !url.includes("/uploads/")) return url;
-      if (stagedUrl) return stagedUrl;
-      const { url: tempUrl } = await uploadBufferToCloudinary(
-        sourceBuffer,
-        "space-transfers/ai-edit-input",
-      );
-      stagedUrl = tempUrl;
-      return tempUrl;
-    };
 
-    // Tiered free-first: Gemini's AI Studio key costs nothing and handles the
-    // whole instruction-edit surface, so it leads. The paid tiers sit behind it
-    // and only earn a request when it is capped or fails — a billing lapse or a
-    // spent daily quota degrades the feature instead of breaking it.
+    // Gemini is the whole implementation.
     let editedBuffer: Buffer | undefined;
     let providerUsed = "";
     let modelUsed = built.model;
@@ -1163,56 +925,23 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
         providerUsed = "gemini";
         modelUsed = result.model;
       } catch (geminiErr: any) {
+        // A refusal is an answer, not an outage — say what the model said, and
+        // don't tell the customer the service is down or that they should retry.
+        if (geminiErr instanceof GeminiDeclinedError) {
+          const said = String(geminiErr.message).replace(/\s+/g, " ").trim().slice(0, 300);
+          console.warn(`[AI-EDIT] declined for intent "${intent}" — ${said}`);
+          return next(
+            Object.assign(new Error(`The AI couldn't make this edit: ${said} Try rewording it.`), {
+              statusCode: 422,
+            }),
+          );
+        }
         console.warn(`[AI-EDIT] Gemini failed (${geminiErr?.message}) — falling back`);
         lastTierError = `Gemini: ${geminiErr?.message}`;
         editedBuffer = undefined;
       }
     }
 
-    if (!editedBuffer && replicateEditReady()) {
-      try {
-        editedBuffer = await editWithReplicate(
-          await publicSourceUrl(),
-          built,
-          env.replicateApiToken!,
-        );
-        providerUsed = "replicate";
-        // A success means the account is funded again; clear any earlier mark
-        // so a single recovered request restores the tier immediately.
-        replicateOutOfCreditAt = 0;
-      } catch (replicateErr: any) {
-        const message = String(replicateErr?.message ?? "");
-        console.warn(`[AI-EDIT] Replicate failed (${message}) — falling back`);
-        lastTierError = `Replicate: ${message}`;
-        // Out of credit is a billing state, not a transient error: it fails
-        // identically for every request until someone tops up, so the tier is
-        // parked briefly rather than re-tried on each edit.
-        if (/\b402\b|insufficient credit/i.test(message)) {
-          replicateOutOfCreditAt = Date.now();
-          console.warn(
-            `[AI-EDIT] Replicate out of credit — pausing that tier for ${REPLICATE_CREDIT_RETRY_MS / 60_000} min`,
-          );
-        }
-        editedBuffer = undefined;
-      }
-    }
-
-    if (!editedBuffer && hasCloudflareEdit()) {
-      try {
-        editedBuffer = await editWithCloudflare(
-          sourceBuffer,
-          built,
-          env.cloudflareAccountId!,
-          env.cloudflareApiToken!,
-        );
-        providerUsed = "cloudflare";
-        modelUsed = CF_EDIT_MODEL;
-      } catch (cfErr: any) {
-        console.warn(`[AI-EDIT] Cloudflare failed (${cfErr?.message})`);
-        lastTierError = `Cloudflare: ${cfErr?.message}`;
-        editedBuffer = undefined;
-      }
-    }
 
     if (!editedBuffer) {
       /**
@@ -1221,8 +950,8 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
        *
        * The generic sentence this used to return is what made the reported bug
        * so hard to act on: the actual cause (a Gemini key whose image models have
-       * a free-tier quota of exactly 0, behind a Replicate account with no
-       * credit) was fully known here and thrown away. Now the specific reason is
+       * a free-tier quota of exactly 0) was fully known here and thrown away.
+       * Now the specific reason is
        * both logged and attached, so an operator can see the fix and a customer
        * gets a sentence that is true.
        *
@@ -1233,9 +962,10 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       const detail = geminiUnavailableReason() ?? lastTierError;
       console.warn(`[AI-EDIT] all tiers failed for intent "${intent}" — ${detail ?? "no detail"}`);
 
+      // Only Gemini is wired now; the Cloudflare tier this once also named is gone.
       const advice =
         geminiStatus() === "billing_required"
-          ? " Generative editing needs either billing enabled on the Gemini key or the free Cloudflare tier configured."
+          ? " Generative editing needs billing enabled on the Gemini key."
           : "";
 
       return next(
@@ -1256,7 +986,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     // and the item's physical size and DPI survive the edit intact.
     const conformed = await conformToSource(editedBuffer, sourceGeometry);
 
-    const { url: editedUrl } = await uploadBufferToCloudinary(
+    const { url: editedUrl } = await storeArtwork(
       conformed.buffer,
       "space-transfers/ai-edited",
     );
@@ -1314,7 +1044,19 @@ export const updateAccount = async (req: Request, res: Response, next: NextFunct
 
     if (name) user.name = name;
     if (companyName) user.companyName = companyName;
-    if (phone) user.phone = phone;
+    /*
+     * Shape checked when supplied. Presence was the only test — `if (phone)` —
+     * so a customer could set their contact number to "1" or "abc" with no
+     * error, and that is the number used to reach them about their own order.
+     */
+    if (phone) {
+      if (!isValidPhone(String(phone))) {
+        const error = new Error("Enter a valid phone number") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      user.phone = phone;
+    }
 
     if (defaultShippingAddress && typeof defaultShippingAddress === "object") {
       // Merge onto existing address so partial updates (e.g. just postalCode) don't wipe other fields.
@@ -1510,6 +1252,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+
     if (!shippingMethod) {
       const error = new Error("shippingMethod is required") as CustomError;
       error.statusCode = 400;
@@ -1522,14 +1265,28 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    if (payment.method === "card" && !payment.paymentIntentId) {
-      const error = new Error("payment.paymentIntentId is required for card payments") as CustomError;
+    /*
+     * Card is the only method the platform takes.
+     *
+     * `payment.method` was a free-form string and verification keyed off it, so
+     * `method: "bank_transfer"` skipped the check entirely and produced a real
+     * unpaid order — the same hole in a different coat. There is no bank
+     * transfer, no invoicing and no cash: checkout offers a Stripe card and
+     * nothing else, so anything else is a request that did not come from it.
+     */
+    if (payment.method !== "card") {
+      const error = new Error(
+        `Unsupported payment method: ${String(payment.method)}. Orders are paid by card.`,
+      ) as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    if (payment.method === "paypal" && (!payment.paypalOrderId || !payment.paypalCaptureId)) {
-      const error = new Error("payment.paypalOrderId and payment.paypalCaptureId are required for PayPal payments") as CustomError;
+    // Presence only — the payment itself is verified below, once the server has
+    // priced the order, because it has to be checked against OUR total rather
+    // than the one the request supplied.
+    if (!payment.paymentIntentId) {
+      const error = new Error("payment.paymentIntentId is required for card payments") as CustomError;
       error.statusCode = 400;
       throw error;
     }
@@ -1547,6 +1304,12 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    const roundToTwo = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+
+    // Read before the items are priced: every line, the shipping and the tax on
+    // this order come from one set of rates.
+    const globalPricing = await getGlobalPricing();
+
     let computedSubtotal = 0;
     const orderItems = items.map((item: any) => {
       const {
@@ -1555,24 +1318,29 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         name,
         widthIn,
         heightIn,
-        quantity,
-        unitPrice,
         sheetWidthIn,
         sheetHeightIn,
         previewImage,
         artboardItems,
-        assetTable
+        assetTable,
+        itemSpacingIn,
+        sheetMarginIn
       } = item || {};
 
-      if (!type || !name || typeof quantity !== "number" || typeof unitPrice !== "number") {
-        const error = new Error("Each item requires type, name, quantity and unitPrice") as CustomError;
+      if (!type || !name) {
+        const error = new Error("Each item requires type and name") as CustomError;
         error.statusCode = 400;
         throw error;
       }
 
-      const lineSubtotal = unitPrice * quantity;
-      computedSubtotal += lineSubtotal;
-
+      /**
+       * Priced here, from the sheet's dimensions and the configured rate.
+       *
+       * `quantity` and `unitPrice` used to be taken from the request and only
+       * checked for internal consistency, so any self-consistent set was
+       * accepted — a caller could name a $0.01 subtotal for a full sheet and
+       * both this order and the Stripe charge would honour it.
+       */
       /**
        * Resolves an artwork reference back to its URL.
        *
@@ -1611,8 +1379,16 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
               posX: Number(it.posX),
               posY: Number(it.posY),
               rotation: typeof it.rotation === "number" ? it.rotation : 0,
+              // Dropped here before, so a mirrored design printed unmirrored.
+              flipped: Boolean(it.flipped),
               copies: typeof it.copies === "number" ? it.copies : 1,
-              linked: Boolean(it.linked)
+              linked: Boolean(it.linked),
+              // How auto-nest laid the piece out; the export draws it the same way.
+              nestRotation: Number(it.nestRotation) === 90 ? 90 : 0,
+              flowCols:
+                Number.isInteger(Number(it.flowCols)) && Number(it.flowCols) >= 1
+                  ? Number(it.flowCols)
+                  : undefined
             }))
             .filter((it: any) =>
               Number.isFinite(it.id) &&
@@ -1624,36 +1400,206 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             )
         : undefined;
 
+      /*
+       * The spacing and margin the print export lays copies out with. Checkout
+       * sent both and they were dropped right here, so every printed sheet fell
+       * back to a 0.06in gap whatever the customer had set.
+       */
+      const recordedSpacingIn =
+        typeof itemSpacingIn === "number" && itemSpacingIn >= 0 && itemSpacingIn <= 6 ? itemSpacingIn : undefined;
+      const recordedMarginIn =
+        typeof sheetMarginIn === "number" && sheetMarginIn >= 0 && sheetMarginIn <= 2 ? sheetMarginIn : undefined;
+
+      /*
+       * The roll a sheet was built on must be the roll it is billed and printed
+       * on. The roll width is an admin setting; if it changed after this sheet
+       * was laid out, its positions no longer match the roll. Refused, so the
+       * customer reopens the sheet and it re-fits, rather than paying for one
+       * width and receiving another.
+       */
+      const rollWidthIn = globalPricing.sheetWidthIn;
+      if (
+        String(type).toLowerCase() === "gangsheet" &&
+        typeof sheetWidthIn === "number" &&
+        Math.abs(sheetWidthIn - rollWidthIn) > 0.005
+      ) {
+        const error = new Error(
+          `The sheet width changed to ${rollWidthIn}in after this gang sheet was built. Open it in the editor so the artwork re-fits, then check out again.`,
+        ) as CustomError;
+        error.statusCode = 409;
+        throw error;
+      }
+
+      /*
+       * Billed on at least the length it prints.
+       *
+       * The length arrives from the client, measured on the artboard. The
+       * placements say where every graphic actually lands, so the sheet is
+       * priced and recorded on whichever is longer: a client that measures
+       * short cannot buy a longer print than it paid for.
+       */
+      const printedLengthIn =
+        normalizedArtboardItems && normalizedArtboardItems.length > 0
+          ? roundToTwo(
+              printedSheetLengthIn({
+                sheetWidthIn: rollWidthIn,
+                artboardItems: normalizedArtboardItems,
+                itemSpacingIn: recordedSpacingIn,
+                sheetMarginIn: recordedMarginIn,
+              }),
+            )
+          : 0;
+      /*
+       * Every graphic must sit on the roll. The editor keeps artwork inside the
+       * printable width, but a sheet from an older session or another client
+       * could still reach past it — and the printer would cut that artwork off.
+       */
+      if (normalizedArtboardItems && normalizedArtboardItems.length > 0) {
+        const extent = printedSheetExtentIn({
+          sheetWidthIn: rollWidthIn,
+          artboardItems: normalizedArtboardItems,
+          itemSpacingIn: recordedSpacingIn,
+          sheetMarginIn: recordedMarginIn,
+        });
+        const toleranceIn = 0.01;
+        if (extent.right > rollWidthIn + toleranceIn || extent.left < -toleranceIn) {
+          const error = new Error(
+            `Some artwork on this gang sheet extends past the ${rollWidthIn}in sheet width, so it would be cut off. Open it in the editor so it fits, then check out again.`,
+          ) as CustomError;
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+
+      const claimedLengthIn = Number(heightIn);
+      const billedLengthIn =
+        printedLengthIn > (Number.isFinite(claimedLengthIn) ? claimedLengthIn : 0) + 0.02
+          ? printedLengthIn
+          : heightIn;
+      if (billedLengthIn !== heightIn) {
+        console.warn(
+          `[ORDER_PRICING] item "${String(name)}" claimed ${heightIn}in but its placements print ${printedLengthIn}in — billing ${printedLengthIn}in`,
+        );
+      }
+
+      /**
+       * Priced here, from the sheet's dimensions and the configured rate — see
+       * the note above `deriveItemUnitPrice`. After the length check, so the
+       * price is for the sheet that prints.
+       */
+      const quantity = itemQuantity(item);
+      const unitPrice = deriveItemUnitPrice({ ...item, heightIn: billedLengthIn }, globalPricing);
+
+      const clientUnitPrice = Number(item?.unitPrice);
+      if (Number.isFinite(clientUnitPrice) && roundToTwo(clientUnitPrice) !== unitPrice) {
+        console.warn(
+          `[ORDER_PRICING] item "${String(name)}" sent unitPrice ${roundToTwo(clientUnitPrice)} ` +
+            `but ${widthIn}x${billedLengthIn}in at $${globalPricing.baseRatePerSqFt}/sq ft is ${unitPrice} — charging ${unitPrice}`,
+        );
+      }
+
+      const lineSubtotal = unitPrice * quantity;
+      computedSubtotal += lineSubtotal;
+
       return {
         type,
         designId,
         name,
         widthIn,
-        heightIn,
+        heightIn: billedLengthIn,
         quantity,
         unitPrice,
         subtotal: lineSubtotal,
         sheetWidthIn: typeof sheetWidthIn === "number" ? sheetWidthIn : undefined,
-        sheetHeightIn: typeof sheetHeightIn === "number" ? sheetHeightIn : undefined,
+        sheetHeightIn:
+          billedLengthIn !== heightIn
+            ? billedLengthIn
+            : typeof sheetHeightIn === "number" ? sheetHeightIn : undefined,
+        itemSpacingIn: recordedSpacingIn,
+        sheetMarginIn: recordedMarginIn,
+        // The roll this sheet was built and billed on; every render uses it.
+        rollWidthIn: String(type).toLowerCase() === "gangsheet" ? rollWidthIn : undefined,
         previewImage: typeof previewImage === "string" ? previewImage : undefined,
         artboardItems: normalizedArtboardItems && normalizedArtboardItems.length > 0 ? normalizedArtboardItems : undefined
       };
     });
 
-    const roundToTwo = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
     const roundedComputedSubtotal = roundToTwo(computedSubtotal);
 
     if (roundToTwo(pricing.subtotal) !== roundedComputedSubtotal) {
-      const error = new Error("pricing.subtotal does not match computed items subtotal") as CustomError;
-      error.statusCode = 400;
-      throw error;
+      // Not an error any more: the server priced these lines itself, so a
+      // disagreement means the client's figure was stale or wrong, not that the
+      // order is invalid. Rejecting here would turn a rate change mid-checkout
+      // into a failed order.
+      console.warn(
+        `[ORDER_PRICING] client sent subtotal ${roundToTwo(pricing.subtotal)} but server priced ` +
+          `the items at ${roundedComputedSubtotal} — recording the server figure`,
+      );
     }
 
-    const expectedTotal = roundToTwo(pricing.subtotal + pricing.shippingCost + pricing.tax);
-    if (roundToTwo(pricing.total) !== expectedTotal) {
-      const error = new Error("pricing.total does not match subtotal + shippingCost + tax") as CustomError;
-      error.statusCode = 400;
-      throw error;
+    /**
+     * Shipping, tax and total are recomputed here rather than taken from the
+     * request.
+     *
+     * The old check only asserted the client's own numbers were internally
+     * consistent, so any self-consistent set was accepted — which is how orders
+     * came to be recorded with $19.99 shipping and zero tax while Stripe
+     * charged $24.99 plus 8%. Deriving them from the same pricer the charge
+     * uses makes the saved order and the charge agree by construction.
+     *
+     * `subtotal` is no longer taken on trust either: each line is priced above
+     * from its own dimensions and the configured rate, so the whole total is
+     * now derived rather than asserted.
+     */
+    const shippingQuote = await quoteShipping({
+      totalSqFt: totalBillableSqFt(items, globalPricing),
+      method: normalizeShippingMethod(shippingMethod),
+      destination: {
+        state: String(shippingAddress?.state || ""),
+        postalCode: String(shippingAddress?.postalCode || ""),
+        country: String(shippingAddress?.country || "US"),
+        city: shippingAddress?.city ? String(shippingAddress.city) : undefined,
+      },
+      packaging: globalPricing.packaging,
+      markupPct: globalPricing.shippingMarkupPct,
+      fallbackRates: globalPricing.shipping,
+      // Quote from the region that will actually fulfil this, not from the
+      // fixed warehouse postcode in the environment.
+      origin: await predictShippingOrigin(shippingAddress?.state).catch(() => null),
+    });
+
+    /**
+     * Priority is the customer's choice, made at checkout by picking express.
+     *
+     * It used to be set only by an admin at assignment — so the express
+     * option's "priority handling" was charged for and never delivered, and the
+     * partner's rush surcharge was applied to orders nobody had paid a rush on.
+     */
+    const orderPriority = priorityForShippingMethod(shippingMethod);
+
+    const authoritativeTotals = computeOrderTotals({
+      subtotal: roundedComputedSubtotal,
+      shippingMethod,
+      pricing: globalPricing,
+      shippingCost: shippingQuote.cost,
+      priority: orderPriority,
+    });
+
+    const recordedPricing = {
+      subtotal: authoritativeTotals.subtotal,
+      rushSurcharge: authoritativeTotals.rushSurcharge,
+      shippingCost: authoritativeTotals.shippingCost,
+      tax: authoritativeTotals.tax,
+      total: authoritativeTotals.total,
+      currency: authoritativeTotals.currency,
+    };
+
+    if (roundToTwo(pricing.total) !== authoritativeTotals.total) {
+      console.warn(
+        `[ORDER_PRICING] client sent total ${roundToTwo(pricing.total)} but server computed ` +
+          `${authoritativeTotals.total} (shipping ${authoritativeTotals.shippingCost}, tax ${authoritativeTotals.tax}) — ` +
+          `recording the server figure`,
+      );
     }
 
     mark("validate");
@@ -1667,6 +1613,21 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     // auto-assignment. Returns null for non-US / unknown state codes; never defaults to "West".
     const stateBasedRegion = getRegionFromState(shippingAddress?.state);
     const stateCoord = getLatLngFromState(shippingAddress?.state);
+
+    /*
+     * Shape checked here, on the field that actually lands: `customer.phone`
+     * is what the store submits and what the schema stores — the shipping
+     * address has no phone field at all, so a check placed there would
+     * validate a value the database silently discards. Nothing validated this
+     * before, so "1" or "abc" would have been stored as the number used to
+     * reach a customer about their own order. Optional, as it always was —
+     * only checked when supplied.
+     */
+    if (customer?.phone && !isValidPhone(String(customer.phone))) {
+      const error = new Error("Enter a valid phone number") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
     // customer.region field is cosmetic only — do not use it to override the address region.
     const normalizedCustomer = {
@@ -1694,6 +1655,32 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       geocoded: false
     };
 
+    /*
+     * The payment is confirmed with Stripe before an order exists.
+     *
+     * `payment` used to be stored exactly as the request sent it, so a
+     * fabricated `paymentIntentId` produced a real, unpaid order queued for a
+     * partner to print. Checked against `recordedPricing.total` — the server's
+     * own figure — rather than anything the caller supplied.
+     */
+    const verifiedPayment = await verifyCardPayment({
+      paymentIntentId: payment.paymentIntentId,
+      expectedTotal: recordedPricing.total,
+      currency: recordedPricing.currency,
+      userId: String(req.user?.id || ""),
+    });
+
+    /*
+     * Built from what Stripe confirmed, not from what the request sent. The two
+     * agree when the caller is honest, and only one of them is evidence.
+     */
+    const recordedPayment = {
+      method: "card" as const,
+      paymentIntentId: verifiedPayment.paymentIntentId,
+      cardBrand: verifiedPayment.cardBrand ?? undefined,
+      cardLast4: verifiedPayment.cardLast4 ?? undefined,
+    };
+
     const order = new Order({
       user: req.user?.id,
       displayId: await nextOrderDisplayId(),
@@ -1701,8 +1688,20 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       customer: normalizedCustomer,
       shippingAddress: enrichedShippingAddress,
       shippingMethod,
-      payment,
-      pricing,
+      payment: recordedPayment,
+      priority: orderPriority,
+      pricing: recordedPricing,
+      shippingQuote: {
+        carrierCost: shippingQuote.carrierCost ?? undefined,
+        chargedCost: shippingQuote.cost,
+        serviceName: shippingQuote.serviceName ?? undefined,
+        serviceCode: shippingQuote.serviceCode ?? undefined,
+        source: shippingQuote.source,
+        fallbackReason: shippingQuote.fallbackReason,
+        originPostalCode: shippingQuote.originPostalCode ?? undefined,
+        originPartnerRegion: shippingQuote.originPartnerRegion ?? undefined,
+        parcel: deriveParcel(totalBillableSqFt(items, globalPricing), globalPricing.packaging),
+      },
       status: "PENDING"
     });
 
@@ -1742,15 +1741,18 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             rotation: typeof it.rotation === "number" ? it.rotation : 0,
             flipped: Boolean(it.flipped),
             copies: typeof it.copies === "number" ? it.copies : 1,
+            nestRotation: it.nestRotation,
+            flowCols: it.flowCols,
           }));
           const rendered = await exportGangsheetPng24({
+            // The sheet's own spacing and margin — without them the thumbnail
+            // laid copies out on the export's fallback gap.
+            itemSpacingIn: gangsheetOrderItem.itemSpacingIn,
+            sheetMarginIn: gangsheetOrderItem.sheetMarginIn,
             jobId: String(orderId),
             printerId: "order-preview",
-            // The sheet, not the stored `sheetWidthIn` — that field carries the
-            // artwork's bounding width for partner pricing, and rendering onto
-            // it misplaces every absolute `posX`. Same fix as the printer and
-            // admin previews.
-            sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN,
+            // The roll this order was built on — see `orderSheetWidthIn`.
+            sheetWidthIn: orderSheetWidthIn(gangsheetOrderItem),
             sheetHeightIn: typeof gangsheetOrderItem.sheetHeightIn === "number" ? gangsheetOrderItem.sheetHeightIn : undefined,
             artboardItems: thumbItems,
             dpi: 600,
@@ -1796,11 +1798,23 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       }
     })();
 
+    /*
+     * The order is saved and paid, so what was in the cart has been bought.
+     * Cleared here, not only by the store after the response: if the customer
+     * closes the tab first, the saved cart would otherwise come back on their
+     * next sign-in holding sheets they already paid for.
+     */
+    if (req.user?.id) {
+      await User.updateOne({ _id: req.user.id }, { $set: { cart: [] } }).catch((err: any) => {
+        console.warn(`[ORDER_CART] orderId=${orderId} could not clear the saved cart (non-fatal): ${err?.message}`);
+      });
+    }
+
     notifyAllAdmins({
       category: "orders",
       priority: "medium",
       title: "New order placed",
-      message: `${String(customer.firstName)} ${String(customer.lastName)} • $${Number(pricing.total).toFixed(2)}`,
+      message: `${String(customer.firstName)} ${String(customer.lastName)} • $${recordedPricing.total.toFixed(2)}`,
       meta: { orderId: order.id, status: "PENDING" }
     }).catch(() => {});
 
@@ -1869,7 +1883,6 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
     // than failing an order, since the work is not recoverable from a cart.
     assertPersistable(design.toObject(), { label: "design" });
     await design.save();
-    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
 
     res.status(201).json({
       id: design.id,
@@ -1877,34 +1890,6 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
       createdAt: design.createdAt,
       updatedAt: design.updatedAt
     });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const user = await User.findById(req.user?.id).select("artboardDraft");
-    res.json({ draft: user?.artboardDraft || null });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const upsertArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { draft } = req.body || {};
-    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: draft || null } });
-    res.json({ message: "Draft saved" });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const clearArtboardDraft = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    await User.updateOne({ _id: req.user?.id }, { $set: { artboardDraft: null } });
-    res.json({ message: "Draft cleared" });
   } catch (error) {
     next(error);
   }
@@ -1995,12 +1980,34 @@ export const getDesignById = async (req: Request, res: Response, next: NextFunct
       throw error;
     }
 
+    /*
+     * Items store `assetId`, usually an asset's database id. The editor needs an
+     * image address for a piece whose saved image is missing, and showed a broken
+     * image when all it had was the id — so each id is sent with its address.
+     */
+    const artboardData = design.toObject().artboardData ?? { items: [] };
+    const items = Array.isArray(artboardData.items) ? artboardData.items : [];
+    const assetIds = [
+      ...new Set(items.map((it: any) => String(it.assetId || "")).filter((id) => mongoose.isValidObjectId(id) && /^[a-f0-9]{24}$/i.test(id))),
+    ];
+    const addresses = new Map<string, string>();
+    if (assetIds.length > 0) {
+      const assets = await Asset.find({ _id: { $in: assetIds }, user: req.user?.id }).select("url").lean();
+      for (const asset of assets as any[]) if (asset.url) addresses.set(String(asset._id), String(asset.url));
+    }
+
     res.json({
       id: design.id,
       title: design.title,
       size: design.size,
       pricing: design.pricing,
-      artboardData: design.artboardData
+      artboardData: {
+        ...artboardData,
+        items: items.map((it: any) => {
+          const assetUrl = addresses.get(String(it.assetId));
+          return assetUrl ? { ...it, assetUrl } : it;
+        }),
+      },
     });
   } catch (error) {
     next(error);
@@ -2112,11 +2119,20 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
 
     if (status) {
       const normalized = status.toString().trim().toLowerCase();
+      /**
+       * Deliberately coarser than the internal states: a customer does not need
+       * to know whether their sheet is queued at a partner, on the press, or
+       * waiting for a label — only that it is being made.
+       *
+       * PRINTING and QUALITY_CHECK previously matched no filter at all, so an
+       * order in production was invisible under every option. PAID/"paid" were
+       * removed from the schema and are dropped here with them.
+       */
       const statusMap: { [key: string]: string[] } = {
         pending: ["PENDING"],
-        processing: ["PROCESSING"],
+        processing: ["PROCESSING", "PRINTING", "QUALITY_CHECK"],
         shipped: ["SHIPPED"],
-        completed: ["COMPLETED", "PAID", "paid"],
+        completed: ["COMPLETED"],
         cancelled: ["CANCELLED"]
       };
 
@@ -2175,6 +2191,8 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
 
     const responseOrders = orders.map((order) => ({
       orderId: order.id,
+      // Same order number the customer sees on their invoice and in emails.
+      displayId: (order as any).displayId || null,
       status: apiStatusMap[order.status] || order.status,
       date: order.createdAt,
       total: order.pricing?.total ?? null,
@@ -2223,7 +2241,35 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         description: description,
         quantity: item.quantity || 0,
         unitPrice: item.unitPrice || 0,
-        subtotal: item.subtotal || 0
+        subtotal: item.subtotal || 0,
+        /*
+         * The sheet's actual shape, not only a description string built from it.
+         *
+         * These were read to compose `description` and then dropped, so the only
+         * consumer that needs them — reorder, which refills the cart from this
+         * response — had nothing to work with and fell back to a constant. A
+         * 60in sheet came back as a default-length one, quietly.
+         */
+        type: item.type || "gangsheet",
+        widthIn: item.widthIn ?? null,
+        heightIn: item.heightIn ?? null,
+        sheetWidthIn: (item as any).sheetWidthIn ?? item.widthIn ?? null,
+        sheetHeightIn: (item as any).sheetHeightIn ?? item.heightIn ?? null,
+        // So the reordered line can point at the same artwork.
+        designId: (item as any).designId ?? null,
+        previewImage: (item as any).previewImage ?? null,
+        /*
+         * What reorder needs to rebuild the same sheet: where every graphic sat,
+         * and the roll and spacing it was laid out with. Without the placements a
+         * reordered sheet reached checkout with no artwork and became an order
+         * the printer had nothing to print from.
+         */
+        artboardItems: Array.isArray((item as any).artboardItems) ? (item as any).artboardItems : undefined,
+        // The roll it printed on, by the same rule the printer export uses —
+        // orders placed before the roll was recorded printed at the legacy width.
+        rollWidthIn: (item.type || "gangsheet") === "gangsheet" ? orderSheetWidthIn(item as any) : null,
+        itemSpacingIn: (item as any).itemSpacingIn ?? null,
+        sheetMarginIn: (item as any).sheetMarginIn ?? null,
       };
     });
 
@@ -2236,6 +2282,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     res.json({
       orderId: order.id,
+      displayId: (order as any).displayId || null,
       status: apiStatusMap[order.status] || order.status,
       items: formattedItems,
       shippingAddress: {
@@ -2298,14 +2345,15 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
         const thumbUrl = computeThumbUrl(foundAsset.trimmedUrl || foundAsset.url);
         const normDpi = foundAsset.dpi || 300;
         /**
-         * Reuse the stored verdict, and only compute one if this record predates
-         * the fade check. Identical bytes cannot produce a different answer, so
-         * re-running the model here would spend a call to reproduce a result we
-         * already have — while an asset saved before this feature existed still
-         * needs one, or it would silently report "no fade" forever.
+         * Reuse the stored verdict unless it was reached under older rules (or
+         * none). Identical bytes cannot produce a different answer under the same
+         * rules, so re-running the model would spend a call to reproduce a result
+         * we already have — while a verdict from before a rule change would
+         * silently keep missing what the new rule catches.
          */
-        const cachedFade = foundAsset.fade ?? (await detectFade(fileBuffer));
-        if (!foundAsset.fade) {
+        const fadeIsCurrent = foundAsset.fade?.version === TRANSPARENCY_CHECK_VERSION;
+        const cachedFade = fadeIsCurrent ? foundAsset.fade : await detectFade(fileBuffer);
+        if (!fadeIsCurrent) {
           await Asset.findByIdAndUpdate(foundAsset._id, { fade: cachedFade }).catch(() => {
             // A failed backfill is not worth failing the upload over; the
             // verdict is still returned and will be recomputed next time.
@@ -2340,78 +2388,98 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
      *
      * A file whose contents are not really an image — a partly-downloaded or
      * damaged file, which typically still carries its original extension — used
-     * to travel a long way through this handler. It was uploaded to Cloudinary,
+     * to travel a long way through this handler. It was uploaded to storage,
      * its metadata extraction failed into a swallowed `catch`, and the response
      * went back as a **201 with `widthPx: undefined`**. The client then computed
      * `undefined / dpi`, and placed an item on the sheet whose physical size was
      * NaN: no error anywhere, and a gang sheet that cannot be printed.
      *
-     * So this is now a hard 400, and it runs *before* the Cloudinary upload —
+     * So this is now a hard 400, and it runs *before* the upload —
      * there is no reason to spend the round trip and the storage on a file that
      * is about to be rejected.
      *
-     * PDFs are exempt because sharp cannot decode them without poppler; they are
-     * checked by signature instead, which is all that is available here.
      */
     let widthPx: number | undefined, heightPx: number | undefined, dpi: number | undefined;
-    const isPdfUpload = req.file.mimetype === "application/pdf";
 
-    if (isPdfUpload) {
-      if (fileBuffer.subarray(0, 5).toString("latin1") !== "%PDF-") {
-        const error = new Error(
-          `“${req.file.originalname}” could not be read — it isn't a valid PDF. It may be damaged or only partly downloaded. Please re-export it and try again.`,
-        ) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-    } else {
-      try {
-        const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
-        widthPx = metadata.width;
-        heightPx = metadata.height;
-        dpi = metadata.density || 300;
-      } catch (err: any) {
-        console.warn(`[UPLOAD] rejected ${req.file.originalname}: ${err?.message}`);
-      }
-
-      // Dimensions are the test, not merely whether metadata() threw: some
-      // malformed files parse far enough to return an object with no width or
-      // height, and that is exactly the shape that produced the NaN item.
-      if (!widthPx || !heightPx) {
-        const error = new Error(
-          `“${req.file.originalname}” could not be read — the file may be damaged or only partly downloaded. Please re-export it and try again.`,
-        ) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      // Every sharp call here passes `limitInputPixels: false` to allow
-      // legitimately huge gang sheets, which also removes the guard against a
-      // decompression bomb. Without an explicit ceiling, a 50000×50000 PNG
-      // decodes to ~10 GB and the process is killed by the OS rather than
-      // returning an error.
-      if (widthPx * heightPx > MAX_IMAGE_PIXELS) {
-        console.error(
-          `[UPLOAD] rejected ${req.file.originalname}: ${widthPx}×${heightPx} exceeds ` +
-            `the ${MAX_IMAGE_PIXELS.toLocaleString()} px ceiling`,
-        );
-        const error = new Error(
-          `“${req.file.originalname}” is too large to process (${widthPx}×${heightPx}). ` +
-            `Please re-export it at a smaller resolution.`,
-        ) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
+    /*
+     * PDFs are refused as artwork. A stored PDF cannot be printed: sharp in this
+     * build has no PDF support, so the export pipeline dropped PDF items from
+     * the sheet without a word. The editor renders each page to a PNG before
+     * uploading (`pdfRasterize.ts`), so only a caller bypassing it lands here.
+     *
+     * Checked by signature as well as type, so a PDF renamed .png gets this
+     * message rather than "could not be read".
+     */
+    /*
+     * SVG likewise: the editor renders it to a PNG at its real size before
+     * uploading, so the print pipeline only ever composites raster artwork.
+     */
+    const head = fileBuffer.subarray(0, 256).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    if (req.file.mimetype === "image/svg+xml" || head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) {
+      const error = new Error(
+        `“${req.file.originalname}” is an SVG. Add it from the editor, which converts it to an image at its real size, or upload a PNG or JPG.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
     }
 
-    // Upload original to Cloudinary.
-    const { url: fileUrl } = await uploadBufferToCloudinary(fileBuffer, "space-transfers/assets");
+    if (
+      req.file.mimetype === "application/pdf" ||
+      fileBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
+    ) {
+      const error = new Error(
+        `“${req.file.originalname}” is a PDF. Add it from the editor, which converts each page to an image, or upload a PNG or JPG.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    try {
+      const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
+      widthPx = metadata.width;
+      heightPx = metadata.height;
+      dpi = metadata.density || 300;
+    } catch (err: any) {
+      console.warn(`[UPLOAD] rejected ${req.file.originalname}: ${err?.message}`);
+    }
+
+    // Dimensions are the test, not merely whether metadata() threw: some
+    // malformed files parse far enough to return an object with no width or
+    // height, and that is exactly the shape that produced the NaN item.
+    if (!widthPx || !heightPx) {
+      const error = new Error(
+        `“${req.file.originalname}” could not be read — the file may be damaged or only partly downloaded. Please re-export it and try again.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Every sharp call here passes `limitInputPixels: false` to allow
+    // legitimately huge gang sheets, which also removes the guard against a
+    // decompression bomb. Without an explicit ceiling, a 50000×50000 PNG
+    // decodes to ~10 GB and the process is killed by the OS rather than
+    // returning an error.
+    if (widthPx * heightPx > MAX_IMAGE_PIXELS) {
+      console.error(
+        `[UPLOAD] rejected ${req.file.originalname}: ${widthPx}×${heightPx} exceeds ` +
+          `the ${MAX_IMAGE_PIXELS.toLocaleString()} px ceiling`,
+      );
+      const error = new Error(
+        `“${req.file.originalname}” is too large to process (${widthPx}×${heightPx}). ` +
+          `Please re-export it at a smaller resolution.`,
+      ) as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Store the original, exactly as it arrived.
+    const { url: fileUrl } = await storeArtwork(fileBuffer, "space-transfers/assets");
 
     const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
     const heightIn = heightPx && normalizedDpi ? +(heightPx / normalizedDpi).toFixed(4) : undefined;
 
-    // Trim and upload trimmed version to Cloudinary.
+    // Trim and store the trimmed version alongside it.
     let trimmedUrl: string | undefined;
     let trimmedWidthPx: number | undefined;
     let trimmedHeightPx: number | undefined;
@@ -2419,7 +2487,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     let trimmedHeightIn: number | undefined;
     try {
       const trimmedBuffer = await trimBuffer(fileBuffer);
-      const { url: tUrl } = await uploadBufferToCloudinary(trimmedBuffer, "space-transfers/trimmed");
+      const { url: tUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
       trimmedUrl = tUrl;
       const trimmedMeta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
       trimmedWidthPx = trimmedMeta.width;
@@ -2430,7 +2498,8 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       trimmedUrl = undefined;
     }
 
-    // Cloudinary thumbnail is derived from the URL — no local generation needed.
+    // The thumbnail is written beside the original by storeArtwork, at the
+    // path computeThumbUrl derives — nothing to generate here.
     const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
 
     /**
@@ -2573,6 +2642,47 @@ const roundToTwo = (value: number) => {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 };
 
+/**
+ * The rates the storefront needs to display a total that matches what will be
+ * charged: the per-square-foot sheet rate, shipping per method, and the tax
+ * percentage.
+ *
+ * Read-only and free of customer data, so it is available to guests — the cart
+ * is usable before sign-in and would otherwise show a total the checkout then
+ * contradicts. `getCartQuote` cannot serve this: it prices saved designs by id,
+ * and cart items are unsaved gang sheets with no `designId`.
+ *
+ * `baseRatePerSqFt` is served here because the editor prices a sheet as the
+ * user draws it, long before anything is saved. It used to price from a
+ * constant compiled into the client bundle, which meant the admin's Retail
+ * Pricing field was authoritative over nothing — the number that actually set
+ * every price could only be changed by a redeploy.
+ */
+export const getPricingConfig = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pricing = await getGlobalPricing();
+    res.status(200).json({
+      baseRatePerSqFt: pricing.baseRatePerSqFt,
+      /*
+       * The billing shape of a sheet, so the editor quotes what the server will
+       * actually charge. Without these the editor priced the artwork's bounding
+       * box while the server bills the roll — the customer would have been shown
+       * one number and charged another.
+       */
+      sheetWidthIn: pricing.sheetWidthIn,
+      minSheetLengthIn: pricing.minSheetLengthIn,
+      // The storefront shows this as a line on express orders, so it has to
+      // know the rate or the cart total would not match what is charged.
+      rushSurchargePct: pricing.rushSurchargePct,
+      shipping: pricing.shipping,
+      taxRatePct: pricing.taxRatePct,
+      currency: "USD",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getCartQuote = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { items, shippingMethod, shippingCountry, shippingPostalCode } = req.body || {};
@@ -2600,6 +2710,10 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       error.statusCode = 400;
       throw error;
     }
+
+    // Read once, above the loop: the same rates must price every line item,
+    // the shipping and the tax on this quote.
+    const pricing = await getGlobalPricing();
 
     const quoteItems: any[] = [];
     let subtotal = 0;
@@ -2643,20 +2757,31 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
           throw error;
         }
 
-        if (design.pricing && typeof design.pricing.price === "number") {
-          unitPrice = design.pricing.price;
-        } else if (design.pricing && typeof design.pricing.areaSqFt === "number") {
-          const baseRatePerSqFt = 3.5;
-          unitPrice = design.pricing.areaSqFt * baseRatePerSqFt;
-        } else if (typeof widthIn === "number" && typeof heightIn === "number") {
-          const areaSqFt = (widthIn * heightIn) / 144;
-          const baseRatePerSqFt = 3.5;
-          unitPrice = areaSqFt * baseRatePerSqFt;
-        } else {
+        /**
+         * Priced from area x the current global rate, not from the price
+         * stored on the design.
+         *
+         * The stored price is a snapshot of whatever rate was in force when
+         * the sheet was saved, so preferring it meant a rate change never
+         * reached carts holding older designs. Two hard-coded `3.5` fallbacks
+         * sat behind it, which is what actually priced anything that reached
+         * them — a third retail rate, invisible to the admin and disagreeing
+         * with `global_pricing` by a factor of seven.
+         */
+        const areaSqFt =
+          typeof design.pricing?.areaSqFt === "number" && Number.isFinite(design.pricing.areaSqFt)
+            ? design.pricing.areaSqFt
+            : null;
+
+        if (areaSqFt == null || areaSqFt <= 0) {
           const error = new Error("Unable to determine price for gangsheet item") as CustomError;
           error.statusCode = 400;
           throw error;
         }
+
+        // Same helper the payment intent and the saved order use, so a quote
+        // cannot promise a number the checkout then contradicts.
+        unitPrice = sheetUnitPrice(areaSqFt, pricing);
       } else {
         const error = new Error(`Unsupported cart item type: ${type}`) as CustomError;
         error.statusCode = 400;
@@ -2676,30 +2801,47 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       });
     }
 
-    subtotal = roundToTwo(subtotal);
+    // Shipping and tax come from the shared pricer so this quote, the Stripe
+    // charge and the saved order cannot disagree. This path previously used its
+    // own rates (express $19.99, 9.4% tax gated on the country string being
+    // exactly "United States") while the charge path used $24.99 and a flat 8%.
+    const shippingQuote = await quoteShipping({
+      totalSqFt: totalBillableSqFt(items, pricing),
+      method: normalizeShippingMethod(shippingMethod),
+      destination: {
+        state: String(req.body?.shippingState || ""),
+        postalCode: String(shippingPostalCode || ""),
+        country: String(shippingCountry || "US"),
+        city: req.body?.shippingCity ? String(req.body.shippingCity) : undefined,
+      },
+      packaging: pricing.packaging,
+      markupPct: pricing.shippingMarkupPct,
+      fallbackRates: pricing.shipping,
+      origin: await predictShippingOrigin(req.body?.shippingState).catch(() => null),
+    });
 
-    let shippingCost = 0;
-    if (shippingMethod === "standard") {
-      shippingCost = 8.99;
-    } else if (shippingMethod === "express") {
-      shippingCost = 19.99;
-    }
-
-    let taxRate = 0;
-    if (shippingCountry === "United States") {
-      taxRate = 0.094;
-    }
-
-    const tax = roundToTwo(subtotal * taxRate);
-    const total = roundToTwo(subtotal + shippingCost + tax);
+    const totals = computeOrderTotals({
+      subtotal: roundToTwo(subtotal),
+      shippingMethod,
+      pricing,
+      shippingCost: shippingQuote.cost,
+      // Quoted the same way the order will be priced, so the cart cannot show a
+      // total the checkout then contradicts.
+      priority: priorityForShippingMethod(shippingMethod),
+    });
 
     res.status(200).json({
       items: quoteItems,
-      subtotal,
-      shippingCost,
-      tax,
-      total,
-      currency: "USD"
+      subtotal: totals.subtotal,
+      rushSurcharge: totals.rushSurcharge,
+      shippingCost: totals.shippingCost,
+      // Named so the storefront can say "USPS Ground Advantage" instead of just
+      // a number, and so a fallback is visible rather than silent.
+      shippingService: shippingQuote.serviceName,
+      shippingSource: shippingQuote.source,
+      tax: totals.tax,
+      total: totals.total,
+      currency: totals.currency
     });
   } catch (error) {
     next(error);
@@ -2709,44 +2851,41 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
 export const sendGangsheetUtilizationWarning = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = req.user!;
-    const { fullSheetPrice, sheetWidthIn, sheetHeightIn, utilizationPct } = req.body;
+    const { billedPrice, sheetWidthIn, billedLengthIn, usedLengthIn } = req.body || {};
 
-    const price = Number(fullSheetPrice);
-    if (!Number.isFinite(price) || price <= 0) {
-      const error = new Error("fullSheetPrice must be a positive number") as CustomError;
+    const price = Number(billedPrice);
+    const width = Number(sheetWidthIn);
+    const billed = Number(billedLengthIn);
+    const used = Number(usedLengthIn);
+    if (![price, width, billed, used].every((n) => Number.isFinite(n) && n >= 0) || price <= 0) {
+      const error = new Error("billedPrice, sheetWidthIn, billedLengthIn and usedLengthIn are required") as CustomError;
       error.statusCode = 400;
       throw error;
     }
 
-    const width = Number(sheetWidthIn || 23.5);
-    const height = Number(sheetHeightIn || 23.5);
-    const pct = utilizationPct != null ? Number(utilizationPct) : null;
-    const pctText = pct != null && Number.isFinite(pct) ? `${pct.toFixed(0)}%` : "N/A";
-
-    const amountText = `$${price.toFixed(2)}`;
-
+    /*
+     * About the minimum billable length, which is the rule. This used to say the
+     * customer would be charged for a "full" 23.5 x 23.5in sheet — a figure no
+     * setting held and nothing else charged.
+     */
     const subject = "Unused gang sheet space notice";
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
         <h2 style="margin: 0 0 12px 0;">Unused gang sheet space</h2>
         <p style="margin: 0 0 12px 0;">
-          Your gang sheet (${width.toFixed(1)}&quot; × ${height.toFixed(1)}&quot;) is not fully utilized.
+          Your artwork is ${used.toFixed(2)}in long. Gang sheets are billed from a ${billed.toFixed(2)}in minimum,
+          so this ${width.toFixed(2)}in &times; ${billed.toFixed(2)}in sheet costs <strong>$${price.toFixed(2)}</strong>.
         </p>
-        <p style="margin: 0 0 12px 0;">
-          If you proceed, you will be charged the full gang sheet amount of <strong>${amountText}</strong>.
-        </p>
-        <p style="margin: 0 0 0 0; color: #6B7280; font-size: 12px;">
-          Utilization: ${pctText}
+        <p style="margin: 0; color: #6B7280; font-size: 12px;">
+          You can add more artwork to the same sheet at no extra cost until it reaches ${billed.toFixed(2)}in.
         </p>
       </div>
     `;
 
     const sendResult = await sendEmail({ to: user.email, subject, html });
-
     console.log(
-      `[GANGSHEET_WARN] user=${user.id} email=${user.email} fullSheetPrice=${amountText} utilization=${pctText} sent=${sendResult.sent}`
+      `[GANGSHEET_WARN] user=${user.id} used=${used}in billed=${billed}in price=$${price.toFixed(2)} sent=${sendResult.sent}`,
     );
-
     res.status(200).json({ sent: sendResult.sent });
   } catch (error) {
     next(error);
@@ -2764,8 +2903,6 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
       throw error;
     }
 
-    const invoiceTemplatePath = path.join(process.cwd(), "src", "templates", "invoice.html");
-    const htmlTemplate = fs.readFileSync(invoiceTemplatePath, "utf8");
 
     const formattedItems = (order.items || []).map((item) => {
       let description = "";
@@ -2789,7 +2926,9 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
     ];
 
     const data = {
-      orderId: order.id,
+      // The invoice is the most customer-visible document there is, so it
+      // carries the canonical DTF-#### number rather than the raw ObjectId.
+      orderId: (order as any).displayId || order.id,
       date: (order.createdAt || new Date()).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }),
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -2807,99 +2946,29 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
       }
     };
 
-    const pdfOptions = {
-      format: "A4",
-      printBackground: true
-    };
-
-    const result = await generatePDF({
-      html: htmlTemplate,
-      data: data,
-      buffer: true,
-      pdfOptions: pdfOptions
-    });
+    const pdfBuffer = await renderInvoicePdf(data);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="invoice-${order.id}.pdf"`);
-    res.send(result.buffer);
+    res.setHeader("Content-Disposition", `attachment; filename="invoice-${data.orderId}.pdf"`);
+    res.setHeader("Content-Length", String(pdfBuffer.length));
+    res.send(pdfBuffer);
 
   } catch (error) {
     next(error);
   }
 };
 
-export const reorder = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { orderId } = req.params;
-    const { quantityMultiplier = 1 } = req.body || {};
-
-    if (typeof quantityMultiplier !== "number" || quantityMultiplier <= 0) {
-      const error = new Error("quantityMultiplier must be a positive number") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const originalOrder = await Order.findOne({ _id: orderId, user: req.user?.id });
-
-    if (!originalOrder) {
-      const error = new Error("Original order not found") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const newItems = originalOrder.items.map((item) => {
-      const quantity = item.quantity * quantityMultiplier;
-      const subtotal = item.unitPrice * quantity;
-
-      return {
-        type: item.type,
-        designId: item.designId,
-        name: item.name,
-        widthIn: item.widthIn,
-        heightIn: item.heightIn,
-        quantity,
-        unitPrice: item.unitPrice,
-        subtotal
-      };
-    });
-
-    const subtotal = newItems.reduce((sum, item) => sum + item.subtotal!, 0);
-    const shippingCost = originalOrder.pricing.shippingCost || 0;
-    const taxRate = originalOrder.pricing.subtotal && originalOrder.pricing.subtotal > 0 ? (originalOrder.pricing.tax || 0) / originalOrder.pricing.subtotal : 0;
-    const tax = roundToTwo(subtotal * taxRate);
-    const total = roundToTwo(subtotal + shippingCost + tax);
-
-    const newOrder = new Order({
-      user: req.user?.id,
-      items: newItems,
-      customer: originalOrder.customer,
-      shippingAddress: originalOrder.shippingAddress,
-      shippingMethod: originalOrder.shippingMethod,
-      payment: {
-        method: originalOrder.payment.method
-      },
-      pricing: {
-        subtotal: roundToTwo(subtotal),
-        shippingCost: roundToTwo(shippingCost),
-        tax,
-        total,
-        currency: originalOrder.pricing.currency
-      },
-      status: "PENDING"
-    });
-
-    // A reorder copies artwork references from an existing order, so it can
-    // only be oversized if the original was — but the original predates this
-    // guard, so it is checked rather than assumed.
-    assertPersistable(newOrder.toObject(), { label: "reorder" });
-    await newOrder.save();
-
-    res.status(201).json({
-      orderId: newOrder.id,
-      status: "Pending",
-      createdFrom: originalOrder.id
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+/*
+ * `reorder` was removed.
+ *
+ * It created a live order the moment it was called — no cart, no address
+ * confirmation, no payment step — and the store's Order Details modal called it
+ * behind a button that toasted "Order placed successfully!". The order it wrote
+ * carried no `paymentIntentId`, so it was unpaid, and it was priced by copying
+ * the ORIGINAL order's stored `unitPrice` and tax ratio rather than going
+ * through `deriveItemUnitPrice`. After any rate or minimum-length change it
+ * would have charged the old amount.
+ *
+ * Reordering now fills the cart from `GET /customer/orders/:id` and goes through
+ * checkout like any other order, which is what Order History already did.
+ */

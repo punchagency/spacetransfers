@@ -5,9 +5,7 @@ import {
   listPrintQueue,
   updateJobStatus,
   listPrinterOrders,
-  getPrinterEarnings,
   getDashboardStats,
-  updateJobPriority,
   getJobDetails,
   getJobCustomerInfo,
   getPrinterJobOverview,
@@ -21,7 +19,6 @@ import {
   getExportJobStatus,
   getJobGangsheetPreview,
   downloadGangsheetExport,
-  downloadGangsheetPreviewPdf,
   exportPngForDownload,
   getPrinterOrdersSummary,
   updatePrinterOrderStatus,
@@ -30,10 +27,8 @@ import {
   reprintShippingLabel,
   updateJobTracking,
   getOrderSummary,
-  getEarningsSummary,
   listEarningsJobs,
-  requestPayout,
-  confirmPayoutRequest,
+  exportEarningsCsv,
   getPrinterProfile,
   updatePrinterProfile,
   getPrinterSettings,
@@ -69,7 +64,6 @@ router.get("/jobs/:jobId/gangsheet/preview", getJobGangsheetPreview);
 router.post("/jobs/:jobId/assets/bundle", createJobAssetBundle);
 router.get("/jobs/:jobId/assets/bundle/download", downloadJobAssetBundle);
 router.post("/jobs/:jobId/gangsheet/export", exportJobGangsheet);
-router.get("/jobs/:jobId/gangsheet/preview-pdf", downloadGangsheetPreviewPdf);
 router.post("/jobs/:jobId/gangsheet/png-export", exportPngForDownload);
 router.get("/jobs/export-status/:exportJobId", getExportJobStatus);
 router.get("/exports/:exportId/file", downloadGangsheetExport);
@@ -83,14 +77,10 @@ router.patch("/jobs/:jobId/specs", updateJobSpecs);
 router.patch("/jobs/:jobId/tracking", updateJobTracking);
 router.post("/jobs/:jobId/actions", executeJobAction);
 router.patch("/print-queue/:jobId/status", updateJobStatus);
-router.patch("/print-queue/:jobId/priority", updateJobPriority);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);
-router.get("/earnings/summary", getEarningsSummary);
-router.post("/earnings/payout-requests", requestPayout);
-router.post("/earnings/payout-requests/:requestId/confirm", confirmPayoutRequest);
-router.get("/earnings", getPrinterEarnings);
+router.get("/earnings/export", exportEarningsCsv);
 
 router.get("/availability", getAvailabilityStatus);
 router.patch("/availability", updateAvailabilityStatus);

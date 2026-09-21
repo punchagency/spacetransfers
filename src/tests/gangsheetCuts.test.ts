@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   computeGangsheetCuts,
   computeItemVerticalSpansIn,
+  printedSheetLengthIn,
 } from "../services/gangsheetExport.service.js";
 
 /**
@@ -156,20 +157,70 @@ describe("computeItemVerticalSpansIn", () => {
     assert.deepEqual(tops, [0, 5.5], "second row starts one height + gap down");
   });
 
-  it("accounts for rotation widening an item's vertical footprint", () => {
+  const height = (s: Array<{ topIn: number; bottomIn: number }>) => s[0].bottomIn - s[0].topIn;
+
+  it("measures a customer-rotated piece the way the store stores it", () => {
+    // `rotateSelected` swaps width and height as it turns a piece, so a 10x2in
+    // graphic turned once arrives as 2x10 with rotation 90. It runs 10in down
+    // the sheet. Rotating the already-swapped box again, as this used to, said 2.
     const upright = computeItemVerticalSpansIn({
       sheetWidthIn: 23.5,
       artboardItems: [{ widthIn: 10, heightIn: 2, posX: 0, posY: 0, copies: 1 }],
     });
     const turned = computeItemVerticalSpansIn({
       sheetWidthIn: 23.5,
-      artboardItems: [{ widthIn: 10, heightIn: 2, posX: 0, posY: 0, rotation: 90, copies: 1 }],
+      artboardItems: [{ widthIn: 2, heightIn: 10, posX: 0, posY: 0, rotation: 90, copies: 1 }],
     });
 
-    const height = (s: Array<{ topIn: number; bottomIn: number }>) => s[0].bottomIn - s[0].topIn;
     assert.ok(Math.abs(height(upright) - 2) < 1e-6);
-    // Rotated 90°, the 10in dimension is now the vertical one.
     assert.ok(Math.abs(height(turned) - 10) < 1e-6);
+  });
+
+  it("measures a piece auto-nest turned on its side", () => {
+    // A nest turn keeps the artwork's own width and height; the cell is swapped.
+    const spans = computeItemVerticalSpansIn({
+      sheetWidthIn: 23.5,
+      artboardItems: [{ widthIn: 10, heightIn: 2, posX: 0, posY: 0, copies: 1, nestRotation: 90 }],
+    });
+    assert.ok(Math.abs(height(spans) - 10) < 1e-6);
+  });
+
+  it("wraps copies at the columns auto-nest chose, not as many as fit", () => {
+    // Seven 3in pieces would fit across; auto-nest wrapped these six at two.
+    const spans = computeItemVerticalSpansIn({
+      sheetWidthIn: 23.5,
+      artboardItems: [{ widthIn: 3, heightIn: 2, posX: 0, posY: 0, copies: 6, flowCols: 2 }],
+      itemSpacingIn: 0.25,
+      sheetMarginIn: 0.15,
+    });
+    const tops = [...new Set(spans.map((s) => Number(s.topIn.toFixed(4))))].sort((a, b) => a - b);
+    assert.deepEqual(tops, [0, 2.25, 4.5]);
+  });
+
+  it("keeps the old column rule for placements stored without one", () => {
+    // Orders from before `flowCols` was recorded: as many columns as fit.
+    const spans = computeItemVerticalSpansIn({
+      sheetWidthIn: 23.5,
+      artboardItems: [{ widthIn: 3, heightIn: 2, posX: 0, posY: 0, copies: 6 }],
+      itemSpacingIn: 0.25,
+      sheetMarginIn: 0.15,
+    });
+    assert.deepEqual([...new Set(spans.map((s) => s.topIn))], [0]);
+  });
+
+  it("reports the printed length as the bottom of the lowest graphic", () => {
+    const length = printedSheetLengthIn({
+      sheetWidthIn: 23.5,
+      artboardItems: [
+        // 8 copies of an 11in square at two columns: four rows from 0.15in.
+        { widthIn: 11, heightIn: 11, posX: 0.15, posY: 0.15, copies: 8, flowCols: 2 },
+        // A nested 20x4 piece runs 20in down from 1in.
+        { widthIn: 20, heightIn: 4, posX: 22, posY: 1, copies: 1, nestRotation: 90 },
+      ],
+      itemSpacingIn: 0.5,
+      sheetMarginIn: 0.15,
+    });
+    assert.ok(Math.abs(length - (0.15 + 4 * 11 + 3 * 0.5)) < 1e-6, `got ${length}`);
   });
 
   it("skips items with no usable dimensions", () => {

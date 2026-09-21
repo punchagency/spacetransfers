@@ -18,8 +18,9 @@ import {
  *  - **Anti-aliasing.** Every cutout PNG has a 1–2px band of partial alpha
  *    around its silhouette. On a small or detailed logo that band is easily 5%
  *    of the visible pixels.
- *  - **Drop shadows.** Uniformly semi-transparent by design, and printable —
- *    they are rasterised into the underbase like anything else.
+ *  - **Drop shadows.** Uniformly semi-transparent by design. They do print, but
+ *    solid, not at the opacity shown — so they are flagged by the measured
+ *    see-through rule (`seeThroughVerdict`), not called fades.
  *  - **Soft glows and feathered edges.**
  *
  * The previous rule was `semiTransparent / visible > 0.05`, which cannot tell
@@ -41,10 +42,44 @@ const ANALYSIS_PX = 256;
 const TRANSPARENT_AT = 8;
 const OPAQUE_AT = 248;
 
+/**
+ * Alpha below this is more than 50% transparent.
+ *
+ * DTF prints each pixel solid or not at all, so no partial transparency comes
+ * out as it looks on screen. Two bands are told apart because the outcome
+ * differs: more than 50% transparent does not print as shown at all; less than
+ * that prints fully solid, stronger than on screen.
+ */
+export const FAINT_BELOW = 128;
+
+/**
+ * Share of the visible artwork that must be see-through (any alpha between
+ * `TRANSPARENT_AT` and `OPAQUE_AT`, edges excluded) before the image is flagged.
+ * Low enough to catch a small shadow or overlay, and high enough to ignore a
+ * few stray pixels.
+ */
+export const SEE_THROUGH_FLAG_RATIO = 0.01;
+
+/**
+ * Resolution for the see-through measurement. It is sampled with
+ * nearest-neighbour, never averaged: averaging turns a halftone's solid dots
+ * (the printable way to make a fade) into an even grey that would read as
+ * see-through.
+ */
+const SEE_THROUGH_ANALYSIS_PX = 1024;
+
+/**
+ * Bumped whenever the rules change, so a verdict cached on an asset under older
+ * rules is recomputed rather than trusted.
+ */
+export const TRANSPARENCY_CHECK_VERSION = 3;
+
 export type FadeVerdictSource = "ai" | "heuristic";
 
 export type FadeKind =
   | "fade"
+  | "semi-transparent"
+  | "translucent"
   | "anti-aliasing"
   | "shadow"
   | "soft-edge"
@@ -77,9 +112,17 @@ export interface FadeAnalysis {
   maxRampRatio: number;
   /** Distinct alpha levels present — a hard cutout has very few. */
   alphaLevels: number;
+  /**
+   * Pixels more than 50% transparent that are not an anti-aliased edge, as a
+   * fraction of visible ones. See `seeThroughShares`.
+   */
+  faintRatio: number;
+  /** Pixels partly transparent but at least 50% opaque, edges excluded, as a fraction of visible ones. */
+  translucentRatio: number;
 }
 
 export interface FadeResult {
+  /** True when the image has transparency DTF cannot print as shown: a fade, or see-through areas. */
   hasFade: boolean;
   /** 0–1. How sure the check is, whichever layer produced it. */
   confidence: number;
@@ -89,7 +132,77 @@ export interface FadeResult {
   /** Which layer produced this verdict. */
   source: FadeVerdictSource;
   analysis: FadeAnalysis;
+  /** `TRANSPARENCY_CHECK_VERSION` at the time this verdict was reached. */
+  version: number;
 }
+
+/**
+ * Shares of the visible artwork that are see-through, not counting anti-aliased
+ * edges: `faint` (more than 50% transparent) and `translucent` (partly
+ * transparent, at least 50% opaque).
+ *
+ * `alpha` is one byte per pixel. A pixel counts when its alpha is above
+ * `TRANSPARENT_AT` (it is there at all) and below `OPAQUE_AT`, and its 5×5
+ * neighbourhood does not hold both a fully opaque and a fully transparent pixel.
+ * That second test is what excludes the 1–2px soft edge every cutout has: an
+ * edge pixel always sits between solid artwork and empty space.
+ */
+export const seeThroughShares = (
+  alpha: Uint8Array | Buffer,
+  w: number,
+  h: number,
+): { faint: number; translucent: number } => {
+  const at = (x: number, y: number) => alpha[y * w + x];
+  let visible = 0;
+  let faint = 0;
+  let translucent = 0;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const a = at(x, y);
+      if (a <= TRANSPARENT_AT) continue;
+      visible++;
+      if (a >= OPAQUE_AT) continue;
+
+      let sawOpaque = false;
+      let sawTransparent = false;
+      for (let dy = -2; dy <= 2 && !(sawOpaque && sawTransparent); dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
+            sawTransparent = true;
+            continue;
+          }
+          const n = at(nx, ny);
+          if (n >= OPAQUE_AT) sawOpaque = true;
+          else if (n <= TRANSPARENT_AT) sawTransparent = true;
+          if (sawOpaque && sawTransparent) break;
+        }
+      }
+      if (sawOpaque && sawTransparent) continue;
+      if (a < FAINT_BELOW) faint++;
+      else translucent++;
+    }
+  }
+
+  const total = Math.max(1, visible);
+  return { faint: faint / total, translucent: translucent / total };
+};
+
+const measureSeeThrough = async (buffer: Buffer) => {
+  const { data, info } = await sharp(buffer, { limitInputPixels: false })
+    .ensureAlpha()
+    .resize(SEE_THROUGH_ANALYSIS_PX, SEE_THROUGH_ANALYSIS_PX, {
+      fit: "inside",
+      withoutEnlargement: true,
+      kernel: "nearest",
+    })
+    .extractChannel(3)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  return seeThroughShares(data, info.width, info.height);
+};
 
 /**
  * Extracts alpha-channel geometry.
@@ -161,6 +274,10 @@ export const analyzeAlpha = async (buffer: Buffer): Promise<FadeAnalysis> => {
     interiorSemiRatio: interiorSemi / Math.max(1, visible),
     maxRampRatio: longestRamp(data, w, h),
     alphaLevels: levels.size,
+    ...(await measureSeeThrough(buffer).then(({ faint, translucent }) => ({
+      faintRatio: faint,
+      translucentRatio: translucent,
+    }))),
   };
 };
 
@@ -259,7 +376,7 @@ const longestRamp = (data: Buffer | Uint8Array, w: number, h: number): number =>
  * costs them a pointless re-export and erodes trust in the warning, which is
  * worse than the occasional missed fade that a human proof would catch.
  */
-export const heuristicVerdict = (analysis: FadeAnalysis): Omit<FadeResult, "source" | "analysis"> => {
+export const heuristicVerdict = (analysis: FadeAnalysis): Omit<FadeResult, "source" | "analysis" | "version"> => {
   const { interiorSemiRatio, maxRampRatio, semiRatio, alphaLevels } = analysis;
 
   // Essentially no partial alpha: a hard-edged cutout or a fully opaque image.
@@ -299,6 +416,44 @@ export const heuristicVerdict = (analysis: FadeAnalysis): Omit<FadeResult, "sour
     confidence: 0.6,
     kind: interiorSemiRatio > 0.05 ? "shadow" : "soft-edge",
     reason: "Semi-transparent areas look like a shadow or soft edge rather than a fade.",
+  };
+};
+
+/**
+ * Verdict for see-through artwork over a real area.
+ *
+ * Measured, not judged, so it is final: nothing the model says can make partial
+ * transparency print as it looks. Null when the see-through area is below the
+ * flag ratio.
+ */
+export const seeThroughVerdict = (
+  analysis: FadeAnalysis,
+): Omit<FadeResult, "source" | "analysis" | "version"> | null => {
+  const seeThrough = analysis.faintRatio + analysis.translucentRatio;
+  if (seeThrough < SEE_THROUGH_FLAG_RATIO) return null;
+  const percent = (ratio: number) => Math.max(1, Math.round(ratio * 100));
+
+  if (heuristicVerdict(analysis).hasFade) {
+    return {
+      hasFade: true,
+      confidence: 1,
+      kind: "fade",
+      reason: `It fades into transparency; about ${percent(seeThrough)}% of the artwork is see-through.`,
+    };
+  }
+  if (analysis.faintRatio >= SEE_THROUGH_FLAG_RATIO) {
+    return {
+      hasFade: true,
+      confidence: 1,
+      kind: "semi-transparent",
+      reason: `About ${percent(analysis.faintRatio)}% of the artwork is more than 50% transparent.`,
+    };
+  }
+  return {
+    hasFade: true,
+    confidence: 1,
+    kind: "translucent",
+    reason: `About ${percent(seeThrough)}% of the artwork is partly transparent.`,
   };
 };
 
@@ -412,7 +567,7 @@ const FADE_SCHEMA = {
 export const classifyFadeWithAi = async (
   buffer: Buffer,
   analysis: FadeAnalysis,
-): Promise<Omit<FadeResult, "source" | "analysis"> | null> => {
+): Promise<Omit<FadeResult, "source" | "analysis" | "version"> | null> => {
   if (!geminiPlanningReady()) return null;
 
   try {
@@ -495,9 +650,17 @@ export const detectFade = async (buffer: Buffer): Promise<FadeResult> => {
         interiorSemiRatio: 0,
         maxRampRatio: 0,
         alphaLevels: 1,
+        faintRatio: 0,
+        translucentRatio: 0,
       },
+      version: TRANSPARENCY_CHECK_VERSION,
     };
   }
+
+  const version = TRANSPARENCY_CHECK_VERSION;
+
+  const seeThrough = seeThroughVerdict(analysis);
+  if (seeThrough) return { ...seeThrough, source: "heuristic", analysis, version };
 
   /**
    * Short-circuit before spending a model call.
@@ -508,11 +671,11 @@ export const detectFade = async (buffer: Buffer): Promise<FadeResult> => {
    * affordable and fast enough to be the default.
    */
   if (analysis.semiRatio < 0.005) {
-    return { ...heuristicVerdict(analysis), source: "heuristic", analysis };
+    return { ...heuristicVerdict(analysis), source: "heuristic", analysis, version };
   }
 
   const ai = await classifyFadeWithAi(buffer, analysis);
-  if (ai) return { ...ai, source: "ai", analysis };
+  if (ai) return { ...ai, source: "ai", analysis, version };
 
-  return { ...heuristicVerdict(analysis), source: "heuristic", analysis };
+  return { ...heuristicVerdict(analysis), source: "heuristic", analysis, version };
 };

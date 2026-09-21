@@ -28,6 +28,8 @@ export interface IAsset extends Document {
     kind: string;
     reason: string;
     source: string;
+    /** Rules version the verdict was reached under; older verdicts are recomputed. */
+    version?: number;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -84,7 +86,8 @@ const assetSchema = new Schema<IAsset>(
           confidence: { type: Number, required: true },
           kind: { type: String, required: true },
           reason: { type: String },
-          source: { type: String }
+          source: { type: String },
+          version: { type: Number }
         },
         { _id: false }
       ),

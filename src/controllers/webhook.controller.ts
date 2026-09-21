@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
+// Node's crypto, not the WebCrypto global — only the former has timingSafeEqual.
+import { timingSafeEqual } from "node:crypto";
 import { env } from "../config/env.js";
 import { Order } from "../models/order.model.js";
 import { ssRequestByUrl, isShipStationConfigured } from "../services/shipstation.service.js";
@@ -222,14 +224,40 @@ export const shipStationWebhook = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    // Token check — must match SHIPSTATION_WEBHOOK_SECRET if configured.
+    /*
+     * Token check, and it fails closed.
+     *
+     * This used to be wrapped in `if (secret)`, so an unset
+     * SHIPSTATION_WEBHOOK_SECRET left the endpoint open to anyone: a public URL
+     * that mutates order state and tracking on request. An unset secret is a
+     * misconfiguration, and the safe reading of a misconfiguration is "reject",
+     * not "accept everything" — the same rule `SHIPSTATION_LABELS_ENABLED`
+     * follows for spending money.
+     */
     const secret = env.shipStationWebhookSecret;
-    if (secret) {
-      const provided = String(req.query.token || "");
-      if (provided !== secret) {
-        res.status(401).end();
-        return;
-      }
+    if (!secret) {
+      console.error(
+        "[SHIPSTATION_WEBHOOK] refused: SHIPSTATION_WEBHOOK_SECRET is not set, so callers cannot be verified",
+      );
+      res.status(503).end();
+      return;
+    }
+
+    const provided = String(req.query.token || "");
+    /*
+     * Length-independent comparison. `!==` on strings returns as soon as two
+     * characters differ, and the timing of that is measurable over enough
+     * requests — the token is a fixed secret, which is exactly the shape that
+     * can be recovered a character at a time.
+     */
+    const providedBuf = Buffer.from(provided);
+    const secretBuf = Buffer.from(secret);
+    const tokenMatches =
+      providedBuf.length === secretBuf.length && timingSafeEqual(providedBuf, secretBuf);
+
+    if (!tokenMatches) {
+      res.status(401).end();
+      return;
     }
 
     const { resource_url, resource_type } = (req.body || {}) as SSWebhookBody;

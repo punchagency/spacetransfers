@@ -70,7 +70,7 @@ describe("buildEditRequest", () => {
   });
 
   it("only sends optional inputs the model actually declares", () => {
-    // Replicate rejects the whole prediction with a 422 if it receives a field
+    // A strict model API rejects the whole request if it receives a field
     // the model doesn't declare, so a seed must not be sent blindly.
     const built = buildEditRequest("remove-object", "Remove the cup", 1234);
     assert.equal(built.extraInput.seed, 1234);

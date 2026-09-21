@@ -42,7 +42,6 @@ export interface IUser extends Document {
   stripeConnectAccountId?: string | null;
   stripeConnectOnboarded?: boolean;
   payoutsEnabled?: boolean;
-  artboardDraft?: any;
   cart?: any[];
   verificationStatus?: {
     email: boolean;
@@ -55,6 +54,19 @@ export interface IUser extends Document {
     registrationNumber?: string;
     foundedDate?: Date;
   };
+  /**
+   * This partner's own warehouse in the client's ShipStation account.
+   *
+   * ShipStation stamps a warehouse on every order and reports against it, so
+   * without one every partner's jobs are filed under the HQ warehouse — the
+   * labels still ship from the right address, but ShipStation's own reporting
+   * shows all volume coming from head office.
+   *
+   * The client creates a warehouse per partner and passes the numeric id; it is
+   * only visible in the ShipStation URL, which is why it is entered by hand
+   * rather than discovered.
+   */
+  shipStationWarehouseId?: number | null;
   businessAddress?: {
     street: string;
     city: string;
@@ -72,33 +84,16 @@ export interface IUser extends Document {
     verificationCode?: string;
     documentUrl?: string;
   }[];
-  badges?: {
-    name: string;
-    icon: string;
-    dateEarned: Date;
-  }[];
-  performance?: {
-    completionRate: number;
-    responseTime: number; // in minutes
-    customerRating: number;
-  };
+    /*
+     * `badges` and `performance` removed.
+     *
+     * Neither was ever written by any code path: badges was empty on every
+     * partner with no way to award one, and performance was {0, 0, 0} on all of
+     * them while the Profile page dressed those zeros up as "< 2 hours response
+     * time" and "Top 10%". Real production time and on-time rate are derived
+     * from orders in `partnerPerformance.service`, which both consoles read.
+     */
   settings: {
-    profile?: {
-      bio?: string;
-      gender?: string;
-      dateOfBirth?: string;
-      nationalId?: string;
-      taxId?: string;
-    };
-    businessHours?: {
-      monday?: { isOpen: boolean; start: string; end: string };
-      tuesday?: { isOpen: boolean; start: string; end: string };
-      wednesday?: { isOpen: boolean; start: string; end: string };
-      thursday?: { isOpen: boolean; start: string; end: string };
-      friday?: { isOpen: boolean; start: string; end: string };
-      saturday?: { isOpen: boolean; start: string; end: string };
-      sunday?: { isOpen: boolean; start: string; end: string };
-    };
     jobCapacity?: {
       maxConcurrent?: number;
       dailyMax?: number;
@@ -116,18 +111,15 @@ export interface IUser extends Document {
         partnerActivity?: boolean;
       };
     };
+    /**
+     * Mirrors the schema below. Payouts run through Stripe Connect only — the
+     * older bank_transfer / paypal / check shape was never persistable, because
+     * the schema has no `accountNumber`, `routingNumber` or `paypalEmail`
+     * fields and Mongoose strict mode dropped them on save.
+     */
     paymentMethod?: {
-      type?: "bank_transfer" | "paypal" | "check";
-      accountNumber?: string;
-      routingNumber?: string;
-      paypalEmail?: string;
-    };
-    printingCapabilities?: {
-      maxSheetSizeIn?: { width: number; height: number };
-      supportedInks?: string[];
-      supportedFilms?: string[];
-      supportedFormats?: string[];
-      maxResolutionDPI?: number;
+      type?: "stripe_connect";
+      stripeConnectAccountId?: string;
     };
     pricing?: {
       baseRatePerSqFt: number;
@@ -141,8 +133,13 @@ export interface IUser extends Document {
         specialInkFlat: number;
       };
     };
+    /**
+     * Two-factor was a stored boolean that nothing enforced — login never read
+     * it, there was no TOTP secret, and the "QR code" carried the literal
+     * string MOCKSECRET. It was removed rather than left advertising protection
+     * the account did not have.
+     */
     security?: {
-      twoFactorEnabled: boolean;
       lastPasswordChange?: Date;
     };
   };
@@ -162,7 +159,16 @@ export interface IUser extends Document {
   // getRegionFromState / geocoding. Stored so queries can filter by region without
   // recomputing it live on every request.
   detectedRegion?: "West" | "Midwest" | "South" | "Northeast" | null;
-  availabilityStatus?: "open" | "paused" | "stopped";
+  statusHistory?: Array<{
+    from?: string | null;
+    to: string;
+    reason?: string | null;
+    at?: Date;
+    byId?: any;
+    byName?: string | null;
+    notified?: boolean;
+  }>;
+  availabilityStatus?: "open" | "paused";
   // True when the partner was automatically paused because they reached their
   // maximum active job limit. Distinguishes a capacity auto-pause from a manual
   // pause so auto-recovery only re-opens partners the system paused itself, and
@@ -192,7 +198,6 @@ const userSchema = new Schema<IUser>(
     email: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
       trim: true
     },
@@ -229,9 +234,42 @@ const userSchema = new Schema<IUser>(
     ],
     status: {
       type: String,
-      enum: ["Active", "Suspended", "Under Review", "Pending"],
+      /*
+       * "Rejected" is terminal and distinct from "Suspended" on purpose. A
+       * suspension is a pause on a partner the network still wants — it can be
+       * lifted. A rejection is a declined application that was never a partner.
+       * Collapsing the two left declined applicants sitting in the partners
+       * table looking exactly like a working partner paused for cause.
+       */
+      enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected"],
       default: "Active"
     },
+
+    /*
+     * Every status change, with the reason and who made it.
+     *
+     * Rejecting or suspending a partner is consequential and was previously a
+     * one-click, unexplained, permanent act: the only trace was the status field
+     * itself. Nothing recorded why, who decided, or when — so a partner
+     * re-applying months later met an approver with no way to know whether the
+     * last rejection was about print quality or a duplicate signup.
+     *
+     * One trail for all of them rather than a `rejectionReason` beside a
+     * `suspensionReason`, so a new status cannot arrive without somewhere to
+     * explain itself.
+     */
+    statusHistory: [
+      {
+        from: { type: String, default: null },
+        to: { type: String, required: true },
+        reason: { type: String, default: null },
+        at: { type: Date, default: Date.now },
+        byId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+        byName: { type: String, default: null },
+        /** Whether the partner was successfully told. */
+        notified: { type: Boolean, default: false },
+      },
+    ],
     rating: {
       type: Number,
       default: 5.0,
@@ -288,9 +326,14 @@ const userSchema = new Schema<IUser>(
     stripeConnectAccountId: { type: String, default: null },
     stripeConnectOnboarded: { type: Boolean, default: false },
     payoutsEnabled: { type: Boolean, default: true },
-    artboardDraft: {
-      type: Schema.Types.Mixed,
-      default: null
+    /*
+     * The customer's saved cart. It was declared on the interface but not here,
+     * so strict mode dropped every write: `PUT /customer/cart` answered "Cart
+     * updated" and stored nothing, and every read came back empty.
+     */
+    cart: {
+      type: [Schema.Types.Mixed],
+      default: undefined
     },
     verificationStatus: {
       email: { type: Boolean, default: false },
@@ -303,6 +346,7 @@ const userSchema = new Schema<IUser>(
       registrationNumber: String,
       foundedDate: Date
     },
+    shipStationWarehouseId: { type: Number, default: null },
     businessAddress: {
       street: String,
       city: String,
@@ -325,35 +369,31 @@ const userSchema = new Schema<IUser>(
         documentUrl: String
       }
     ],
-    badges: [
-      {
-        name: String,
-        icon: String,
-        dateEarned: { type: Date, default: Date.now }
-      }
-    ],
-    performance: {
-      completionRate: { type: Number, default: 0 },
-      responseTime: { type: Number, default: 0 },
-      customerRating: { type: Number, default: 0 }
-    },
     settings: {
-      profile: {
-        bio: { type: String, default: "" },
-        gender: { type: String, default: "" },
-        dateOfBirth: { type: String, default: "" },
-        nationalId: { type: String, default: "" },
-        taxId: { type: String, default: "" }
-      },
-      businessHours: {
-        monday: { isOpen: Boolean, start: String, end: String },
-        tuesday: { isOpen: Boolean, start: String, end: String },
-        wednesday: { isOpen: Boolean, start: String, end: String },
-        thursday: { isOpen: Boolean, start: String, end: String },
-        friday: { isOpen: Boolean, start: String, end: String },
-        saturday: { isOpen: Boolean, start: String, end: String },
-        sunday: { isOpen: Boolean, start: String, end: String }
-      },
+      /*
+       * `profile` (bio, gender, dateOfBirth, nationalId, taxId) removed.
+       * Nothing anywhere read it — the admin console collected it, echoed it
+       * back and used it for nothing, and the schema defaults created an empty
+       * copy on every user of every role.
+       *
+       * Date of birth and national ID are the ones worth naming: storing staff
+       * identity documents with no purpose is a liability, not a feature.
+       */
+      /*
+       * `businessHours` and `printingCapabilities` were removed from this
+       * schema.
+       *
+       * Business hours gated auto-assignment and separately refused a partner
+       * permission to accept a job already assigned to them (403) while that
+       * job's SLA clock kept running. The check compared against the SERVER's
+       * clock and no partner has a timezone stored, so "9-5" meant nine to five
+       * wherever the server happened to run. Pause answers "am I taking work"
+       * explicitly, visibly to admins, and with a notification.
+       *
+       * Printing capabilities (max sheet size, inks, films, formats, DPI) were
+       * consulted by no assignment or pricing decision, and both editors for
+       * them had already been removed as decorative.
+       */
       jobCapacity: {
         maxConcurrent: Number,
         dailyMax: Number,
@@ -375,14 +415,14 @@ const userSchema = new Schema<IUser>(
         type: { type: String, enum: ["stripe_connect"] },
         stripeConnectAccountId: String,
       },
-      printingCapabilities: {
-        maxSheetSizeIn: { width: Number, height: Number },
-        supportedInks: [String],
-        supportedFilms: [String],
-        supportedFormats: [String],
-        maxResolutionDPI: Number
-      },
       pricing: {
+        /*
+         * Last resort only. Both creation paths — admin `createPartner` and
+         * self-registration — now write `partnerDefaults` from the admin's
+         * General Settings explicitly, so this should never be the value a
+         * real partner ends up on. It stays as a floor for documents written
+         * outside those paths (fixtures, migrations, direct edits).
+         */
         baseRatePerSqFt: { type: Number, default: 2.5 },
         tiered: [
           {
@@ -397,7 +437,6 @@ const userSchema = new Schema<IUser>(
         }
       },
       security: {
-        twoFactorEnabled: { type: Boolean, default: false },
         lastPasswordChange: { type: Date }
       }
     },
@@ -434,7 +473,15 @@ const userSchema = new Schema<IUser>(
     },
     availabilityStatus: {
       type: String,
-      enum: ["open", "paused", "stopped"],
+      /*
+       * Two states, not three. "Stopped" was offered alongside "Paused" and did
+       * exactly the same thing: one gate reads this field and it only asks
+       * whether the value is "open", and a manual change to either cleared
+       * `capacityPaused` identically. The dropdown promised a difference
+       * ("temporarily not accepting" vs "offline") that no code honoured, so it
+       * was a choice with no consequence.
+       */
+      enum: ["open", "paused"],
       default: "open",
     },
     capacityPaused: {
@@ -469,6 +516,20 @@ const userSchema = new Schema<IUser>(
 // Partial unique index on googleId: only enforced when the field is a non-null
 // string (i.e., an actual Google account ID). This lets every non-Google user
 // keep googleId === null without colliding with each other on the unique key.
+/*
+ * One address may hold one account of each kind, not one account in total.
+ *
+ * `email` alone was unique, so a person who administered the platform could not
+ * also sign up as a print partner, and a partner could not shop as a customer —
+ * the same human needed a second mailbox per role. Scoping uniqueness to the
+ * pair keeps the real constraint (no two partner accounts on one address) while
+ * dropping the accidental one.
+ *
+ * Every lookup by email is now role-scoped to match; `loginUser` resolves the
+ * role from the app making the request.
+ */
+userSchema.index({ email: 1, role: 1 }, { unique: true });
+
 userSchema.index(
   { googleId: 1 },
   { unique: true, partialFilterExpression: { googleId: { $type: "string" } } },

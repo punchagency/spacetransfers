@@ -156,6 +156,20 @@ export const createShipStationOrder = (params: {
   country: string;
   items: Array<{ name: string; quantity: number; unitPrice: number }>;
   totalAmount: number;
+  /**
+   * The real parcel. Optional only so existing callers keep compiling; when it
+   * is absent the old fiction is used and a warning is logged, because a
+   * mis-declared parcel is billed back by the carrier after the fact.
+   */
+  parcel?: { weightLb: number; lengthIn: number; widthIn: number; heightIn: number };
+  /**
+   * The assigned partner's own warehouse. Omitted, the HQ default is used.
+   *
+   * ShipStation reports by warehouse, so stamping every order with the HQ one
+   * filed all partner volume under head office. The label already shipped from
+   * the right address — this only fixes what ShipStation's own reports say.
+   */
+  warehouseId?: number | null;
 }): Promise<{ shipStationOrderId: string; orderNumber: string }> =>
   withRetry(
     async () => {
@@ -169,7 +183,24 @@ export const createShipStationOrder = (params: {
         country: normaliseCountry(params.country),
         phone: params.phone || "",
       };
-      const warehouseId = await getDefaultWarehouseId();
+      const warehouseId =
+        typeof params.warehouseId === "number" && Number.isFinite(params.warehouseId)
+          ? params.warehouseId
+          : await getDefaultWarehouseId();
+
+      if (!params.parcel) {
+        console.warn(
+          `[SHIPSTATION] order ${params.displayId} created without a parcel — ` +
+            `declaring 1lb 12x10x2in, which the carrier will re-bill if wrong`,
+        );
+      }
+      const parcel = params.parcel ?? {
+        weightLb: 1,
+        lengthIn: 12,
+        widthIn: 10,
+        heightIn: 2,
+      };
+
       const result = await ssRequest<SSCreateOrderResponse>("POST", "/orders/createorder", {
         orderNumber: params.displayId,
         orderDate: new Date().toISOString(),
@@ -185,8 +216,13 @@ export const createShipStationOrder = (params: {
           unitPrice: item.unitPrice,
         })),
         amountPaid: params.totalAmount,
-        weight: { value: 1, units: "pounds" },
-        dimensions: { units: "inches", length: 12, width: 10, height: 2 },
+        weight: { value: parcel.weightLb, units: "pounds" },
+        dimensions: {
+          units: "inches",
+          length: parcel.lengthIn,
+          width: parcel.widthIn,
+          height: parcel.heightIn,
+        },
         ...(warehouseId !== null && { advancedOptions: { warehouseId } }),
       });
       return {
@@ -209,6 +245,98 @@ interface SSCreateLabelResponse {
   carrierCode: string;
 }
 
+interface SSRate {
+  serviceName: string;
+  serviceCode: string;
+  shipmentCost: number;
+  otherCost: number;
+}
+
+export interface CarrierRate {
+  serviceName: string;
+  serviceCode: string;
+  carrierCode: string;
+  /** Carrier's total for this service, before any markup. */
+  costUsd: number;
+}
+
+/**
+ * Live rates for a parcel to a destination.
+ *
+ * This did not exist: the service could create orders, buy labels and poll
+ * tracking, but never ask what shipping actually costs. Every customer was
+ * charged a flat $8.99 regardless of whether the parcel cost $6 or $40.
+ *
+ * Rates are quoted, not committed — the label is still bought separately, and
+ * the price the carrier charges then can differ if the parcel was mis-declared.
+ * That is why `deriveParcel` exists.
+ */
+export const getShipStationRates = (params: {
+  toState: string;
+  toPostalCode: string;
+  toCountry: string;
+  toCity?: string;
+  parcel: { weightLb: number; lengthIn: number; widthIn: number; heightIn: number };
+  carrierCode?: string;
+  /** Residential addresses carry a carrier surcharge; assume so unless told otherwise. */
+  residential?: boolean;
+  /**
+   * Where the parcel ships from. Falls back to the configured warehouse only
+   * when no serving partner could be identified — quoting from a fixed origin
+   * while the label ships from a partner's address is what made rates wrong.
+   */
+  fromPostalCode?: string;
+}): Promise<CarrierRate[]> =>
+  withRetry(
+    async () => {
+      const carrierCode = params.carrierCode ?? env.shipStationCarrierId ?? "stamps_com";
+
+      const rates = await ssRequest<SSRate[]>("POST", "/shipments/getrates", {
+        carrierCode,
+        fromPostalCode: params.fromPostalCode || env.shipStationFromPostalCode || undefined,
+        toState: params.toState,
+        toCountry: normaliseCountry(params.toCountry),
+        toPostalCode: params.toPostalCode,
+        toCity: params.toCity || undefined,
+        weight: { value: params.parcel.weightLb, units: "pounds" },
+        dimensions: {
+          units: "inches",
+          length: params.parcel.lengthIn,
+          width: params.parcel.widthIn,
+          height: params.parcel.heightIn,
+        },
+        // Understating this is the most common source of a quote that comes in
+        // under the eventual label price.
+        residential: params.residential !== false,
+      });
+
+      return (Array.isArray(rates) ? rates : [])
+        .map((r) => ({
+          serviceName: String(r?.serviceName ?? ""),
+          serviceCode: String(r?.serviceCode ?? ""),
+          carrierCode,
+          costUsd: Number(r?.shipmentCost ?? 0) + Number(r?.otherCost ?? 0),
+        }))
+        .filter((r) => r.serviceCode && Number.isFinite(r.costUsd) && r.costUsd > 0)
+        .sort((a, b) => a.costUsd - b.costUsd);
+    },
+    2,
+    600,
+    "getRates",
+  );
+
+/**
+ * Buying a label is the one ShipStation call that spends money, so the guard
+ * lives here rather than at the two call sites.
+ *
+ * `SHIPSTATION_LABELS_ENABLED` was declared in the deployment blueprint and
+ * read by nothing, which meant staging — pointed at the same live ShipStation
+ * account, because there is no sandbox — could buy real postage against the
+ * client's card. Rate quoting, order creation and tracking are all unaffected;
+ * only the purchase is blocked.
+ */
+export const areLabelPurchasesEnabled = (): boolean => env.shipStationLabelsEnabled;
+
 export const createShipStationLabel = (params: {
   shipStationOrderId: string;
   carrierCode?: string;
@@ -230,6 +358,15 @@ export const createShipStationLabel = (params: {
 }> =>
   withRetry(
     async () => {
+      if (!areLabelPurchasesEnabled()) {
+        const error = new Error(
+          "Label purchasing is disabled in this environment (SHIPSTATION_LABELS_ENABLED is not true). " +
+            "ShipStation has no sandbox, so buying a label here would charge the live account.",
+        ) as Error & { statusCode?: number };
+        error.statusCode = 503;
+        throw error;
+      }
+
       // Prefer the caller-supplied shipFrom (printer's business address).
       // Fall back to env-var address if caller didn't provide one.
       const shipFrom = params.shipFrom ?? (env.shipStationFromStreet
