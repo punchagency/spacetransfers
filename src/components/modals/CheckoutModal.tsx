@@ -664,6 +664,7 @@ export default function CheckoutModal({
                       formData={formData}
                       setFormData={setFormData}
                       errors={checkoutErrors as any}
+                      cartItems={cartItems}
                     />
                   )}
 
