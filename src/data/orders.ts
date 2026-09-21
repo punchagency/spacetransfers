@@ -4,172 +4,19 @@ export interface Order {
     createdAtMs?: number;
     customer: string;
     region: string;
+    /** Set when the order was fulfilled outside the customer's own region. */
+    crossRegion?: { customerRegion: string; assignedRegion: string } | null;
     partner: string;
-    status: "Assigned" | "Completed" | "Ready to Ship" | "Processing" | "Pending" | "Rejected" | "Shipped" | "Cancelled";
+    /** Display labels from `utils/orderStatus`, not backend values. */
+    status: "Unassigned" | "Assigned" | "Printing" | "Ready to Ship" | "Shipped" | "Completed" | "Cancelled" | string;
     amount: string;
     profit: string;
+    /**
+     * False while the order has not shipped. Partners are not paid before then
+     * and revenue is counted from placement, so the figure is a forecast — the
+     * table marks it rather than presenting it as money already made.
+     */
+    profitRealized?: boolean;
+    isUrgent?: boolean;
     date: string;
 }
-
-export const mockOrders: Order[] = [
-    {
-        id: "#ORD-2847",
-        customer: "Sarah Johnson",
-        region: "West",
-        partner: "FastPrint LA",
-        status: "Assigned",
-        amount: "$342.50",
-        profit: "$34",
-        date: "Dec 1, 2024",
-    },
-    {
-        id: "#ORD-2846",
-        customer: "Mike Chen",
-        region: "North",
-        partner: "NYC Graphics",
-        status: "Completed",
-        amount: "$125.00",
-        profit: "$12",
-        date: "Nov 30, 2024",
-    },
-    {
-        id: "#ORD-2845",
-        customer: "Emma Wilson",
-        region: "North",
-        partner: "NYC Graphics",
-        status: "Ready to Ship",
-        amount: "$892.75",
-        profit: "$89",
-        date: "Nov 30, 2024",
-    },
-    {
-        id: "#ORD-2844",
-        customer: "David Brown",
-        region: "North",
-        partner: "FastPrint LA",
-        status: "Processing",
-        amount: "$456.20",
-        profit: "$45",
-        date: "Nov 29, 2024",
-    },
-    {
-        id: "#ORD-2843",
-        customer: "Lisa Anderson",
-        region: "North",
-        partner: "FastPrint LA",
-        status: "Pending",
-        amount: "$278.00",
-        profit: "$27",
-        date: "Nov 29, 2024",
-    },
-    {
-        id: "#ORD-2842",
-        customer: "John Doe",
-        region: "West",
-        partner: "Unassigned",
-        status: "Rejected",
-        amount: "$120.00",
-        profit: "$12",
-        date: "Nov 28, 2024",
-    },
-    {
-        id: "#ORD-2841",
-        customer: "Jane Smith",
-        region: "East",
-        partner: "PrintMaster",
-        status: "Shipped",
-        amount: "$550.00",
-        profit: "$55",
-        date: "Nov 28, 2024",
-    },
-    {
-        id: "#ORD-2840",
-        customer: "Robert Fox",
-        region: "South",
-        partner: "QuickPrint",
-        status: "Processing",
-        amount: "$89.99",
-        profit: "$9",
-        date: "Nov 27, 2024",
-    },
-    {
-        id: "#ORD-2839",
-        customer: "Emily Davis",
-        region: "West",
-        partner: "FastPrint LA",
-        status: "Completed",
-        amount: "$210.50",
-        profit: "$21",
-        date: "Nov 27, 2024",
-    },
-    {
-        id: "#ORD-2838",
-        customer: "Michael Brown",
-        region: "East",
-        partner: "Unassigned",
-        status: "Pending",
-        amount: "$75.00",
-        profit: "$7",
-        date: "Nov 26, 2024",
-    },
-    {
-        id: "#ORD-2837",
-        customer: "William Taylor",
-        region: "North",
-        partner: "NYC Graphics",
-        status: "Assigned",
-        amount: "$340.00",
-        profit: "$34",
-        date: "Nov 26, 2024",
-    },
-    {
-        id: "#ORD-2836",
-        customer: "Olivia Martin",
-        region: "South",
-        partner: "QuickPrint",
-        status: "Ready to Ship",
-        amount: "$150.00",
-        profit: "$15",
-        date: "Nov 25, 2024",
-    },
-    {
-        id: "#ORD-2835",
-        customer: "James Wilson",
-        region: "West",
-        partner: "FastPrint LA",
-        status: "Shipped",
-        amount: "$420.00",
-        profit: "$42",
-        date: "Nov 25, 2024",
-    },
-    {
-        id: "#ORD-2834",
-        customer: "Sophia Anderson",
-        region: "East",
-        partner: "PrintMaster",
-        status: "Rejected",
-        amount: "$95.00",
-        profit: "$9",
-        date: "Nov 24, 2024",
-    },
-    {
-        id: "#ORD-2833",
-        customer: "Benjamin Thomas",
-        region: "North",
-        partner: "NYC Graphics",
-        status: "Processing",
-        amount: "$180.00",
-        profit: "$18",
-        date: "Nov 24, 2024",
-    },
-    {
-        id: "#ORD-3243",
-        customer: "John Smith",
-        region: "West",
-        partner: "FastPrint LA",
-        status: "Assigned",
-        amount: "$45.00",
-        profit: "$18.00",
-        date: "Dec 3, 2024",
-    },
-];

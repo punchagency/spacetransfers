@@ -8,12 +8,14 @@ export const ProfileSecurity = () => {
   const [lastPasswordChange, setLastPasswordChange] = useState<Date | null>(
     null
   );
-  const [sessionLocation, setSessionLocation] = useState<{
-    ip?: string;
-    city?: string;
-    region?: string;
-    country?: string;
-  } | null>(null);
+  const [activity, setActivity] = useState<Array<{
+    id: string;
+    device: string;
+    ip: string;
+    location: string;
+    status: string;
+    time: string;
+  }>>([]);
 
   const [updatingPassword, setUpdatingPassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -27,25 +29,12 @@ export const ProfileSecurity = () => {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await apiFetch("/admin/settings/security");
-        setLastPasswordChange(res.lastPasswordChange ? new Date(res.lastPasswordChange) : null);
-
-        try {
-          const geoRes = await fetch("https://ipapi.co/json/");
-          if (geoRes.ok) {
-            const geo = await geoRes.json();
-            setSessionLocation({
-              ip: geo.ip,
-              city: geo.city,
-              region: geo.region,
-              country: geo.country_name || geo.country,
-            });
-          } else {
-            setSessionLocation(null);
-          }
-        } catch {
-          setSessionLocation(null);
-        }
+        const [security, log] = await Promise.all([
+          apiFetch("/admin/settings/security"),
+          apiFetch("/admin/security/login-activity?pageSize=10&page=1"),
+        ]);
+        setLastPasswordChange(security.lastPasswordChange ? new Date(security.lastPasswordChange) : null);
+        setActivity(Array.isArray(log?.activity) ? log.activity : []);
       } catch (error: any) {
         toast.error(error.message || "Failed to load security settings");
       } finally {
@@ -63,6 +52,11 @@ export const ProfileSecurity = () => {
     if (newPassword !== confirmPassword) return false;
     return true;
   }, [loading, updatingPassword, currentPassword, newPassword, confirmPassword]);
+
+  const formatTime = (value: string) => {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  };
 
   const handleUpdatePassword = async () => {
     if (!canUpdatePassword) return;
@@ -195,45 +189,52 @@ export const ProfileSecurity = () => {
 
       <div className="border-t border-gray-100 my-8"></div>
 
-      {/* Active Sessions */}
+      {/* Login Activity */}
       <div>
-        <h3 className="text-base font-bold text-gray-900 mb-6">
-          Active Sessions
-        </h3>
+        <h3 className="text-base font-bold text-gray-900 mb-1">Login Activity</h3>
+        <p className="text-sm text-gray-500 mb-6">
+          Your 10 most recent sign-in attempts. The top row is your current session.
+        </p>
 
-        <div className="space-y-4">
-          <div className="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
-            <div>
-              <div className="font-medium text-gray-900 text-sm">
-                Current Session
-              </div>
-              <div className="text-sm text-gray-500 mt-0.5">This device</div>
-              <div className="text-xs text-gray-400 mt-1">
-                Location:{" "}
-                {sessionLocation?.city || sessionLocation?.region || sessionLocation?.country
-                  ? `${[sessionLocation.city, sessionLocation.region, sessionLocation.country].filter(Boolean).join(", ")}`
-                  : "Unknown"}
-                {sessionLocation?.ip ? ` • IP: ${sessionLocation.ip}` : ""}
-              </div>
-              <div className="text-xs text-gray-400 mt-1">
-                Last activity: Just now
-              </div>
-            </div>
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
-              Active
-            </span>
-          </div>
-
-          <button
-            onClick={() => {
-              localStorage.removeItem("admin_token");
-              localStorage.removeItem("admin_user");
-              window.location.href = "/auth";
-            }}
-            className="w-full flex items-center justify-center px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-          >
-            Sign Out of This Session
-          </button>
+        <div className="overflow-x-auto border border-gray-200 rounded-lg">
+          <table className="w-full text-left text-sm text-gray-500">
+            <thead className="bg-gray-50 text-gray-700 uppercase text-xs">
+              <tr>
+                <th className="px-4 py-3 font-medium">Device / Browser</th>
+                <th className="px-4 py-3 font-medium">IP Address</th>
+                <th className="px-4 py-3 font-medium">Location</th>
+                <th className="px-4 py-3 font-medium">Time</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {loading ? (
+                <tr className="bg-white"><td className="px-4 py-4" colSpan={5}>Loading…</td></tr>
+              ) : activity.length === 0 ? (
+                <tr className="bg-white"><td className="px-4 py-4" colSpan={5}>No sign-in activity recorded yet.</td></tr>
+              ) : (
+                activity.map((log) => (
+                  <tr key={log.id} className="bg-white hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-900">{log.device}</td>
+                    <td className="px-4 py-3">{log.ip}</td>
+                    <td className="px-4 py-3">{log.location}</td>
+                    <td className="px-4 py-3">{formatTime(log.time)}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          log.status === "Success"
+                            ? "bg-green-100 text-green-800"
+                            : "bg-red-100 text-red-800"
+                        }`}
+                      >
+                        {log.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </>

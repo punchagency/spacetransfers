@@ -1,4 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { getApiBaseUrl } from "../utils/api";
+import { getToken } from "../utils/auth";
 import { apiFetch } from "../utils/api";
 
 export type AdminNotificationCategory = "orders" | "partners" | "system";
@@ -10,9 +12,23 @@ export type AdminNotificationItem = {
   priority: AdminNotificationPriority;
   title: string;
   message: string;
+  /** Context for the thing the notification is about — e.g. `{ orderId, partnerId }`. */
+  meta?: Record<string, any> | null;
   readAt: string | null;
   createdAt: string;
 };
+
+/**
+ * A raw admin-stream event.
+ *
+ * The admin stream carries more than notifications — `partner.availability_changed`
+ * and `order.returned_to_queue` are pushed down it too. Both were broadcast by
+ * the server and dropped on the floor here, because this store only ever looked
+ * for `notification.*` and nothing else could reach the socket: the connection
+ * is owned by this provider, and a page opening its own would mean a second SSE
+ * connection per admin per tab.
+ */
+export type AdminStreamHandler = (event: string, data: any) => void;
 
 type ListResponse = {
   notifications: AdminNotificationItem[];
@@ -30,22 +46,35 @@ type NotificationsState = {
   loadMore: () => Promise<void>;
   markRead: (id: string, read: boolean) => Promise<void>;
   markAllRead: () => Promise<void>;
+  /**
+   * Listen to the raw admin stream. Returns an unsubscribe function.
+   *
+   * Handlers are held in a ref, so subscribing never re-runs the connection
+   * effect — a page mounting must not tear down and re-open the stream.
+   */
+  subscribeToStream: (handler: AdminStreamHandler) => () => void;
 };
 
 const NotificationsStoreContext = createContext<NotificationsState | null>(null);
 
-const API_BASE_URL = "http://localhost:4000/api";
+/**
+ * Was hard-coded to `http://localhost:4000/api`, so notifications could only
+ * stream on a developer's machine. Same defect as the order-detail stream had.
+ */
+const API_BASE_URL = getApiBaseUrl();
 
 const startSse = async ({
   endpoint,
   onEvent,
   signal,
+  onOpen,
 }: {
   endpoint: string;
   onEvent: (event: string, data: any) => void;
   signal: AbortSignal;
+  onOpen?: () => void;
 }) => {
-  const token = localStorage.getItem("admin_token");
+  const token = getToken();
   const res = await fetch(`${API_BASE_URL}${endpoint}`, {
     method: "GET",
     headers: {
@@ -55,6 +84,7 @@ const startSse = async ({
   });
 
   if (!res.ok || !res.body) return;
+  onOpen?.();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -92,7 +122,7 @@ const startSse = async ({
   }
 };
 
-export const NotificationsStoreProvider = ({ children }: { children: any }) => {
+export const NotificationsStoreProvider = ({ children }: { children: ReactNode }) => {
   const [records, setRecords] = useState<Record<string, AdminNotificationItem>>({});
   const [ids, setIds] = useState<string[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -101,6 +131,14 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastQuery, setLastQuery] = useState<{ status?: string; category?: string; priority?: string; q?: string }>({});
   const abortRef = useRef<AbortController | null>(null);
+  const streamSubscribersRef = useRef<Set<AdminStreamHandler>>(new Set());
+
+  const subscribeToStream = useCallback((handler: AdminStreamHandler) => {
+    streamSubscribersRef.current.add(handler);
+    return () => {
+      streamSubscribersRef.current.delete(handler);
+    };
+  }, []);
 
   const upsertMany = useCallback((rows: AdminNotificationItem[]) => {
     setRecords((prev) => {
@@ -199,10 +237,53 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
     const abort = new AbortController();
     abortRef.current = abort;
 
-    startSse({
-      endpoint: "/admin/notifications/stream",
-      signal: abort.signal,
-      onEvent: (event, data) => {
+    /**
+     * Reconnect loop.
+     *
+     * `startSse` returns whenever the stream ends — a server restart, a proxy
+     * idle timeout, a laptop waking from sleep. Without this the bell simply
+     * stopped updating until someone reloaded the page, and nothing said so.
+     *
+     * Backoff caps at 30s so a server that is down does not get hammered, and
+     * resets on a clean connect so a brief blip recovers immediately.
+     */
+    let attempt = 0;
+    const connect = async () => {
+      while (!abort.signal.aborted) {
+        try {
+          await startSse({
+            endpoint: "/admin/notifications/stream",
+            signal: abort.signal,
+            onEvent: handleEvent,
+            onOpen: () => {
+              attempt = 0;
+              // Catch up on anything missed while disconnected.
+              refresh({ status: "unread" }).catch(() => {});
+            },
+          });
+        } catch {
+          // fall through to the backoff below
+        }
+        if (abort.signal.aborted) return;
+        attempt += 1;
+        const delay = Math.min(30000, 1000 * 2 ** (attempt - 1));
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    };
+
+    const handleEvent = (event: string, data: any) => {
+      // Fan out first and to every event: the notification branches below
+      // return early, and a subscriber that only sees the leftovers would miss
+      // the ones this store handles.
+      for (const handler of streamSubscribersRef.current) {
+        try {
+          handler(event, data);
+        } catch {
+          // One bad subscriber must not stop the others, or the stream.
+        }
+      }
+
+      {
         if (event === "notification.created" && data && data.id) {
           const n: AdminNotificationItem = {
             id: String(data.id),
@@ -210,6 +291,7 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
             priority: data.priority,
             title: data.title,
             message: data.message,
+            meta: data.meta ?? null,
             readAt: data.readAt || null,
             createdAt: new Date(data.createdAt || Date.now()).toISOString(),
           };
@@ -231,8 +313,10 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
         if (event === "notification.email_failed") {
           refresh({ status: "unread" }).catch(() => {});
         }
-      },
-    }).catch(() => {});
+      }
+    };
+
+    connect();
 
     return () => {
       abort.abort();
@@ -249,6 +333,7 @@ export const NotificationsStoreProvider = ({ children }: { children: any }) => {
     loadMore,
     markRead,
     markAllRead,
+    subscribeToStream,
   };
 
   return <NotificationsStoreContext.Provider value={value}>{children}</NotificationsStoreContext.Provider>;

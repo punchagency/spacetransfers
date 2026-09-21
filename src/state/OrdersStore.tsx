@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import toast from "react-hot-toast";
 import { apiFetch } from "../utils/api";
 import type { Order as OrderRow } from "../data/orders";
 import { mapAdminOrderToRow } from "../utils/orderMappers";
@@ -10,25 +11,38 @@ type OrdersState = {
   loadingRecent: boolean;
   loadingList: boolean;
   fetchRecentOrders: (range?: string) => Promise<{ stats: any }>;
-  fetchOrdersList: (params?: { status?: string; cursor?: string | null; append?: boolean }) => Promise<void>;
+  fetchOrdersList: (params?: { status?: string; cursor?: string | null; append?: boolean; search?: string }) => Promise<void>;
+  /**
+   * Set when the last list fetch failed.
+   *
+   * `fetchOrdersList` had no catch — only a `finally` — and every caller invokes
+   * it un-awaited, so a failed load became an unhandled rejection and the orders
+   * table rendered "No data found." with no toast and no error. The console's
+   * most important table failed completely silently.
+   */
+  listError: string | null;
   upsertOrderRow: (actualId: string, patch: Partial<OrderRow>) => void;
 };
 
 const OrdersStoreContext = createContext<OrdersState | null>(null);
 
-export const OrdersStoreProvider = ({ children }: { children: any }) => {
+export const OrdersStoreProvider = ({ children }: { children: ReactNode }) => {
   const [records, setRecords] = useState<Record<string, OrderRow>>({});
   const [recentIds, setRecentIds] = useState<string[]>([]);
   const [listIds, setListIds] = useState<string[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingRecent, setLoadingRecent] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
 
   const upsertMany = useCallback((rows: OrderRow[]) => {
     setRecords((prev) => {
       const next = { ...prev };
       for (const r of rows) {
-        const key = r.actualId || r.id.replace("#ORD-", "").toLowerCase();
+        // actualId (the raw ObjectId) is always set by the mapper; the second
+        // branch is a guard only. It used to strip a "#ORD-" prefix that no
+        // longer exists now that rows carry the canonical DTF-#### number.
+        const key = r.actualId || r.id.toLowerCase();
         next[key] = { ...next[key], ...r };
       }
       return next;
@@ -55,12 +69,23 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
       status,
       cursor = null,
       append = false,
-    }: { status?: string; cursor?: string | null; append?: boolean } = {}) => {
+      search,
+    }: { status?: string; cursor?: string | null; append?: boolean; search?: string } = {}) => {
       setLoadingList(true);
       try {
         const statusParam = status && status !== "All" ? `&status=${encodeURIComponent(status)}` : "";
         const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
-        const response = await apiFetch(`/orders?limit=15${statusParam}${cursorParam}`);
+        const searchParam = search && search.trim() ? `&search=${encodeURIComponent(search.trim())}` : "";
+        /**
+         * `/admin/orders`, not the generic `/orders` feed.
+         *
+         * `mapAdminOrderToRow` reads `region`, `assignedPartner` and `profits`,
+         * and the generic feed returns none of them — so every row fell back to
+         * region "West", partner "Unassigned" and profit $0.00 regardless of
+         * the truth. The admin endpoint returns those fields, and is also the
+         * only one that supports `search`.
+         */
+        const response = await apiFetch(`/admin/orders?limit=15${statusParam}${cursorParam}${searchParam}`);
         const rows: OrderRow[] = Array.isArray(response.orders)
           ? response.orders.map((o: any) => mapAdminOrderToRow(o))
           : [];
@@ -73,6 +98,14 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
           const sorted = [...rows].sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
           return sorted.slice(0, 5).map((r) => r.actualId || "");
         });
+        setListError(null);
+      } catch (error: any) {
+        const message = error?.message || "Could not load orders";
+        setListError(message);
+        toast.error(message);
+        // Rows from an earlier successful load are kept on an append —
+        // losing them would be a worse outcome than a stale page.
+        if (!append) setListIds([]);
       } finally {
         setLoadingList(false);
       }
@@ -96,6 +129,7 @@ export const OrdersStoreProvider = ({ children }: { children: any }) => {
     nextCursor,
     loadingRecent,
     loadingList,
+    listError,
     fetchRecentOrders,
     fetchOrdersList,
     upsertOrderRow,

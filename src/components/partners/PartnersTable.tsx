@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { GenericTable } from "../common/GenericTable";
+import { AvailabilityBadge } from "./AvailabilityBadge";
 import type { Partner } from "../../types/partners";
 
 const getStatusStyles = (status: Partner["status"]) => {
@@ -12,12 +13,23 @@ const getStatusStyles = (status: Partner["status"]) => {
             return "bg-amber-50 text-amber-600";
         case "Suspended":
             return "bg-red-50 text-red-600";
+        // Grey, not red: a rejected application is closed and needs nothing from
+        // anyone. Red is for a partner who was working and has been stopped.
+        case "Rejected":
+            return "bg-gray-100 text-gray-500";
         default:
             return "bg-gray-50 text-gray-600";
     }
 };
 
-export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
+export const PartnersTable = ({
+    partners,
+    error = null,
+}: {
+    partners: Partner[];
+    /** Passed straight through so a failed load is not shown as an empty roster. */
+    error?: string | null;
+}) => {
     const navigate = useNavigate();
 
     const columns = [
@@ -48,25 +60,52 @@ export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
         {
             header: "Status",
             render: (partner: Partner) => (
-                <span
-                    className={`px-3 py-1 rounded-full text-[11px] font-semibold ${getStatusStyles(
-                        partner.status
-                    )}`}
-                >
-                    {partner.status}
-                </span>
+                <div className="flex flex-col items-start gap-1.5">
+                    <span
+                        className={`px-3 py-1 rounded-full text-[11px] font-semibold ${getStatusStyles(
+                            partner.status
+                        )}`}
+                    >
+                        {partner.status}
+                    </span>
+                    {/*
+                      Only for Active partners. Availability decides whether
+                      auto-assignment will route work to them, and for a
+                      Pending, Suspended or Rejected partner it decides
+                      nothing — showing a green "Open" beside "Suspended"
+                      would say they are taking work when they cannot.
+                    */}
+                    {partner.status === "Active" && (
+                        <AvailabilityBadge
+                            status={partner.availabilityStatus}
+                            capacityPaused={partner.capacityPaused}
+                            size="sm"
+                        />
+                    )}
+                </div>
             )
         },
-        { header: "Base Price", key: "basePrice" as keyof Partner, className: "text-[#364153] font-medium" },
-        { header: "Sale Price", key: "salePrice" as keyof Partner, className: "text-[#364153] font-medium" },
-        { header: "Profit", key: "profit" as keyof Partner, className: "text-[#364153] font-bold" },
-        { header: "Orders", key: "orders" as keyof Partner, className: "text-gray-900 font-medium" },
+        /*
+         * Base price, sale price and profit were removed when pricing became
+         * network-wide: they showed the same three numbers on every row, and
+         * "profit" was a per-sq-ft margin rather than anything this partner had
+         * earned. In progress differs per partner and is what an admin needs
+         * when choosing who to assign to.
+         */
+        { header: "In Progress", key: "ordersInProgress" as keyof Partner, className: "text-gray-900 font-medium" },
+        { header: "Completed", key: "orders" as keyof Partner, className: "text-gray-900 font-medium" },
         {
             header: "Action",
+            /*
+             * A span, not a button. It never had an onClick — it only worked
+             * because the click bubbled to the row's navigate handler, so a
+             * stopPropagation above would have killed it silently while it
+             * still looked clickable. The row is the control.
+             */
             render: () => (
-                <button className="text-gray-400 hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
+                <span className="text-gray-400 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
                     View
-                </button>
+                </span>
             )
         },
     ];
@@ -74,6 +113,7 @@ export const PartnersTable = ({ partners }: { partners: Partner[] }) => {
     return (
         <GenericTable
             data={partners}
+            error={error}
             columns={columns}
             showFooterInfo={true}
             footerLabel="partners"

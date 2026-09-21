@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { PartnersTable } from '../components/partners/PartnersTable';
 import { FiPlus, FiSend } from 'react-icons/fi';
@@ -9,6 +9,8 @@ import { apiFetch } from '../utils/api';
 import toast from 'react-hot-toast';
 import { AddPartnerModal } from '../components/partners/AddPartnerModal';
 import { AssignOrdersModal } from '../components/partners/AssignOrdersModal';
+import { useNotificationsStore } from '../state/NotificationsStore';
+import { REGIONS } from "../utils/regions";
 
 export const FulfilmentPartners = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -16,58 +18,168 @@ export const FulfilmentPartners = () => {
   const [regionFilter, setRegionFilter] = useState('All Regions');
   const [partners, setPartners] = useState<Partner[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Debounced so typing doesn't fire a request per keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const { subscribeToStream } = useNotificationsStore();
 
-  const filteredPartners: Partner[] = useMemo(() => {
-    return partners.filter((partner) => {
-      const matchesSearch =
-        partner.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        partner.email.toLowerCase().includes(searchTerm.toLowerCase());
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => window.clearTimeout(id);
+  }, [searchTerm]);
 
-      const matchesStatus =
-        statusFilter === 'All Status' || partner.status === statusFilter;
+  /**
+   * Live availability, from the admin stream this console already holds open.
+   *
+   * The server has broadcast `partner.availability_changed` all along — from a
+   * partner's own pill, from the capacity monitor, and now from this console —
+   * and nothing listened. A partner pausing themselves left this table showing
+   * Open until someone reloaded, which is the one moment the roster is being
+   * read to decide who gets work.
+   *
+   * The row is patched rather than refetched: a refetch would fight whatever
+   * filter and cursor page the admin is currently on.
+   */
+  /*
+   * Name and regions are both partner-editable now, and both are columns here.
+   * Patched in place rather than refetched so the admin's current filter and
+   * cursor page survive.
+   */
+  useEffect(
+    () =>
+      subscribeToStream((event, data) => {
+        if (event !== 'partner.profile_updated' || !data?.partnerId) return;
+        const partnerId = String(data.partnerId);
+        setPartners((prev) =>
+          prev.map((p) =>
+            p.id === partnerId
+              ? {
+                  ...p,
+                  name: data.name ? String(data.name) : p.name,
+                  regions: Array.isArray(data.regions) ? data.regions : p.regions,
+                }
+              : p,
+          ),
+        );
+      }),
+    [subscribeToStream],
+  );
 
-      const matchesRegion =
-        regionFilter === 'All Regions' || partner.regions.includes(regionFilter);
+  useEffect(
+    () =>
+      subscribeToStream((event, data) => {
+        if (event !== 'partner.availability_changed' || !data?.partnerId) return;
+        const partnerId = String(data.partnerId);
+        setPartners((prev) =>
+          prev.map((p) =>
+            p.id === partnerId
+              ? {
+                  ...p,
+                  availabilityStatus: data.availabilityStatus === 'paused' ? 'paused' : 'open',
+                  capacityPaused: Boolean(data.capacityPaused),
+                }
+              : p,
+          ),
+        );
+      }),
+    [subscribeToStream],
+  );
 
-      return matchesSearch && matchesStatus && matchesRegion;
-    });
-  }, [partners, searchTerm, statusFilter, regionFilter]);
+  /**
+   * The server already applied search, status and region — this list is the
+   * result of that query, so re-filtering it here only removes rows.
+   *
+   * It did exactly that: the server matches a partner's contact `name`,
+   * `companyName` or `email`, but returns `companyName` as the display `name`.
+   * Searching a partner's contact name therefore matched server-side and was
+   * then discarded client-side, so a partner that exists reported "no results".
+   */
+  const filteredPartners: Partner[] = partners;
+
+  const mapPartner = (p: any): Partner => ({
+    id: String(p.id),
+    name: String(p.name || 'N/A'),
+    email: String(p.email || 'N/A'),
+    regions: Array.isArray(p.regions) ? p.regions : [],
+    status: p.status as Partner['status'],
+    // Returned by the API all along; the console just never read it.
+    availabilityStatus: p.availabilityStatus === 'paused' ? 'paused' : 'open',
+    capacityPaused: Boolean(p.capacityPaused),
+    ordersInProgress: String(p.ordersInProgress ?? '0'),
+    orders: String(p.orders ?? p.ordersCompleted ?? '0'),
+  });
+
+  const queryFor = useCallback((cursor?: string | null) => {
+    const params = new URLSearchParams();
+    if (statusFilter !== 'All Status') params.set('status', statusFilter);
+    if (regionFilter !== 'All Regions') params.set('region', regionFilter);
+    if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
+    params.set('limit', '50');
+    if (cursor) params.set('cursor', cursor);
+    return params.toString();
+  }, [statusFilter, regionFilter, debouncedSearch]);
+
+  // Read through a ref inside the effect so the fetch always uses the current
+  // filters without making the effect re-run on an identity change.
+  const queryForRef = useRef(queryFor);
+  queryForRef.current = queryFor;
+
+  /**
+   * The server returns a cursor when more partners exist. The page asked for 50
+   * and threw it away, so at 51 partners the rest simply were not there — no
+   * message, no control, and the table's own pager only paginates what it was
+   * handed.
+   */
+  const loadMorePartners = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await apiFetch(`/admin/partners?${queryFor(nextCursor)}`);
+      const more = (res.partners || []).map(mapPartner);
+      setPartners((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...more.filter((p: Partner) => !seen.has(p.id))];
+      });
+      setNextCursor(res.nextCursor || null);
+    } catch (error: any) {
+      toast.error(error.message || 'Could not load more partners');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
     const fetchPartners = async () => {
       setLoading(true);
       try {
-        const params = new URLSearchParams();
-        if (statusFilter !== 'All Status') params.set('status', statusFilter);
-        if (regionFilter !== 'All Regions') params.set('region', regionFilter);
-        if (searchTerm.trim()) params.set('search', searchTerm.trim());
-        params.set('limit', '50');
+        const params = new URLSearchParams(queryForRef.current());
 
         const response = await apiFetch(`/admin/partners?${params.toString()}`);
-        const mapped: Partner[] = (response.partners || []).map((p: any) => ({
-          id: String(p.id),
-          name: String(p.name || 'N/A'),
-          email: String(p.email || 'N/A'),
-          regions: Array.isArray(p.regions) ? p.regions : [],
-          status: p.status as Partner['status'],
-          basePrice: String(p.basePrice || '$0.00'),
-          salePrice: String(p.salePrice || '$0.00'),
-          profit: String(p.profit || '$0.00'),
-          orders: String(p.orders ?? p.ordersCompleted ?? '0'),
-        }));
-        setPartners(mapped);
+        setPartners((response.partners || []).map(mapPartner));
+        setNextCursor(response.nextCursor || null);
+        setLoadError(null);
       } catch (error: any) {
-        toast.error(error.message || 'Failed to load partners');
+        const message = error.message || 'Failed to load partners';
+        // Cleared and recorded, so the table reports that it could not load
+        // rather than presenting an empty roster as the truth.
+        setPartners([]);
+        setLoadError(message);
+        toast.error(message);
       } finally {
+        // In `finally`, not in the catch. A splice while adding the error state
+        // swallowed this block, leaving the flag cleared only on failure — so a
+        // successful load spun forever.
         setLoading(false);
       }
     };
 
     fetchPartners();
-  }, [refreshKey, searchTerm, statusFilter, regionFilter]);
+  }, [refreshKey, debouncedSearch, statusFilter, regionFilter]);
 
   return (
     <DashboardLayout>
@@ -101,7 +213,7 @@ export const FulfilmentPartners = () => {
         {/* Filters */}
         <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col md:flex-row gap-4 items-center">
           <SearchInput
-            placeholder="Search by name or region..."
+            placeholder="Search by name, company or email"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             containerClassName="flex-1 w-full"
@@ -116,6 +228,7 @@ export const FulfilmentPartners = () => {
             <option>Active</option>
             <option>Pending</option>
             <option>Suspended</option>
+            <option>Rejected</option>
           </SelectInput> 
 
           <SelectInput
@@ -124,13 +237,9 @@ export const FulfilmentPartners = () => {
             containerClassName="w-full md:w-48"
           >
             <option>All Regions</option>
-            <option>South</option>
-            <option>Central</option>
-            <option>Midwest</option>
-            <option>Pacific Northwest</option>
-            <option>Southwest</option>
-            <option>North-east</option>
-            <option>Westcoast</option>
+            {REGIONS.map((region) => (
+              <option key={region}>{region}</option>
+            ))}
           </SelectInput>
         </div>
 
@@ -140,7 +249,20 @@ export const FulfilmentPartners = () => {
             <p className="mt-3 text-gray-500 text-sm">Loading partners...</p>
           </div>
         ) : (
-          <PartnersTable partners={filteredPartners} />
+          <>
+            <PartnersTable partners={filteredPartners} error={loadError} />
+            {nextCursor && (
+              <div className="flex justify-center pt-4">
+                <button
+                  onClick={() => void loadMorePartners()}
+                  disabled={loadingMore}
+                  className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50 rounded-lg text-sm font-medium text-gray-700"
+                >
+                  {loadingMore ? 'Loading…' : 'Load more partners'}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

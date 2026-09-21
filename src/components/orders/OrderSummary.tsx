@@ -104,6 +104,18 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
 
     const effectiveGangsheetItems = Object.values(consolidatedMap);
 
+    const GANGSHEET_PAGE_SIZE = 15;
+    const [gangsheetPage, setGangsheetPage] = useState(0);
+    const gangsheetPageCount = Math.max(1, Math.ceil(effectiveGangsheetItems.length / GANGSHEET_PAGE_SIZE));
+    // The order refreshes on a 5s poll, so the list can shrink under a reader
+    // sitting on a later page. Clamp rather than render an empty page.
+    const safeGangsheetPage = Math.min(gangsheetPage, gangsheetPageCount - 1);
+    const gangsheetStart = safeGangsheetPage * GANGSHEET_PAGE_SIZE;
+    const visibleGangsheetItems = effectiveGangsheetItems.slice(
+        gangsheetStart,
+        gangsheetStart + GANGSHEET_PAGE_SIZE,
+    );
+
     const orderId = typeof (order as any)?.id === "string" ? String((order as any).id) : null;
     const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
     const [previewSheet, setPreviewSheet] = useState<{ widthIn: number | null; heightIn: number | null }>({
@@ -289,12 +301,23 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
 
                 {effectiveGangsheetItems.length > 0 && (
                     <div className="mt-6">
-                        <h4 className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">
-                            Gangsheet Contents ({effectiveGangsheetItems.length} Unique Items)
-                        </h4>
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                Gangsheet Contents ({effectiveGangsheetItems.length} Unique Items)
+                            </h4>
+                            {gangsheetPageCount > 1 && (
+                                <span className="text-xs text-gray-400">
+                                    Showing {gangsheetStart + 1}–{gangsheetStart + visibleGangsheetItems.length}
+                                </span>
+                            )}
+                        </div>
                         <div className="space-y-3">
-                            {effectiveGangsheetItems.map((it, idx) => (
-                                <div key={`${it.sku}-${idx}`} className="bg-gray-50 p-4 rounded-lg border border-gray-100">
+                            {visibleGangsheetItems.map((it, idx) => (
+                                // Absolute index, not the page-local one: two
+                                // pages can otherwise produce the same key for
+                                // different rows, and React reuses the previous
+                                // page's DOM — showing the wrong thumbnail.
+                                <div key={`${it.sku}-${gangsheetStart + idx}`} className="bg-gray-50 p-4 rounded-lg border border-gray-100">
                                     <div className="flex items-start gap-4">
                                         <div className="w-12 h-12 bg-white rounded border border-gray-200 flex items-center justify-center text-gray-400 overflow-hidden shrink-0">
                                             {it.fileUrl ? (
@@ -327,6 +350,38 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                                 </div>
                             ))}
                         </div>
+
+                        {/*
+                          A busy sheet carries hundreds of unique graphics — this
+                          order has 306 — and every one was rendered at once, so
+                          reaching anything below the list meant scrolling past
+                          all of them. Paged rather than virtualised: the list is
+                          long, not infinite, and paging keeps the page height
+                          predictable without pulling in a windowing library.
+                        */}
+                        {gangsheetPageCount > 1 && (
+                            <div className="flex items-center justify-between gap-3 mt-4 pt-3 border-t border-gray-100">
+                                <button
+                                    type="button"
+                                    onClick={() => setGangsheetPage(Math.max(0, safeGangsheetPage - 1))}
+                                    disabled={safeGangsheetPage === 0}
+                                    className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Previous
+                                </button>
+                                <span className="text-xs text-gray-500 tabular-nums">
+                                    Page {safeGangsheetPage + 1} of {gangsheetPageCount}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setGangsheetPage(Math.min(gangsheetPageCount - 1, safeGangsheetPage + 1))}
+                                    disabled={safeGangsheetPage >= gangsheetPageCount - 1}
+                                    className="px-3 py-1.5 text-sm font-medium text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

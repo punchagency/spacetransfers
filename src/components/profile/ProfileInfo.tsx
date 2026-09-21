@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FiCamera, FiSave, FiUser } from "react-icons/fi";
 import toast from "react-hot-toast";
 import { apiFetch } from "../../utils/api";
+import { getUser, getToken, setAuth } from "../../utils/auth";
 
 export const ProfileInfo = () => {
   const [loading, setLoading] = useState(true);
@@ -12,33 +13,11 @@ export const ProfileInfo = () => {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string>("");
-  const [bio, setBio] = useState("");
-  const [gender, setGender] = useState("");
-  const [dateOfBirth, setDateOfBirth] = useState("");
-  const [nationalId, setNationalId] = useState("");
-  const [taxId, setTaxId] = useState("");
-  const [street, setStreet] = useState("");
-  const [city, setCity] = useState("");
-  const [stateProv, setStateProv] = useState("");
-  const [postalCode, setPostalCode] = useState("");
-  const [country, setCountry] = useState("");
   const [initial, setInitial] = useState<{
     name: string;
     email: string;
     phone: string;
     avatarUrl: string;
-    bio: string;
-    gender: string;
-    dateOfBirth: string;
-    nationalId: string;
-    taxId: string;
-    address: {
-      street: string;
-      city: string;
-      state: string;
-      postalCode: string;
-      country: string;
-    };
   } | null>(null);
 
   useEffect(() => {
@@ -57,33 +36,11 @@ export const ProfileInfo = () => {
         setEmail(String(profile.email || ""));
         setPhone(String(profile.phone || ""));
         setAvatarUrl(String(profile.avatarUrl || ""));
-        setBio(String(profile.profile?.bio || ""));
-        setGender(String(profile.profile?.gender || ""));
-        setDateOfBirth(String(profile.profile?.dateOfBirth || ""));
-        setNationalId(String(profile.profile?.nationalId || ""));
-        setTaxId(String(profile.profile?.taxId || ""));
-        setStreet(String(profile.address?.street || ""));
-        setCity(String(profile.address?.city || ""));
-        setStateProv(String(profile.address?.state || ""));
-        setPostalCode(String(profile.address?.postalCode || ""));
-        setCountry(String(profile.address?.country || ""));
         setInitial({
           name: fullName,
           email: String(profile.email || ""),
           phone: String(profile.phone || ""),
           avatarUrl: String(profile.avatarUrl || ""),
-          bio: String(profile.profile?.bio || ""),
-          gender: String(profile.profile?.gender || ""),
-          dateOfBirth: String(profile.profile?.dateOfBirth || ""),
-          nationalId: String(profile.profile?.nationalId || ""),
-          taxId: String(profile.profile?.taxId || ""),
-          address: {
-            street: String(profile.address?.street || ""),
-            city: String(profile.address?.city || ""),
-            state: String(profile.address?.state || ""),
-            postalCode: String(profile.address?.postalCode || ""),
-            country: String(profile.address?.country || ""),
-          },
         });
       } catch (error: any) {
         toast.error(error.message || "Failed to load profile");
@@ -105,17 +62,7 @@ export const ProfileInfo = () => {
       fullName !== initial.name ||
       email !== initial.email ||
       phone !== initial.phone ||
-      avatarUrl !== initial.avatarUrl ||
-      bio !== initial.bio ||
-      gender !== initial.gender ||
-      dateOfBirth !== initial.dateOfBirth ||
-      nationalId !== initial.nationalId ||
-      taxId !== initial.taxId ||
-      street !== initial.address.street ||
-      city !== initial.address.city ||
-      stateProv !== initial.address.state ||
-      postalCode !== initial.address.postalCode ||
-      country !== initial.address.country
+      avatarUrl !== initial.avatarUrl
     );
   }, [
     initial,
@@ -123,16 +70,6 @@ export const ProfileInfo = () => {
     email,
     phone,
     avatarUrl,
-    bio,
-    gender,
-    dateOfBirth,
-    nationalId,
-    taxId,
-    street,
-    city,
-    stateProv,
-    postalCode,
-    country,
   ]);
 
   const canSave = !loading && isDirty && !saving && !!fullName && !!email.trim();
@@ -148,20 +85,6 @@ export const ProfileInfo = () => {
           email,
           phone: phone || null,
           avatarUrl: avatarUrl || null,
-          profile: {
-            bio,
-            gender,
-            dateOfBirth,
-            nationalId,
-            taxId,
-          },
-          address: {
-            street,
-            city,
-            state: stateProv,
-            postalCode,
-            country,
-          },
         }),
       });
       toast.success("Profile updated");
@@ -170,12 +93,6 @@ export const ProfileInfo = () => {
         email,
         phone,
         avatarUrl,
-        bio,
-        gender,
-        dateOfBirth,
-        nationalId,
-        taxId,
-        address: { street, city, state: stateProv, postalCode, country },
       });
 
       const stored = localStorage.getItem("admin_user");
@@ -203,44 +120,34 @@ export const ProfileInfo = () => {
 
     setUploadingAvatar(true);
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("Failed to read file"));
-        reader.readAsDataURL(file);
+      /**
+       * Uploaded as a file, not a base64 data URL.
+       *
+       * This previously read the image with FileReader and PATCHed the whole
+       * `data:` URL onto the profile, so the image was stored on the user
+       * document — and `authenticate` loads that document on every
+       * authenticated request. The server now resizes it, encodes WebP and
+       * puts it on Cloudinary, and only the URL is stored.
+       */
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await apiFetch("/admin/profile/upload", {
+        method: "POST",
+        body: form,
       });
 
-      if (!dataUrl) throw new Error("Failed to read image");
+      const url = String(res?.avatarUrl || "");
+      if (!url) throw new Error("Upload succeeded but no image URL was returned");
 
-      await apiFetch("/admin/profile", {
-        method: "PATCH",
-        body: JSON.stringify({ avatarUrl: dataUrl }),
-      });
+      setAvatarUrl(url);
+      setInitial((prev) => (prev ? { ...prev, avatarUrl: url } : prev));
 
-      setAvatarUrl(dataUrl);
-      setInitial((prev) =>
-        prev
-          ? { ...prev, avatarUrl: dataUrl }
-          : {
-              name: fullName,
-              email,
-              phone,
-              avatarUrl: dataUrl,
-              bio,
-              gender,
-              dateOfBirth,
-              nationalId,
-              taxId,
-              address: { street, city, state: stateProv, postalCode, country },
-            }
-      );
-
-      const stored = localStorage.getItem("admin_user");
-      const parsed = stored ? JSON.parse(stored) : {};
-      localStorage.setItem(
-        "admin_user",
-        JSON.stringify({ ...parsed, name: fullName || parsed.name, email, avatarUrl: dataUrl })
-      );
+      // setAuth rather than a bare localStorage write: it notifies subscribers,
+      // so the header avatar updates immediately instead of staying stale until
+      // the next full page load.
+      const current = getUser() || {};
+      setAuth(getToken() || "", { ...current, avatarUrl: url });
 
       toast.success("Profile picture updated");
     } catch (error: any) {
@@ -372,126 +279,6 @@ export const ProfileInfo = () => {
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="md:col-span-2 space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">Bio</label>
-            <input
-              type="text"
-              value={bio}
-              onChange={(e) => setBio(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="md:col-span-2 space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">Gender</label>
-            <input
-              type="text"
-              value={gender}
-              onChange={(e) => setGender(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">
-              Date of Birth
-            </label>
-            <input
-              type="text"
-              value={dateOfBirth}
-              onChange={(e) => setDateOfBirth(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">
-              National ID
-            </label>
-            <input
-              type="text"
-              value={nationalId}
-              onChange={(e) => setNationalId(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Address */}
-      <div className="mt-10">
-        <h3 className="text-base font-bold text-gray-900 mb-6">Address</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-          <div className="md:col-span-2 space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">Street</label>
-            <input
-              type="text"
-              value={street}
-              onChange={(e) => setStreet(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">Country</label>
-            <input
-              type="text"
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">City</label>
-            <input
-              type="text"
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">State</label>
-            <input
-              type="text"
-              value={stateProv}
-              onChange={(e) => setStateProv(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">
-              Postal Code
-            </label>
-            <input
-              type="text"
-              value={postalCode}
-              onChange={(e) => setPostalCode(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-gray-700">TAX ID</label>
-            <input
-              type="text"
-              value={taxId}
-              onChange={(e) => setTaxId(e.target.value)}
               disabled={loading}
               className="w-full px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
             />

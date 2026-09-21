@@ -1,15 +1,28 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FiLogOut, FiUser, FiChevronDown } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import { clearAuth, getUserSnapshot, subscribeToAuth } from '../../utils/auth';
 
 export const UserMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  const userStr = localStorage.getItem('admin_user');
-  const user = userStr ? JSON.parse(userStr) : { name: 'Admin', email: 'admin@company.com', avatarUrl: null };
+  /**
+   * Subscribed rather than read once, so changing your profile picture updates
+   * the header immediately. This used to read localStorage during render, which
+   * meant a new avatar only appeared after a full page reload.
+   */
+  const stored = useSyncExternalStore(subscribeToAuth, getUserSnapshot, () => null);
+
+  // AuthUser carries an index signature, so its fields are `unknown` — narrowed
+  // here once rather than cast at every use site.
+  const user = {
+    name: typeof stored?.name === 'string' && stored.name ? stored.name : 'Admin',
+    email: typeof stored?.email === 'string' && stored.email ? stored.email : 'admin@company.com',
+    avatarUrl: typeof stored?.avatarUrl === 'string' && stored.avatarUrl ? stored.avatarUrl : null,
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -24,11 +37,12 @@ export const UserMenu = () => {
 
   const handleLogout = () => {
     try {
-      localStorage.removeItem('admin_token');
-      localStorage.removeItem('admin_user');
+      // clearAuth notifies the route guard, which redirects on its own — no
+      // full page reload, so in-flight React state isn't thrown away and the
+      // app doesn't flash.
+      clearAuth();
       toast.success('Logged out successfully');
-      // Using window.location to ensure a full app reload and clear any state
-      window.location.href = '/auth';
+      navigate('/auth', { replace: true });
     } catch {
       toast.error('Logout failed');
     }

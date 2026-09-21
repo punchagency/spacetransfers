@@ -19,10 +19,18 @@ export const RevenueChartCard = ({
   currentTotal,
   previousTotal,
   points,
+  periodLabel = "Last 30 days",
+  priorPeriodLabel = "Previous 30 days",
 }: {
   currentTotal: number;
   previousTotal: number;
   points: RevenueChartPoint[];
+  /*
+   * The legend read "Current Week" / "Previous Week" no matter what window was
+   * requested, so a 30-day chart described itself as a week.
+   */
+  periodLabel?: string;
+  priorPeriodLabel?: string;
 }) => {
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 h-[393px] flex flex-col">
@@ -33,7 +41,7 @@ export const RevenueChartCard = ({
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-gray-900" />
             <span>
-              Current Week{" "}
+              {periodLabel}{" "}
               <span className="font-semibold text-gray-900">
                 {currency(currentTotal || 0)}
               </span>
@@ -42,7 +50,7 @@ export const RevenueChartCard = ({
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-blue-500" />
             <span>
-              Previous Week{" "}
+              {priorPeriodLabel}{" "}
               <span className="font-semibold text-gray-900">
                 {currency(previousTotal || 0)}
               </span>
@@ -74,21 +82,42 @@ export const RevenueChartCard = ({
               axisLine={{ stroke: "#E5E7EB" }}
               tickLine={false}
               tick={{ fill: "#9CA3AF", fontSize: 10 }}
-              tickFormatter={(value) => (value === 0 ? "0" : `${Number(value) / 1000}K`)}
+              /*
+               * Dividing by 1000 unconditionally rendered a $586 axis as
+               * "0.5862K". Thousands are abbreviated; anything smaller is shown
+               * as the number it is.
+               */
+              tickFormatter={(value) => {
+                const n = Number(value);
+                if (!n) return "0";
+                if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}K`;
+                return n.toFixed(0);
+              }}
             />
             <Tooltip
               cursor={{ stroke: "#111827", strokeWidth: 1 }}
-              content={({ active, payload }) => {
-                if (active && payload && payload.length) {
-                  return (
-                    <div className="bg-white p-2 border border-gray-200 shadow-lg rounded-lg">
-                      <p className="text-gray-900 font-bold text-lg">
-                        {currency(payload[0].value as number)}
-                      </p>
-                    </div>
-                  );
-                }
-                return null;
+              /*
+               * Shows the bucket and both series. It used to print
+               * `payload[0].value` alone — one unlabelled figure, with no way to
+               * tell which period it belonged to or which point on the axis.
+               */
+              content={({ active, payload, label }) => {
+                if (!active || !payload || !payload.length) return null;
+                const find = (key: string) =>
+                  payload.find((p) => p.dataKey === key)?.value as number | undefined;
+                return (
+                  <div className="bg-white p-3 border border-gray-200 shadow-lg rounded-lg">
+                    <p className="text-xs text-gray-500 mb-1">{label}</p>
+                    <p className="text-gray-900 font-bold text-base">
+                      {currency(find("current") ?? 0)}
+                      <span className="text-xs font-normal text-gray-500"> · {periodLabel}</span>
+                    </p>
+                    <p className="text-blue-600 text-sm">
+                      {currency(find("previous") ?? 0)}
+                      <span className="text-xs text-gray-500"> · {priorPeriodLabel}</span>
+                    </p>
+                  </div>
+                );
               }}
             />
             <Line

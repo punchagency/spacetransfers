@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AiOutlineSearch } from 'react-icons/ai';
 import { GoBell } from "react-icons/go";
+import { useNavigate } from "react-router-dom";
 import { UserMenu } from "../common/UserMenu";
 import { useNotificationsStore, type AdminNotificationCategory, type AdminNotificationPriority } from "../../state/NotificationsStore";
 
@@ -24,6 +25,22 @@ export const Topbar = () => {
   const [unreadOnly, setUnreadOnly] = useState(true);
 
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
+
+  /**
+   * Where a notification points, or null if it points nowhere.
+   *
+   * `meta` is populated at every call site on the server (orderId for order
+   * events, partnerId for partner ones), so most notifications can take the
+   * admin straight to the thing they are about instead of leaving them to go
+   * and find it.
+   */
+  const targetFor = (n: { meta?: Record<string, any> | null }): string | null => {
+    const meta = n.meta || {};
+    if (meta.orderId) return `/dashboard/orders/${meta.orderId}`;
+    if (meta.partnerId) return `/dashboard/fulfilment-partners/${meta.partnerId}`;
+    return null;
+  };
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -83,10 +100,11 @@ export const Topbar = () => {
 
   return (
     <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200">
-      <div className="flex items-center gap-3 w-full max-w-xl border border-gray-200 rounded-xl px-4 py-2 hover:border-blue-400 transition-colors group">
-        <AiOutlineSearch className="w-4 h-4 text-gray-400 group-hover:text-blue-500 transition-colors" />
-        <input className="bg-transparent outline-none text-sm w-full placeholder-gray-400" placeholder="Search" />
-      </div>
+      {/* Left slot intentionally empty. A global search box lived here with no
+          value, onChange or state — it was decoration. There is no cross-entity
+          search endpoint to wire it to, so it was removed rather than left
+          promising something it could not do. */}
+      <div />
 
       <div className="flex items-center gap-6">
         <div className="relative" ref={wrapperRef}>
@@ -123,7 +141,7 @@ export const Topbar = () => {
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
                     className="w-full text-sm outline-none"
-                    placeholder="Search notifications"
+                    placeholder="Search by title or message"
                   />
                 </div>
 
@@ -168,8 +186,23 @@ export const Topbar = () => {
                   <div className="p-6 text-sm text-gray-500">No notifications</div>
                 ) : (
                   <div className="divide-y divide-gray-100">
-                    {filtered.map((n) => (
-                      <div key={n.id} className="p-4 hover:bg-gray-50">
+                    {filtered.map((n) => {
+                      const target = targetFor(n);
+                      return (
+                      <div
+                        key={n.id}
+                        onClick={target ? () => { setOpen(false); navigate(target); } : undefined}
+                        role={target ? "link" : undefined}
+                        tabIndex={target ? 0 : undefined}
+                        onKeyDown={target ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setOpen(false);
+                            navigate(target);
+                          }
+                        } : undefined}
+                        className={`p-4 hover:bg-gray-50 ${target ? "cursor-pointer focus:outline-none focus:bg-gray-50" : ""}`}
+                      >
                         <div className="flex items-start gap-3">
                           <div className={`mt-1.5 w-2 h-2 rounded-full ${priorityDot(n.priority)}`} />
                           <div className="flex-1 min-w-0">
@@ -183,7 +216,7 @@ export const Topbar = () => {
                                 {categoryLabel(n.category)} • {n.priority.toUpperCase()}
                               </div>
                               <button
-                                onClick={() => void markRead(n.id, !n.readAt)}
+                                onClick={(e) => { e.stopPropagation(); void markRead(n.id, !n.readAt); }}
                                 className="text-[11px] font-semibold text-blue-600 hover:text-blue-700"
                               >
                                 {n.readAt ? "Mark unread" : "Mark read"}
@@ -192,7 +225,8 @@ export const Topbar = () => {
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

@@ -1,4 +1,5 @@
 import { FiCheck } from 'react-icons/fi';
+import { ORDER_STATUS_LABEL, formatOrderStatus } from '../../utils/orderStatus';
 
 interface TimelineEntry {
     status: string;
@@ -19,12 +20,22 @@ interface OrderTimelineProps {
     };
 }
 
+/**
+ * Labels come from the shared map so a step and a real timeline entry for the
+ * same status cannot disagree.
+ *
+ * PROCESSING previously read "Payment Verified" here — unrelated to what the
+ * state means (a partner is attached), and describing something the platform
+ * does not do: payment verification is not implemented and there is no payment
+ * status on an order.
+ */
 const STATUS_STEPS = [
-    { key: 'PENDING',      label: 'Order Received' },
-    { key: 'PROCESSING',   label: 'Payment Verified' },
-    { key: 'PRINTING',     label: 'In Production' },
-    { key: 'SHIPPED',      label: 'Shipped' },
-    { key: 'COMPLETED',    label: 'Completed' },
+    { key: 'PENDING',       label: ORDER_STATUS_LABEL.PENDING },
+    { key: 'PROCESSING',    label: ORDER_STATUS_LABEL.PROCESSING },
+    { key: 'PRINTING',      label: ORDER_STATUS_LABEL.PRINTING },
+    { key: 'QUALITY_CHECK', label: ORDER_STATUS_LABEL.QUALITY_CHECK },
+    { key: 'SHIPPED',       label: ORDER_STATUS_LABEL.SHIPPED },
+    { key: 'COMPLETED',     label: ORDER_STATUS_LABEL.COMPLETED },
 ];
 
 export const OrderTimeline = ({ order }: OrderTimelineProps) => {
@@ -52,7 +63,7 @@ export const OrderTimeline = ({ order }: OrderTimelineProps) => {
                             </div>
                             <div>
                                 <p className="text-sm font-medium text-gray-900">
-                                    {entry.status}
+                                    {formatOrderStatus(entry.status)}
                                 </p>
                                 {entry.message && (
                                     <p className="text-xs text-gray-500 mt-0.5">{entry.message}</p>
