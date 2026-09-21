@@ -23,7 +23,7 @@ import type { ArtboardItem } from "../../types";
  */
 
 /** Fields an artboard item can hold a canvas result in. */
-const IMAGE_FIELDS = ["url", "croppedUrl"] as const;
+const IMAGE_FIELDS = ["url", "croppedUrl", "uncroppedUrl"] as const;
 
 /**
  * Below this an embedded image is not worth a round trip.

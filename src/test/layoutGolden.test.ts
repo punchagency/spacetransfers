@@ -6,11 +6,16 @@
  * the same board must pack to the same coordinates, or customers' existing
  * designs would shift under them.
  *
- * The fixture was captured from the pre-optimization engine, so this file is a
- * one-way ratchet — it fails if any refactor changes a single placement. If a
- * change to the packing *algorithm* is ever intended (not merely its
- * performance), regenerate the fixture deliberately and review the diff; do not
- * loosen the comparison.
+ * The fixture is a one-way ratchet — it fails if any refactor changes a single
+ * placement. If a change to the packing *algorithm* is ever intended (not merely
+ * its performance), regenerate the fixture deliberately and review the diff; do
+ * not loosen the comparison.
+ *
+ * Regenerated 2026-09-16, when auto-nest was allowed to turn any piece that
+ * makes the sheet shorter (it would only turn one that did not fit upright).
+ * Reviewed as lengths: 51.79 -> 51.79, 158.33 -> 156.01, 423.95 -> 395.93,
+ * 952.31 -> 907.55, 1199.99 -> 1199.93in. Shorter or identical in every case,
+ * which is what `calculateGridLayout` running both rotation policies guarantees.
  */
 import { describe, it, expect } from "vitest";
 import golden from "./fixtures/layoutGolden.json";

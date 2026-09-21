@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ArtboardItem } from "../../types";
 import type { AiEditOptions, AiEditProgress, AiEditResult, AiIntentId, PlanStep } from "../ai";
 import { AiEditAbortedError, INTENT_VERBS, classifyPrompt, runAiEdit } from "../ai";
 import type { CommitHistory } from "./useHistory";
-
-const PROMPT_HISTORY_KEY = "artboard.ai.promptHistory";
-const PROMPT_HISTORY_MAX = 20;
+import { afterPixelEdit, captureImageSnapshot, restoreImageSnapshot } from "../utils/imageState";
 
 /**
  * Ceiling on steps in one run.
@@ -19,20 +17,7 @@ const PROMPT_HISTORY_MAX = 20;
  */
 const MAX_STEPS = 4;
 
-const readPromptHistory = (): string[] => {
-  try {
-    const raw = localStorage.getItem(PROMPT_HISTORY_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter((p) => typeof p === "string") : [];
-  } catch {
-    return [];
-  }
-};
-
 export interface AiEditStatus {
-  /** Which item is being processed, 1-based, when a batch is running. */
-  index: number;
-  total: number;
   progress: AiEditProgress;
   /** Which step of a multi-step plan is running, 1-based. */
   stepIndex?: number;
@@ -47,11 +32,8 @@ export interface AiEditStatus {
  * Previewing rather than applying is the difference between an editor and a
  * slot machine. A generative edit is non-deterministic and occasionally wrong
  * in ways only a human can judge, and while undo *can* reverse it, discovering
- * that requires the bad result to already be sitting on the print sheet. So a
- * single-item run stages here and the customer compares before committing.
- *
- * Batch runs skip this — reviewing twelve edits through one slider is worse
- * than reviewing them on the sheet, and undo covers the whole batch in one step.
+ * that requires the bad result to already be sitting on the print sheet. So
+ * every run stages here and the customer compares before committing.
  */
 export interface AiPreview {
   itemId: number;
@@ -65,6 +47,12 @@ export interface AiPreview {
   steps: PlanStep[];
   /** Everything needed to apply this to the item, unchanged from the provider. */
   result: AiEditResult;
+  /**
+   * How the edit was asked for beyond its text — a chip's forced intent, a
+   * swatch's colour and tolerance — so Try again repeats the same request. It
+   * re-sent the prompt text alone, so a Wide swatch pick came back at Normal.
+   */
+  request: Pick<AiGenerateRequest, "intentOverride" | "options">;
 }
 
 export interface AiEditOutcome {
@@ -72,8 +60,6 @@ export interface AiEditOutcome {
   /** True when the user cancelled — callers should stay silent about it. */
   canceled?: boolean;
   error?: string;
-  /** Number of items successfully edited. */
-  editedCount?: number;
   /** Id of the provider that served the run, for attribution in the UI. */
   provider?: string;
   /** Intent the run actually resolved to, so callers report on what happened
@@ -93,6 +79,8 @@ export interface AiEditOutcome {
   awaitingReview?: boolean;
   /** Set when a model rendered below print resolution and was scaled back up. */
   upsampled?: boolean;
+  /** Steps left out because the plan was longer than one run allows. */
+  droppedSteps?: number;
 }
 
 /** What a caller can ask `generate` to do beyond the bare prompt. */
@@ -107,11 +95,6 @@ export interface AiGenerateRequest {
   intentOverride?: AiIntentId;
   /** Structured parameters, e.g. the eyedropper's picked colour. */
   options?: AiEditOptions;
-  /**
-   * Stage the result for review instead of applying it. Ignored for batch runs.
-   * Defaults to true — see `AiPreview` for why review is the default.
-   */
-  preview?: boolean;
 }
 
 /**
@@ -134,19 +117,17 @@ const applyResultToItem = (item: ArtboardItem, result: AiEditResult, prompt: str
 
   const aiHistory = [
     ...(item.aiHistory ?? []),
-    { prompt, url: item.url, at: Date.now() },
+    // The whole image state, not just the URL, so reverting restores the size
+    // and pixel counts that went with it.
+    { prompt, url: item.url, at: Date.now(), snapshot: captureImageSnapshot(item) },
   ].slice(-10);
 
   const base: ArtboardItem = {
     ...item,
-    url: result.url,
-    // croppedUrl is what checkout ships to the print pipeline. Without updating
-    // it too, an AI edit would only change the on-screen preview while the
-    // printed file silently stayed the pre-edit original.
-    croppedUrl: result.url,
-    croppedWidthPx: result.widthPx,
-    croppedHeightPx: result.heightPx,
-    nativeWidthPx: result.widthPx,
+    // Shown, shipped to print (checkout sends croppedUrl — without it an AI
+    // edit would only change the preview), and the new uncropped source for the
+    // auto-crop switch.
+    ...afterPixelEdit(result.url, result.widthPx, result.heightPx),
     // Keep originalUrl pointing at the pre-edit remote asset so the checkout
     // assetId still resolves to a real DB record rather than a data URL.
     originalUrl: item.originalUrl || item.url,
@@ -182,21 +163,18 @@ const applyResultToItem = (item: ArtboardItem, result: AiEditResult, prompt: str
 };
 
 /**
- * Drives AI editing for the current selection. Holds no UI concerns — the bar
- * renders whatever this exposes, and any other surface (context menu, keyboard
- * shortcut, batch action) can drive the same logic.
+ * Drives AI editing of one image — the one the AI panel is open on. Holds no
+ * UI concerns; the panel renders whatever this exposes.
  */
 export const useAiEdit = (
   items: ArtboardItem[],
   setItems: React.Dispatch<React.SetStateAction<ArtboardItem[]>>,
-  targetIds: number[],
+  targetId: number | null,
   commitHistory?: CommitHistory,
   onActionPerformed?: (action: { type: string; id?: number; payload?: any }) => void,
 ) => {
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState<AiEditStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [promptHistory, setPromptHistory] = useState<string[]>(readPromptHistory);
   const [preview, setPreview] = useState<AiPreview | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -207,37 +185,18 @@ export const useAiEdit = (
   useEffect(() => {
     previewRef.current = preview;
   }, [preview]);
-  // Read targets/items through a ref so `generate` keeps a stable identity and
-  // an in-flight run always resolves against the latest state.
+  // Read the target/items through a ref so `generate` keeps a stable identity
+  // and an in-flight run always resolves against the latest state.
   const itemsRef = useRef(items);
-  const targetIdsRef = useRef(targetIds);
+  const targetIdRef = useRef(targetId);
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
   useEffect(() => {
-    targetIdsRef.current = targetIds;
-  }, [targetIds]);
+    targetIdRef.current = targetId;
+  }, [targetId]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
-
-  const targetItems = useMemo(
-    () => items.filter((it) => targetIds.includes(it.id)),
-    [items, targetIds],
-  );
-
-  const rememberPrompt = useCallback((prompt: string) => {
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
-    setPromptHistory((prev) => {
-      const next = [trimmed, ...prev.filter((p) => p !== trimmed)].slice(0, PROMPT_HISTORY_MAX);
-      try {
-        localStorage.setItem(PROMPT_HISTORY_KEY, JSON.stringify(next));
-      } catch {
-        // Private-mode / quota failures must not break generation.
-      }
-      return next;
-    });
-  }, []);
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
@@ -246,11 +205,6 @@ export const useAiEdit = (
     setStatus(null);
   }, []);
 
-  /**
-   * Resolves when every target has been edited. The artboard is only mutated
-   * after each individual result arrives, so the original artwork stays on
-   * screen for the whole time the model is working.
-   */
   /**
    * Runs one item through every step of a plan, in order.
    *
@@ -328,9 +282,13 @@ export const useAiEdit = (
       const req: AiGenerateRequest =
         typeof request === "string" ? { intentOverride: request } : request;
 
-      const targets = itemsRef.current.filter((it) => targetIdsRef.current.includes(it.id));
-      if (targets.length === 0) {
+      const item = itemsRef.current.find((it) => it.id === targetIdRef.current);
+      if (!item) {
         return { ok: false, error: "Select an image on the artboard first." };
+      }
+      // A lock holds against AI edits as it does against every other tool.
+      if (item.locked) {
+        return { ok: false, error: "This image is locked. Unlock it to make changes." };
       }
 
       const intent = req.intentOverride ?? classifyPrompt(trimmed);
@@ -342,141 +300,79 @@ export const useAiEdit = (
       const steps = requested.slice(0, MAX_STEPS);
       const droppedSteps = requested.length - steps.length;
 
-      // Review is for the single-item case only — see `AiPreview`.
-      const shouldPreview = (req.preview ?? true) && targets.length === 1;
-
       const controller = new AbortController();
       abortRef.current = controller;
 
       setIsRunning(true);
-      setError(null);
       setPreview(null);
       setStatus({
-        index: 1,
-        total: targets.length,
         stepIndex: 1,
         stepCount: steps.length,
         stepLabel: steps[0].label,
         progress: { phase: `${steps[0].label}…`, pct: 0 },
       });
 
-      // Committed lazily, immediately before the first mutation, so a run that
-      // is canceled or fails outright leaves no empty entry on the undo stack.
-      // One entry covers the whole batch, so a single undo reverts it all.
-      let committed = false;
-      let editedCount = 0;
-      let provider: string | undefined;
-      let widthPx: number | undefined;
-      let heightPx: number | undefined;
-      let upsampled = false;
-
       try {
-        for (let i = 0; i < targets.length; i++) {
-          const item = targets[i];
-
-          const result = await runPlanForItem(
-            item,
-            steps,
-            req.options,
-            controller.signal,
-            (stepIndex, step, progress) =>
-              setStatus({
-                index: i + 1,
-                total: targets.length,
-                stepIndex: stepIndex + 1,
-                stepCount: steps.length,
-                stepLabel: step.label,
-                // Each step reports 0–100 of its own work; scaled into its slice
-                // of the whole so one bar advances monotonically across a chain
-                // rather than snapping back to zero on every step.
-                progress: {
-                  phase: steps.length > 1 ? `${step.label}…` : progress.phase,
-                  pct: Math.round(((stepIndex + progress.pct / 100) / steps.length) * 100),
-                },
-              }),
-          );
-
-          if (controller.signal.aborted) throw new AiEditAbortedError();
-
-          provider = result.provider;
-          widthPx = result.widthPx;
-          heightPx = result.heightPx;
-          upsampled = upsampled || Boolean(result.upsampled);
-
-          if (shouldPreview) {
-            // Held back deliberately: nothing is written to the artboard and no
-            // history entry is committed until the customer accepts it.
-            setPreview({
-              itemId: item.id,
-              beforeUrl: item.croppedUrl || item.url,
-              afterUrl: result.url,
-              prompt: trimmed,
-              intent,
-              steps,
-              result,
-            });
-            rememberPrompt(trimmed);
-            return {
-              ok: true,
-              editedCount: 0,
-              provider,
-              intent,
-              widthPx,
-              heightPx,
+        const result = await runPlanForItem(
+          item,
+          steps,
+          req.options,
+          controller.signal,
+          (stepIndex, step, progress) =>
+            setStatus({
+              stepIndex: stepIndex + 1,
               stepCount: steps.length,
-              awaitingReview: true,
-              upsampled,
-            };
-          }
+              stepLabel: step.label,
+              // Each step reports 0–100 of its own work; scaled into its slice
+              // of the whole so one bar advances monotonically across a chain
+              // rather than snapping back to zero on every step.
+              progress: {
+                phase: steps.length > 1 ? `${step.label}…` : progress.phase,
+                pct: Math.round(((stepIndex + progress.pct / 100) / steps.length) * 100),
+              },
+            }),
+        );
 
-          if (!committed) {
-            commitHistory?.();
-            committed = true;
-          }
-          setItems((prev) =>
-            prev.map((it) => (it.id === item.id ? applyResultToItem(it, result, trimmed) : it)),
-          );
-          editedCount++;
-          onActionPerformed?.({
-            type: "aiEdit",
-            id: item.id,
-            payload: { prompt: trimmed, intent, provider: result.provider },
-          });
-        }
+        if (controller.signal.aborted) throw new AiEditAbortedError();
 
-        rememberPrompt(trimmed);
+        // Held back deliberately: nothing is written to the artboard and no
+        // history entry is committed until the customer accepts it.
+        setPreview({
+          itemId: item.id,
+          beforeUrl: item.croppedUrl || item.url,
+          afterUrl: result.url,
+          prompt: trimmed,
+          intent,
+          steps,
+          result,
+          request: { intentOverride: req.intentOverride, options: req.options },
+        });
         return {
           ok: true,
-          editedCount,
-          provider,
+          provider: result.provider,
           intent,
-          widthPx,
-          heightPx,
+          widthPx: result.widthPx,
+          heightPx: result.heightPx,
           stepCount: steps.length,
-          upsampled,
+          awaitingReview: true,
+          upsampled: Boolean(result.upsampled),
           // Surfaced rather than swallowed: a customer who asked for five things
           // and got four needs to know which one to ask for again.
-          ...(droppedSteps > 0
-            ? {
-                error: `I ran the first ${steps.length} changes — that's the most I can chain at once. Send the remaining ${droppedSteps} as a follow-up.`,
-              }
-            : {}),
+          ...(droppedSteps > 0 ? { droppedSteps } : {}),
         };
       } catch (err: any) {
         // A cancel is a deliberate no-op, not a failure worth surfacing.
         if (err instanceof AiEditAbortedError || err?.name === "AbortError") {
-          return { ok: false, canceled: true, editedCount };
+          return { ok: false, canceled: true };
         }
-        const message = err?.message || "The AI edit failed. Please try again.";
-        setError(message);
-        return { ok: false, error: message, editedCount };
+        return { ok: false, error: err?.message || "The AI edit failed. Please try again." };
       } finally {
         abortRef.current = null;
         setIsRunning(false);
         setStatus(null);
       }
     },
-    [setItems, commitHistory, onActionPerformed, rememberPrompt, runPlanForItem],
+    [runPlanForItem],
   );
 
   /** Commits a previewed edit onto its item, as one undoable step. */
@@ -528,9 +424,21 @@ export const useAiEdit = (
         prev.map((it) =>
           it.id === itemId
             ? {
-                ...it,
-                url: entry.url,
-                croppedUrl: entry.url,
+                // Entries recorded before snapshots existed carry only a URL.
+                ...(entry.snapshot
+                  ? restoreImageSnapshot(it, entry.snapshot)
+                  : {
+                      ...it,
+                      url: entry.url,
+                      croppedUrl: entry.url,
+                      uncroppedUrl: entry.url,
+                      // Unknown for that image; measured again when needed.
+                      croppedWidthPx: undefined,
+                      croppedHeightPx: undefined,
+                      nativeWidthPx: undefined,
+                      uncroppedWidthPx: undefined,
+                      uncroppedHeightPx: undefined,
+                    }),
                 // Everything from this point on is discarded. Keeping the later
                 // entries would present a history that no longer describes the
                 // image, and re-reverting into them would restore edits that
@@ -544,17 +452,11 @@ export const useAiEdit = (
     [commitHistory, setItems],
   );
 
-  const clearError = useCallback(() => setError(null), []);
-
   return {
     isRunning,
     status,
-    error,
-    clearError,
     generate,
     cancel,
-    promptHistory,
-    targetItems,
     preview,
     applyPreview,
     discardPreview,

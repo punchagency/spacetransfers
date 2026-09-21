@@ -1,29 +1,38 @@
 import { MdClose } from "react-icons/md";
 
+/**
+ * Shown when the artwork is shorter than the minimum billable length.
+ *
+ * It used to compare against a hard-coded 23.5in and warn that the customer
+ * would be charged for a "full" 23.5 x 23.5in sheet — and then charge exactly
+ * that, overriding the minimum set in admin. It now explains the real rule: the
+ * sheet is billed at the minimum, which is the price the header already shows.
+ */
 export default function UnderUtilizedSheetModal({
   isOpen,
-  sheetSizeLabel,
-  fullSheetAmount,
-  utilizationPct,
+  amount,
+  usedLengthIn,
+  minLengthIn,
+  sheetWidthIn,
   isBusy = false,
   onConfirm,
   onCancel,
 }: {
   isOpen: boolean;
-  sheetSizeLabel: string;
-  fullSheetAmount: number;
-  utilizationPct: number | null;
+  /** What the sheet costs, billed at the minimum length. */
+  amount: number;
+  usedLengthIn: number;
+  minLengthIn: number;
+  sheetWidthIn: number;
   isBusy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   if (!isOpen) return null;
 
-  const amountText = `$${Number(fullSheetAmount || 0).toFixed(2)}`;
-  const pctText =
-    utilizationPct != null && Number.isFinite(utilizationPct)
-      ? `${Math.max(0, Math.min(100, Math.round(utilizationPct)))}%`
-      : "N/A";
+  const amountText = `$${Number(amount || 0).toFixed(2)}`;
+  const inches = (n: number) => `${Number(n || 0).toFixed(2)}in`;
+  const unusedIn = Math.max(0, minLengthIn - usedLengthIn);
 
   return (
     <div
@@ -37,7 +46,7 @@ export default function UnderUtilizedSheetModal({
         className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl mx-4"
         role="dialog"
         aria-modal="true"
-        aria-label="Unused gang sheet space warning"
+        aria-label="Unused gang sheet space"
       >
         <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4">
           <div>
@@ -45,7 +54,7 @@ export default function UnderUtilizedSheetModal({
               Unused Sheet Space
             </h2>
             <p className="mt-1 text-[12px] text-gray-500">
-              Your {sheetSizeLabel} gang sheet is not fully utilized.
+              Your artwork is {inches(usedLengthIn)} long. Sheets are billed from a {inches(minLengthIn)} minimum.
             </p>
           </div>
           <button
@@ -63,16 +72,12 @@ export default function UnderUtilizedSheetModal({
         <div className="px-5 py-4 space-y-3">
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
             <p className="text-[13px] text-amber-900 font-semibold">
-              You will be charged the full gang sheet amount of {amountText}.
+              This {inches(sheetWidthIn)} × {inches(minLengthIn)} sheet costs {amountText}.
             </p>
             <p className="mt-1 text-[12px] text-amber-800">
-              Utilization: <span className="font-semibold">{pctText}</span>
+              {inches(unusedIn)} of it is still empty — anything you add there costs nothing extra.
             </p>
           </div>
-
-          <p className="text-[12px] text-gray-500">
-            Continue adding items to maximize your sheet, or add to cart anyway.
-          </p>
 
           <div className="flex flex-col gap-2 pt-1">
             <button
@@ -82,7 +87,7 @@ export default function UnderUtilizedSheetModal({
                 isBusy ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
               }`}
             >
-              {isBusy ? "Adding..." : `Add to Cart (Charge ${amountText})`}
+              {isBusy ? "Adding..." : `Add to Cart (${amountText})`}
             </button>
             <button
               onClick={onCancel}
@@ -101,4 +106,3 @@ export default function UnderUtilizedSheetModal({
     </div>
   );
 }
-

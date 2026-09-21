@@ -9,10 +9,7 @@ import { ACCEPTED_IMAGE_TYPES } from "../config/artboard.config";
 describe("unsupported-files notice", () => {
   it("derives format labels from the MIME types the drop filter accepts", () => {
     expect(formatLabels(ACCEPTED_IMAGE_TYPES)).toEqual([
-      "PNG",
-      "JPG",
-      "SVG",
-      "PDF",
+      "PNG", "JPG", "PDF", "SVG", "AI", "PSD", "TIFF", "WEBP", "AVIF", "HEIC", "GIF", "BMP",
     ]);
   });
 
@@ -34,7 +31,7 @@ describe("unsupported-files notice", () => {
     // (or omits one it takes) sends the customer round the loop twice.
     const { body } = unsupportedFilesText(3, ACCEPTED_IMAGE_TYPES);
     expect(body).toBe(
-      "Unsupported file format. Supported: PNG, JPG, SVG, PDF.",
+      "Unsupported file format. Supported: PNG, JPG, PDF, SVG, AI, PSD, TIFF, WEBP, AVIF, HEIC, GIF, BMP.",
     );
   });
 });

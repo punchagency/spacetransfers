@@ -46,6 +46,32 @@ describe("classifyPrompt", () => {
     expect(classifyPrompt("Make the logo gold")).toBe("change-color");
   });
 
+  it("reads the Change color chip's own wording as a recolour", () => {
+    // It used to land on replace-object and ask what "it" should become.
+    expect(classifyPrompt("Change the color to green")).toBe("change-color");
+    expect(classifyPrompt("Change the colour of the logo to navy")).toBe("change-color");
+    expect(classifyPrompt("turn it gold")).toBe("change-color");
+    expect(analyzePrompt("Change the color to ").clarification).toMatch(/Which colour/);
+    // A real swap is still a swap.
+    expect(classifyPrompt("Turn the balloon dog into a balloon rabbit")).toBe("replace-object");
+  });
+
+  it("reads a colour naming a thing as removing that thing, not the colour", () => {
+    // "the red circle" used to remove every red pixel in the artwork.
+    expect(classifyPrompt("Remove the red circle")).toBe("remove-object");
+    expect(classifyPrompt("delete the blue car on the left")).toBe("remove-object");
+    // …while these stay colour removals.
+    expect(classifyPrompt("Remove the red")).toBe("remove-color");
+    expect(classifyPrompt("remove the white from the logo")).toBe("remove-color");
+    expect(classifyPrompt("remove red and blue")).toBe("remove-color");
+    expect(classifyPrompt("remove the white background")).toBe("remove-bg");
+    // The DTF classics are colour removals, not objects to generate away.
+    expect(classifyPrompt("remove the white border")).toBe("remove-color");
+    expect(classifyPrompt("remove the white outline")).toBe("remove-color");
+    expect(classifyPrompt("get rid of the black edges")).toBe("remove-color");
+    expect(classifyPrompt("remove the white space around it")).toBe("remove-color");
+  });
+
   it("reads a swap as a replacement rather than as half of one", () => {
     // A swap is a removal *and* an addition; classifying it as either alone
     // loses the other half of the request.
@@ -88,9 +114,9 @@ describe("analyzePrompt", () => {
     expect(analyzePrompt("Replace the shirt").clarification).toBeTruthy();
   });
 
-  it("points a colour removal at the eyedropper rather than asking for a name", () => {
+  it("points a colour removal at the swatches rather than asking for a name", () => {
     const analysis = analyzePrompt("Remove the color");
-    expect(analysis.clarification).toMatch(/eyedropper|click/i);
+    expect(analysis.clarification).toMatch(/swatches/i);
   });
 
   it("stays quiet once the detail is present", () => {

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { ArtboardItem } from "../../types";
+import { billableSheetDimensions } from "../../../../lib/utils/pricingRates";
 import { animateItemPosition } from "../utils";
 import {
   calculateGridLayout,
@@ -9,9 +10,15 @@ import {
   computeGroupDims,
   planLocalDisplacement,
   getItemFootprint,
+  sheetContentLengthIn,
+  separateCrowdedItems,
+  fitItemToPrintableArea,
+  fitGroupsToPrintableArea,
 } from "../utils";
+import { showLargeImageWarning } from "../../../common/LargeImageWarning";
 import { snapToGridPoint } from "../utils";
 import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import { usePricingSettings } from "../../../../lib/utils/pricingRates";
 import toast from "react-hot-toast";
 
 export const useArtboardEffects = (
@@ -31,10 +38,20 @@ export const useArtboardEffects = (
   onDataChange?: (data: any) => void,
   counter?: number
 ) => {
+  /*
+   * The whole settings snapshot, not just the rate.
+   *
+   * Watching `pricePerSqFt` alone meant a change to the roll width or the
+   * minimum length never reached this effect — the rate compared equal, React
+   * bailed out, and the board kept the compiled fallback for the session.
+   */
+  const pricingSettings = usePricingSettings();
+  const pricePerSqFt = pricingSettings.pricePerSqFt;
   const [originalPositions, setOriginalPositions] = useState<
     Record<number, { posX: number; posY: number }>
   >({});
-  const [lastConfig, setLastConfig] = useState({ marginSize, spacing });
+  // The roll width is part of the sheet's geometry: changing it in admin re-fits the board.
+  const [lastConfig, setLastConfig] = useState({ marginSize, spacing, canvasWidth });
   const prevItemsRef = useRef<ArtboardItem[]>([]);
   const warnedMaxHeightRef = useRef(false);
   const rebuildTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -123,9 +140,12 @@ export const useArtboardEffects = (
     rebuildTimerRef.current = setTimeout(() => {
       rebuildTimerRef.current = null;
 
-      const configChanged = lastConfig.marginSize !== marginSize || lastConfig.spacing !== spacing;
+      const configChanged =
+        lastConfig.marginSize !== marginSize ||
+        lastConfig.spacing !== spacing ||
+        lastConfig.canvasWidth !== canvasWidth;
       if (configChanged) {
-        setLastConfig({ marginSize, spacing });
+        setLastConfig({ marginSize, spacing, canvasWidth });
       }
       // Capture the OFF→ON transition before overwriting the ref — turning
       // auto-nest on must force a repack even if no item geometry changed.
@@ -139,14 +159,40 @@ export const useArtboardEffects = (
       const clampPosY = (u: { widthIn: number; heightIn: number; copies?: number; posY: number }) => {
         const copies = typeof u.copies === "number" && u.copies > 0 ? u.copies : 1;
         const { height: groupH } = getRenderedGroupSize(u.widthIn, u.heightIn, copies, maxAvailableWidth);
-        const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupH);
-        const nextPosY = Math.max(0, Math.min(u.posY, maxPosY));
+        const maxPosY = Math.max(marginSize, MAX_SHEET_HEIGHT_IN - groupH);
+        const nextPosY = Math.max(marginSize, Math.min(u.posY, maxPosY));
         if (nextPosY < u.posY - 0.001) didClamp = true;
         return nextPosY;
       };
 
+      /*
+       * Nothing may reach outside the margins — the roll cannot print past its
+       * edge, and the margin is the clearance the customer set from it. Checked
+       * first, on every piece, so it holds however a piece got there: a piece
+       * pinned near the edge and then rotated, a width typed in the properties
+       * panel, an oversized upload, or a design built on a wider roll.
+       *
+       * With auto-nest on, a hand-placed piece that no longer fits where it was
+       * put is released to be nested again rather than pushed onto its
+       * neighbours; a piece free to move is only shrunk if turning it would not
+       * make it fit, since the packer turns it.
+       */
+      const resizedIds = new Set<number>();
+      const fitChangedIds = new Set<number>();
+      // Groups first, as whole units, so the per-piece pass finds them already inside.
+      const groupFit = fitGroupsToPrintableArea(items, canvasWidth, effectiveMargin, spacing);
+      for (const id of groupFit.movedIds) fitChangedIds.add(id);
+      const board = groupFit.items.map((it) => {
+        const canNestRotate = autoNestStickers && !it.pinned && !it.locked;
+        const fit = fitItemToPrintableArea(it, canvasWidth, effectiveMargin, spacing, canNestRotate);
+        if (!fit.changed) return fitChangedIds.has(it.id) ? { ...it } : it;
+        fitChangedIds.add(it.id);
+        if (fit.scaled) resizedIds.add(it.id);
+        return autoNestStickers && fit.item.pinned && !fit.item.locked ? { ...fit.item, pinned: false } : fit.item;
+      });
+
       const snapshotAndBail = () => {
-        lastResolvedRef.current = new Map(items.map((it) => [it.id, geomKey(it)]));
+        lastResolvedRef.current = new Map(board.map((it) => [it.id, geomKey(it)]));
       };
 
       // Non-geometric change guard: if nothing that affects layout changed
@@ -156,10 +202,11 @@ export const useArtboardEffects = (
       // state without rearranging the board, even when Auto-Nest is on. A
       // config change or the auto-nest turning on still forces the repack below.
       const prevKeysForGuard = lastResolvedRef.current;
-      if (prevKeysForGuard && !configChanged && !autoNestJustTurnedOn) {
+      // A piece the width check just changed must be written, so no guard may bail.
+      if (prevKeysForGuard && !configChanged && !autoNestJustTurnedOn && fitChangedIds.size === 0) {
         const noLayoutChange =
-          prevKeysForGuard.size === items.length &&
-          items.every((it) => prevKeysForGuard.get(it.id) === geomKey(it));
+          prevKeysForGuard.size === board.length &&
+          board.every((it) => prevKeysForGuard.get(it.id) === geomKey(it));
         if (noLayoutChange) {
           snapshotAndBail();
           return;
@@ -171,7 +218,7 @@ export const useArtboardEffects = (
         // rotation or copy-count change alters the size fields, so it is NOT
         // caught here and still reflows neighbors to stay gap-free and
         // collision-free, even for a pinned item.
-        const changed = items.filter(
+        const changed = board.filter(
           (it) => prevKeysForGuard.get(it.id) !== geomKey(it),
         );
         const isPurePositionMove = (it: ArtboardItem) => {
@@ -191,9 +238,15 @@ export const useArtboardEffects = (
 
       let updatesToUse: ArtboardItem[];
 
-      // Auto-nest ON → re-nest continuously on every change; a margin/spacing
-      // change also forces one global re-gap even when auto-nest is off.
-      const runGlobalPack = autoNestStickers || configChanged;
+      /*
+       * Auto-nest ON re-nests the whole sheet on every change. With it off, a
+       * spacing or margin change no longer re-nests anything: every group's
+       * columns are re-fitted to the new gap below, and then, in both modes,
+       * only pieces now closer than the spacing move (`separateCrowdedItems`).
+       * Re-nesting here rearranged a hand-built board for a nudge of the
+       * spacing, yet left hand-placed pieces as close together as before.
+       */
+      const runGlobalPack = autoNestStickers;
       if (runGlobalPack) {
         // Strip `pinned` ONLY at the moment auto-nest is switched on, so a
         // hand-arranged board snaps into a clean nest on that toggle. While
@@ -201,8 +254,8 @@ export const useArtboardEffects = (
         // dragged item keeps its dropped position and everything else nests
         // around it, instead of snapping back on the next repack.
         const source = autoNestJustTurnedOn
-          ? items.map((it) => (it.pinned ? { ...it, pinned: false } : it))
-          : items;
+          ? board.map((it) => (it.pinned ? { ...it, pinned: false } : it))
+          : board;
         const updates = calculateGridLayout(
           source,
           canvasWidth,
@@ -215,11 +268,13 @@ export const useArtboardEffects = (
         // Diff against the last resolved layout to find what actually changed.
         const prevKeys = lastResolvedRef.current;
         const changedIds: number[] = [];
-        for (const it of items) {
+        for (const it of board) {
           const key = prevKeys?.get(it.id);
-          if (key === undefined || key !== geomKey(it)) changedIds.push(it.id);
+          // A spacing or margin change reshapes every group, so every item counts;
+          // so does a piece the width check just moved or shrank.
+          if (configChanged || fitChangedIds.has(it.id) || key === undefined || key !== geomKey(it)) changedIds.push(it.id);
         }
-        if (prevKeys === null || changedIds.length === 0) {
+        if (fitChangedIds.size === 0 && ((prevKeys === null && !configChanged) || changedIds.length === 0)) {
           snapshotAndBail();
           return;
         }
@@ -228,7 +283,7 @@ export const useArtboardEffects = (
         // size change reshapes their flow), clamp them into the sheet, then
         // displace only whatever neighbors they now collide with.
         const changedSet = new Set(changedIds);
-        const withFlow = items.map((it) => {
+        const withFlow = board.map((it) => {
           if (!changedSet.has(it.id)) return it;
           const copies = Math.max(1, it.copies || 1);
           const rotated = it.nestRotation === 90;
@@ -266,6 +321,27 @@ export const useArtboardEffects = (
         });
       }
 
+      // The spacing is the sheet's cutting clearance: once it or the margin
+      // changes, anything now too close is moved apart, hand-placed pieces too.
+      if (configChanged) {
+        const apart = separateCrowdedItems(updatesToUse, canvasWidth, effectiveMargin, spacing);
+        if (apart.size > 0) {
+          updatesToUse = updatesToUse.map((it) => {
+            const m = apart.get(it.id);
+            return m ? { ...it, posX: m.posX, posY: clampPosY({ ...it, posY: m.posY }) } : it;
+          });
+        }
+      }
+
+      // Once more after placement: whatever packing or displacement produced must
+      // also lie inside the margins (a piece the packer could not turn).
+      updatesToUse = updatesToUse.map((it) => {
+        const fit = fitItemToPrintableArea(it, canvasWidth, effectiveMargin, spacing);
+        if (fit.scaled) resizedIds.add(it.id);
+        return fit.changed ? { ...fit.item, posY: clampPosY(fit.item) } : it;
+      });
+      if (resizedIds.size > 0) showLargeImageWarning(resizedIds.size, maxAvailableWidth);
+
       if (didClamp && !warnedMaxHeightRef.current) {
         toast.error("Max sheet height of 1200 inches reached.");
         warnedMaxHeightRef.current = true;
@@ -287,6 +363,9 @@ export const useArtboardEffects = (
           return (
             Math.abs(update.posX - it.posX) > 0.001 ||
             Math.abs(update.posY - it.posY) > 0.001 ||
+            Math.abs(update.widthIn - it.widthIn) > 0.0001 ||
+            Math.abs(update.heightIn - it.heightIn) > 0.0001 ||
+            Boolean(update.pinned) !== Boolean(it.pinned) ||
             update.flowCols !== it.flowCols ||
             update.flowStartCol !== it.flowStartCol ||
             update.flowEndCol !== it.flowEndCol ||
@@ -301,8 +380,12 @@ export const useArtboardEffects = (
           if (!update) return it.skipAnimation ? { ...it, skipAnimation: false } : it;
 
           const hasMoved = Math.abs(update.posX - it.posX) > 0.001 || Math.abs(update.posY - it.posY) > 0.001;
+          const hasResized =
+            Math.abs(update.widthIn - it.widthIn) > 0.0001 || Math.abs(update.heightIn - it.heightIn) > 0.0001;
           if (
             !hasMoved &&
+            !hasResized &&
+            Boolean(update.pinned) === Boolean(it.pinned) &&
             update.flowCols === it.flowCols &&
             update.flowStartCol === it.flowStartCol &&
             update.flowEndCol === it.flowEndCol &&
@@ -317,6 +400,10 @@ export const useArtboardEffects = (
             ...it,
             posX: update.posX,
             posY: update.posY,
+            // Written back only by the printable-width check.
+            widthIn: update.widthIn,
+            heightIn: update.heightIn,
+            pinned: update.pinned,
             flowCols: update.flowCols,
             flowStartCol: update.flowStartCol,
             flowEndCol: update.flowEndCol,
@@ -384,72 +471,27 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      const bounds = items.reduce(
-        (acc, item) => {
-          const copies = item.copies || 1;
-          const gap = CANVAS.GRID_GAP_IN;
-          const effectiveMargin = marginSize;
-          const maxAvailableWidth = Math.max(0, canvasWidth - 2 * effectiveMargin);
-
-          const scaledWidth = item.widthIn;
-          const scaledHeight = item.heightIn;
-          const capacityCols = Math.max(
-            1,
-            Math.floor((maxAvailableWidth + gap) / (scaledWidth + gap)),
-          );
-          const visibleCols = Math.min(copies, capacityCols);
-          const rows = Math.ceil(copies / capacityCols);
-
-          const groupWidthRaw =
-            visibleCols * scaledWidth + (visibleCols - 1) * gap;
-          const maxGroupWidth = Math.max(0, maxAvailableWidth);
-          const groupWidth = Math.min(groupWidthRaw, maxGroupWidth);
-
-          const groupHeight =
-            rows * scaledHeight + (rows - 1) * gap;
-
-          const centeredLeft =
-            effectiveMargin + (maxAvailableWidth - groupWidth) / 2;
-          const rightBoundLeft = canvasWidth - effectiveMargin - groupWidth;
-          const clampedLeft =
-            copies > 1
-              ? Math.max(
-                  effectiveMargin,
-                  Math.min(centeredLeft, rightBoundLeft),
-                )
-              : Math.max(effectiveMargin, item.posX);
-          const maxTopBySheetLimit = Math.max(
-            0,
-            MAX_SHEET_HEIGHT_IN - groupHeight,
-          );
-          const clampedTop = Math.min(
-            Math.max(effectiveMargin, item.posY),
-            maxTopBySheetLimit,
-          );
-
-          const left = clampedLeft;
-          const top = clampedTop;
-          const right = clampedLeft + groupWidth;
-          const bottom = clampedTop + groupHeight;
-          return {
-            minX: Math.min(acc.minX, left),
-            minY: Math.min(acc.minY, top),
-            maxX: Math.max(acc.maxX, right),
-            maxY: Math.max(acc.maxY, bottom),
-          };
-        },
-        { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: 0, maxY: 0 },
-      );
-
-      const usedWidthIn = items.length > 0 ? Math.max(0, bounds.maxX) : 0;
-      const usedHeightIn = items.length > 0 ? Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bounds.maxY)) : 0;
+      // The length the sheet prints at — see `sheetContentLengthIn` for why this
+      // no longer has arithmetic of its own.
+      const usedHeightIn =
+        items.length > 0 ? sheetContentLengthIn(items, canvasWidth, marginSize, spacing) : 0;
 
       // Pricing is based on actual utilized area (not hardcoded).
-      const totalAreaSf = +(
-        (usedWidthIn * usedHeightIn) /
-        PRICING.SQUARE_INCHES_PER_SQ_FT
-      ).toFixed(UNIT.INCH.DECIMALS);
-      const totalPrice = +(totalAreaSf * PRICING.PRICE_PER_SQ_FT).toFixed(
+      /*
+       * Billed on the roll, with a minimum run length — the same rule the
+       * server charges by. This priced `usedWidthIn * usedHeightIn`, the
+       * bounding box of the artwork, so a sparse sheet was quoted a fraction of
+       * what it would actually cost and a short one ignored the minimum.
+       */
+      const billed = billableSheetDimensions(usedHeightIn);
+      /*
+       * Zero only while the board is genuinely empty — there is nothing to
+       * charge for yet. The dimensions still show the floor, so the strip reads
+       * as "this is what a sheet costs" rather than "this sheet costs nothing".
+       */
+      const hasArtwork = items.length > 0;
+      const totalAreaSf = hasArtwork ? billed.areaSf : 0;
+      const totalPrice = +(totalAreaSf * pricePerSqFt).toFixed(
         UNIT.INCH.DECIMALS,
       );
 
@@ -458,14 +500,25 @@ export const useArtboardEffects = (
         (item.name || `Item #${item.id}`).replace(/\.[^/.]+$/, "")
       );
 
-      // Default to "Instant hot peel" and do not change when items are selected
-      const displayName = 'Instant hot peel';
+      /*
+       * "Instant hot peel" was hard-coded here. Nothing backed it: the store has
+       * no film selection, the order model records no peel type, and it sat in
+       * the slot that becomes the design's name once saved — so one position
+       * meant a product claim before saving and a name after.
+       */
+      const displayName = 'Untitled gang sheet';
 
       onHeaderInfoChange({
         hasItem: items.length > 0,
         areaSf: totalAreaSf,
-        widthIn: +usedWidthIn.toFixed(UNIT.INCH.DECIMALS),
-        heightIn: +usedHeightIn.toFixed(UNIT.INCH.DECIMALS),
+        // The billed dimensions, so the strip, the price and the invoice agree.
+        widthIn: +billed.widthIn.toFixed(UNIT.INCH.DECIMALS),
+        heightIn: +billed.heightIn.toFixed(UNIT.INCH.DECIMALS),
+        minimumAreaSf: billableSheetDimensions(0).areaSf,
+        // What the artwork actually occupies, kept for the layout warnings.
+        usedHeightIn: +usedHeightIn.toFixed(UNIT.INCH.DECIMALS),
+        atMinimumLength: hasArtwork && billed.atMinimum,
+        isEmpty: !hasArtwork,
         name: displayName,
         price: totalPrice,
         imageNames,
@@ -475,5 +528,5 @@ export const useArtboardEffects = (
         unknownDpiCount: items.filter(isUnknownDpi).length,
       });
     }
-  }, [items, canvasWidth, marginSize, onHeaderInfoChange]);
+  }, [items, canvasWidth, marginSize, spacing, onHeaderInfoChange, pricingSettings]);
 };

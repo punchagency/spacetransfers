@@ -86,7 +86,10 @@ export const readDPI = async (file: File): Promise<{ dpiX?: number; dpiY?: numbe
           }
           break;
         }
-        off += 12 + length + 4;
+        // A chunk is length(4) + type(4) + data + crc(4). This was `+ 4` more,
+        // which misaligned the walk after IHDR — no PNG's resolution was ever
+        // found, and every one was placed as 300dpi whatever it really was.
+        off += 12 + length;
       }
     }
   } catch { }
@@ -153,17 +156,7 @@ export class ImageDecodeError extends Error {
 
 export const loadImageSize = (file: File): Promise<{ widthPx: number; heightPx: number; url: string }> => {
   return new Promise((resolve, reject) => {
-    // For PDFs, return a placeholder size and let the server handle conversion
-    if (file.type === "application/pdf") {
-      const url = URL.createObjectURL(file);
-      resolve({
-        widthPx: 2550,
-        heightPx: 3300,
-        url,
-      });
-      return;
-    }
-
+    // PDFs never reach here: `useDropHandler` renders each page to a PNG first.
     const url = URL.createObjectURL(file);
     const img = new Image();
 
@@ -212,3 +205,42 @@ export const loadImageSize = (file: File): Promise<{ widthPx: number; heightPx: 
     img.src = url;
   });
 };
+
+/**
+ * Loads an image by URL and reports its pixel size and whether it has a solid
+ * background. The background test samples the four corners of a 64px copy:
+ * corners that are (almost) fully transparent mean the art is already cut out.
+ * Used by the toolbar to label a single image and by the BG remover / DPI
+ * enhancer to decide which of several selected images to process.
+ */
+export const readImageInfo = (
+  url: string,
+): Promise<{ widthPx: number; heightPx: number; hasBackground: boolean } | null> =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const info = { widthPx: img.naturalWidth, heightPx: img.naturalHeight, hasBackground: true };
+      try {
+        const size = 64;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return resolve(info);
+        ctx.drawImage(img, 0, 0, size, size);
+        const corners = [
+          ctx.getImageData(0, 0, 1, 1).data[3],
+          ctx.getImageData(size - 1, 0, 1, 1).data[3],
+          ctx.getImageData(0, size - 1, 1, 1).data[3],
+          ctx.getImageData(size - 1, size - 1, 1, 1).data[3],
+        ];
+        const avgAlpha = corners.reduce((s, a) => s + a, 0) / corners.length;
+        resolve({ ...info, hasBackground: avgAlpha >= 10 });
+      } catch {
+        resolve(info);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });

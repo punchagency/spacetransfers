@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { HiOutlineSparkles } from "react-icons/hi2";
 import { MdArrowUpward, MdClose } from "react-icons/md";
-import { QUICK_ACTIONS, BOARD_QUICK_ACTIONS, PROMPT_SUGGESTIONS, analyzePrompt, INTENT_VERBS } from "../../lib/ai";
-import type { AiEditOptions } from "../../lib/ai";
+import { QUICK_ACTIONS, BOARD_QUICK_ACTIONS, PROMPT_SUGGESTIONS, analyzePrompt, INTENT_VERBS, canServeIntent, parseBoardCommands, splitSequence } from "../../lib/ai";
+import type { AiEditOptions, AiIntentId } from "../../lib/ai";
 import type { AiMessage, AiSendOptions } from "../../lib/hooks/useAiConversation";
 import type { AiEditStatus } from "../../lib/hooks/useAiEdit";
 import AiEditHistory from "./AiEditHistory";
@@ -28,9 +28,11 @@ const ESTIMATED_HEIGHT = 300;
  * commands, single edits and chained ones, and only a rotating sample gets all
  * three in front of someone in a strip four chips wide.
  */
-const SUGGESTION_SAMPLE = [...PROMPT_SUGGESTIONS]
-  .sort(() => Math.random() - 0.5)
-  .slice(0, 4);
+const SUGGESTION_ORDER = [...PROMPT_SUGGESTIONS].sort(() => Math.random() - 0.5);
+
+/** The intent a suggestion would run as, or null for a sheet change (always available). */
+const suggestionIntent = (text: string): AiIntentId | null =>
+  splitSequence(text).every((f) => parseBoardCommands(f).length > 0) ? null : analyzePrompt(text).intent;
 
 interface Placement {
   x: number;
@@ -178,11 +180,15 @@ export default function AiImagePanel({
 
   // Click-outside closes. The toolbar's AI toggle is exempt so its own
   // open/close handler runs alone instead of racing this one (double-close).
+  // So is the review dialog: it belongs to this panel, and a real click on its
+  // Apply, Discard or Try again used to close the panel too — cancelling the
+  // retry Try again had just started.
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (panelRef.current?.contains(target)) return;
       if ((target as HTMLElement).closest?.("[data-ai-toggle]")) return;
+      if ((target as HTMLElement).closest?.("[data-ai-review]")) return;
       requestClose();
     };
     // Defer so the same click that opened the panel doesn't immediately close it.
@@ -275,6 +281,42 @@ export default function AiImagePanel({
     submit(action.prompt, action.intent ? { intentOverride: action.intent } : undefined);
   };
 
+  /**
+   * Chips whose edit no provider can serve right now — the model-only ones when
+   * the image model is not connected. They are shown greyed with the reason
+   * rather than letting a click run into a guaranteed error. Re-checked after
+   * every run, since a failed edit is how an outage is usually discovered.
+   */
+  const [unservable, setUnservable] = useState<ReadonlySet<AiIntentId>>(new Set());
+  useEffect(() => {
+    if (isRunning) return;
+    let cancelled = false;
+    const intents = new Set<AiIntentId>(QUICK_ACTIONS.map((a) => a.intent));
+    for (const text of SUGGESTION_ORDER) {
+      const intent = suggestionIntent(text);
+      if (intent) intents.add(intent);
+    }
+    Promise.all(
+      [...intents].map(async (intent) => [intent, await canServeIntent(intent)] as const),
+    ).then((results) => {
+      if (cancelled) return;
+      setUnservable(new Set(results.filter(([, ok]) => !ok).map(([intent]) => intent)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isRunning]);
+
+  // Suggestions follow the chips: one that can only fail right now is not offered.
+  const suggestions = useMemo(
+    () =>
+      SUGGESTION_ORDER.filter((text) => {
+        const intent = suggestionIntent(text);
+        return !intent || !unservable.has(intent);
+      }).slice(0, 4),
+    [unservable],
+  );
+
   const pct = status ? Math.max(0, Math.min(100, status.progress.pct)) : 0;
   const lastAssistant = useMemo(
     () => [...messages].reverse().find((m) => m.role === "assistant"),
@@ -282,6 +324,12 @@ export default function AiImagePanel({
   );
   const hasError = lastAssistant?.status === "error";
   const promptAnalysis = useMemo(() => analyzePrompt(prompt), [prompt]);
+  // A sheet change runs instantly and never touches the pixels, so it is named
+  // as one — the image-edit wording described "make it 4 inches wide" as generating.
+  const isBoardOnly = useMemo(() => {
+    const fragments = splitSequence(prompt.trim());
+    return fragments.length > 0 && fragments.every((f) => parseBoardCommands(f).length > 0);
+  }, [prompt]);
 
   // The panel is ALWAYS mounted so its real height is measurable from the first
   // layout pass; until positioned it sits offscreen at opacity 0 (no flash).
@@ -392,8 +440,12 @@ export default function AiImagePanel({
             <button
               key={action.intent}
               onClick={() => handleChip({ ...action, intent: action.intent })}
-              disabled={isRunning}
-              title={action.hint}
+              disabled={isRunning || unservable.has(action.intent)}
+              title={
+                unservable.has(action.intent)
+                  ? "Needs the AI image model, which isn't available right now."
+                  : action.hint
+              }
               className="flex-shrink-0 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 hover:border-slate-300 hover:bg-gray-50 hover:text-slate-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150"
             >
               {action.label}
@@ -454,8 +506,10 @@ export default function AiImagePanel({
           }`}
         >
           {prompt.trim()
-            ? promptAnalysis.clarification || promptAnalysis.reply ||
-              `Ready to ${INTENT_VERBS[promptAnalysis.intent].toLowerCase()} this image while preserving its layout and text.`
+            ? isBoardOnly
+              ? "Press Enter — a sheet change, applied instantly."
+              : promptAnalysis.clarification || promptAnalysis.reply ||
+                `Press Enter to start — reads as ${INTENT_VERBS[promptAnalysis.intent].toLowerCase()}. You'll review it before it's applied.`
             : "Be specific for the best result — mention the subject, colour, style, or background you want."}
         </p>
 
@@ -465,7 +519,7 @@ export default function AiImagePanel({
             once there's history the panel should be about the conversation. */}
         {!prompt.trim() && messages.length === 0 && (
           <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {SUGGESTION_SAMPLE.map((suggestion) => (
+            {suggestions.map((suggestion) => (
               <button
                 key={suggestion}
                 onClick={() => submit(suggestion)}
@@ -484,10 +538,8 @@ export default function AiImagePanel({
             <div className="flex items-center justify-between text-[11px] text-gray-500">
               <span className="truncate">{status.progress.phase}</span>
               <span className="ml-2 flex-shrink-0 font-semibold text-slate-900 tabular-nums">
-                {/* Both counters when both apply: which image of the batch, and
-                    which step of the plan. A single "45%" during a two-step edit
-                    on eight images tells the customer nothing about the wait. */}
-                {status.total > 1 ? `${status.index}/${status.total} · ` : ""}
+                {/* Which step of the plan, when there is more than one. A bare
+                    "45%" during a two-step edit says nothing about the wait. */}
                 {status.stepCount && status.stepCount > 1
                   ? `step ${status.stepIndex}/${status.stepCount} · `
                   : ""}

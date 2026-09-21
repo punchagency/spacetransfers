@@ -22,12 +22,21 @@ interface CartStepProps {
   cartItems: CartItem[];
   updateQuantity: (id: number, change: number) => void;
   removeItem: (id: number) => void;
+  /** Opens a sheet back on the artboard; edits then update this same line. */
+  onEditItem?: (item: CartItem) => void;
+  /** Empties the cart. The caller confirms first. */
+  onClearCart?: () => void;
+  /** Clears the board for a separate sheet; what is in the cart stays there. */
+  onStartNewSheet?: () => void;
 }
 
 export default function CartStep({
   cartItems,
   updateQuantity,
   removeItem,
+  onEditItem,
+  onClearCart,
+  onStartNewSheet,
 }: CartStepProps) {
   const renderItemImage = (item: CartItem) => {
     if (item.type === "gangsheet") {
@@ -80,9 +89,20 @@ export default function CartStep({
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-      <h3 className="text-base font-semibold text-gray-900 mb-4">
-        Cart ({cartItems.length})
-      </h3>
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-base font-semibold text-gray-900">
+          Cart ({cartItems.length})
+        </h3>
+        {/* Emptying a cart line by line is the only way this could be done. */}
+        {cartItems.length > 0 && onClearCart ? (
+          <button
+            onClick={onClearCart}
+            className="text-sm font-medium text-gray-500 underline-offset-2 hover:text-gray-900 hover:underline"
+          >
+            Clear cart
+          </button>
+        ) : null}
+      </div>
 
       {cartItems.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 px-4">
@@ -102,6 +122,11 @@ export default function CartStep({
         </div>
       ) : (
         <div className="space-y-6">
+          {/*
+            Starting another sheet belongs here, not in the toast that confirms
+            an add: by the time someone is looking at the cart, a second sheet is
+            a decision they have actually made.
+          */}
           {cartItems.map((item) => (
             <div
               key={item.id}
@@ -140,6 +165,14 @@ export default function CartStep({
                       </div>
                     )}
                     <div className="flex flex-col items-end gap-2 mt-2">
+                      {item.type === "gangsheet" && onEditItem ? (
+                        <button
+                          onClick={() => onEditItem(item)}
+                          className="text-sm font-medium text-gray-700 underline-offset-2 hover:text-gray-900 hover:underline"
+                        >
+                          Edit sheet
+                        </button>
+                      ) : null}
                       <div className="flex items-center border border-gray-300 rounded overflow-hidden">
                         <button
                           onClick={() => updateQuantity(item.id, -1)}
@@ -172,6 +205,20 @@ export default function CartStep({
           ))}
         </div>
       )}
+
+      {cartItems.length > 0 && onStartNewSheet ? (
+        <div className="mt-6 border-t border-gray-200 pt-4">
+          <button
+            onClick={onStartNewSheet}
+            className="text-sm font-semibold text-gray-800 underline-offset-2 hover:underline"
+          >
+            + Start a new sheet
+          </button>
+          <p className="mt-1 text-xs text-gray-500">
+            Clears the artboard for another gang sheet. Everything here stays in your cart.
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }

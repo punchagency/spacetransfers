@@ -3,16 +3,18 @@ import { CANVAS } from "../../../../config/artboard.config";
 interface CanvasMarginsProps {
   showMargins: boolean;
   marginSize: number;
+  /** The roll width, so the right-hand guide sits the margin in from the real edge. */
+  sheetWidthIn: number;
   heightIn: number;
   isDarkBg?: boolean;
 }
 
-export default function CanvasMargins({ showMargins, marginSize, heightIn, isDarkBg = false }: CanvasMarginsProps) {
+export default function CanvasMargins({ showMargins, marginSize, sheetWidthIn, heightIn, isDarkBg = false }: CanvasMarginsProps) {
   if (!showMargins) return null;
 
   const ppi = CANVAS.PIXELS_PER_INCH;
   const marginPx     = marginSize * ppi;
-  const innerWidthPx = (CANVAS.SHEET_WIDTH_IN - 2 * marginSize) * ppi;
+  const innerWidthPx = Math.max(0, sheetWidthIn - 2 * marginSize) * ppi;
   const innerHeightPx = Math.max(0, heightIn - marginSize) * ppi;
 
   const borderCls = isDarkBg ? 'border-white/60'  : 'border-red-500';

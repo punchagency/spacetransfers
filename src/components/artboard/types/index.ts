@@ -1,3 +1,5 @@
+import type { ImageSnapshot } from "../lib/utils/imageState";
+
 export interface ArtboardItem {
   id: number;
   url: string;
@@ -47,25 +49,21 @@ export interface ArtboardItem {
    * across resizes without needing a live image element.
    */
   nativeWidthPx?: number;
+  /** The upload this piece came from — its identity for saving and checkout. Never changes after an edit. */
   originalUrl?: string;
   originalWidthIn?: number;
   originalHeightIn?: number;
+  /**
+   * The piece's current image before auto-crop trims it: the upload, or the
+   * result of the latest edit. The auto-crop switch works from this, so it never
+   * undoes an edit. See `imageState.ts`.
+   */
+  uncroppedUrl?: string;
+  /** Pixel size of `uncroppedUrl`, so the auto-crop toggle keeps a piece's scale both ways. */
+  uncroppedWidthPx?: number;
+  uncroppedHeightPx?: number;
   isDropping?: boolean;
   dpi?: number;
-  /**
-   * True only when the fade verdict is confident enough to warn about — this is
-   * what drives the orange border and the banner. `fade` carries the full
-   * result, including verdicts too uncertain to surface.
-   */
-  hasFade?: boolean;
-  /** Full fade-check result: confidence, what kind of transparency, and why. */
-  fade?: {
-    hasFade: boolean;
-    confidence: number;
-    kind: string;
-    reason: string;
-    source: "ai" | "heuristic";
-  };
   // Unified flow geometry — when set, copies render at cells within a shared
   // grid so multiple grouped items can occupy a single fluid layout.
   // flowCols is the total columns of the shared grid; flowStartCol/flowEndCol
@@ -81,13 +79,26 @@ export interface ArtboardItem {
    * autoNestStickers is enabled; cleared to 0 when auto-nest is turned off.
    */
   nestRotation?: 0 | 90;
+  /** Pieces sharing a group id are selected, moved, nested, turned and flipped as one. */
+  groupId?: string;
   /**
    * Trail of AI edits applied to this item, oldest first (capped at 10). Each
-   * entry stores the prompt and the url as it was *before* that edit, so a
-   * version-history UI can restore any earlier state. Undo/redo is handled
-   * separately by useHistory's item snapshots — this survives across sessions.
+   * entry stores the prompt and the image as it was *before* that edit — its
+   * URL, and the size and pixel counts that went with it — so a version-history
+   * UI can restore any earlier state. Undo/redo is handled separately by
+   * useHistory's item snapshots.
    */
-  aiHistory?: Array<{ prompt: string; url: string; at: number }>;
+  aiHistory?: Array<{ prompt: string; url: string; at: number; snapshot?: ImageSnapshot }>;
+}
+
+/** The selection as the image toolbar sees it. */
+export interface SelectionSummary {
+  /** Pieces selected. */
+  count: number;
+  /** Selected pieces that are not locked. */
+  editable: number;
+  /** Unlocked selected pieces below 300 DPI or with no measurable DPI. */
+  lowDpi: number;
 }
 
 export interface HistoryState {
@@ -106,6 +117,10 @@ export interface ArtboardProps {
   marginSize?: number;
   autoNestStickers?: boolean;
   spacing?: number;
+  /** Whether new uploads are auto-cropped — the sidebar's "Auto Crop Uploads". */
+  autoCropUploads?: boolean;
+  /** False while a dialog owns the screen, so "N" does not re-nest the board behind it. */
+  shortcutsEnabled?: boolean;
   onRequestAutoNest?: (enabled: boolean) => void;
   /**
    * Writes a board setting owned by the editor. Supplied so the AI text box can
@@ -115,7 +130,6 @@ export interface ArtboardProps {
   onUpdateSetting?: (key: string, value: boolean | number | string) => void;
   onDataChange?: (data: any) => void;
   initialData?: any;
-  onAddToCart?: (item: any) => void;
   onActionPerformed?: (action: { type: string; id?: number; payload?: any }) => void;
   onHistoryChange?: (state: HistoryState) => void;
   /** Visual-only artboard background. 'transparent' = checkerboard; a hex/named

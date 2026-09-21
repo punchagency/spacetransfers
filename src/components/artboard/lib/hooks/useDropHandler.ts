@@ -1,8 +1,10 @@
+import { getToken } from "../../../../lib/utils/auth";
 import { useRef, useState } from "react";
-import { readDPI, loadImageSize, validateImageFile, checkFade, shouldWarn } from "../utils";
-import type { FadeVerdict } from "../utils";
+import { readDPI, loadImageSize, validateImageFile, checkFade } from "../utils";
 import { placeNewItems, arrangeInitialLayout, isSheetFull } from "../utils";
 import { autoCropImage } from "../utils/autoCrop";
+import { convertUpload, UploadConvertError } from "../utils/uploadConvert";
+import { isAcceptedUpload } from "../utils/fileValidation";
 import { ArtboardItem } from "../../types";
 import { gsap } from "gsap";
 import {
@@ -11,7 +13,7 @@ import {
   MAX_SHEET_HEIGHT_IN,
 } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
-import { showLargeImageWarning } from "../../../common/LargeImageWarning";
+import { getSheetWidthIn } from "../../../../lib/utils/pricingRates";
 import {
   showUnsupportedFilesWarning,
   showUnsupportedFileWarning,
@@ -103,11 +105,11 @@ export const useDropHandler = (
   onRequestAutoNest: ((enabled: boolean) => void) | undefined,
   spacing: number,
   marginSize: number,
-  commitHistory?: CommitHistory
+  commitHistory?: CommitHistory,
+  /** Whether new uploads are cropped to their artwork — the sidebar's "Auto Crop Uploads". */
+  autoCropUploads: boolean = true,
 ) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [fadeCount, setFadeCount] = useState(0);
-  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadFileName, setUploadFileName] = useState<string | null>(null);
@@ -213,20 +215,6 @@ export const useDropHandler = (
   };
 
   /**
-   * Fade check.
-   *
-   * Replaces the old `semiTransparent / visible > 0.05` rule, which could not
-   * tell a genuine fade from the three printable things that look identical to
-   * a pixel count — anti-aliased edges, drop shadows and soft glows — and so
-   * flagged ordinary cutouts as unprintable.
-   *
-   * `checkFade` prefers the AI verdict the upload response already carried, so
-   * on the normal path this costs no request at all.
-   */
-  const detectFade = async (url: string, serverVerdict?: unknown): Promise<FadeVerdict> =>
-    checkFade(url, serverVerdict);
-
-  /**
    * Cancels every in-flight batch.
    *
    * The button is global ("Cancel" on the overlay), so this marks all live
@@ -269,7 +257,9 @@ export const useDropHandler = (
     // definition of where the API lives.
     const API_BASE_URL =
       import.meta.env.VITE_API_URL || "https://space-transfers-475154718031.herokuapp.com/api";
-    const authToken = localStorage.getItem("token");
+    // XHR, not `apiFetch`, because this one reports upload progress — but the
+    // token still comes from one place.
+    const authToken = getToken();
 
     return new Promise<any>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -351,6 +341,45 @@ export const useDropHandler = (
   };
 
   /**
+   * Turns every file in a drop into the PNG or JPEG the upload path takes.
+   *
+   * Runs before anything is counted, so capacity, the progress bar and the
+   * "N files" label all see what actually lands on the board — a PDF's pages,
+   * a PSD's flattened image. A file that cannot be converted is reported by
+   * name and left out; the rest of the drop carries on.
+   */
+  const convertUploads = async (files: File[]): Promise<File[]> => {
+    const out: File[] = [];
+    for (const file of files) {
+      let toastId: string | undefined;
+      try {
+        const result = await convertUpload(file, {
+          onConverting: () => {
+            toastId = toast.loading(`Converting “${file.name}”…`);
+          },
+          onProgress: (done, total) => {
+            if (total > 1 && toastId) {
+              toast.loading(`Converting “${file.name}” — page ${done} of ${total}`, { id: toastId });
+            }
+          },
+        });
+        if (toastId) toast.dismiss(toastId);
+        out.push(...result.files);
+        for (const notice of result.notices) toast(notice, { duration: 8000, icon: "ℹ️" });
+      } catch (err) {
+        if (toastId) toast.dismiss(toastId);
+        if (err instanceof UploadConvertError) {
+          showUnsupportedFileWarning(err.message);
+        } else {
+          console.warn(`[UPLOAD] ${file.name} — conversion failed`, err);
+          toast.error(`“${file.name}” could not be converted. Please re-export it and try again.`, { duration: 6000 });
+        }
+      }
+    }
+    return out;
+  };
+
+  /**
    * The only way `processDrop` is ever called.
    *
    * `processDrop` is long and touches decoding, the network, canvas work and
@@ -408,7 +437,8 @@ export const useDropHandler = (
     dropY: number;
   }) => {
     setIsDragging(false);
-    // Reassigned when the drop exceeds the remaining item capacity.
+    // Reassigned as PDFs expand into their pages, and when the drop exceeds the
+    // remaining item capacity.
     let dropped = droppedFiles;
     if (dropped.length === 0 && !droppedUrl) return;
 
@@ -419,6 +449,13 @@ export const useDropHandler = (
         `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
       );
       return;
+    }
+
+    // After the sheet-full check, so a full sheet does not pay for conversions
+    // whose results would all be refused.
+    if (dropped.length > 0) {
+      dropped = await convertUploads(dropped);
+      if (dropped.length === 0 && !droppedUrl) return;
     }
 
 
@@ -434,10 +471,6 @@ export const useDropHandler = (
     const nextItemId = () => (idCursorRef.current += 1);
 
     let lowDpiImages = 0;
-    let fadeImages = 0;
-    // Artwork wider than the printable area. Tallied across the drop so the
-    // notice appears once, however many files were added.
-    let oversizeImages = 0;
 
     const createItemFromUrl = async (
       url: string,
@@ -465,7 +498,7 @@ export const useDropHandler = (
         locked: false,
         expanded: false,
         flipped: false,
-        autoCrop: true,
+        autoCrop: autoCropUploads,
         copies: 1,
         widthIn,
         heightIn,
@@ -481,9 +514,12 @@ export const useDropHandler = (
         originalUrl: originalUrlOverride || url,
         originalWidthIn: widthIn,
         originalHeightIn: heightIn,
+        uncroppedUrl: url,
+        uncroppedWidthPx: loaded.widthPx,
+        uncroppedHeightPx: loaded.heightPx,
       };
 
-      const cropped = await autoCropImage(url, dpi);
+      const cropped = autoCropUploads ? await autoCropImage(url, dpi) : null;
       if (cropped) {
         const deltaX = (widthIn - cropped.widthIn) / 2;
         const deltaY = (heightIn - cropped.heightIn) / 2;
@@ -497,20 +533,6 @@ export const useDropHandler = (
         baseItem.posX = baseItem.posX + deltaX;
         baseItem.posY = baseItem.posY + deltaY;
       }
-
-      // Oversized artwork is kept at the size it arrived and flagged, not
-      // silently shrunk — the notice tells the customer they may want to resize
-      // it, which would be untrue if it had already been resized for them.
-      if (baseItem.widthIn > (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize) {
-        oversizeImages++;
-      }
-
-      // No upload response on this path (the item came from a URL or a saved
-      // design), so the checker resolves it against the server itself.
-      const verdict = await detectFade(baseItem.url);
-      baseItem.fade = verdict;
-      baseItem.hasFade = shouldWarn(verdict);
-      if (baseItem.hasFade) fadeImages++;
 
       return baseItem;
     };
@@ -624,7 +646,7 @@ export const useDropHandler = (
 
         const chunk = pending.splice(0, pending.length);
         const chunkIds = new Set(chunk.map((c) => c.id));
-        const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+        const currentCanvasWidth = canvasWidth || getSheetWidthIn();
 
         setItems((prev) => {
           const all = [...prev, ...chunk];
@@ -688,13 +710,13 @@ export const useDropHandler = (
             const gap = CANVAS.GRID_GAP_IN;
             const groupHeightIn =
               copies <= 1 ? itemH : copies * itemH + (copies - 1) * gap;
-            const maxPosY = Math.max(0, MAX_SHEET_HEIGHT_IN - groupHeightIn);
+            const maxPosY = Math.max(marginSize, MAX_SHEET_HEIGHT_IN - groupHeightIn);
             if (u.posY > maxPosY + 1e-6) didClamp = true;
 
             return {
               ...it,
               posX: u.posX,
-              posY: Math.max(0, Math.min(u.posY, maxPosY)),
+              posY: Math.max(marginSize, Math.min(u.posY, maxPosY)),
               flowCols: u.flowCols,
               flowStartCol: u.flowStartCol,
               flowEndCol: u.flowEndCol,
@@ -827,14 +849,14 @@ export const useDropHandler = (
         fileProgress[idx] = 1;
         publishProgress();
 
-        const isPdf = file.type === "application/pdf";
         const rawDpi = Math.max(1, Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300));
         // Mirror server normalization: values < 150 (e.g. 72 dpi JFIF defaults) are treated as unknown
         const dpi = rawDpi < 150 ? 300 : rawDpi;
-        if (dpi < 300 && !isPdf) lowDpiImages++;
+        if (dpi < 300) lowDpiImages++;
 
         const serverUrl = assetResponse?.url || localInfo.url;
-        const trimmedUrl = assetResponse?.trimmedUrl || null;
+        // With auto crop off for uploads, the server's trimmed copy goes unused.
+        const trimmedUrl = autoCropUploads ? assetResponse?.trimmedUrl || null : null;
         const widthPx = assetResponse?.widthPx || localInfo.widthPx;
         const heightPx = assetResponse?.heightPx || localInfo.heightPx;
 
@@ -852,7 +874,7 @@ export const useDropHandler = (
           locked: false,
           expanded: false,
           flipped: false,
-          autoCrop: true,
+          autoCrop: autoCropUploads,
           copies: 1,
           widthIn,
           heightIn,
@@ -873,9 +895,12 @@ export const useDropHandler = (
           originalUrl: serverUrl,
           originalWidthIn,
           originalHeightIn,
+          uncroppedUrl: serverUrl,
+          uncroppedWidthPx: widthPx,
+          uncroppedHeightPx: heightPx,
         };
 
-        if (!trimmedUrl && !isPdf) {
+        if (autoCropUploads && !trimmedUrl) {
           const cropped = await autoCropImage(serverUrl, dpi);
           if (cropped) {
             const deltaX = (widthIn - cropped.widthIn) / 2;
@@ -897,32 +922,18 @@ export const useDropHandler = (
           }
         }
 
-        // Counted, not clamped. The upload succeeded and the item is usable;
-        // whether to resize it is the customer's call, and the notice below
-        // says so once for the whole drop rather than once per file.
-        if (baseItem.widthIn > (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize) {
-          oversizeImages++;
-        }
-
-        if (!isPdf) {
-          /**
-           * The upload already ran the AI check on the buffer it held, so its
-           * verdict is passed straight through — no second analysis, and no
-           * request. Only an image the server never saw falls back to a call.
-           *
-           * Checked against `baseItem.url` rather than the original, because a
-           * canvas auto-crop can remove the very region that faded.
-           */
-          const verdict = await detectFade(
-            baseItem.url,
-            baseItem.url === (trimmedUrl || serverUrl) ? assetResponse?.fade : undefined,
-          );
-          baseItem.fade = verdict;
-          // `hasFade` drives the border colour and the warning banner, so it is
-          // only set once the verdict clears the confidence threshold — a
-          // low-confidence guess must not turn an image orange.
-          baseItem.hasFade = shouldWarn(verdict);
-          if (baseItem.hasFade) fadeImages++;
+        /**
+         * The upload already ran the transparency check on the buffer it held,
+         * so its verdict is remembered for this URL — no second analysis, and no
+         * request. Not awaited: the flag is drawn by the artboard from the
+         * image's URL (`useTransparencyVerdicts`), which also checks any image
+         * the server never saw, so the item need not wait for it.
+         *
+         * Only for the URL the server actually analysed; a canvas auto-crop
+         * produces a different image, which is checked in its own right.
+         */
+        if (baseItem.url === (trimmedUrl || serverUrl) && assetResponse?.fade) {
+          void checkFade(baseItem.url, assetResponse.fade);
         }
 
         return baseItem;
@@ -1048,7 +1059,7 @@ export const useDropHandler = (
       // Single item from a URL or a saved design. Packed against `prev` in the
       // same updater that adds it, for the same reason the file path is: the
       // closure's `items` is a snapshot from before the decode and fade check.
-      const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+      const currentCanvasWidth = canvasWidth || getSheetWidthIn();
       setItems((prev) => {
         const all = [...prev, item];
         const packed = placeNewItems(
@@ -1066,7 +1077,7 @@ export const useDropHandler = (
                 ...(u
                   ? {
                       posX: u.posX,
-                      posY: Math.max(0, Math.min(u.posY, 1200)),
+                      posY: Math.max(marginSize, Math.min(u.posY, 1200)),
                       flowCols: u.flowCols,
                       flowStartCol: u.flowStartCol,
                       flowEndCol: u.flowEndCol,
@@ -1081,22 +1092,11 @@ export const useDropHandler = (
       });
     }
 
-    // Informational, and deliberately last: the upload has completed and the
-    // items are on the sheet by this point, so nothing about it is blocking.
-    if (oversizeImages > 0) {
-      showLargeImageWarning(oversizeImages);
-    }
-
-    // Same queue, same card and same 7s life as the large-image notice above,
-    // so a drop that trips both shows two stacked notices rather than one
-    // merged sentence or two competing surfaces.
+    // Same queue, same card and same 7s life as the resized-to-fit notice (raised
+    // by the layout once the drop settles), so a drop that trips both shows two
+    // stacked notices rather than one merged sentence.
     if (lowDpiImages > 0) {
       showLowDpiWarning(lowDpiImages);
-    }
-    if (fadeImages > 0) {
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
-      setFadeCount(fadeImages);
-      fadeTimerRef.current = setTimeout(() => setFadeCount(0), 7000);
     }
 
 
@@ -1108,9 +1108,9 @@ export const useDropHandler = (
   };
 
   const filterFiles = (files: File[]) => {
-    const accepted = files.filter((f) =>
-      (ACCEPTED_IMAGE_TYPES as readonly string[]).includes(f.type),
-    );
+    // By type or extension — see `isAcceptedUpload`. The contents decide the
+    // rest, including refusing a file whose name was the only thing right.
+    const accepted = files.filter(isAcceptedUpload);
     const other = files.length - accepted.length;
     // The count and the format list both come from this one call, so the
     // advice can never name a format the filter above would reject.
@@ -1170,7 +1170,7 @@ export const useDropHandler = (
     const droppedFiles = filterFiles(arr);
     if (droppedFiles.length === 0) return;
 
-    const currentCanvasWidth = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+    const currentCanvasWidth = canvasWidth || getSheetWidthIn();
     const dropX = currentCanvasWidth / 2;
     const dropY = 6;
     submitDrop({ droppedFiles, droppedUrl: "", dropX, dropY });
@@ -1178,7 +1178,6 @@ export const useDropHandler = (
 
   return {
     isDragging,
-    fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,

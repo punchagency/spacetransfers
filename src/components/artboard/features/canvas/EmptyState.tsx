@@ -1,4 +1,5 @@
 import { MdOutlineFileUpload } from "react-icons/md";
+import { UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
 
 export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
   return (
@@ -27,7 +28,7 @@ export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
             Browse files
           </button>      
           <div className="mt-5 text-[11px] tracking-wide text-slate-400">
-            PNG • JPG • PDF  
+            {UPLOAD_FORMAT_LABELS.join(" • ")}
           </div>
         </div>
         <div className="mt-3 flex items-center justify-center gap-6 text-[11px] text-slate-400">

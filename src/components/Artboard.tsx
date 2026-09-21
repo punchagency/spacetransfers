@@ -10,8 +10,10 @@ import {
   useAiEdit,
   useAiConversation,
   useMaterializeImages,
+  useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
-import { snapToGridPoint, isDpiFlagged } from "./artboard/lib/utils";
+import { snapToGridPoint, isDpiFlagged, shouldWarn, type FadeVerdict } from "./artboard/lib/utils";
+import { isTypingTarget } from "../lib/utils/keyboard";
 import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
@@ -19,26 +21,31 @@ import type { AiPanelBridge } from "./artboard/features/ai";
 import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
-import { ACCEPTED_IMAGE_TYPES, CANVAS, MAX_SHEET_HEIGHT_IN, ZOOM } from "../config/artboard.config";
+import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
+import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
 import { isSheetFull } from "./artboard/lib/utils";
 
 export default function Artboard({
   onHeaderInfoChange,
   onActionPerformed,
-  showRulers = true,
-  showGrid = true,
-  snapToGrid = false,
-  showMargins = false,
-  marginSize = 0.25,
-  autoNestStickers = false,
-  spacing = 0.5,
-  canvasBg = '#f3f4f6',
+  // One set of defaults. These disagreed with the editor's (0.25in margin,
+  // auto-nest off, 0.5in spacing), so a caller omitting a prop got a different
+  // sheet from the one the editor starts.
+  showRulers = DEFAULT_EDITOR_SETTINGS.showRulers,
+  showGrid = DEFAULT_EDITOR_SETTINGS.showGrid,
+  snapToGrid = DEFAULT_EDITOR_SETTINGS.snapToGrid,
+  showMargins = DEFAULT_EDITOR_SETTINGS.showMargins,
+  marginSize = DEFAULT_EDITOR_SETTINGS.marginSize,
+  autoNestStickers = DEFAULT_EDITOR_SETTINGS.autoNestStickers,
+  spacing = DEFAULT_EDITOR_SETTINGS.spacing,
+  canvasBg = DEFAULT_EDITOR_SETTINGS.canvasBg,
+  autoCropUploads = DEFAULT_EDITOR_SETTINGS.autoCropUploads,
+  shortcutsEnabled = true,
   highlightLowDpi = false,
   onRequestAutoNest,
   onUpdateSetting,
   onDataChange,
   initialData,
-  onAddToCart,
   onHistoryChange,
 }: ArtboardProps) {
   const [zoom, setZoom] = useState(1);
@@ -49,8 +56,54 @@ export default function Artboard({
   const [showProperties, setShowProperties] = useState<Record<number, boolean>>(
     {},
   );
-  const [addedToCart, setAddedToCart] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  /*
+   * Escape clears the selection, the standard way out of one. Panels that own
+   * Escape (the AI panel, the edit preview) stop it in the capture phase, so
+   * pressing it there closes the panel and leaves the selection alone.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      setSelectedId(null);
+      setSelectedIds((prev) => (prev.size === 0 ? prev : new Set()));
+      setShowProperties((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  /**
+   * Auto-nest on and off, without opening the sidebar.
+   *
+   * Turning it on re-nests the whole sheet, which is the one-press way to pull a
+   * hand-arranged board back into the shortest layout. Shared by the "N"
+   * shortcut and the canvas's right-click menu, and said out loud either way:
+   * the change is to the whole board, so it should never be silent.
+   */
+  const toggleAutoNest = useCallback(() => {
+    const next = !autoNestStickers;
+    onRequestAutoNest?.(next);
+    toast.success(
+      next ? "Auto-nest on — artwork re-nested into the shortest sheet" : "Auto-nest off — artwork stays where you put it",
+      { id: "auto-nest-toggle" },
+    );
+  }, [autoNestStickers, onRequestAutoNest]);
+
+  /* "N" nests, the way double-clicking the sheet adds artwork. */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (!shortcutsEnabled || isTypingTarget(e.target)) return;
+      e.preventDefault();
+      toggleAutoNest();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleAutoNest, shortcutsEnabled]);
 
   const canvasWidth = useCanvasWidth();
 
@@ -60,12 +113,12 @@ export default function Artboard({
   // break the responsive behaviour the artboard has always had.
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
 
-  // Auto-fit the 23.5" sheet width into the visible area at browser zoom 100%.
+  // Auto-fit the roll's width into the visible area at browser zoom 100%.
   useEffect(() => {
     const el = document.querySelector("#artboard-main-container") as HTMLElement | null;
     if (!el) return;
 
-    const neededPx = CANVAS.SHEET_WIDTH_IN * CANVAS.PIXELS_PER_INCH;
+    const neededPx = canvasWidth * CANVAS.PIXELS_PER_INCH;
     if (!neededPx) return;
 
     const update = () => {
@@ -84,7 +137,7 @@ export default function Artboard({
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [zoomOverride]);
+  }, [zoomOverride, canvasWidth]);
 
   /**
    * Applies an explicit zoom, or `null` to resume auto-fit. Returns the value
@@ -94,14 +147,14 @@ export default function Artboard({
     if (factor == null) {
       setZoomOverride(null);
       const el = document.querySelector("#artboard-main-container") as HTMLElement | null;
-      const neededPx = CANVAS.SHEET_WIDTH_IN * CANVAS.PIXELS_PER_INCH;
+      const neededPx = canvasWidth * CANVAS.PIXELS_PER_INCH;
       const availablePx = Math.max(0, (el?.clientWidth ?? 0) - CANVAS.RULER_OFFSET_PX);
       return Math.min(1, Math.max(0.1, availablePx / neededPx || 1));
     }
     const clamped = Math.min(ZOOM.MAX, Math.max(ZOOM.MIN, factor));
     setZoomOverride(clamped);
     return clamped;
-  }, []);
+  }, [canvasWidth]);
   /**
    * Uploads canvas-produced artwork in the background, as soon as it appears.
    *
@@ -125,7 +178,6 @@ export default function Artboard({
 
   const {
     isDragging,
-    fadeCount,
     isUploading,
     uploadProgress,
     uploadFileName,
@@ -151,7 +203,24 @@ export default function Artboard({
       spacing,
       marginSize,
       history.commit,
+      autoCropUploads,
     );
+  const transparencyVerdicts = useTransparencyVerdicts(items);
+
+  /**
+   * One verdict per flagged file on the board, for the banner. Counted by file,
+   * not by piece: duplicates of one image share it, and the banner's instruction
+   * is to update the file — two copies of one image are one file to fix.
+   */
+  const flaggedTransparency = useMemo(() => {
+    const flagged = new Map<string, FadeVerdict>();
+    for (const it of items) {
+      const verdict = transparencyVerdicts.get(it.url);
+      if (verdict && shouldWarn(verdict)) flagged.set(it.url, verdict);
+    }
+    return [...flagged.values()];
+  }, [items, transparencyVerdicts]);
+
   /**
    * The items the DPI chip is counting.
    *
@@ -179,6 +248,7 @@ export default function Artboard({
     items,
     setItems,
     selectedId,
+    selectedIds,
     snapToGrid,
     snapToGridPoint,
     canvasWidth,
@@ -187,6 +257,36 @@ export default function Artboard({
     onActionPerformed,
     history.commit,
   );
+
+  /**
+   * Deletes the selection. Selection is only cleared when something went —
+   * locked pieces stay, and stay selected so it is clear which ones they are.
+   */
+  const deleteSelection = useCallback(() => {
+    const removed = itemActions.deleteSelected();
+    if (removed > 0) {
+      setSelectedId(null);
+      setSelectedIds(new Set());
+    }
+  }, [itemActions]);
+
+  /*
+   * Delete and Backspace remove the selection — what every design tool does.
+   * There was no keyboard delete at all.
+   */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (!shortcutsEnabled || isTypingTarget(e.target)) return;
+      if (selectedId == null && selectedIds.size === 0) return;
+      e.preventDefault();
+      deleteSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleteSelection, shortcutsEnabled, selectedId, selectedIds]);
+
   const {
     handleResizeStart,
     handleDragStart,
@@ -248,31 +348,17 @@ export default function Artboard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
 
-  // AI editing targets: every selected item that is actually a raster image.
-  // PDFs are excluded — they're placed as documents, not pixels, so no image
-  // model can meaningfully operate on them.
-  const aiTargetIds = useMemo(() => {
-    const ids = new Set<number>(selectedIds);
-    if (selectedId != null) ids.add(selectedId);
-    return items
-      .filter(
-        (it) => ids.has(it.id) && !(it.name?.toLowerCase().endsWith(".pdf") ?? false),
-      )
-      .map((it) => it.id);
-  }, [items, selectedId, selectedIds]);
-
+  // AI image edits apply to one image: the one the panel is open on, which is
+  // always the primary selection (the panel closes when the primary changes).
+  // Board commands typed into the panel still act on the whole selection.
   const ai = useAiEdit(
     items,
     setItems,
-    aiTargetIds,
+    selectedId,
     history.commit,
     onActionPerformed,
   );
 
-  // Board commands target the raw selection, not `aiTargetIds`: PDFs are
-  // excluded from *pixel* edits because no image model can operate on them, but
-  // they are still items on the sheet and must resize, move and delete normally.
-  //
   // Everything the executor reads goes through a ref so `runBoardCommands` keeps
   // a stable identity — otherwise the conversation's `send` handler, and the
   // panel that holds it, would be rebuilt on every item change mid-drag.
@@ -310,7 +396,10 @@ export default function Artboard({
       canRedo: state.history.canRedo,
       select: (ids) => {
         setSelectedIds(new Set(ids));
-        setSelectedId(ids.length ? ids[ids.length - 1] : null);
+        // Keep the current primary when it is still selected, so "select all"
+        // typed into an image's AI panel doesn't close that panel.
+        const current = boardStateRef.current.selectedId;
+        setSelectedId(ids.length ? (current != null && ids.includes(current) ? current : ids[ids.length - 1]) : null);
       },
       // Delegated rather than reimplemented: auto-crop does real image work
       // (server trim, or a canvas alpha/border scan) and only ever applies to
@@ -343,9 +432,13 @@ export default function Artboard({
   // Close the panel (and cancel any run) whenever the primary selection changes
   // or the item disappears, so a stale panel can never linger on a deselected
   // or deleted image. Opening for a fresh image starts a clean transcript.
+  // (Shift-clicking another image closes it too — that click lands outside it.)
   useEffect(() => {
     if (aiPanelItemId != null && aiPanelItemId !== selectedId) {
       setAiPanelItemId(null);
+      // Both halves: a prompt still being read would otherwise carry on and
+      // edit whichever image is selected now.
+      aiConversation.stopThinking();
       ai.cancel();
     }
     // Only the selection change should trigger this; reading the latest
@@ -359,7 +452,7 @@ export default function Artboard({
 
   const aiPanel: AiPanelBridge = {
     openItemId: aiPanelItemId,
-    isRunning: ai.isRunning,
+    isRunning: ai.isRunning || aiConversation.isThinking,
     status: ai.status,
     messages: aiConversation.messages,
     onOpen: (id) => {
@@ -367,6 +460,7 @@ export default function Artboard({
       setAiPanelItemId(id);
     },
     onClose: () => {
+      aiConversation.stopThinking();
       ai.cancel();
       // A staged edit belongs to the panel session — leaving it behind would
       // pop the review dialog back up over a closed panel with no context.
@@ -374,7 +468,10 @@ export default function Artboard({
       setAiPanelItemId(null);
     },
     onSend: aiConversation.send,
-    onCancel: ai.cancel,
+    onCancel: () => {
+      aiConversation.stopThinking();
+      ai.cancel();
+    },
     imageUrl: aiPanelItem?.croppedUrl || aiPanelItem?.url,
     editHistory: aiPanelItem?.aiHistory,
     onRevertHistory: (entryIndex) => {
@@ -383,72 +480,102 @@ export default function Artboard({
     },
   };
 
+  /**
+   * Duplicates everything selected, and selects the copies.
+   *
+   * It used to duplicate only the piece last clicked, however many were
+   * selected. A locked piece may be duplicated — the copy starts unlocked, since
+   * it is a new piece the customer has not locked.
+   */
   const duplicateSelected = () => {
-    if (selectedId == null) return;
+    const sourceIds = [
+      ...(selectedId == null ? [] : [selectedId]),
+      ...[...selectedIds].filter((id) => id !== selectedId),
+    ];
+    const sources = sourceIds
+      .map((id) => items.find((it) => it.id === id))
+      .filter((it): it is NonNullable<typeof it> => Boolean(it));
+    if (sources.length === 0) return;
     if (isSheetFull(items as any)) {
       toast.error(
         `Sheet is full — the maximum length of ${MAX_SHEET_HEIGHT_IN.toLocaleString()}in has been reached. Remove artwork to add more.`,
       );
       return;
     }
-    const target = items.find((it) => it.id === selectedId);
-    if (!target) return;
     history.commit();
-    const newId = counter + 1;
-    setCounter(newId);
-    const copy = {
-      ...target,
-      id: newId,
-      posX: target.posX + 0.5,
-      posY: target.posY + 0.5,
-      gravityActive: true,
+    let nextId = counter;
+    const newGroupIds = new Map<string, string>();
+    const copyGroupId = (groupId?: string) => {
+      if (!groupId) return undefined;
+      if (!newGroupIds.has(groupId)) newGroupIds.set(groupId, `g-${Date.now().toString(36)}-${newGroupIds.size}`);
+      return newGroupIds.get(groupId);
     };
+    const copies = sources.map((source) => ({
+      ...source,
+      id: ++nextId,
+      groupId: copyGroupId(source.groupId),
+      posX: source.posX + 0.5,
+      posY: source.posY + 0.5,
+      locked: false,
+      pinned: false,
+      gravityActive: true,
+    }));
+    setCounter(nextId);
     setItems((prev) => {
-      const idx = prev.findIndex((it) => it.id === selectedId);
       const next = [...prev];
-      next.splice(idx === -1 ? next.length : idx + 1, 0, copy);
+      // Each copy right after its source, so it stacks where you expect.
+      for (const copy of copies) {
+        const sourceIndex = next.findIndex((it) => it.id === sources[copies.indexOf(copy)].id);
+        next.splice(sourceIndex === -1 ? next.length : sourceIndex + 1, 0, copy);
+      }
       return next;
     });
-    setSelectedId(newId);
+    // The copies alone are selected. Setting only the primary left the original in
+    // the multi-selection too, so both showed handles.
+    setSelectedId(copies[0].id);
+    setSelectedIds(new Set(copies.map((c) => c.id)));
   };
 
-  const handleLinkSelected = () => {
-    const selectedItems = items.filter(
-      (it) => selectedIds.has(it.id) || it.id === selectedId,
-    );
-    // De-dupe by ID
-    const uniqueSelected = Array.from(
-      new Map(selectedItems.map((item) => [item.id, item])).values(),
-    );
+  /** Everything selected, the clicked piece first. */
+  const selectionIds = [
+    ...(selectedId == null ? [] : [selectedId]),
+    ...[...selectedIds].filter((id) => id !== selectedId),
+  ];
+  const selectedPieces = selectionIds
+    .map((id) => items.find((it) => it.id === id))
+    .filter((it): it is NonNullable<typeof it> => Boolean(it));
 
-    if (uniqueSelected.length < 2) return;
+  /**
+   * What the toolbar's Group button would do: bundle the selection, split the
+   * group it is, or nothing (a single loose piece has nothing to group with).
+   *
+   * This button was "Link", and merged two selected copies of one image into a
+   * single piece with copies — a second meaning for a word the properties panel
+   * already used for keeping proportions, and with one piece selected it did
+   * nothing at all.
+   */
+  const groupAction: "group" | "ungroup" | null = (() => {
+    if (selectedPieces.length === 0) return null;
+    const groupIds = new Set(selectedPieces.map((it) => it.groupId ?? `loose-${it.id}`));
+    if (groupIds.size === 1 && selectedPieces[0].groupId) return "ungroup";
+    return selectedPieces.length >= 2 ? "group" : null;
+  })();
 
-    // Check if all are the same image URL
-    const firstUrl = uniqueSelected[0].url;
-    const allSame = uniqueSelected.every((it) => it.url === firstUrl);
+  const groupSelection = () => {
+    if (selectedPieces.length < 2) return;
+    const groupId = `g-${Date.now().toString(36)}`;
+    const ids = new Set(selectedPieces.map((it) => it.id));
+    history.commit();
+    setItems((prev) => prev.map((it) => (ids.has(it.id) ? { ...it, groupId } : it)));
+    toast.success(`${ids.size} images grouped — they now move as one.`, { id: "group" });
+  };
 
-    if (allSame) {
-      history.commit();
-      const totalCopies = uniqueSelected.reduce(
-        (sum, it) => sum + it.copies,
-        0,
-      );
-      const primary = uniqueSelected[0];
-
-      const mergedItem = {
-        ...primary,
-        copies: totalCopies,
-        id: Date.now(),
-        linked: false, // Reset link state
-      };
-
-      const selectedIdSet = new Set(uniqueSelected.map((it) => it.id));
-      const remainingItems = items.filter((it) => !selectedIdSet.has(it.id));
-
-      setItems([...remainingItems, mergedItem]);
-      setSelectedId(mergedItem.id);
-      setSelectedIds(new Set([mergedItem.id]));
-    }
+  const ungroupSelection = () => {
+    const ids = new Set(selectedPieces.map((it) => it.id));
+    if (ids.size === 0) return;
+    history.commit();
+    setItems((prev) => prev.map((it) => (ids.has(it.id) ? { ...it, groupId: undefined } : it)));
+    toast.success("Ungrouped.", { id: "group" });
   };
 
   return (
@@ -460,29 +587,14 @@ export default function Artboard({
       {/* Resolution is no longer routed through here — it is raised as a toast
           when a drop lands (`showLowDpiWarning`) and reported continuously by
           the top-bar chip, so this banner is now purely about fades. */}
-      <ArtboardWarning
-        fadeCount={fadeCount > 0 ? items.filter((it) => it.hasFade).length : 0}
-        // Only the verdicts behind the flagged items, so the banner's
-        // confidence reflects what it is actually warning about.
-        fadeVerdicts={
-          fadeCount > 0
-            ? items
-                .filter((it) => it.hasFade && it.fade)
-                .map((it) => ({
-                  confidence: it.fade!.confidence,
-                  reason: it.fade!.reason,
-                  source: it.fade!.source,
-                }))
-            : []
-        }
-      />
+      <ArtboardWarning flagged={flaggedTransparency} />
       <input
         ref={fileInputRef}
         type="file"
         // Same list the drop filter uses. These had drifted: PDF was accepted
         // when dragged but absent here, so browsing could not select a file
         // the artboard would happily have taken.
-        accept={ACCEPTED_IMAGE_TYPES.join(",")}
+        accept={UPLOAD_ACCEPT_ATTRIBUTE}
         multiple
         className="hidden"
         onChange={async (e) => {
@@ -497,6 +609,9 @@ export default function Artboard({
         <CanvasContainer
           zoom={zoom}
           showRulers={showRulers}
+          // Was destructured here and passed to nothing — the toggle's whole
+          // journey ended at this component.
+          showGrid={showGrid}
           showMargins={showMargins}
           marginSize={marginSize}
           spacing={spacing}
@@ -512,13 +627,13 @@ export default function Artboard({
           batchTotal={batchTotal}
           queuedCount={queuedCount}
           dpiHighlightIds={dpiHighlightIds}
+          transparencyVerdicts={transparencyVerdicts}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}
           items={items}
           selectedId={selectedId}
           selectedIds={selectedIds}
           showProperties={showProperties}
-          addedToCart={addedToCart}
           onWheel={(e) => {
             // Zoom disabled
             if (e.ctrlKey || e.metaKey) e.preventDefault();
@@ -532,17 +647,25 @@ export default function Artboard({
             setShowProperties({});
           }}
           onItemSelect={(id, multi) => {
+            const clicked = items.find((it) => it.id === id);
+            const unit = clicked?.groupId
+              ? items.filter((it) => it.groupId === clicked.groupId).map((it) => it.id)
+              : [id];
             if (multi) {
-              setSelectedIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id);
-                else next.add(id);
-                return next;
-              });
-              setSelectedId(id); // Update primary focus to latest clicked
+              const next = new Set(selectedIds);
+              if (selectedId != null) next.add(selectedId);
+              const removing = unit.every((u) => next.has(u));
+              for (const u of unit) {
+                if (removing) next.delete(u);
+                else next.add(u);
+              }
+              setSelectedIds(next);
+              // Deselecting used to leave the deselected piece as the one the
+              // toolbar acted on.
+              setSelectedId(removing ? ([...next][0] ?? null) : id);
             } else {
               setSelectedId(id);
-              setSelectedIds(new Set([id]));
+              setSelectedIds(new Set(unit));
             }
             setShowProperties({});
           }}
@@ -550,27 +673,10 @@ export default function Artboard({
             setShowProperties((prev) => ({ ...prev, [id]: true }))
           }
           itemActions={itemActions}
-          onLink={handleLinkSelected}
+          groupAction={groupAction}
+          onGroup={groupAction === "ungroup" ? ungroupSelection : groupSelection}
           onDuplicate={duplicateSelected}
-          onDelete={() => {
-            itemActions.deleteSelected();
-            setSelectedId(null);
-            setSelectedIds(new Set());
-          }}
-          onAddToCart={(it) => {
-            if (onAddToCart && !addedToCart.has(it.id)) {
-              onAddToCart({
-                id: it.id,
-                name: it.name,
-                widthIn: it.widthIn,
-                heightIn: it.heightIn,
-                copies: it.copies,
-                price: it.price,
-                url: it.url,
-              });
-              setAddedToCart((prev) => new Set(prev).add(it.id));
-            }
-          }}
+          onDelete={deleteSelection}
           onCloseProperties={() => setShowProperties({})}
           onRemoveBg={itemActions.removeBg}
           onDragStart={handleDragStart}
@@ -607,9 +713,9 @@ export default function Artboard({
           // customer is asking for another sample of what they asked for, and
           // re-planning may also read the request better the second time.
           onRetry={() => {
-            const { prompt } = ai.preview!;
+            const { prompt, request } = ai.preview!;
             ai.discardPreview();
-            aiConversation.send(prompt);
+            aiConversation.send(prompt, request);
           }}
         />
       )}

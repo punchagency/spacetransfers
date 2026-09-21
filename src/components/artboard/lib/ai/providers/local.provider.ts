@@ -4,7 +4,7 @@ import { AiEditAbortedError } from "../types";
 /**
  * Runs the operations the app can already do deterministically — background
  * removal (in-browser WASM segmentation) and AI upscaling (server endpoint with
- * its own Replicate → HuggingFace → sharp fallback chain).
+ * sharp on the server).
  *
  * Registered at the highest priority so prompts like "remove the white
  * background" never spend a generative credit on work that has a better,
@@ -59,6 +59,18 @@ const colorFromPrompt = (prompt: string): string | null => {
     if (color) return color;
   }
   return null;
+};
+
+/**
+ * The colour as the customer named it ("red"), for messages — a picked swatch
+ * or a typed hex has no name, so those are quoted as the hex.
+ */
+const colorLabel = (prompt: string, hex: string, picked: boolean): string => {
+  if (picked) return hex;
+  const named = Array.from(prompt.toLowerCase().matchAll(/\b[a-z]+\b/g))
+    .map((m) => m[0])
+    .find((word) => COLOR_NAMES[word] === hex.toLowerCase());
+  return named ? `that ${named}` : hex;
 };
 
 /**
@@ -213,11 +225,18 @@ export const localProvider: AiEditProvider = {
         );
       }
 
-      const { removeColor } = await import("../../utils/colorRemover");
+      const { removeColor, nearestImageColor } = await import("../../utils/colorRemover");
+      throwIfAborted(signal);
+
+      // A colour *named* in the prompt ("remove the red") is a family, so it is
+      // matched to the artwork's own nearest shade. A swatch pick or a typed
+      // hex is exact and used as given.
+      const named = !options?.targetColor && !/#[0-9a-f]{3,8}\b/i.test(prompt);
+      const matchColor = (named && (await nearestImageColor(imageUrl, targetColor))) || targetColor;
       throwIfAborted(signal);
 
       const result = await removeColor(imageUrl, {
-        targetColor,
+        targetColor: matchColor,
         replacementColor: options?.replacementColor ?? parsed.replacement,
         tolerance: options?.tolerance ?? 25,
         onProgress: (phase, pct) => onProgress?.({ phase, pct }),
@@ -229,7 +248,8 @@ export const localProvider: AiEditProvider = {
       // image, which reads as the feature being broken.
       if (result.affectedRatio < 0.0005) {
         throw new Error(
-          `I couldn't find ${targetColor} in this image. Try clicking the colour directly, or raise the tolerance.`,
+          `I couldn't find ${colorLabel(prompt, targetColor, Boolean(options?.targetColor))} in this image. ` +
+            "Click the colour in the swatches above instead — set them to Wide to catch nearby shades.",
         );
       }
 

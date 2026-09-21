@@ -78,6 +78,15 @@ export const animateItemPosition = (
     fromY?: number
 ) => {
     const PPI = CANVAS.PIXELS_PER_INCH;
+    /*
+     * A tween still running from an earlier move owns `left`/`top` until it
+     * finishes, and would drag the element back to that older target after this
+     * one placed it. That is what left a duplicate drawn on top of its original:
+     * the copy's first tween (towards its 0.5in offset) outlived the move
+     * auto-nest made a moment later, so the piece was stored beside the original
+     * but drawn over it — and clicks there picked the wrong piece.
+     */
+    gsap.killTweensOf(element, "left,top");
     if (gravityActive && fromX !== undefined && fromY !== undefined) {
         // FLIP: React has already rendered the element at its final left/top,
         // so animate a transform offset from the OLD position back to zero.

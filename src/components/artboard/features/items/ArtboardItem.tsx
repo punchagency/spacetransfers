@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
-import { FiLink } from "react-icons/fi";
 import ItemToolbar from "./ItemToolbar";
 import PropertiesPanel from "./PropertiesPanel";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
-import { computeRenderCopies } from "../../lib/utils/layoutHelpers";
+import { computeGroupDims, computeRenderCopies } from "../../lib/utils/layoutHelpers";
+import { shouldWarn, transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
+import { readImageInfo } from "../../lib/utils/imageUtils";
+import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
+import type { SelectionSummary } from "../../types";
 
 let hasShownMaxHeightToast = false;
 
@@ -33,15 +36,6 @@ interface ArtboardItemProps {
     flowEndCol?: number;
     dpi?: number;
     nativeWidthPx?: number;
-    hasFade?: boolean;
-    /** Full fade verdict, for the explanation on hover. */
-    fade?: {
-      hasFade: boolean;
-      confidence: number;
-      kind: string;
-      reason: string;
-      source: "ai" | "heuristic";
-    };
     nestRotation?: 0 | 90;
   };
   isSelected: boolean;
@@ -52,17 +46,23 @@ interface ArtboardItemProps {
    * about the item's geometry, transform or content.
    */
   isDpiHighlighted?: boolean;
+  /**
+   * The transparency check's verdict for this item's current image, or
+   * undefined while it is still being checked (`useTransparencyVerdicts`).
+   */
+  transparency?: FadeVerdict;
   showProperties: boolean;
-  addedToCart: boolean;
   onSelect: (multi?: boolean) => void;
   onToggleProperties: () => void;
-  onLink: () => void;
+  onGroup: () => void;
+  groupAction: "group" | "ungroup" | null;
   onRotate: () => void;
   onToggleLock: () => void;
   onFlip: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
-  onIncreaseDpi: (scale?: number) => Promise<void>;
+  /** Upscales every selected image below 300 DPI; reports progress per image. */
+  onIncreaseDpi: (onProgress?: (phase: string) => void) => Promise<PixelBatchResult>;
   onToggleAutoCrop: () => void;
   onSetCopies: (n: number) => void;
   onToggleLinked: () => void;
@@ -70,9 +70,11 @@ interface ArtboardItemProps {
   onSetHeightIn: (n: number) => void;
   onSetPosX: (n: number) => void;
   onSetPosY: (n: number) => void;
-  onAddToCart: () => void;
   onCloseProperties: () => void;
-  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<void>;
+  /** Removes the background from every selected image that has one. */
+  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
+  /** The whole selection, for the toolbar this piece shows when it is the primary. */
+  selection?: SelectionSummary;
   onDragStart: (e: React.MouseEvent) => void;
   onResizeStart: (e: React.MouseEvent) => void;
   isDragging: boolean;
@@ -100,12 +102,14 @@ function ArtboardItem({
   item,
   isSelected,
   isPrimary,
+  selection,
   isDpiHighlighted = false,
+  transparency,
   showProperties,
-  addedToCart,
   onSelect,
   onToggleProperties,
-  onLink,
+  onGroup,
+  groupAction,
   onRotate,
   onToggleLock,
   onFlip,
@@ -119,7 +123,6 @@ function ArtboardItem({
   onSetHeightIn,
   onSetPosX,
   onSetPosY,
-  onAddToCart,
   onCloseProperties,
   onRemoveBg,
   onDragStart,
@@ -144,6 +147,7 @@ function ArtboardItem({
   const [naturalWidthPx, setNaturalWidthPx] = useState<number | null>(null);
   const [naturalHeightPx, setNaturalHeightPx] = useState<number | null>(null);
   const [isDpiEnhancing, setIsDpiEnhancing] = useState(false);
+  const [dpiProgress, setDpiProgress] = useState<string | null>(null);
   const [dpiEnhanced, setDpiEnhanced] = useState(false);
   const [bgJustRemoved, setBgJustRemoved] = useState(false);
   const [panelInitialPos, setPanelInitialPos] = useState({ x: 0, y: 0 });
@@ -166,61 +170,64 @@ function ArtboardItem({
     setPanelInitialPos({ x: rect.right + gap, y: rect.top });
   }, [showProperties, item.posX, item.posY, zoom, scrollTop]);
 
-  const isPdf = item.name?.toLowerCase().endsWith('.pdf') ?? false;
   const aiOpen = aiPanel?.openItemId === item.id;
 
   // Detect whether the image has a solid background by sampling the 4 corners.
   // All-transparent corners → already no background → disable Remove BG.
   // Also captures natural dimensions for effective-DPI calculation (pixels / current widthIn).
   useEffect(() => {
-    if (isPdf) {
-      setBgStatus('has-bg');
-      setNaturalWidthPx(null);
-      setNaturalHeightPx(null);
-      return;
-    }
     setBgStatus('detecting');
     setNaturalWidthPx(null);
     setNaturalHeightPx(null);
     setDpiEnhanced(false);
     setBgJustRemoved(false);
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      setNaturalWidthPx(img.naturalWidth);
-      setNaturalHeightPx(img.naturalHeight);
-      try {
-        const size = 64;
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { setBgStatus('has-bg'); return; }
-        ctx.drawImage(img, 0, 0, size, size);
-        const corners = [
-          ctx.getImageData(0, 0, 1, 1).data[3],
-          ctx.getImageData(size - 1, 0, 1, 1).data[3],
-          ctx.getImageData(0, size - 1, 1, 1).data[3],
-          ctx.getImageData(size - 1, size - 1, 1, 1).data[3],
-        ];
-        const avgAlpha = corners.reduce((s, a) => s + a, 0) / corners.length;
-        setBgStatus(avgAlpha < 10 ? 'no-bg' : 'has-bg');
-      } catch {
-        setBgStatus('has-bg');
-      }
-    };
-    img.onerror = () => setBgStatus('has-bg');
-    img.src = item.url;
-  }, [item.url, isPdf]);
+    let cancelled = false;
+    readImageInfo(item.url).then((info) => {
+      if (cancelled) return;
+      if (!info) { setBgStatus('has-bg'); return; }
+      setNaturalWidthPx(info.widthPx);
+      setNaturalHeightPx(info.heightPx);
+      setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
+    });
+    return () => { cancelled = true; };
+  }, [item.url]);
+
+  /**
+   * One toast for a run over the selection: what changed, what was skipped
+   * and why, and the first error if any image failed.
+   */
+  const reportBatch = (
+    r: PixelBatchResult,
+    words: { done: (n: number) => string; skipped: string; nothing: string },
+  ) => {
+    const notes: string[] = [];
+    if (r.skipped > 0) notes.push(`${r.skipped} ${words.skipped}`);
+    if (r.locked > 0) notes.push(`${r.locked} locked`);
+    const tail = notes.length > 0 ? ` (${notes.join(", ")} left as is)` : "";
+    if (r.failed > 0) {
+      const prefix = r.done > 0 ? `${words.done(r.done)}, but ${r.failed} failed: ` : "";
+      toast.error(prefix + (r.firstError ?? "Something went wrong. Please try again."));
+    } else if (r.done > 0) {
+      toast.success(words.done(r.done) + tail);
+    } else {
+      toast(words.nothing + tail, { icon: "ℹ️" });
+    }
+  };
+
+  const plural = (n: number) => `${n} image${n === 1 ? "" : "s"}`;
 
   const handleRemoveBg = async () => {
     setIsRemovingBg(true);
     setBgJustRemoved(false);
     setBgProgress({ phase: "Starting...", pct: 0 });
     try {
-      await onRemoveBg((phase, pct) => setBgProgress({ phase, pct }));
-      setBgJustRemoved(true);
-      toast.success("Background removed successfully!");
+      const result = await onRemoveBg((phase, pct) => setBgProgress({ phase, pct }));
+      if (result.done > 0 && result.failed === 0) setBgJustRemoved(true);
+      reportBatch(result, {
+        done: (n) => (n === 1 ? "Background removed" : `Backgrounds removed from ${plural(n)}`),
+        skipped: "already transparent",
+        nothing: "Nothing to remove — the selected images are already transparent.",
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Background removal failed";
       toast.error(msg);
@@ -231,26 +238,23 @@ function ArtboardItem({
   };
 
   const handleIncreaseDpi = async () => {
-    if (isDpiEnhancing || dpiEnhanced) return;
-    // Compute the scale factor needed to reach 300 DPI at the current print size.
-    // effectiveDpi is pixelWidth / widthIn, the most accurate available value.
-    const currentDpi = (typeof effectiveDpi === "number" && effectiveDpi > 0)
-      ? effectiveDpi
-      : (typeof item.dpi === "number" && item.dpi > 0 ? item.dpi : 72);
-    // Round up to the nearest scale that gets us to ≥ 300 DPI (max 8×).
-    const neededScale = Math.ceil(300 / currentDpi);
-    const scale = Math.min(8, Math.max(2, neededScale));
-
+    if (isDpiEnhancing) return;
+    // Each image's upscale factor is worked out from its own DPI in the action.
     setIsDpiEnhancing(true);
     try {
-      await onIncreaseDpi(scale);
-      setDpiEnhanced(true);
-      toast.success("Image enhanced to 300 DPI!");
+      const result = await onIncreaseDpi((phase) => setDpiProgress(phase));
+      if (result.done > 0 && result.failed === 0) setDpiEnhanced(true);
+      reportBatch(result, {
+        done: (n) => (n === 1 ? "Image enhanced to 300 DPI" : `${plural(n)} enhanced to 300 DPI`),
+        skipped: "already at 300 DPI",
+        nothing: "Nothing to enhance — the selected images are already at 300 DPI.",
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "DPI enhancement failed. Please try again.";
       toast.error(msg);
     } finally {
       setIsDpiEnhancing(false);
+      setDpiProgress(null);
     }
   };
 
@@ -300,19 +304,20 @@ function ArtboardItem({
   const PT_TO_IN = 1 / 72;
   const isTooSmall = item.widthIn < 2 * PT_TO_IN || item.heightIn < 2 * PT_TO_IN;
 
-  const hasFade = !!item.hasFade;
+  const hasFade = shouldWarn(transparency);
 
   /**
    * Hover explanation for a flagged image.
    *
    * The orange border says something is wrong but not what, and the banner is
    * about the sheet as a whole. On a sheet with several images this is the only
-   * place that connects a specific image to a specific reason.
+   * place that connects a specific image to a specific reason — and says what
+   * to do about it.
    */
-  const fadeTitle = hasFade && item.fade
-    ? `Fade detected${item.fade.source === "ai" ? ` (${Math.round(item.fade.confidence * 100)}% confident)` : ""}` +
-      (item.fade.reason ? ` — ${item.fade.reason}` : "")
-    : undefined;
+  const fadeMessage = hasFade && transparency ? transparencyMessage(transparency) : null;
+  const fadeConfidence =
+    transparency?.source === "ai" ? ` (${Math.round(transparency.confidence * 100)}% confident)` : "";
+  const fadeTitle = fadeMessage ? `${fadeMessage.title}${fadeConfidence}: ${fadeMessage.body}` : undefined;
 
   // Priority: too-small (red) > fade (orange) > low/unknown-dpi (amber) > normal (blue)
   const borderColor = isTooSmall ? "#EF4444" : hasFade ? "#F97316" : needsDpiAttention ? "#EDAE00" : "#3b82f6";
@@ -346,11 +351,6 @@ function ArtboardItem({
   const userRotationOdd = ((item.rotation / 90) % 2 + 2) % 2 === 1;
   const needsSwapRender = (nestRot === 90) !== userRotationOdd;
   const totalCssRotation = nestRot + item.rotation;
-  const capacityCols = Math.max(
-    1,
-    Math.floor((maxAvailableWidth + gap) / Math.max(1e-6, scaledWidth + gap))
-  );
-
   const renderCopies = computeRenderCopies(
     { widthIn: scaledWidth, heightIn: scaledHeight, copies: item.copies },
     canvasWidth,
@@ -364,9 +364,12 @@ function ArtboardItem({
     typeof item.flowCols === "number" &&
     typeof item.flowStartCol === "number" &&
     typeof item.flowEndCol === "number";
+  // Without a layout-assigned column count, wrap the way the footprint, the
+  // billed length and the print export do. "As many as fit" made this the one
+  // place that drew a copy group in a different shape from the other three.
   const flowCols = hasFlow
     ? Math.max(1, item.flowCols!)
-    : Math.max(1, Math.min(renderCopies, capacityCols));
+    : computeGroupDims(scaledWidth, scaledHeight, Math.max(1, renderCopies), Math.max(1e-6, maxAvailableWidth), gap).cols;
   const flowStartCol = hasFlow ? Math.max(0, item.flowStartCol!) : 0;
   const flowEndColRaw = hasFlow
     ? Math.max(0, item.flowEndCol!)
@@ -444,7 +447,6 @@ function ArtboardItem({
           return createPortal(
             <PropertiesPanel
               item={item}
-              addedToCart={addedToCart}
               initialPos={panelInitialPos}
               onClose={onCloseProperties}
               onToggleAutoCrop={onToggleAutoCrop}
@@ -454,7 +456,6 @@ function ArtboardItem({
               onSetHeightIn={onSetHeightIn}
               onSetPosX={onSetPosX}
               onSetPosY={onSetPosY}
-              onAddToCart={onAddToCart}
             />,
             portal,
           );
@@ -526,28 +527,31 @@ function ArtboardItem({
         return createPortal(
           <ItemToolbar
             locked={item.locked}
-            onLink={onLink}
+            onGroup={onGroup}
+            groupAction={groupAction}
             onRotate={onRotate}
             onToggleLock={onToggleLock}
             onFlip={onFlip}
             onDuplicate={onDuplicate}
             onDelete={onDelete}
-            onIncreaseDpi={!isPdf ? handleIncreaseDpi : () => {}}
+            onIncreaseDpi={handleIncreaseDpi}
             currentDpi={effectiveDpi ?? item.dpi}
             isDpiUnknown={isDpiUnknown}
             isDpiEnhancing={isDpiEnhancing}
+            dpiProgress={dpiProgress}
             dpiEnhanced={dpiEnhanced}
-            onRemoveBg={!isPdf ? handleRemoveBg : () => {}}
+            onRemoveBg={handleRemoveBg}
             bgStatus={bgStatus}
             isRemovingBg={isRemovingBg}
             bgProgress={bgProgress}
             bgJustRemoved={bgJustRemoved}
             onOpenAi={
-              !isPdf && aiPanel
-                ? () => (aiOpen ? aiPanel.onClose() : aiPanel.onOpen(item.id))
+              aiPanel
+                ?() => (aiOpen ? aiPanel.onClose() : aiPanel.onOpen(item.id))
                 : undefined
             }
             aiActive={aiOpen}
+            selection={selection}
           />,
           portal,
         );
@@ -571,26 +575,7 @@ function ArtboardItem({
           onRevertHistory={aiPanel.onRevertHistory}
         />
       ) : null}
-      {isSelected ? (
-        <div className="absolute top-1 right-2 bg-white/90 border border-gray-200 text-gray-700 text-[10px] rounded-full px-2 h-5 flex items-center gap-2 pointer-events-none">
-          <span className="font-semibold">{item.copies > 1 ? "Group" : "Single"}</span>
-          <span className="text-gray-400">•</span>
-          <span>{item.copies > 1 ? "Top" : "Bottom"}</span>
-        </div>
-      ) : null}
       {propertiesPortal}
-      {isSelected && !item.autoCrop && (
-        <div
-          className="absolute top-1 left-2 bg-blue-600 text-white text-xs rounded-xl px-2 h-5 flex items-center gap-1 cursor-pointer hover:bg-blue-700 pointer-events-auto"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleLinked();
-          }}
-        >
-          <FiLink className="w-3 h-3" />
-          <span>#{item.id}</span>
-        </div>
-      )}
       {/* Group Layout for Copies — virtual rows, absolute positioned */}
       <div
         className="relative"
@@ -649,75 +634,7 @@ function ArtboardItem({
                 ? col - flowStartCol
                 : firstRowCapacity + (row - 1) * flowCols + col;
             if (index < 0 || index >= renderCopies) return null;
-            const posStyle = needsSwapRender ? (() => {
-              const offset = (scaledWidth - scaledHeight) * ppi / 2;
-              return {
-                position: "absolute" as const,
-                left: `${col * (scaledWidth + gap) * ppi + offset}px`,
-                top:  `${row * (scaledHeight + gap) * ppi - offset}px`,
-                width:  `${scaledHeight * ppi}px`,
-                height: `${scaledWidth  * ppi}px`,
-                maxWidth: "none" as const,
-                maxHeight: "none" as const,
-                transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${totalCssRotation}deg)`,
-              };
-            })() : {
-              position: "absolute" as const,
-              left: `${col * (scaledWidth + gap) * ppi}px`,
-              top:  `${row * (scaledHeight + gap) * ppi}px`,
-              width:  `${scaledWidth  * ppi}px`,
-              height: `${scaledHeight * ppi}px`,
-              maxWidth: "none" as const,
-              maxHeight: "none" as const,
-              transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${totalCssRotation}deg)`,
-            };
-
-            const renderElement = isPdf ? (
-              <div
-                key={index}
-                style={{...posStyle, pointerEvents: "auto"}}
-                className={`rounded-sm ${isLifted ? "cursor-grabbing" : "cursor-grab"} ${
-                  isSelected && renderCopies > 1
-                    ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
-                    : ""
-                }`}
-                onMouseDown={(e: any) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  dragActivatedRef.current = false;
-                  cancelPendingDrag();
-                  const startX = e.clientX;
-                  const startY = e.clientY;
-                  const THRESHOLD_SQ = 4 * 4;
-
-                  const onMove = (moveEvt: MouseEvent) => {
-                    const dx = moveEvt.clientX - startX;
-                    const dy = moveEvt.clientY - startY;
-                    if (dx * dx + dy * dy >= THRESHOLD_SQ) {
-                      cleanup();
-                      dragActivatedRef.current = true;
-                      onDragStart({ clientX: startX, clientY: startY } as React.MouseEvent);
-                    }
-                  };
-                  const onUp = () => cleanup();
-                  const cleanup = () => {
-                    document.removeEventListener("mousemove", onMove);
-                    document.removeEventListener("mouseup", onUp);
-                    pendingDragRef.current = null;
-                  };
-                  document.addEventListener("mousemove", onMove);
-                  document.addEventListener("mouseup", onUp);
-                  pendingDragRef.current = cleanup;
-                }}
-              >
-                <embed
-                  src={item.url}
-                  type="application/pdf"
-                  draggable={false}
-                  style={{ width: "100%", height: "100%", pointerEvents: "none" }}
-                />
-              </div>
-            ) : (
+            const renderElement = (
               <img
                 key={index}
                 src={item.url}
@@ -851,10 +768,14 @@ function ArtboardItem({
                   Items smaller than 2pt may not print properly.
                 </p>
               )}
-              {hasFade && (
-                <p className="text-[11px] leading-snug text-orange-600 font-medium">
-                  DTF Technology cannot print fades. Please remove transparency gradients or fading into transparency.
-                </p>
+              {fadeMessage && (
+                <>
+                  <p className="text-[11px] leading-snug text-orange-600 font-semibold">
+                    {fadeMessage.title}
+                    {fadeConfidence}
+                  </p>
+                  <p className="text-[11px] leading-snug text-gray-700">{fadeMessage.body}</p>
+                </>
               )}
             </div>
           </div>
@@ -901,6 +822,25 @@ function ArtboardItem({
             strokeWidth={3}
             strokeLinejoin="round"
           />
+        </svg>
+      )}
+      {/*
+        Transparency flag.
+
+        Always drawn, not only on hover or selection: artwork that will not print
+        as it looks has to be findable on a busy sheet at a glance, including
+        zoomed out. Drawn before the selection outline, which is the same orange
+        for a flagged item, so selecting one changes nothing but the handles.
+      */}
+      {hasFade && (
+        <svg
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path d={polygonPathD} fill="none" stroke="#F97316" strokeWidth={3} strokeLinejoin="round" />
         </svg>
       )}
       {(isSelected || isHovered) && (

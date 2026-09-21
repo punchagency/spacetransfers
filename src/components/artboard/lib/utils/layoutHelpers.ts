@@ -84,11 +84,6 @@ export function getItemVerticalExtent(
   const scaledWidth = nestRot === 90 ? item.heightIn : item.widthIn;
   const scaledHeight = nestRot === 90 ? item.widthIn : item.heightIn;
 
-  const capacityCols = Math.max(
-    1,
-    Math.floor((maxAvailableWidth + gap) / Math.max(1e-6, scaledWidth + gap)),
-  );
-
   const renderCopies = computeRenderCopies(
     { widthIn: scaledWidth, heightIn: scaledHeight, copies: item.copies },
     canvasWidthIn,
@@ -100,9 +95,10 @@ export function getItemVerticalExtent(
     typeof item.flowCols === "number" &&
     typeof item.flowStartCol === "number" &&
     typeof item.flowEndCol === "number";
+  // Same column rule as the footprint, the renderer and the print export.
   const flowCols = hasFlow
     ? Math.max(1, item.flowCols!)
-    : Math.max(1, Math.min(renderCopies, capacityCols));
+    : computeGroupDims(scaledWidth, scaledHeight, Math.max(1, renderCopies), Math.max(1e-6, maxAvailableWidth), gap).cols;
   const flowStartCol = hasFlow ? Math.max(0, item.flowStartCol!) : 0;
 
   const rows = (() => {
@@ -186,6 +182,10 @@ export interface LayoutItem {
   pinned?: boolean;
   locked?: boolean;
   nestRotation?: 0 | 90;
+  /** Pieces sharing a group id move, nest and turn as one. */
+  groupId?: string;
+  /** A collapsed group standing in for its members during layout: never turned by the packer. */
+  rigid?: boolean;
 }
 
 export const getRenderedGroupSize = (
@@ -380,7 +380,7 @@ class PlacedBoxIndex {
    * Deliberately identical in meaning to the original
    * `placedBoxes.some(b => …)` predicate — see the class comment.
    */
-  overlaps(qx: number, qy: number, qw: number, qh: number, gap: number): boolean {
+  overlaps(qx: number, qy: number, qw: number, qh: number, gap: number, eps = 0): boolean {
     const x0 = Math.floor(qx / this.cell);
     const x1 = Math.floor((qx + qw + gap) / this.cell);
     const y0 = Math.floor(qy / this.cell);
@@ -395,11 +395,13 @@ class PlacedBoxIndex {
         for (const b of bucket) {
           if (this.seen.get(b) === token) continue;
           this.seen.set(b, token);
+          // `eps` forgives float noise in a piece placed exactly at the gap;
+          // the packer passes none, so its answers are unchanged.
           if (
-            qx < b.x + b.w + gap &&
-            qx + qw + gap > b.x &&
-            qy < b.y + b.h + gap &&
-            qy + qh + gap > b.y
+            qx < b.x + b.w + gap - eps &&
+            qx + qw + gap > b.x + eps &&
+            qy < b.y + b.h + gap - eps &&
+            qy + qh + gap > b.y + eps
           ) {
             return true;
           }
@@ -839,42 +841,38 @@ function evaluateSpill(
   }
 }
 
-/**
- * Whether some existing gap accepts this item turned but not upright.
- *
- * The packer's rotation gate only ever asked whether an item fit the *sheet*
- * width. That answers "can this be placed at all", not "can this be nested",
- * so a piece narrow enough for the sheet but too wide for the strip beside a
- * larger image was never offered the one orientation that would have fitted
- * there — the strip stayed empty and the piece opened a new row.
- *
- * This asks the question per gap instead, and only reports true when turning
- * genuinely unlocks space that upright cannot use. That distinction is what
- * keeps the existing conservatism intact: an item that already fits somewhere
- * upright is not turned merely because rotating would score marginally
- * better, so a portrait design is never silently laid on its side when it had
- * a home the right way up.
- */
-function rotationUnlocksGap(
-  freeRects: FreeRect[],
-  widthIn: number,
-  heightIn: number,
-  copies: number,
-  gap: number,
-): boolean {
-  for (const fr of freeRects) {
-    const uprightFits =
-      fr.w >= widthIn - 1e-6 &&
-      computeGroupDims(widthIn, heightIn, copies, fr.w, gap).gh <= fr.h + 1e-6;
-    if (uprightFits) continue;
+/** Compares two pieces for the order the packer places them in. */
+type PackOrder = (a: LayoutItem, b: LayoutItem) => number;
 
-    const turnedFits =
-      fr.w >= heightIn - 1e-6 &&
-      computeGroupDims(heightIn, widthIn, copies, fr.w, gap).gh <= fr.h + 1e-6;
-    if (turnedFits) return true;
-  }
-  return false;
-}
+const groupArea = (it: LayoutItem) => it.widthIn * it.heightIn * Math.max(1, it.copies || 1);
+
+/**
+ * The orders auto-nest tries, keeping whichever gives the shortest sheet.
+ *
+ * The sheet's width is fixed, so length is the only thing a layout can save,
+ * and it is what the customer pays for. A greedy packer's result depends
+ * heavily on the order pieces arrive in, and largest-area-first was the only
+ * order ever tried. Measured on realistic boards, a plain shelf pack beat it on
+ * four of six — 300 small pieces came out at 172in against the shelf's 164in.
+ *
+ * Largest-area-first stays first, so a board no other order makes strictly
+ * shorter keeps exactly the layout it had.
+ */
+const PACK_ORDERS: PackOrder[] = [
+  (a, b) => groupArea(b) - groupArea(a),
+  (a, b) => b.heightIn - a.heightIn || b.widthIn - a.widthIn,
+  (a, b) => b.widthIn - a.widthIn || b.heightIn - a.heightIn,
+  (a, b) =>
+    Math.max(b.widthIn, b.heightIn) - Math.max(a.widthIn, a.heightIn) || groupArea(b) - groupArea(a),
+];
+
+/**
+ * Past this many pieces only the first order runs. The repack happens on every
+ * board change, and trying every order costs about four single passes —
+ * measured, under 90ms at 400 pieces but 730ms at 1,000 — so a large board
+ * keeps a single pass rather than stalling each edit.
+ */
+const MULTI_ORDER_MAX_ITEMS = 400;
 
 function freeRectPack(
   items: LayoutItem[],
@@ -884,6 +882,15 @@ function freeRectPack(
   onlyPackIds?: Set<number>,
   /** Receives the ids of items that would not fit inside the sheet's length. */
   overflowedIds?: Set<number>,
+  /** The order pieces are offered to the packer in. See PACK_ORDERS. */
+  order: PackOrder = PACK_ORDERS[0],
+  /**
+   * "free" turns a piece whenever the score says the sheet comes out shorter;
+   * "only-to-fit" turns one only when it would not fit the width upright, which
+   * is what the packer used to do. Greedy packing can lose from an early turn,
+   * so `calculateGridLayout` runs both and keeps the shorter sheet.
+   */
+  rotation: "free" | "only-to-fit" = "free",
 ): LayoutItem[] {
   const margin = Math.max(0, marginIn);
   const gap = Math.max(0, gapIn);
@@ -970,47 +977,28 @@ function freeRectPack(
 
   const packable = items
     .filter((it) => !isFixed(it))
-    .sort((a, b) => {
-      const areaA = a.widthIn * a.heightIn * Math.max(1, a.copies || 1);
-      const areaB = b.widthIn * b.heightIn * Math.max(1, b.copies || 1);
-      return areaB - areaA;
-    });
+    .sort(order);
 
   for (const item of packable) {
     const copies = Math.max(1, item.copies || 1);
-    // Rotation is only ever attempted when it provides a genuine benefit:
-    // either the item literally doesn't fit within the sheet width as-is
-    // (rotating is the only way it fits at all), or it's a multi-copy group
-    // where rotating lets strictly MORE copies fit per row, so fewer rows
-    // are needed overall — a real packing gain. Merely swapping which
-    // dimension is taller is NOT that: a single copy has no grid to
-    // rearrange at all, and even a multi-copy group can have its per-row
-    // "added height" shrink under rotation purely because the cell itself
-    // is taller than it is wide, with the SAME row count either way — that
-    // isn't a packing improvement, just the same "looks shorter to the
-    // packer" illusion that would silently flip a portrait photo onto its
-    // side for a single item. Comparing row counts (not raw height) is what
-    // tells genuine copies-per-row gains apart from that illusion.
-    const notSquare = Math.abs(item.widthIn - item.heightIn) >= 1e-4;
-    const fitsUnrotated = item.widthIn <= maxWidth + 1e-6;
-    let canRotate: boolean;
-    if (!notSquare) {
-      canRotate = false;
-    } else if (!fitsUnrotated) {
-      canRotate = true;
-    } else if (copies <= 1) {
-      // A single copy has no grid to rearrange, so the row-count test below
-      // says nothing about it. It is still worth turning when doing so is the
-      // only way into an existing gap — which is the case the sheet-width
-      // check above cannot see.
-      canRotate = rotationUnlocksGap(freeRects, item.widthIn, item.heightIn, copies, gap);
-    } else {
-      const rows0 = computeGroupDims(item.widthIn, item.heightIn, copies, maxWidth, gap).rows;
-      const rows90 = computeGroupDims(item.heightIn, item.widthIn, copies, maxWidth, gap).rows;
-      canRotate =
-        rows90 < rows0 ||
-        rotationUnlocksGap(freeRects, item.widthIn, item.heightIn, copies, gap);
-    }
+    /*
+     * Both orientations are offered; the score picks between them.
+     *
+     * The sheet's width is fixed, so its length is the only thing a layout can
+     * save and the only thing the customer pays for — a piece is turned whenever
+     * that makes the sheet shorter. Rotation used to be refused for a single
+     * piece unless it was the only way it fit at all, so a portrait design was
+     * laid out upright at its full height: a 10.8 x 16.3in photo took 16.4in of
+     * roll where turning it takes 11in, under the minimum billable length.
+     *
+     * Turning is not free in the score (`SCORE_WEIGHT_ROTATION`), so a piece is
+     * only turned when it genuinely buys length or fills a gap that upright
+     * cannot — never on a tie.
+     */
+    const canRotate =
+      !item.rigid &&
+      Math.abs(item.widthIn - item.heightIn) >= 1e-4 &&
+      (rotation === "free" || item.widthIn > maxWidth + 1e-6);
 
     // Atomic and spill candidates are evaluated together into one shared
     // accumulator — see evaluateSpill's comment for why running spill only
@@ -1095,6 +1083,205 @@ function freeRectPack(
   return items.map((it) => updatesById.get(it.id) ?? it);
 }
 
+/**
+ * Groups, seen by the layout as single pieces.
+ *
+ * A group is a set of pieces the customer bundled to act as one. Every layout
+ * pass — auto-nest, the displacement that makes room during a drag, the
+ * re-spacing after a spacing change — places pieces one at a time, and would
+ * scatter a group across the sheet. So each group is collapsed into one rigid
+ * block the size of its members' combined footprint, laid out like any other
+ * piece (never turned), and then every member is moved by exactly the offset
+ * its block moved. The arrangement inside a group is never touched.
+ */
+export interface GroupCollapse<T extends LayoutItem> {
+  /** Ungrouped pieces as they are, and one rigid block per group. */
+  items: T[];
+  /** The id the layout sees for a piece: its own, or its group block's. */
+  unitOf: (id: number) => number;
+  /** True when there was a group to collapse. */
+  hasGroups: boolean;
+  /** Pieces after a layout of `items`: members moved by their block's offset. */
+  expand: (laidOut: LayoutItem[]) => T[];
+  /** Per-piece moves from moves keyed by `unitOf` ids. */
+  expandMoves: (
+    moves: Map<number, { posX: number; posY: number }>,
+  ) => Map<number, { posX: number; posY: number }>;
+}
+
+export function collapseGroups<T extends LayoutItem>(
+  items: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): GroupCollapse<T> {
+  const members = new Map<string, T[]>();
+  for (const it of items) {
+    if (!it.groupId) continue;
+    const list = members.get(it.groupId) ?? [];
+    list.push(it);
+    members.set(it.groupId, list);
+  }
+  // A group of one is just a piece.
+  for (const [id, list] of members) if (list.length < 2) members.delete(id);
+
+  if (members.size === 0) {
+    return {
+      items,
+      unitOf: (id) => id,
+      hasGroups: false,
+      expand: (laidOut) => laidOut as T[],
+      expandMoves: (moves) => moves,
+    };
+  }
+
+  const unitIdOfGroup = new Map<string, number>();
+  const boxOfUnit = new Map<number, FootprintBox>();
+  const groupOfUnit = new Map<number, string>();
+  let nextUnit = -1;
+  const units: T[] = [];
+  for (const [groupId, list] of members) {
+    const boxes = list.map((it) => getItemFootprint(it, canvasWidthIn, marginIn, gapIn));
+    const x = Math.min(...boxes.map((b) => b.x));
+    const y = Math.min(...boxes.map((b) => b.y));
+    const w = Math.max(...boxes.map((b) => b.x + b.w)) - x;
+    const h = Math.max(...boxes.map((b) => b.y + b.h)) - y;
+    const unitId = nextUnit--;
+    unitIdOfGroup.set(groupId, unitId);
+    boxOfUnit.set(unitId, { x, y, w, h });
+    groupOfUnit.set(unitId, groupId);
+    units.push({
+      ...(list[0] as T),
+      id: unitId,
+      widthIn: w,
+      heightIn: h,
+      posX: x,
+      posY: y,
+      copies: 1,
+      flowCols: undefined,
+      flowStartCol: undefined,
+      flowEndCol: undefined,
+      nestRotation: 0,
+      // A member held in place holds the whole group.
+      pinned: list.some((it) => it.pinned),
+      locked: list.some((it) => it.locked),
+      rigid: true,
+    });
+  }
+
+  const unitOf = (id: number) => {
+    const it = items.find((candidate) => candidate.id === id);
+    return it?.groupId && unitIdOfGroup.has(it.groupId) ? unitIdOfGroup.get(it.groupId)! : id;
+  };
+
+  const shiftMembers = (unitId: number, posX: number, posY: number) => {
+    const box = boxOfUnit.get(unitId)!;
+    const dx = posX - box.x;
+    const dy = posY - box.y;
+    return members.get(groupOfUnit.get(unitId)!)!.map((m) => ({ ...m, posX: m.posX + dx, posY: m.posY + dy }));
+  };
+
+  return {
+    items: [...items.filter((it) => !(it.groupId && members.has(it.groupId))), ...units],
+    unitOf,
+    hasGroups: true,
+    expand: (laidOut) => {
+      const out: T[] = [];
+      for (const it of laidOut) {
+        if (boxOfUnit.has(it.id)) out.push(...shiftMembers(it.id, it.posX, it.posY));
+        else out.push(it as T);
+      }
+      // Keep the caller's order, so nothing downstream sees pieces reshuffled.
+      const byId = new Map(out.map((it) => [it.id, it]));
+      return items.map((it) => byId.get(it.id) ?? it);
+    },
+    expandMoves: (moves) => {
+      const out = new Map<number, { posX: number; posY: number }>();
+      for (const [id, move] of moves) {
+        if (!boxOfUnit.has(id)) {
+          out.set(id, move);
+          continue;
+        }
+        for (const m of shiftMembers(id, move.posX, move.posY)) out.set(m.id, { posX: m.posX, posY: m.posY });
+      }
+      return out;
+    },
+  };
+}
+
+/** The combined footprint of some pieces. */
+export function footprintBounds(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): FootprintBox {
+  const boxes = items.map((it) => getItemFootprint(it, canvasWidthIn, marginIn, gapIn));
+  const x = Math.min(...boxes.map((b) => b.x));
+  const y = Math.min(...boxes.map((b) => b.y));
+  return {
+    x,
+    y,
+    w: Math.max(...boxes.map((b) => b.x + b.w)) - x,
+    h: Math.max(...boxes.map((b) => b.y + b.h)) - y,
+  };
+}
+
+/**
+ * A group turned a quarter clockwise, as one.
+ *
+ * Every member turns in place and its centre swings around the group's centre,
+ * so the arrangement turns with it — turning each member where it stood would
+ * leave the group pointing one way and its pieces another.
+ */
+export function rotateGroupClockwise<T extends LayoutItem & { rotation?: number; originalWidthIn?: number; originalHeightIn?: number }>(
+  members: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): T[] {
+  const box = footprintBounds(members, canvasWidthIn, marginIn, gapIn);
+  const gcx = box.x + box.w / 2;
+  const gcy = box.y + box.h / 2;
+  return members.map((m) => {
+    const fp = getItemFootprint(m, canvasWidthIn, marginIn, gapIn);
+    const dx = fp.x + fp.w / 2 - gcx;
+    const dy = fp.y + fp.h / 2 - gcy;
+    const turned: T = {
+      ...m,
+      rotation: ((m.rotation ?? 0) + 90) % 360,
+      widthIn: m.heightIn,
+      heightIn: m.widthIn,
+      originalWidthIn: m.originalHeightIn,
+      originalHeightIn: m.originalWidthIn,
+      // Columns were chosen for the old shape.
+      flowCols: undefined,
+      flowStartCol: undefined,
+      flowEndCol: undefined,
+    };
+    const next = getItemFootprint(turned, canvasWidthIn, marginIn, gapIn);
+    // Screen coordinates run downward, so a clockwise quarter maps (dx, dy) to (-dy, dx).
+    return { ...turned, posX: gcx - dy - next.w / 2, posY: gcy + dx - next.h / 2 };
+  });
+}
+
+/**
+ * A group mirrored left to right, as one: every member is flipped, and its
+ * position mirrored across the group's centre line.
+ */
+export function flipGroupHorizontally<T extends LayoutItem & { flipped?: boolean }>(
+  members: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): T[] {
+  const box = footprintBounds(members, canvasWidthIn, marginIn, gapIn);
+  return members.map((m) => {
+    const fp = getItemFootprint(m, canvasWidthIn, marginIn, gapIn);
+    return { ...m, flipped: !m.flipped, posX: box.x + box.x + box.w - fp.x - fp.w + (m.posX - fp.x) };
+  });
+}
+
 export const calculateGridLayout = (
   items: LayoutItem[],
   canvasWidth: number,
@@ -1102,15 +1289,122 @@ export const calculateGridLayout = (
   autoNestStickers: boolean,
   margin: number = 0.15
 ): LayoutItem[] => {
-  // The free-rectangle engine is now the only layout implementation — it always
+  const groups = collapseGroups(items, canvasWidth, margin, Math.max(0, spacing));
+  const laidOut = calculateGridLayoutFlat(groups.items, canvasWidth, spacing, autoNestStickers, margin);
+  return groups.hasGroups ? groups.expand(laidOut) : laidOut;
+};
+
+const calculateGridLayoutFlat = (
+  items: LayoutItem[],
+  canvasWidth: number,
+  spacing: number,
+  autoNestStickers: boolean,
+  margin: number = 0.15
+): LayoutItem[] => {
+  // The free-rectangle engine is the only layout implementation — it always
   // runs, whatever the auto-nest toggle's value. It also reserves each group's
   // TRUE cells rather than its bounding box (see groupCellRects), so the empty
   // cells of a short last row are ordinary free space that later items get
   // scored into like any other gap — no separate post-pass, and nothing ever
   // relocated out of a good spot to fill one.
   void autoNestStickers;
-  return freeRectPack(items, canvasWidth, margin, Math.max(0, spacing));
+  const gap = Math.max(0, spacing);
+  const orders = items.length > MULTI_ORDER_MAX_ITEMS ? PACK_ORDERS.slice(0, 1) : PACK_ORDERS;
+
+  let best: LayoutItem[] = items;
+  let bestOverflow = Infinity;
+  let bestLength = Infinity;
+  const consider = (candidate: LayoutItem[], overflow: number) => {
+    const length = sheetContentLengthIn(candidate, canvasWidth, margin, gap);
+    // Fewer pieces left off the sheet first, then shorter — strictly, so the
+    // first order wins every tie.
+    if (overflow < bestOverflow || (overflow === bestOverflow && length < bestLength - 1e-6)) {
+      best = candidate;
+      bestOverflow = overflow;
+      bestLength = length;
+    }
+  };
+
+  for (const order of orders) {
+    for (const rotation of ["free", "only-to-fit"] as const) {
+      const overflowed = new Set<number>();
+      const candidate = freeRectPack(items, canvasWidth, margin, gap, undefined, overflowed, order, rotation);
+      consider(candidate, overflowed.size);
+    }
+  }
+
+  /*
+   * A shelf pack is in the running too, wherever it can represent the board:
+   * every piece a single copy, none pinned or locked, each within the printable
+   * width. It neither rotates nor wraps copies, so anything else is out of reach.
+   */
+  const usableWidth = canvasWidth - 2 * Math.max(0, margin);
+  if (
+    items.length > 0 &&
+    items.length <= MULTI_ORDER_MAX_ITEMS &&
+    items.every(
+      (it) => !it.pinned && !it.locked && Math.max(1, it.copies || 1) === 1 && it.widthIn <= usableWidth + 1e-6,
+    )
+  ) {
+    const shelf = arrangeInitialLayout(items, canvasWidth, gap, margin);
+    const overflow = shelf.filter((it) => {
+      const fp = getItemFootprint(it, canvasWidth, margin, gap);
+      return fp.y + fp.h > MAX_SHEET_HEIGHT_IN + 1e-4;
+    }).length;
+    consider(shelf, overflow);
+  }
+
+  return best;
 };
+
+/**
+ * The columns an item's copies wrap into.
+ *
+ * What the artboard draws, what the print export lays out and what the billed
+ * length measures. Sent with every order and saved design, so the export never
+ * has to guess — it used to, with a rule of its own, and printed copy groups in
+ * a different shape from the one the customer approved.
+ */
+export function resolveFlowCols(
+  item: LayoutItem,
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): number {
+  if (item.flowCols && item.flowCols > 0) return item.flowCols;
+  const maxW = Math.max(0, canvasWidthIn - 2 * Math.max(0, marginIn));
+  const rotated = item.nestRotation === 90;
+  const w = Math.max(1e-6, rotated ? item.heightIn : item.widthIn);
+  const h = Math.max(1e-6, rotated ? item.widthIn : item.heightIn);
+  return computeGroupDims(w, h, Math.max(1, item.copies || 1), maxW, gapIn).cols;
+}
+
+/**
+ * The bottom of the artwork, in inches: the length a sheet prints at, and so
+ * the length it is billed at.
+ *
+ * Measured with the footprint the packer, the drag system and the renderer
+ * share. The header used arithmetic of its own — a fixed 0.06in gap, the
+ * unrotated size and as many columns as fit — so it ignored the spacing
+ * setting, auto-nest's quarter turns and the columns auto-nest chose: eight
+ * copies of an 11in square at 0.5in spacing print 45.5in and were quoted at
+ * 44.18in.
+ */
+export function sheetContentLengthIn(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): number {
+  let bottom = 0;
+  for (const it of items) {
+    const fp = getItemFootprint(it, canvasWidthIn, marginIn, gapIn);
+    // The renderer clamps a group against the sheet's end the same way.
+    const top = Math.min(fp.y, MAX_SHEET_HEIGHT_IN - fp.h);
+    bottom = Math.max(bottom, top + fp.h);
+  }
+  return Math.min(MAX_SHEET_HEIGHT_IN, Math.max(0, bottom));
+}
 
 /**
  * Packs ONLY the given new items into the gaps of the existing layout —
@@ -1252,6 +1546,125 @@ export function getItemFootprint(
   };
 }
 
+export interface FitResult<T> {
+  item: T;
+  /** Shrunk, keeping its proportions, because it was wider than the printable width. */
+  scaled: boolean;
+  /** Moved or reshaped to lie inside the printable width. */
+  changed: boolean;
+}
+
+/**
+ * A piece brought inside the sheet's safe print area — the margin lines.
+ *
+ * The roll cannot print past its edge, and the margin is the customer's own
+ * clearance from it, so no piece may reach beyond either. Pieces used to be kept
+ * inside only when a drag was validated: a piece pinned near the right edge and
+ * then rotated, resized from the properties panel, uploaded wider than the sheet,
+ * or left over from a wider roll kept its position and ran off the sheet — on
+ * screen, in the price, and cut off in print. The top margin was enforced
+ * nowhere at all, so artwork could sit above the "Safe Print Area" line.
+ *
+ *  1. One copy wider than the printable width is scaled down to fit, keeping
+ *     its proportions (the width axis is the nested one when auto-nest turned it).
+ *     With `canNestRotate` — auto-nest on, piece free to move — it is scaled only
+ *     if it would not fit turned either, since the packer turns it to fit at
+ *     full size.
+ *  2. A copy group whose recorded columns no longer fit has them cleared, so the
+ *     group re-wraps within the width.
+ *  3. The piece is moved left, or down off the top margin, just far enough to
+ *     lie inside the margins. The sheet grows downward, so there is no bottom
+ *     bound here — `clampPosY` keeps a piece inside the sheet's maximum length.
+ *
+ * Returns the same object when nothing needed to change.
+ */
+export function fitItemToPrintableArea<T extends LayoutItem>(
+  item: T,
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+  canNestRotate = false,
+): FitResult<T> {
+  const margin = Math.max(0, marginIn);
+  const maxW = Math.max(0, canvasWidthIn - 2 * margin);
+  const eps = 1e-4;
+  if (!(maxW > 0)) return { item, scaled: false, changed: false };
+
+  let next = item;
+  let scaled = false;
+
+  const cellW = canNestRotate
+    ? Math.min(next.widthIn, next.heightIn)
+    : next.nestRotation === 90
+    ? next.heightIn
+    : next.widthIn;
+  if (cellW > maxW + eps) {
+    const k = maxW / cellW;
+    next = { ...next, widthIn: next.widthIn * k, heightIn: next.heightIn * k };
+    scaled = true;
+  }
+
+  if (next.flowCols && getItemFootprint(next, canvasWidthIn, margin, gapIn).w > maxW + eps) {
+    next = { ...next, flowCols: undefined, flowStartCol: undefined, flowEndCol: undefined };
+  }
+
+  const fp = getItemFootprint(next, canvasWidthIn, margin, gapIn);
+  const maxPosX = Math.max(margin, canvasWidthIn - margin - fp.w);
+  const posX = Math.max(margin, Math.min(next.posX, maxPosX));
+  const posY = Math.max(margin, next.posY);
+  if (Math.abs(posX - next.posX) > eps || Math.abs(posY - next.posY) > eps) {
+    next = { ...next, posX, posY };
+  }
+
+  return { item: next, scaled, changed: next !== item };
+}
+
+/**
+ * Groups brought inside the margins as one.
+ *
+ * The per-piece check clamps each piece on its own, which would pull one member
+ * of a group back from the edge and leave the rest where they were. Each group
+ * is moved by a single offset instead, so its arrangement survives. Returns the
+ * same array when nothing moved.
+ */
+export function fitGroupsToPrintableArea<T extends LayoutItem>(
+  items: T[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): { items: T[]; movedIds: Set<number> } {
+  const margin = Math.max(0, marginIn);
+  const movedIds = new Set<number>();
+  const groups = new Map<string, T[]>();
+  for (const it of items) {
+    if (!it.groupId) continue;
+    const list = groups.get(it.groupId) ?? [];
+    list.push(it);
+    groups.set(it.groupId, list);
+  }
+  const shift = new Map<number, { dx: number; dy: number }>();
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const box = footprintBounds(members, canvasWidthIn, margin, gapIn);
+    const maxX = Math.max(margin, canvasWidthIn - margin - box.w);
+    const dx = Math.max(margin, Math.min(box.x, maxX)) - box.x;
+    const dy = Math.max(margin, box.y) - box.y;
+    if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) continue;
+    for (const m of members) {
+      shift.set(m.id, { dx, dy });
+      movedIds.add(m.id);
+    }
+  }
+  if (shift.size === 0) return { items, movedIds };
+  return {
+    items: items.map((it) => {
+      const d = shift.get(it.id);
+      return d ? { ...it, posX: it.posX + d.dx, posY: it.posY + d.dy } : it;
+    }),
+    movedIds,
+  };
+}
+
 const boxesCollide = (a: FootprintBox, b: FootprintBox, gap: number, eps = 1e-4) =>
   a.x < b.x + b.w + gap - eps &&
   a.x + a.w > b.x - gap + eps &&
@@ -1313,6 +1726,42 @@ function findNearestGap(
  * resolution on drop / resize / rotate.
  */
 export function planLocalDisplacement(
+  items: LayoutItem[],
+  activeIds: number[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+  activeOriginById?: Map<number, { posX: number; posY: number }>,
+): Map<number, { posX: number; posY: number }> {
+  const groups = collapseGroups(items, canvasWidthIn, marginIn, Math.max(0, gapIn));
+  if (!groups.hasGroups) {
+    return planLocalDisplacementFlat(items, activeIds, canvasWidthIn, marginIn, gapIn, activeOriginById);
+  }
+  const activeUnits = [...new Set(activeIds.map(groups.unitOf))];
+  // A group's origin is its block at the members' pick-up positions.
+  let unitOrigins: Map<number, { posX: number; posY: number }> | undefined;
+  if (activeOriginById) {
+    unitOrigins = new Map();
+    for (const unitId of activeUnits) {
+      if (unitId >= 0) {
+        const origin = activeOriginById.get(unitId);
+        if (origin) unitOrigins.set(unitId, origin);
+        continue;
+      }
+      const memberOrigins = items
+        .filter((it) => groups.unitOf(it.id) === unitId)
+        .map((it) => activeOriginById.get(it.id) ?? { posX: it.posX, posY: it.posY });
+      unitOrigins.set(unitId, {
+        posX: Math.min(...memberOrigins.map((o) => o.posX)),
+        posY: Math.min(...memberOrigins.map((o) => o.posY)),
+      });
+    }
+  }
+  const moves = planLocalDisplacementFlat(groups.items, activeUnits, canvasWidthIn, marginIn, gapIn, unitOrigins);
+  return groups.expandMoves(moves);
+}
+
+function planLocalDisplacementFlat(
   items: LayoutItem[],
   activeIds: number[],
   canvasWidthIn: number,
@@ -1474,6 +1923,73 @@ export function planLocalDisplacement(
   return moves;
 }
 
+/**
+ * Moves apart pieces closer than the spacing allows — and nothing else.
+ *
+ * Spacing is the sheet's cutting clearance, so it has to hold for every piece,
+ * including ones placed by hand. A hand-placed (pinned) piece used to be fixed
+ * whatever the spacing: raising it re-spaced everything around that piece and
+ * left the piece itself as close to its neighbours as before, so the control
+ * looked as though it did nothing.
+ *
+ * Pieces settle in reading order. One that crowds a piece already settled moves
+ * to the nearest spot clear of everything settled, found with the same gap
+ * search a displaced neighbour uses; every other piece stays exactly where it
+ * is. Locked pieces never move, and settle first so the others clear them.
+ */
+export function separateCrowdedItems(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): Map<number, { posX: number; posY: number }> {
+  const groups = collapseGroups(items, canvasWidthIn, marginIn, Math.max(0, gapIn));
+  if (!groups.hasGroups) return separateCrowdedItemsFlat(items, canvasWidthIn, marginIn, gapIn);
+  return groups.expandMoves(separateCrowdedItemsFlat(groups.items, canvasWidthIn, marginIn, gapIn));
+}
+
+function separateCrowdedItemsFlat(
+  items: LayoutItem[],
+  canvasWidthIn: number,
+  marginIn: number,
+  gapIn: number,
+): Map<number, { posX: number; posY: number }> {
+  const margin = Math.max(0, marginIn);
+  const gap = Math.max(0, gapIn);
+  const ordered = [...items].sort(
+    (a, b) =>
+      Number(Boolean(b.locked)) - Number(Boolean(a.locked)) || a.posY - b.posY || a.posX - b.posX,
+  );
+
+  const settled = new Map<number, FootprintBox>();
+  // Indexed, so checking a large board is not a comparison of every pair.
+  const index = new PlacedBoxIndex(Math.max(1, (canvasWidthIn - 2 * margin) / 4));
+  const moves = new Map<number, { posX: number; posY: number }>();
+
+  for (const it of ordered) {
+    let box = getItemFootprint(it, canvasWidthIn, margin, gap);
+    if (!it.locked && index.overlaps(box.x, box.y, box.w, box.h, gap, 1e-4)) {
+      /*
+       * Searched with the piece padded by the spacing on its right and bottom.
+       * The gap search only keeps clearance on an obstacle's right and bottom —
+       * enough for the packer, which fills left to right and top down — so an
+       * unpadded search could land a piece just left of, or above, a neighbour.
+       * The spot is still checked before it is taken.
+       */
+      const padded = { ...box, w: box.w + gap, h: box.h + gap };
+      const spot = findNearestGap(it.id, padded, settled, canvasWidthIn, margin, gap);
+      if (spot && !index.overlaps(spot.x, spot.y, box.w, box.h, gap, 1e-4)) {
+        box = { ...box, x: spot.x, y: spot.y };
+        moves.set(it.id, { posX: spot.x, posY: spot.y });
+      }
+    }
+    settled.set(it.id, box);
+    index.insert(box, gap);
+  }
+
+  return moves;
+}
+
 export interface DragResolution {
   /** Neighbor moves that clear the way for the dragged item. Empty if invalid. */
   moves: Map<number, { posX: number; posY: number }>;
@@ -1540,23 +2056,27 @@ export function resolveDragPlacement(
     ...getItemFootprint(it, canvasWidthIn, marginIn, gap),
   }));
 
-  // Bounds: any moved item pushed off the printable sheet fails the drop.
+  // Bounds: any moved item pushed outside the margins fails the drop.
   for (const b of boxes) {
     if (!changed.has(b.id)) continue;
     if (
       b.x < margin - eps ||
       b.x + b.w > canvasWidthIn - margin + eps ||
-      b.y < -eps ||
+      b.y < margin - eps ||
       b.y + b.h > MAX_SHEET_HEIGHT_IN + eps
     ) {
       return { moves: new Map(), valid: false };
     }
   }
 
-  // Overlap: no box may sit within `gap` of another once the plan is applied.
+  // Overlap: no box may sit within `gap` of another once the plan is applied —
+  // except two members of one group, whose spacing is the customer's own.
+  const groupOf = new Map(projected.map((it) => [it.id, it.groupId]));
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
       if (!changed.has(boxes[i].id) && !changed.has(boxes[j].id)) continue;
+      const gi = groupOf.get(boxes[i].id);
+      if (gi && gi === groupOf.get(boxes[j].id)) continue;
       if (boxesCollide(boxes[i], boxes[j], gap, eps)) {
         return { moves: new Map(), valid: false };
       }

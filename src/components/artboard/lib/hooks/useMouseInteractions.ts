@@ -3,6 +3,7 @@ import { gsap } from "gsap";
 import { ArtboardItem } from "../../types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import toast from "react-hot-toast";
+import { getSheetWidthIn } from "../../../../lib/utils/pricingRates";
 import type { CommitHistory } from "./useHistory";
 import {
   getItemFootprint,
@@ -127,7 +128,8 @@ export const useMouseInteractions = (
   const handleResizeStart = (e: React.MouseEvent, itemId: number) => {
     e.stopPropagation();
     const item = itemsRef.current.find((it) => it.id === itemId);
-    if (!item) return;
+    // A locked piece keeps its size, like its position.
+    if (!item || item.locked) return;
     commitHistory?.();
     const startData = {
       x: e.clientX,
@@ -158,11 +160,18 @@ export const useMouseInteractions = (
     if (sel && sel.size > 1 && sel.has(itemId)) {
       ids = current.filter((it) => sel.has(it.id) && !it.locked).map((it) => it.id);
       setSelectedId?.(itemId);
+    } else if (item.groupId) {
+      // Grabbing any member of a group takes the whole group, selected or not.
+      ids = current.filter((it) => it.groupId === item.groupId && !it.locked).map((it) => it.id);
+      setSelectedId?.(itemId);
+      setSelectedIds?.(new Set(current.filter((it) => it.groupId === item.groupId).map((it) => it.id)));
     } else {
       ids = [itemId];
       setSelectedId?.(itemId);
       setSelectedIds?.(new Set([itemId]));
     }
+    // A group with a locked member stays put, like the member.
+    if (item.groupId && current.some((it) => it.groupId === item.groupId && it.locked)) return;
     if (ids.length === 0) return;
 
     /**
@@ -249,7 +258,7 @@ export const useMouseInteractions = (
           const avgDelta = (deltaX + deltaY / ratio) / 2;
           const rawWidth = Math.max(0.5, start.width + avgDelta);
 
-          const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+          const maxPrintableWidth = (canvasWidth || getSheetWidthIn()) - 2 * marginSize;
           const widthAfterWidthClamp = Math.min(rawWidth, maxPrintableWidth);
           // Silently clamped. A drag handle that stops at the sheet edge is
           // self-explanatory direct manipulation — the pointer keeps moving and
@@ -286,7 +295,7 @@ export const useMouseInteractions = (
               : it,
           );
         } else {
-          const maxPrintableWidth = (canvasWidth || CANVAS.SHEET_WIDTH_IN) - 2 * marginSize;
+          const maxPrintableWidth = (canvasWidth || getSheetWidthIn()) - 2 * marginSize;
           const clampedWidth = Math.min(newWidth, maxPrintableWidth);
           // Silently clamped — see the linked-resize branch above.
 
@@ -343,7 +352,7 @@ export const useMouseInteractions = (
   useEffect(() => {
     if (!isDraggingItem || !dragRef.current) return;
     const drag = dragRef.current;
-    const sheetW = canvasWidth || CANVAS.SHEET_WIDTH_IN;
+    const sheetW = canvasWidth || getSheetWidthIn();
     const ppz = CANVAS.PIXELS_PER_INCH * zoom;
 
     // One rAF step: auto-scroll, position the dragged items under the pointer,
@@ -510,14 +519,10 @@ export const useMouseInteractions = (
         setItems((prev) =>
           prev.map((it) => {
             if (drag.startPositions.has(it.id)) {
-              return {
-                ...it,
-                pinned: true,
-                flowCols: undefined,
-                flowStartCol: undefined,
-                flowEndCol: undefined,
-                gravityActive: false,
-              };
+              // Pinned where it was released. Its columns are kept: the drop was
+              // validated against this shape, and clearing them re-wrapped a copy
+              // group wider, over the neighbours it had just been placed beside.
+              return { ...it, pinned: true, gravityActive: false };
             }
             const mv = moves.get(it.id);
             if (mv) {
@@ -526,9 +531,6 @@ export const useMouseInteractions = (
                 posX: mv.posX,
                 posY: mv.posY,
                 pinned: true,
-                flowCols: undefined,
-                flowStartCol: undefined,
-                flowEndCol: undefined,
                 gravityActive: false,
               };
             }

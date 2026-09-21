@@ -1,6 +1,12 @@
 import { BsPerson } from "react-icons/bs";
 import { IoLocationOutline } from "react-icons/io5";
+import { useMemo } from "react";
 import { IoMdCheckmarkCircleOutline } from "react-icons/io";
+import { MdWarningAmber } from "react-icons/md";
+import { DPI, UPLOAD_FORMAT_LABELS } from "../../config/artboard.config";
+import { usePricingSettings } from "../../lib/utils/pricingRates";
+import { cartLinePieces, describeWarning, summarizeCartWarnings } from "../../lib/utils/checkoutWarnings";
+import { useTransparencyVerdicts } from "../artboard/lib/hooks/useTransparencyVerdicts";
 
 const REGION_BY_STATE: Record<string, string> = {
   WA:"West",OR:"West",CA:"West",NV:"West",ID:"West",MT:"West",WY:"West",
@@ -38,13 +44,31 @@ interface CheckoutStepProps {
   formData: FormData;
   setFormData: (data: FormData) => void;
   errors?: Partial<Record<keyof FormData, string>>;
+  /** The cart, so the Design Validation card can report on its artwork. */
+  cartItems?: any[];
 }
 
 export default function CheckoutStep({
   formData,
   setFormData,
   errors,
+  cartItems = [],
 }: CheckoutStepProps) {
+  // Every piece on every sheet, for the same transparency check the artboard
+  // runs (remembered per image, so pieces already checked there cost nothing).
+  const pieces = useMemo(() => cartItems.flatMap(cartLinePieces), [cartItems]);
+  const verdicts = useTransparencyVerdicts(pieces);
+  const { warnings, checking } = useMemo(
+    () => summarizeCartWarnings(cartItems, verdicts),
+    [cartItems, verdicts],
+  );
+  const sheetCount = useMemo(
+    () => cartItems.filter((line) => cartLinePieces(line).length > 0).length,
+    [cartItems],
+  );
+  // The roll and the minimum are admin settings; the copy reads them rather than
+  // stating numbers that go stale the moment either changes.
+  const { sheetWidthIn, minSheetLengthIn } = usePricingSettings();
   const detectedRegion =
     formData.state.trim().length === 2
       ? REGION_BY_STATE[formData.state.trim().toUpperCase()] ?? null
@@ -250,34 +274,56 @@ export default function CheckoutStep({
       )}
 
       <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
+        {/* The badge used to say "Review Warnings" whatever the cart held. It now
+            reports the artboard's own flags for the artwork being ordered. */}
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-normal text-[11px]">Design Validation</h3>
-          <span className="text-[11px] bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
-            Review Warnings
-          </span>
+          {warnings.length > 0 ? (
+            <span className="text-[11px] bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+              {warnings.length} {warnings.length === 1 ? "warning" : "warnings"}
+            </span>
+          ) : checking ? (
+            <span className="text-[11px] bg-gray-100 text-gray-600 px-2 py-1 rounded">Checking…</span>
+          ) : sheetCount > 0 ? (
+            <span className="text-[11px] bg-green-100 text-green-800 px-2 py-1 rounded">No issues found</span>
+          ) : null}
         </div>
+        {warnings.length > 0 && (
+          <div className="mb-4 space-y-1.5 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2.5">
+            {warnings.map((w) => (
+              <div key={`${w.sheet}-${w.kind}`} className="flex items-start gap-2 text-[11px] text-yellow-900">
+                <MdWarningAmber className="mt-px h-4 w-4 shrink-0 text-yellow-600" />
+                <span>{describeWarning(w, sheetCount)}</span>
+              </div>
+            ))}
+            <p className="pt-0.5 text-[10.5px] text-yellow-800">
+              You can still order as is. To fix these, go back to your cart and choose Edit sheet.
+            </p>
+          </div>
+        )}
         <hr className="border-gray-200 mb-4" />
         <div className="space-y-2">
           <h4 className="font-normal text-[11px]">DTF Printing Guidelines</h4>
+          {/*
+            Every line here is read from where the rule actually lives. This used
+            to promise a 12 x 16in print area (sheets are the roll width by any
+            length), list four formats of the twelve accepted, ask for CMYK (the
+            editor converts CMYK to RGB) and set a 150 DPI minimum the editor
+            flags as low.
+          */}
           <div className="space-y-2.5 text-sm text-gray-700">
-            <div className="flex items-center text-[10px] gap-2">
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>Minimum resolution: 150 DPI (300 DPI recommended)</span>
-            </div>
-            <div className="flex items-center text-[10px] gap-2">                                                                                                             
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>Maximum print area: 12" x 16" for standard transfers</span>
-            </div>
-            <div className="flex items-center text-[10px] gap-2">
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>
-                Supported formats: PNG, PSD, AI, PDF with transparency
-              </span>
-            </div>
-            <div className="flex items-center text-[10px] gap-2">
-              <IoMdCheckmarkCircleOutline className="w-4 h-4 text-green-600" />
-              <span>Color mode: CMYK preferred, RGB will be converted</span>
-            </div>
+            {[
+              `Sheet size: ${sheetWidthIn}" wide (the roll width), any length — billed from ${minSheetLengthIn}" minimum`,
+              `Resolution: ${DPI.THRESHOLD} DPI for sharp prints — anything lower is flagged on your sheet`,
+              `Formats: ${UPLOAD_FORMAT_LABELS.join(", ")}`,
+              "Transparency: fades and see-through areas don't print as shown — they're flagged on your sheet",
+              "Color: RGB — CMYK files are converted to RGB automatically",
+            ].map((line) => (
+              <div key={line} className="flex items-center text-[10px] gap-2">
+                <IoMdCheckmarkCircleOutline className="w-4 h-4 shrink-0 text-green-600" />
+                <span>{line}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>

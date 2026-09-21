@@ -196,17 +196,17 @@ describe("low dpi notice", () => {
     expect(await screen.findByText("Low DPI")).toBeTruthy();
   });
 
-  it("stands alongside the large-image notice instead of replacing it", async () => {
+  it("stands alongside the resized-to-fit notice instead of replacing it", async () => {
     // The headline requirement: two conditions from one drop are two
     // notifications. Distinct toast ids are what keep both alive — react-hot-
     // toast treats a repeated id as an update, so sharing one would silently
     // collapse them into whichever fired last.
     render(<Toaster />);
-    showLargeImageWarning(3);
+    showLargeImageWarning(3, 23.2);
     showLowDpiWarning(2);
 
     expect(await screen.findByText("Low DPI")).toBeTruthy();
-    expect(screen.getByText("3 Large Images Detected")).toBeTruthy();
+    expect(screen.getByText("3 Images Resized to Fit")).toBeTruthy();
   });
 
   it("carries no outer margin, so toast stacking can measure it", () => {
@@ -222,21 +222,42 @@ describe("low dpi notice", () => {
 });
 
 describe("artboard warning banner", () => {
-  it("renders nothing when there is no fade", () => {
-    const { container } = render(<ArtboardWarning fadeCount={0} />);
+  const faint = {
+    hasFade: true,
+    confidence: 1,
+    kind: "semi-transparent" as const,
+    reason: "About 12% of the artwork is more than 50% transparent.",
+    source: "heuristic" as const,
+  };
+
+  it("renders nothing when nothing is flagged", () => {
+    const { container } = render(<ArtboardWarning flagged={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("no longer merges resolution into the fade banner", () => {
+  it("no longer merges resolution into the transparency banner", () => {
     // Low DPI is a toast now, so a sheet with both conditions shows two
     // independent notices rather than one merged "Print Issues" sentence.
-    render(<ArtboardWarning fadeCount={1} />);
-    expect(screen.getByText("Fade Detected")).toBeTruthy();
+    render(<ArtboardWarning flagged={[faint]} />);
+    expect(screen.getByText("Too transparent to print")).toBeTruthy();
     expect(screen.queryByText("Print Issues Detected")).toBeNull();
   });
 
-  it("is announced politely — a fade did not block the customer's work", () => {
-    render(<ArtboardWarning fadeCount={1} />);
+  it("tells the customer to update or replace the file", () => {
+    render(<ArtboardWarning flagged={[faint]} />);
+    const body = screen.getByRole("status").textContent ?? "";
+    expect(body).toContain("About 12% of the artwork is more than 50% transparent.");
+    expect(body).toMatch(/Update the file .* or replace it with a different file/);
+  });
+
+  it("counts several flagged images", () => {
+    render(<ArtboardWarning flagged={[faint, { ...faint, kind: "fade" }]} />);
+    expect(screen.getByText("Transparency won't print as shown")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("(2) images have fades");
+  });
+
+  it("is announced politely — a flag did not block the customer's work", () => {
+    render(<ArtboardWarning flagged={[faint]} />);
     expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");
   });
 });

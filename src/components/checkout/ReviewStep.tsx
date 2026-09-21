@@ -13,7 +13,7 @@ interface ReviewStepProps {
     country: string;
   };
   shipping: "standard" | "express";
-  payment: "card" | "paypal";
+  payment: "card";
 }
 
 export default function ReviewStep({ formData, shipping, payment }: ReviewStepProps) {
@@ -56,14 +56,8 @@ export default function ReviewStep({ formData, shipping, payment }: ReviewStepPr
             Payment Method
           </h3>
           <div className="text-sm text-gray-600">
-            <p className="font-medium text-gray-900">
-              {payment === "card" ? "Credit / Debit Card" : "PayPal"}
-            </p>
-            <p className="mt-1">
-              {payment === "card" 
-                ? "Payment will be processed securely" 
-                : "Payment authorized via PayPal"}
-            </p>
+            <p className="font-medium text-gray-900">Credit / Debit Card</p>
+            <p className="mt-1">Payment will be processed securely</p>
           </div>
         </div>
       </div>

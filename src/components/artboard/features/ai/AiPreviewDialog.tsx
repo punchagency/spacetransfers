@@ -62,6 +62,8 @@ export default function AiPreviewDialog({
 
   return createPortal(
     <div
+      // The AI panel treats clicks in here as its own (see its click-outside).
+      data-ai-review
       className="fixed inset-0 z-[4000] flex items-center justify-center p-4"
       style={{
         background: "rgba(15,23,42,0.45)",

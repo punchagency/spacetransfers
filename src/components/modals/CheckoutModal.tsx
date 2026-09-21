@@ -1,33 +1,55 @@
 import { useState, useEffect, useRef, Fragment } from "react";
 import { gsap } from "gsap";
 import { MdClose, MdCheckCircle, MdArrowBack } from "react-icons/md";
+import { isValidPhone } from "../../lib/utils/validators";
 import CartStep from "../checkout/CartStep";
 import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
 import ReviewStep from "../checkout/ReviewStep";
 import OrderSummary from "../checkout/OrderSummary";
 import { ErrorBoundary } from "../common/ErrorBoundary";
+import ConfirmModal from "./ConfirmModal";
 import { LuShoppingCart } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
 import { stripEmbeddedImages, hasEmbeddedImages } from "../../lib/utils/payloadImages";
 import { itemListsEquivalent } from "../../lib/utils/assetIdentity";
 import { AssetIndex } from "../../lib/utils/assetTable";
+import { resolveFlowCols } from "../artboard/lib/utils/layoutHelpers";
+import { getSheetWidthIn } from "../../lib/utils/pricingRates";
+import { DEFAULT_SHEET_SETTINGS } from "../../lib/utils/editorSettings";
 import toast from "react-hot-toast";
 import { Elements } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
+import { formatOrderNumber } from "../../lib/utils/orderNumber";
 
 const stripePublishableKey = (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY as
   | string
   | undefined;
 const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
-const paypalClientId = (import.meta as any).env?.VITE_PAYPAL_CLIENT_ID as string | undefined;
 
 interface CheckoutModalProps {
   isOpen: boolean;
   onClose: () => void;
   cartItems?: any[];
   onUpdateCart?: (items: any[]) => void;
+  /** Puts a cart sheet back on the artboard, so edits update that same line. */
+  onEditSheet?: (item: any) => void;
+  /** Empties the cart at its owner. Doing it in here alone was lost if this modal closed. */
+  onClearCart?: () => void;
+  /** Clears the artboard for another sheet, leaving the cart as it is. */
+  onStartNewSheet?: () => void;
   onCheckoutSuccess?: () => void;
+  /**
+   * Whether the visitor has an account yet.
+   *
+   * Browsing and filling a cart do not need one — that is how storefronts work,
+   * and Add to Cart has always allowed it. Placing the order does: it is saved
+   * against a customer, paid for, and shipped somewhere. Without this the
+   * signed-out path ran all the way to payment and failed on a 401 from the
+   * order call, after the customer had entered an address.
+   */
+  isLoggedIn?: boolean;
+  onRequireSignIn?: () => void;
 }
 
 const steps = ["Cart", "Checkout", "Payment", "Confirmation"];
@@ -35,11 +57,17 @@ const steps = ["Cart", "Checkout", "Payment", "Confirmation"];
 export default function CheckoutModal({
   isOpen,
   onClose,
+  isLoggedIn = false,
+  onRequireSignIn,
   cartItems: initialCartItems,
   onUpdateCart,
+  onEditSheet,
+  onClearCart,
+  onStartNewSheet,
   onCheckoutSuccess,
 }: CheckoutModalProps) {
   const [step, setStep] = useState(0);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // True only while `placeOrder`'s `stripEmbeddedImages` safety net is doing
   // real (uncached) upload work — the pre-warm effect below normally means
@@ -49,7 +77,7 @@ export default function CheckoutModal({
   const contentRef = useRef<HTMLDivElement>(null);
   const stepperRefs = useRef<(HTMLDivElement | null)[]>([]);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const [payment, setPayment] = useState<"card" | "paypal">("card");
+  const [payment, setPayment] = useState<"card">("card");
   const [shipping, setShipping] = useState<"standard" | "express">("standard");
   const [cartItems, setCartItems] = useState(initialCartItems || []);
   const [checkoutErrors, setCheckoutErrors] = useState<Record<string, string>>({});
@@ -66,8 +94,9 @@ export default function CheckoutModal({
     country: "",
   });
   const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
-  const [paypalData, setPaypalData] = useState<{ paypalOrderId: string; paypalCaptureId: string } | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
+  // The canonical DTF-#### number the customer will see everywhere else.
+  const [orderDisplayId, setOrderDisplayId] = useState<string | null>(null);
 
   /**
    * Resolves any leftover embedded artwork as soon as checkout opens, rather
@@ -104,9 +133,61 @@ export default function CheckoutModal({
       )
       .toFixed(2),
   );
-  const shippingCost = shipping === "standard" ? 8.99 : 19.99;
-  const tax = 0;
-  const total = Number((subtotal + shippingCost).toFixed(2));
+  /**
+   * Shipping and tax rates come from the server so the total shown here is the
+   * total that gets charged.
+   *
+   * These were hardcoded — express $19.99 and tax always 0 — while the server
+   * charged $24.99 plus 8%. On a $100 express order the customer saw $119.99
+   * and was charged $132.99.
+   *
+   * The fallback matches the server's own default, so a failed fetch shows a
+   * plausible figure rather than $0 shipping; the server recomputes on submit
+   * either way, so it can never be the figure actually charged.
+   */
+  const [rates, setRates] = useState<{
+    shipping: { standard: number; express: number };
+    taxRatePct: number;
+    rushSurchargePct: number;
+  }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8, rushSurchargePct: 10 });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    apiFetch("/customer/pricing")
+      .then((r) => {
+        if (cancelled || !r?.shipping) return;
+        setRates({
+          shipping: {
+            standard: Number(r.shipping.standard),
+            express: Number(r.shipping.express),
+          },
+          taxRatePct: Number(r.taxRatePct),
+          rushSurchargePct: Number(r.rushSurchargePct ?? 10),
+        });
+      })
+      .catch(() => {
+        // Non-fatal: keep the fallback rates. The server is authoritative at
+        // submit, so a stale display cannot become a wrong charge.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const shippingCost = Number(
+    (shipping === "standard" ? rates.shipping.standard : rates.shipping.express).toFixed(2),
+  );
+  /**
+   * Express means the job is rushed through production, not just posted faster —
+   * so it carries a surcharge that pays the partner for jumping the queue. The
+   * express price itself only pays the courier.
+   */
+  const rushSurcharge = Number(
+    (shipping === "express" ? subtotal * (rates.rushSurchargePct / 100) : 0).toFixed(2),
+  );
+  const tax = Number(((subtotal + rushSurcharge) * (rates.taxRatePct / 100)).toFixed(2));
+  const total = Number((subtotal + rushSurcharge + shippingCost + tax).toFixed(2));
 
   const validateCheckout = () => {
     const errors: Record<string, string> = {};
@@ -128,6 +209,18 @@ export default function CheckoutModal({
       errors.email = "Enter a valid email address";
     }
 
+    /*
+     * Shape checked, not just presence — the same gap email had until the line
+     * above was written. `req("phone", ...)` only ever tested truthiness, so
+     * "1" or "abc" passed straight through and became the number on a real
+     * order, which is what a partner or the store calls when a shipment needs
+     * attention.
+     */
+    const phone = String(formData.phone || "").trim();
+    if (phone && !isValidPhone(phone)) {
+      errors.phone = "Enter a valid phone number";
+    }
+
     setCheckoutErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -145,10 +238,10 @@ export default function CheckoutModal({
       (formData.country || "US").trim(),
   );
 
-  const isPaymentValid =
-    payment === "paypal"
-      ? Boolean(paypalData)
-      : Boolean((stripePromise && isCardComplete) || (!stripePromise && isCardComplete));
+  // Card requires a configured provider AND a complete card. The previous form
+  // of this check reduced to `isCardComplete` on both branches, so an
+  // unconfigured environment could still advance to placing an order.
+  const isPaymentValid = Boolean(stripePromise && isCardComplete);
 
   const mapItems = () =>
     cartItems.map((item) => {
@@ -192,6 +285,16 @@ export default function CheckoutModal({
             flipped: Boolean(it.flipped),
             copies: typeof it.copies === "number" ? it.copies : 1,
             linked: Boolean(it.linked),
+            // How auto-nest laid the piece out. Without these the print export
+            // drew nested pieces upright and wrapped copies its own way.
+            nestRotation: it.nestRotation === 90 ? 90 : 0,
+            flowCols: resolveFlowCols(
+              it,
+              // The roll this sheet was built on, recorded on the cart line.
+              (item as any).widthIn || getSheetWidthIn(),
+              (item as any).sheetMarginIn ?? DEFAULT_SHEET_SETTINGS.marginSize,
+              (item as any).itemSpacingIn ?? DEFAULT_SHEET_SETTINGS.spacing,
+            ),
           }))
         : undefined;
 
@@ -273,6 +376,7 @@ export default function CheckoutModal({
 
     if (result?.id) {
       setOrderId(result.id);
+      setOrderDisplayId(result.displayId || null);
     }
     setStep(4);
     if (onCheckoutSuccess) {
@@ -286,6 +390,16 @@ export default function CheckoutModal({
     if (step === 0) {
       if (!isCartValid) {
         toast.error("Your cart is empty.");
+        return;
+      }
+      /*
+       * Asked for here, at the edge of checkout — not earlier. The cart survives
+       * the sign-in, so nothing is lost by leaving it this late, and a visitor
+       * can price a sheet and fill a basket without being stopped.
+       */
+      if (!isLoggedIn) {
+        toast("Please sign in to complete your order.", { icon: "🔐" });
+        onRequireSignIn?.();
         return;
       }
       setStep(1);
@@ -303,11 +417,6 @@ export default function CheckoutModal({
     }
 
     if (step === 2) {
-      if (payment === "paypal") {
-        toast.error("Complete PayPal payment to place your order");
-        return;
-      }
-
       if (!isPaymentValid) {
         toast.error("Please enter complete card details.");
         return;
@@ -320,24 +429,13 @@ export default function CheckoutModal({
     if (step === 3) {
       setIsSubmitting(true);
       try {
-        if (payment === "card") {
-          const handler = cardHandlerRef.current;
-          if (!handler) {
-            throw new Error("Card payment is not configured");
-          }
-
-          const { paymentIntentId } = await handler();
-          await placeOrder({ method: "card", paymentIntentId });
-        } else if (payment === "paypal") {
-          if (!paypalData) {
-            throw new Error("PayPal payment not authorized");
-          }
-          await placeOrder({
-            method: "paypal",
-            paypalOrderId: paypalData.paypalOrderId,
-            paypalCaptureId: paypalData.paypalCaptureId,
-          });
+        const handler = cardHandlerRef.current;
+        if (!handler) {
+          throw new Error("Card payment is not configured");
         }
+
+        const { paymentIntentId } = await handler();
+        await placeOrder({ method: "card", paymentIntentId });
       } catch (err: any) {
         toast.error(err.message || "Failed to place order");
       } finally {
@@ -555,6 +653,9 @@ export default function CheckoutModal({
                       cartItems={cartItems}
                       updateQuantity={updateQuantity}
                       removeItem={removeItem}
+                      onEditItem={onEditSheet ? (item) => onEditSheet(item) : undefined}
+                      onClearCart={() => setConfirmClear(true)}
+                      onStartNewSheet={onStartNewSheet ? () => { onClose(); onStartNewSheet(); } : undefined}
                     />
                   )}
 
@@ -563,6 +664,7 @@ export default function CheckoutModal({
                       formData={formData}
                       setFormData={setFormData}
                       errors={checkoutErrors as any}
+                      cartItems={cartItems}
                     />
                   )}
 
@@ -588,17 +690,10 @@ export default function CheckoutModal({
                             postalCode: formData.postalCode,
                             country: formData.country || "US",
                           }}
-                          isSubmitting={isSubmitting}
                           stripeEnabled={true}
-                          paypalClientId={paypalClientId}
                           onCardCompleteChange={setIsCardComplete}
                           onCardHandlerReady={(handler) => {
                             cardHandlerRef.current = handler;
-                          }}
-                          paypalData={paypalData}
-                          onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                            setPaypalData({ paypalOrderId, paypalCaptureId });
-                            setStep(3);
                           }}
                         />
                       </Elements>
@@ -622,17 +717,10 @@ export default function CheckoutModal({
                           postalCode: formData.postalCode,
                           country: formData.country || "US",
                         }}
-                        isSubmitting={isSubmitting}
                         stripeEnabled={false}
-                        paypalClientId={paypalClientId}
                         onCardCompleteChange={setIsCardComplete}
                         onCardHandlerReady={(handler) => {
                           cardHandlerRef.current = handler;
-                        }}
-                        paypalData={paypalData}
-                        onPaypalCaptured={async ({ paypalOrderId, paypalCaptureId }) => {
-                          setPaypalData({ paypalOrderId, paypalCaptureId });
-                          setStep(3);
                         }}
                       />
                     ))
@@ -656,7 +744,7 @@ export default function CheckoutModal({
                       </h2>
                       {orderId && (
                         <div className="mb-4 text-sm sm:text-lg font-medium text-black bg-black/10 px-4 py-1 rounded-full border border-blue-100">
-                          Order #{orderId.slice(-8).toUpperCase()}
+                          Order {formatOrderNumber(orderDisplayId, orderId)}
                         </div>
                       )}
                       <p className="mb-8 max-w-md text-gray-600">
@@ -689,10 +777,29 @@ export default function CheckoutModal({
                             ${subtotal.toFixed(2)}
                           </span>
                         </div>
+                        {rushSurcharge > 0 && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-600">Rush production</span>
+                            <span className="font-medium">
+                              ${rushSurcharge.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-sm">
                           <span className="text-gray-600">Shipping</span>
                           <span className="font-medium">
                             ${shippingCost.toFixed(2)}
+                          </span>
+                        </div>
+                        {/*
+                          Tax was charged and never shown, so Subtotal plus
+                          Shipping did not add up to the Total on screen — the
+                          difference just appeared, unexplained, at checkout.
+                        */}
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600">Tax</span>
+                          <span className="font-medium">
+                            ${tax.toFixed(2)}
                           </span>
                         </div>
                         <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
@@ -701,16 +808,18 @@ export default function CheckoutModal({
                         </div>
                       </div>
 
-                      <div className="mt-4 text-xs text-gray-600">
-                        Returns are easy! Free return within 7 days for items in
-                        original condition.
-                      </div>
-
                       <button
                         onClick={() => setStep(1)}
                         className="w-full mt-4 rounded-lg bg-black py-3 text-sm font-semibold text-white hover:bg-gray-900"
                       >
                         Proceed to Checkout
+                      </button>
+                      {/* The way back to the artboard, where the rest of the order is built. */}
+                      <button
+                        onClick={handleContinueDesigning}
+                        className="w-full mt-2 rounded-lg border border-gray-300 py-3 text-sm font-semibold text-gray-800 hover:bg-gray-50"
+                      >
+                        Continue designing
                       </button>
                     </div>
                   ) : (
@@ -726,17 +835,14 @@ export default function CheckoutModal({
                       disableNext={
                         (step === 0 && !isCartValid) ||
                         (step === 1 && !isCheckoutValid) ||
-                        (step === 2 && payment === "paypal") ||
-                        (step === 2 && payment === "card" && !isPaymentValid)
+                        (step === 2 && !isPaymentValid)
                       }
                       nextLabel={
-                        step === 2 && payment === "paypal"
-                          ? "Complete with PayPal"
-                          : step === 2 && payment === "card" && !isPaymentValid
-                            ? "Enter card details"
-                            : step === 3
-                              ? "Place Order"
-                              : undefined
+                        step === 2 && !isPaymentValid
+                          ? "Enter card details"
+                          : step === 3
+                            ? "Place Order"
+                            : undefined
                       }
                     />
                   )}
@@ -745,6 +851,23 @@ export default function CheckoutModal({
             </div>
           </ErrorBoundary>
         </div>
+      </div>
+      {/* Its own layer: a click inside it used to bubble to the backdrop above,
+          closing checkout before the emptied cart reached its owner. */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <ConfirmModal
+          isOpen={confirmClear}
+          title="Clear your cart?"
+          message="Every sheet in the cart will be removed. Sheets you saved as designs are kept."
+          confirmLabel="Clear cart"
+          danger
+          onConfirm={() => {
+            setConfirmClear(false);
+            setCartItems([]);
+            onClearCart?.();
+          }}
+          onCancel={() => setConfirmClear(false)}
+        />
       </div>
     </div>
   );

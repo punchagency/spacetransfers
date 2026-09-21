@@ -3,19 +3,23 @@ import { MdAdd, MdOutlineFileUpload, MdArrowUpward } from "react-icons/md";
 import { getGridStyle, CHECKER_PAIRS, isDarkBg } from "../../lib/utils";
 import CanvasRulers from "./CanvasRulers";
 import CanvasMargins from "./CanvasMargins";
+import CanvasGrid from "./CanvasGrid";
 import EmptyState from "./EmptyState";
 import BulkLoadOverlay from "./BulkLoadOverlay";
 import QueueBadge from "./QueueBadge";
 import ArtboardItem from "../items/ArtboardItem";
-import { ArtboardItem as ArtboardItemType } from "../../types";
-import { CANVAS } from "../../../../config/artboard.config";
-import { getItemVerticalExtent } from "../../lib/utils/layoutHelpers";
+import { ArtboardItem as ArtboardItemType, type SelectionSummary } from "../../types";
+import { CANVAS, UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
+import { footprintBounds, getItemVerticalExtent, isDpiFlagged } from "../../lib/utils/layoutHelpers";
 import type { DropIndicator, PreviewOffset } from "../../lib/hooks/useMouseInteractions";
+import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
 import type { AiPanelBridge } from "../ai";
+import type { FadeVerdict } from "../../lib/utils/fadeCheck";
 
 interface CanvasContainerProps {
   zoom: number;
   showRulers: boolean;
+  showGrid: boolean;
   showMargins: boolean;
   marginSize: number;
   spacing: number;
@@ -27,7 +31,6 @@ interface CanvasContainerProps {
   selectedId: number | null;
   selectedIds: Set<number>;
   showProperties: Record<number, boolean>;
-  addedToCart: Set<number>;
   onWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
   onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
   onDragLeave: () => void;
@@ -36,12 +39,14 @@ interface CanvasContainerProps {
   onItemSelect: (id: number, multi?: boolean) => void;
   onToggleProperties: (id: number) => void;
   itemActions: any;
-  onLink: () => void;
+  /** Groups the selection, or ungroups the group it is. */
+  onGroup: () => void;
+  /** What Group would do right now; null when there is nothing to group. */
+  groupAction: "group" | "ungroup" | null;
   onDuplicate: () => void;
   onDelete: () => void;
-  onAddToCart: (item: any) => void;
   onCloseProperties: () => void;
-  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<void>;
+  onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
@@ -63,6 +68,8 @@ interface CanvasContainerProps {
    * Chrome only — nothing about an item's geometry or content is read from it.
    */
   dpiHighlightIds?: Set<number> | null;
+  /** Transparency verdicts by image URL (`useTransparencyVerdicts`). */
+  transparencyVerdicts?: ReadonlyMap<string, FadeVerdict>;
   uploadFileName: string | null;
   onCancelUpload: () => void;
   /** Something else (the AI button) occupies the bottom-right — lift the scroll-to-top control clear of it. */
@@ -86,6 +93,7 @@ function canvasBgStyle(bg: string | undefined, zoom: number): React.CSSPropertie
 export default function CanvasContainer({
   zoom,
   showRulers,
+  showGrid,
   showMargins,
   marginSize,
   spacing,
@@ -97,7 +105,6 @@ export default function CanvasContainer({
   selectedId,
   selectedIds,
   showProperties,
-  addedToCart,
   onWheel,
   onDragOver,
   onDragLeave,
@@ -106,10 +113,10 @@ export default function CanvasContainer({
   onItemSelect,
   onToggleProperties,
   itemActions,
-  onLink,
+  onGroup,
+  groupAction,
   onDuplicate,
   onDelete,
-  onAddToCart,
   onCloseProperties,
   onRemoveBg,
   onDragStart,
@@ -126,6 +133,7 @@ export default function CanvasContainer({
   batchTotal = 0,
   queuedCount = 0,
   dpiHighlightIds = null,
+  transparencyVerdicts,
   uploadFileName,
   onCancelUpload,
   avoidBottomRight = false,
@@ -139,6 +147,34 @@ export default function CanvasContainer({
   const prevScrollTopRef = useRef(0);
   const scrollStopTimerRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
+
+  /**
+   * Whether a pointer event landed on empty sheet rather than on artwork.
+   *
+   * This used to be `e.target === e.currentTarget` — true only when the browser
+   * reported the scroll container itself. The sheet inside it is sized in zoomed
+   * pixels and then scaled by zoom again, so its hit box is zoom² of the sheet:
+   * at 62% it covered the left 62%, where a click reported that inner div and
+   * was ignored. Clicking away did not deselect and double-click did not add
+   * files there, yet both worked on the strip to its right.
+   *
+   * So this asks what matters instead: was it outside every item? `contains`
+   * keeps out events React bubbles up from portals — the item toolbar and the
+   * properties panel live elsewhere in the DOM but still bubble through this
+   * component, and pressing one of their buttons must not deselect the item.
+   */
+  const isEmptySheetTarget = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as Element | null;
+    return Boolean(target && e.currentTarget.contains(target) && !target.closest("[data-item-id]"));
+  };
+
+  /*
+   * A click only counts as on the sheet if the press started there too. Dragging
+   * an item and releasing over empty space fires `click` on their common
+   * ancestor, which would otherwise deselect the piece just placed. Captured,
+   * because items stop mousedown from propagating.
+   */
+  const pressedOnSheetRef = useRef(false);
 
   useEffect(() => () => {
     if (scrollStopTimerRef.current !== null) {
@@ -321,6 +357,21 @@ export default function CanvasContainer({
    *  - everything, while the viewport height is still unmeasured (first paint),
    *    since a zero-height viewport would cull the entire sheet.
    */
+  /**
+   * What the toolbar needs to know about the whole selection, not just the
+   * piece it hangs off: BG removal and DPI+ act on every selected image, AI on
+   * one image only.
+   */
+  const selectionSummary = useMemo<SelectionSummary>(() => {
+    const picked = items.filter((it) => it.id === selectedId || selectedIds.has(it.id));
+    const editable = picked.filter((it) => !it.locked);
+    return {
+      count: picked.length,
+      editable: editable.length,
+      lowDpi: editable.filter((it) => isDpiFlagged(it)).length,
+    };
+  }, [items, selectedId, selectedIds]);
+
   const visibleItems = useMemo(() => {
     if (items.length < VIRTUALIZE_THRESHOLD) return items;
     if (viewportHeight <= 0) return items;
@@ -371,12 +422,23 @@ export default function CanvasContainer({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
+      {/*
+        Behind everything. With artwork on the board this is the space *around*
+        the sheet, in a flat neutral; the sheet draws its own surface below. The
+        preview background used to fill this whole area, so zoomed out it ran
+        past the sheet's edge and nothing showed where the roll ended.
+      */}
       <div
         className="absolute inset-0 z-0 opacity-100 transition-[background-color,background-image] duration-200"
-        style={canvasBgStyle(canvasBg, zoom)}
+        style={
+          items.length === 0
+            ? canvasBgStyle(canvasBg, zoom)
+            : { backgroundColor: isDarkBg(canvasBg ?? "transparent") ? "#0b1220" : "#e5e7eb" }
+        }
       />
       <CanvasRulers
         showRulers={showRulers}
+        sheetWidthIn={canvasWidth}
         zoom={zoom}
         sheetHeightPx={sheetHeightPx}
         scrollTopPx={scrollTop}
@@ -443,8 +505,15 @@ export default function CanvasContainer({
 
               onCloseProperties();
             }}
-            onClick={(e) => { if (e.target === e.currentTarget) onCanvasClick(); }}
-            onDoubleClick={(e) => { if (e.target === e.currentTarget && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles(); }}
+            onMouseDownCapture={(e) => {
+              pressedOnSheetRef.current = isEmptySheetTarget(e);
+            }}
+            onClick={(e) => {
+              if (pressedOnSheetRef.current && isEmptySheetTarget(e)) onCanvasClick();
+            }}
+            onDoubleClick={(e) => {
+              if (isEmptySheetTarget(e) && items.length < CANVAS.MAX_ITEMS && !isSheetFull) onBrowseFiles();
+            }}
           >
             <div
               id="artboard-canvas-inner"
@@ -457,8 +526,30 @@ export default function CanvasContainer({
                 transition: "transform 200ms ease-out",
               }}
             >
+              {/* Under the margin guide and the artwork — a grid that sits on
+                  top of the items would fight them for attention. */}
+              {/* The sheet itself: exactly the roll's width, scrolling with the
+                  artwork, with a hairline at its edge. */}
+              <div
+                aria-hidden
+                className="absolute top-0 left-0 pointer-events-none"
+                style={{
+                  ...canvasBgStyle(canvasBg, 1),
+                  zIndex: 0,
+                  width: `${canvasWidth * ppi}px`,
+                  height: `${sheetHeightPx / (ppi * zoom) * ppi}px`,
+                  boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.22)",
+                }}
+              />
+              <CanvasGrid
+                showGrid={showGrid}
+                sheetWidthIn={canvasWidth}
+                heightIn={sheetHeightPx / (ppi * zoom)}
+                isDarkBg={isDarkBg(canvasBg ?? 'transparent')}
+              />
               <CanvasMargins
                 showMargins={showMargins}
+                sheetWidthIn={canvasWidth}
                 marginSize={marginSize}
                 heightIn={sheetHeightPx / (ppi * zoom)}
                 isDarkBg={isDarkBg(canvasBg ?? 'transparent')}
@@ -479,17 +570,54 @@ export default function CanvasContainer({
                   }}
                 />
               ) : null}
+              {/*
+                A selected group gets one outline around all of it, so it reads
+                as a single thing rather than several separately selected pieces.
+              */}
+              {(() => {
+                const selectedGroups = new Set(
+                  items
+                    .filter((it) => it.groupId && (it.id === selectedId || selectedIds.has(it.id)))
+                    .map((it) => it.groupId as string),
+                );
+                return [...selectedGroups].map((groupId) => {
+                  const members = items.filter((it) => it.groupId === groupId);
+                  if (members.length < 2) return null;
+                  const box = footprintBounds(members, canvasWidth, marginSize, spacing);
+                  const pad = 0.08;
+                  return (
+                    <div
+                      key={`group-${groupId}`}
+                      className="absolute pointer-events-none rounded-md"
+                      style={{
+                        left: `${(box.x - pad) * ppi}px`,
+                        top: `${(box.y - pad) * ppi}px`,
+                        width: `${(box.w + 2 * pad) * ppi}px`,
+                        height: `${(box.h + 2 * pad) * ppi}px`,
+                        border: "2px dashed rgba(37,99,235,0.85)",
+                        zIndex: 5,
+                      }}
+                      aria-hidden
+                    >
+                      <span className="absolute -top-5 left-0 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                        Group · {members.length}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
               {visibleItems.map((it) => (
                 <ArtboardItem
                   key={it.id}
                   item={it}
                   isSelected={selectedId === it.id || selectedIds.has(it.id)}
                   isPrimary={selectedId === it.id}
+                  selection={selectionSummary}
                   showProperties={showProperties[it.id] || false}
-                  addedToCart={addedToCart.has(it.id)}
                   onSelect={(multi) => onItemSelect(it.id, multi)}
                   onToggleProperties={() => onToggleProperties(it.id)}
-                  onLink={onLink}
+                  onGroup={onGroup}
+                  groupAction={groupAction}
                   onRotate={itemActions.rotateSelected}
                   onToggleLock={itemActions.toggleLockSelected}
                   onFlip={itemActions.flipSelected}
@@ -503,7 +631,6 @@ export default function CanvasContainer({
                   onSetHeightIn={itemActions.setHeightIn}
                   onSetPosX={itemActions.setPosX}
                   onSetPosY={itemActions.setPosY}
-                  onAddToCart={() => onAddToCart(it)}
                   onCloseProperties={onCloseProperties}
                   onRemoveBg={onRemoveBg}
                   onDragStart={(e) => onDragStart(e, it.id)}
@@ -521,6 +648,7 @@ export default function CanvasContainer({
                   scrollTop={scrollTop}
                   viewportHeight={viewportHeight}
                   isDpiHighlighted={dpiHighlightIds?.has(it.id) ?? false}
+                  transparency={transparencyVerdicts?.get(it.url)}
                 />
               ))}
             </div>
@@ -539,7 +667,15 @@ export default function CanvasContainer({
             </span>
             <span className="flex flex-col items-start">
               <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
-              <span className="text-[11px] text-slate-400 mt-0.5">PNG · JPG · PDF</span>
+              <span className="text-[11px] text-slate-400 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
+                {UPLOAD_FORMAT_LABELS.slice(0, 7).join(" · ")} & more
+              </span>
+              {/* The keyboard gestures, named next to the one for adding artwork. */}
+              <span className="text-[11px] text-slate-400 mt-0.5">
+                <span className="font-semibold text-slate-500">N</span> auto-nest ·{" "}
+                <span className="font-semibold text-slate-500">S</span> settings ·{" "}
+                <span className="font-semibold text-slate-500">C</span> cart
+              </span>
             </span>
           </button>
         </div>
@@ -663,10 +799,11 @@ export default function CanvasContainer({
           <div className="px-3 py-2 border-b   border-gray-100">
             <div className="text-[11px] font-semibold  text-gray-700">Item Spacing</div>
             <div className="text-[11px] text-gray-500">
-              {autoNestStickers ? "Auto-Nest ON (tight)" : `${spacing.toFixed(2)} in`}
+              {/* Spacing applies with auto-nest on too; "tight" claimed it did not. */}
+              {`${spacing.toFixed(2)} in${autoNestStickers ? " · auto-nest on" : ""}`}
             </div>
-            <div className="mt-1 text-[11px] text-gray-400">Add more item</div>
           </div>
+          <div className="px-3 py-2 text-[11px] text-gray-400">Add more item</div>
           <div className="px-3 py-3">
             <button
               className="w-full flex items-center justify-center"

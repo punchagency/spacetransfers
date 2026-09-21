@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { MdClose, MdLogout, MdPersonAddAlt } from "react-icons/md";
 import { BsBoxSeam } from "react-icons/bs";
 import { apiFetch } from "../../lib/utils/api";
+import { setToken } from "../../lib/utils/auth";
 import toast from "react-hot-toast";
 
 interface AccountSettingsModalProps {
@@ -85,7 +86,7 @@ export default function AccountSettingsModal({
       });
 
       if (response.token) {
-        localStorage.setItem("token", response.token);
+        setToken(response.token);
       }
       
       onAuthSuccess(response.user);

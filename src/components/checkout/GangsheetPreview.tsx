@@ -1,6 +1,7 @@
 import { useMemo } from "react";
-import { getRenderedGroupSize } from "../artboard/lib/utils";
+import { computeGroupDims } from "../artboard/lib/utils";
 import { CANVAS } from "../../config/artboard.config";
+import { getSheetWidthIn } from "../../lib/utils/pricingRates";
 
 interface PreviewSubItem {
   id?: number;
@@ -13,6 +14,7 @@ interface PreviewSubItem {
   flipped?: boolean;
   copies?: number;
   nestRotation?: 0 | 90;
+  flowCols?: number;
 }
 
 interface GangsheetPreviewProps {
@@ -50,26 +52,45 @@ export default function GangsheetPreview({
 }: GangsheetPreviewProps) {
   const layout = useMemo(() => {
     const safeItems = Array.isArray(items) ? items.filter((it) => it && it.url) : [];
-    const sheetW = sheetWidthIn && sheetWidthIn > 0 ? sheetWidthIn : CANVAS.SHEET_WIDTH_IN;
+    const sheetW = sheetWidthIn && sheetWidthIn > 0 ? sheetWidthIn : getSheetWidthIn();
     const maxAvailableWidth = Math.max(1e-6, sheetW - 2 * Math.max(0, marginIn));
 
-    // Resolve each item's rendered group footprint (position + wrapped copies).
+    /*
+     * Each item laid out the way the artboard draws it and the export prints
+     * it: the cell swaps for auto-nest's quarter turn, copies wrap at the
+     * columns auto-nest chose, and the image is drawn at its own upright size
+     * and turned into the cell. This preview used as many columns as fit and
+     * ignored the nest turn, so the sheet shown at checkout could differ from
+     * the one just built.
+     */
     const groups = safeItems.map((it) => {
       const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
-      const rotated = it.nestRotation === 90;
-      const w = Math.max(1e-6, (rotated ? it.heightIn : it.widthIn) || 0);
-      const h = Math.max(1e-6, (rotated ? it.widthIn : it.heightIn) || 0);
-      const group = getRenderedGroupSize(w, h, copies, maxAvailableWidth, spacingIn);
+      const widthIn = Math.max(1e-6, it.widthIn || 0);
+      const heightIn = Math.max(1e-6, it.heightIn || 0);
+      const nested = it.nestRotation === 90;
+      const cellW = nested ? heightIn : widthIn;
+      const cellH = nested ? widthIn : heightIn;
+      const rotation = it.rotation || 0;
+      const oddQuarter = ((Math.round(rotation / 90) % 2) + 2) % 2 === 1;
+      const cols =
+        typeof it.flowCols === "number" && it.flowCols >= 1
+          ? Math.min(copies, Math.floor(it.flowCols))
+          : computeGroupDims(cellW, cellH, copies, maxAvailableWidth, spacingIn).cols;
+      const rows = Math.ceil(copies / cols);
       return {
         url: it.url as string,
         posX: Math.max(0, it.posX || 0),
         posY: Math.max(0, it.posY || 0),
-        cellW: w,
-        cellH: h,
-        rotation: it.rotation || 0,
+        cellW,
+        cellH,
+        imageW: oddQuarter ? heightIn : widthIn,
+        imageH: oddQuarter ? widthIn : heightIn,
+        rotation: rotation + (nested ? 90 : 0),
         flipped: !!it.flipped,
         copies,
-        ...group,
+        cols,
+        width: cols * cellW + (cols - 1) * spacingIn,
+        height: rows * cellH + (rows - 1) * spacingIn,
       };
     });
 
@@ -185,10 +206,14 @@ export default function GangsheetPreview({
                   draggable={false}
                   style={{
                     position: "absolute",
-                    left: pct(cellLeftIn, g.width),
-                    top: pct(cellTopIn, g.height),
-                    width: pct(g.cellW, g.width),
-                    height: pct(g.cellH, g.height),
+                    // Centred in the cell at its own upright size, then turned,
+                    // so a quarter turn fills the cell exactly.
+                    left: pct(cellLeftIn + (g.cellW - g.imageW) / 2, g.width),
+                    top: pct(cellTopIn + (g.cellH - g.imageH) / 2, g.height),
+                    width: pct(g.imageW, g.width),
+                    height: pct(g.imageH, g.height),
+                    maxWidth: "none",
+                    maxHeight: "none",
                     objectFit: "contain",
                     transform: `scaleX(${g.flipped ? -1 : 1}) rotate(${g.rotation}deg)`,
                   }}
