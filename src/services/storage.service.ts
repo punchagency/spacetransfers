@@ -47,6 +47,10 @@ const r2 = (): S3Client => {
   client = new S3Client({
     // R2 is S3-compatible but single-region; "auto" is what Cloudflare expects.
     region: "auto",
+    // No limits by default: a stuck connection to storage held the upload (and
+    // the customer's progress bar) open indefinitely. 5 seconds to connect, or
+    // 2 minutes with no data moving, and it fails with an error instead.
+    requestHandler: { connectionTimeout: 5_000, requestTimeout: 120_000 },
     endpoint: `https://${env.r2AccountId}.r2.cloudflarestorage.com`,
     credentials: {
       accessKeyId: env.r2AccessKeyId!,

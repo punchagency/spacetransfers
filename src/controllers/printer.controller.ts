@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import {
   PRINTER_STATUS_LABEL,
   printerStatusLabel,
@@ -1090,7 +1091,7 @@ export const downloadJobAssetBundle = async (req: Request, res: Response, next: 
 
         // Fallback to remote fetch if not local, still streaming - "eliminate redundant file generation"
         if (/^https?:\/\//i.test(url)) {
-          const r = await fetch(url);
+          const r = await fetchWithTimeout(url, {}, 90_000, "Loading the artwork");
           if (r.ok) {
             const contentLength = r.headers.get("content-length");
             if (contentLength === "0") {

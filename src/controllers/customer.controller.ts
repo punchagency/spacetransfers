@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { verifyCardPayment } from "../services/paymentVerification.service.js";
 import { User } from "../models/user.model.js";
 import { isValidPhone } from "../utils/accountFields.js";
@@ -177,7 +178,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
           error.statusCode = 404;
           throw error;
         }
-        const r = await fetch(url);
+        const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
         if (!r.ok) {
           const error = new Error("Asset file not found") as CustomError;
           error.statusCode = 404;
@@ -186,7 +187,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
         sourceBuffer = Buffer.from(await r.arrayBuffer());
       }
     } else {
-      const r = await fetch(url);
+      const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
       if (!r.ok) {
         const error = new Error("Asset file not found") as CustomError;
         error.statusCode = 404;
@@ -274,7 +275,7 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
       { statusCode: 400, code: "IMAGE_NOT_UPLOADED" },
     );
   }
-  const r = await fetch(url);
+  const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
   if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
 
   // Trust the advertised length when present, so an oversized remote asset is

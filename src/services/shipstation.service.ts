@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { Order } from "../models/order.model.js";
 import { User } from "../models/user.model.js";
 import { env } from "../config/env.js";
@@ -82,11 +83,11 @@ async function ssRequest<T>(method: string, path: string, body?: unknown): Promi
     `${env.shipStationApiKey}:${env.shipStationApiSecret}`
   ).toString("base64");
 
-  const res = await fetch(`${SS_BASE}${path}`, {
+  const res = await fetchWithTimeout(`${SS_BASE}${path}`, {
     method,
     headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  }, 30_000, "ShipStation");
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -101,10 +102,10 @@ async function ssRequest<T>(method: string, path: string, body?: unknown): Promi
 export async function ssRequestByUrl<T>(fullUrl: string): Promise<T> {
   if (!isShipStationConfigured()) throw new Error("ShipStation credentials not configured");
   const creds = Buffer.from(`${env.shipStationApiKey}:${env.shipStationApiSecret}`).toString("base64");
-  const res = await fetch(fullUrl, {
+  const res = await fetchWithTimeout(fullUrl, {
     method: "GET",
     headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/json" },
-  });
+  }, 30_000, "ShipStation");
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`ShipStation GET ${fullUrl} → HTTP ${res.status}: ${text.slice(0, 400)}`);
