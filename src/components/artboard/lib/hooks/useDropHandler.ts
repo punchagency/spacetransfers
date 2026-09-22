@@ -25,12 +25,18 @@ import type { SerialQueue } from "../utils/serialQueue";
 import type { CommitHistory } from "./useHistory";
 
 /**
- * Hard ceiling on a single file's upload.
+ * An upload is given up on when it stops moving, not when it takes long.
  *
- * Generous because it has to cover a genuinely large print file on a slow
- * connection — it exists to bound a hang, not to police slow uploads.
+ * It had a 90-second ceiling on the whole request, which is backwards for print
+ * files: a large one on a slow connection legitimately takes minutes (a 4 MB
+ * photo from far away took over a minute), while a connection that has died
+ * was waited on for the full 90 seconds. So:
+ *  - while sending, 30 seconds with no progress at all means it has stalled;
+ *  - once every byte is sent, the server has 2 minutes to answer (it stores
+ *    the file, trims it and checks it before replying).
  */
-const UPLOAD_TIMEOUT_MS = 90_000;
+const UPLOAD_STALL_MS = 30_000;
+const UPLOAD_RESPONSE_MS = 120_000;
 
 /**
  * How many files are processed at once.
@@ -280,36 +286,38 @@ export const useDropHandler = (
       }
 
       /**
-       * Without this an upload could wait forever.
-       *
-       * `xhr.onerror` only fires on a transport failure — a server that accepts
-       * the body and then never answers (which is what a file it cannot decode
-       * can produce) fires nothing at all, and the dialog sits at whatever
-       * percentage it reached with no error, no timeout and no way out but
-       * Cancel. That was the reported bug.
-       *
-       * The window is generous because it has to cover a genuinely large
-       * artwork on a slow connection; it exists to bound a hang, not to police
-       * slow uploads. `xhr.timeout` measures the whole request, and is reset by
-       * neither upload progress nor a partial response.
+       * Without this an upload could wait forever: `xhr.onerror` only fires on
+       * a transport failure, and a server that accepts the body and never
+       * answers fires nothing at all — the dialog sat at its last percentage.
        */
-      xhr.timeout = UPLOAD_TIMEOUT_MS;
-      xhr.ontimeout = () => {
-        release();
-        reject(
-          new Error(
-            `“${file.name}” timed out after ${Math.round(UPLOAD_TIMEOUT_MS / 1000)}s. Check your connection and try again.`,
-          ),
-        );
+      let giveUpReason: string | null = null;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+      const watch = (ms: number, reason: string) => {
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          giveUpReason = reason;
+          xhr.abort();
+        }, ms);
       };
+      const stopWatching = () => {
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = null;
+      };
+      const stalled = `“${file.name}” stopped uploading. Check your connection and try again.`;
+      const slowServer = `“${file.name}” uploaded, but we didn't hear back in time. Please try again in a moment.`;
+      watch(UPLOAD_STALL_MS, stalled);
 
       xhr.upload.onprogress = (evt) => {
+        watch(UPLOAD_STALL_MS, stalled);
         if (evt.lengthComputable) {
           onProgress(Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100)));
         }
       };
+      // Every byte sent: from here the wait is on the server, not the connection.
+      xhr.upload.onload = () => watch(UPLOAD_RESPONSE_MS, slowServer);
 
       xhr.onload = () => {
+        stopWatching();
         release();
         let json: any = {};
         try {
@@ -325,13 +333,15 @@ export const useDropHandler = (
       };
 
       xhr.onerror = () => {
+        stopWatching();
         release();
         reject(new Error(`“${file.name}” couldn't be uploaded. Check your connection and try again.`));
       };
 
       xhr.onabort = () => {
+        stopWatching();
         release();
-        reject(new Error("Upload canceled"));
+        reject(new Error(giveUpReason ?? "Upload canceled"));
       };
 
       const formData = new FormData();

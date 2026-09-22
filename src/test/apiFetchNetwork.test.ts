@@ -26,3 +26,34 @@ describe("apiFetch when the connection fails", () => {
     await expect(apiFetch("/customer/pricing")).rejects.toMatchObject({ name: "AbortError" });
   });
 });
+
+describe("apiFetch time limit", () => {
+  // A fetch that never answers, but stops when aborted — like a real stuck request.
+  const hanging = () =>
+    vi.fn((_url: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      }),
+    );
+
+  it("gives up on a request that never answers, with a message for the customer", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", hanging());
+    const error = await apiFetch("/customer/cart", { method: "PUT", body: "{}", timeoutMs: 50 }).catch((e) => e);
+    expect(error.timeout).toBe(true);
+    expect(error.message).toMatch(/taking longer than it should/);
+  });
+
+  it("tries a read once more before giving up, but never repeats a write", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const read = hanging();
+    vi.stubGlobal("fetch", read);
+    await apiFetch("/customer/pricing", { timeoutMs: 30 }).catch(() => {});
+    expect(read).toHaveBeenCalledTimes(2);
+
+    const write = hanging();
+    vi.stubGlobal("fetch", write);
+    await apiFetch("/customer/orders", { method: "POST", body: "{}", timeoutMs: 30 }).catch(() => {});
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+});

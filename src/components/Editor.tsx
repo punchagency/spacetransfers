@@ -22,7 +22,7 @@ import { clearAuth, getToken, onAuthChanged } from "../lib/utils/auth";
 import { showCartAddedToast } from "./common/CartAddedToast";
 import { getGangsheetSnapshot } from "../lib/utils/gangsheetState";
 import { isTypingTarget } from "../lib/utils/keyboard";
-import { artworkNotUploaded, nextUntitledName } from "../lib/utils/sheetSaving";
+import { artworkNotUploaded, nextCopyName, nextUntitledName, UNTITLED_SHEET } from "../lib/utils/sheetSaving";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
 import { CANVAS, PRICING } from "../config/artboard.config";
@@ -39,7 +39,13 @@ import { cartLineKey, cartSignInMessage, mergeCarts, readCartOwner, repriceCart,
 import { computeRenderCopies, sheetContentLengthIn } from "./artboard/lib/utils/layoutHelpers";
 
 type SaveOptions = { title?: string; thumbnail?: string };
-type SaveResult = { ok: boolean; reason?: string };
+type SaveResult = {
+  ok: boolean;
+  reason?: string;
+  /** The saved sheet and its name, so a caller acting on it (add to cart) uses what was just saved. */
+  designId?: string;
+  title?: string;
+};
 
 export default function Editor() {
   const pricingSettings = usePricingSettings();
@@ -532,8 +538,29 @@ export default function Editor() {
    */
   const [cartLineId, setCartLineId] = useState<number | null>(null);
   const cartLine = cartItems.find((line) => line.id === cartLineId) ?? null;
-  /** Whether this board is in the cart. Once it is, it is kept in step with it. */
+  /** Whether this board is in the cart. */
   const cartSheetState: "none" | "current" = cartLine ? "current" : "none";
+  /** The sheet's name as shown in the header, the cart and the saved list. */
+  const sheetTitle = currentLoadedDesignTitle || draftDesignTitle || UNTITLED_SHEET;
+  /**
+   * Whether changes on the board flow into its cart line.
+   *
+   * They used to, always, a moment after each edit. But changing a sheet that
+   * is already in the cart is ambiguous: the customer may be refining that
+   * order, or starting a variation of it. So on the first change they are
+   * asked; "Update the cart" sets this and the cart follows from then on.
+   * Opening a sheet with the cart's Edit sheet is already that answer.
+   */
+  const [cartFollowLineId, setCartFollowLineId] = useState<number | null>(null);
+  const followsCart = Boolean(cartLine) && cartFollowLineId === cartLine?.id;
+  /**
+   * An in-cart sheet has changed and the customer hasn't said what the change
+   * is for. Until they do, neither the cart line nor the saved sheet behind it
+   * is overwritten — so the version in the cart can't change under them.
+   */
+  const cartDecisionPending = Boolean(cartLine) && !followsCart && cartLine!.designSignature !== currentSnapshot;
+  const CART_DECISION_FIRST =
+    "This sheet is in your cart — choose Update cart or Save as a new sheet first.";
 
   const [isGangsheetBusy, setIsGangsheetBusy] = useState(false);
   const pendingAfterSaveRef = useRef<null | (() => Promise<void> | void)>(null);
@@ -659,6 +686,9 @@ export default function Editor() {
       };
     }
     if (items.length === 0) return { ok: false, reason: "There is nothing on the sheet to save." };
+    // Saving now would overwrite the sheet that is in the cart before the
+    // customer has said whether these changes belong to it.
+    if (cartDecisionPending) return { ok: false, reason: CART_DECISION_FIRST };
     if (artworkNotUploaded(items)) {
       setSaveState("error");
       setSaveError(ARTWORK_PENDING_MESSAGE);
@@ -667,6 +697,8 @@ export default function Editor() {
 
     const { normalizedItems, mappedItems } = mapItemsForSave(items);
     const snapshot = getGangsheetSnapshot(normalizedItems);
+    let savedId: string | undefined;
+    let savedTitle: string | undefined;
     setSaveState("saving");
     try {
       // Artwork the editor rendered locally is uploaded once and referenced by
@@ -684,6 +716,8 @@ export default function Editor() {
           }),
         });
         if (options.title) setCurrentLoadedDesignTitle(options.title);
+        savedId = currentLoadedDesignId;
+        savedTitle = options.title || currentLoadedDesignTitle || draftDesignTitle || undefined;
         updateSavedDesignSnapshot(currentLoadedDesignId, {
           ...(options.title ? { title: options.title } : {}),
           ...(options.thumbnail ? { thumbnail: options.thumbnail } : {}),
@@ -714,14 +748,16 @@ export default function Editor() {
           setCurrentLoadedDesignId(createdId);
           setCurrentLoadedDesignTitle(title);
           setDraftDesignTitle(null);
+          savedId = createdId;
         }
+        savedTitle = title;
       }
       fetchDesigns();
       setBaselineSnapshot(snapshot);
       setCurrentLoadedDesignString(snapshot);
       setSaveState("saved");
       setSaveError(null);
-      return { ok: true };
+      return { ok: true, designId: savedId, title: savedTitle };
     } catch (err: any) {
       const reason = err?.message || "This sheet could not be saved.";
       setSaveState("error");
@@ -732,12 +768,14 @@ export default function Editor() {
   saveRef.current = saveBoardNow;
 
   useEffect(() => {
-    if (!canAutosave || !hasUnsavedChanges) return;
+    // Waits while the customer decides whether changes to an in-cart sheet
+    // update the cart or become a new sheet — see `cartDecisionPending`.
+    if (!canAutosave || !hasUnsavedChanges || cartDecisionPending) return;
     const timer = setTimeout(() => {
       void saveRef.current();
     }, AUTOSAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [currentSnapshot, canAutosave, hasUnsavedChanges]);
+  }, [currentSnapshot, canAutosave, hasUnsavedChanges, cartDecisionPending]);
 
   /** The sidebar's Save for a sheet that already has a record. */
   const saveLoadedGangsheet = async () => {
@@ -776,6 +814,7 @@ export default function Editor() {
           const trimmed = await apiFetch("/customer/assets/trim", {
             method: "POST",
             body: JSON.stringify({ url }),
+            timeoutMs: 90_000,
           });
           if (trimmed?.trimmedUrl) return trimmed.trimmedUrl as string;
         } catch {
@@ -1075,6 +1114,12 @@ export default function Editor() {
       setShowAuthModal(true);
       return;
     }
+    // Adding now would save over the sheet already in the cart, and add a
+    // second line, before the customer has said which they meant.
+    if (cartDecisionPending) {
+      toast(CART_DECISION_FIRST, { id: "cart-decision", icon: "🛒" });
+      return;
+    }
 
     try {
       const currentItems = getCurrentItems();
@@ -1127,7 +1172,12 @@ export default function Editor() {
       // Add gang sheet without image first
       const gangSheetItem = {
         id: Date.now(),
-        name: "Gang Sheet",
+        // The sheet's own name — every line used to read "Gang Sheet".
+        name: saved.title || sheetTitle,
+        // Which saved sheet this is, so Edit sheet reopens that sheet (its name
+        // and record), and so its auto-nest setting comes back with it.
+        designId: saved.designId ?? currentLoadedDesignId ?? undefined,
+        autoNest: settings.autoNestStickers,
         type: "gangsheet",
         image: "/placeholder-gangsheet.png",
         items: normalized,
@@ -1144,8 +1194,6 @@ export default function Editor() {
         sheetMarginIn: settings.marginSize,
       };
 
-      console.log("gangSheetItem being added:", gangSheetItem);
-      console.log("gangSheetItem.items:", gangSheetItem.items);
 
       setCartItems((prev) => [...prev, gangSheetItem]);
       setCartLineId(gangSheetItem.id);
@@ -1204,6 +1252,10 @@ export default function Editor() {
     const heightIn = headerInfo?.heightIn || getMinSheetLengthIn();
     const updated = {
       ...cartLine,
+      // A rename on the board shows in the cart too.
+      name: sheetTitle,
+      designId: currentLoadedDesignId ?? cartLine.designId,
+      autoNest: settings.autoNestStickers,
       items: normalized,
       designSignature: getGangsheetSnapshot(normalized),
       price: headerInfo?.price || 0,
@@ -1256,13 +1308,35 @@ export default function Editor() {
         ...prev,
         spacing: typeof line.itemSpacingIn === "number" ? line.itemSpacingIn : prev.spacing,
         marginSize: typeof line.sheetMarginIn === "number" ? line.sheetMarginIn : prev.marginSize,
+        autoNestStickers: typeof line.autoNest === "boolean" ? line.autoNest : prev.autoNestStickers,
       }));
+      /*
+       * The sheet comes back as itself: its name, and the saved record it was
+       * added from, so autosave keeps writing to that sheet. The header kept
+       * whatever name the board had before, and edits could be saved into a
+       * different sheet.
+       */
+      if (line.designId) {
+        setCurrentLoadedDesignId(String(line.designId));
+        setCurrentLoadedDesignString(snapshot);
+      } else {
+        // A line added before lines recorded their sheet: save it as its own
+        // sheet rather than into whichever sheet was open before.
+        setCurrentLoadedDesignId(null);
+        setCurrentLoadedDesignString(null);
+      }
+      setCurrentLoadedDesignTitle(line.name && line.name !== "Gang Sheet" ? line.name : null);
+      setDraftDesignTitle(null);
       setCartLineId(line.id);
+      // Choosing Edit sheet is choosing to change the cart's version.
+      setCartFollowLineId(line.id);
       setShowCheckoutModal(false);
       toast.success("Editing this sheet — your changes update the cart.", { id: "cart-add" });
     };
-    // Already the board's own line: nothing to swap in, so nothing to warn about.
+    // Already the board's own line: nothing to swap in, so nothing to warn about
+    // — but choosing Edit sheet is still choosing to change the cart's version.
     if (line.id === cartLineId) {
+      setCartFollowLineId(line.id);
       setShowCheckoutModal(false);
       return;
     }
@@ -1289,12 +1363,43 @@ export default function Editor() {
   const cartSyncRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {});
   cartSyncRef.current = updateCartSheet;
   useEffect(() => {
-    if (!cartLine || cartLine.designSignature === currentSnapshot) return;
+    // Only once the customer has said this board's changes belong to its cart
+    // line (Update cart, or opening it with Edit sheet).
+    if (!cartLine || !followsCart) return;
+    if (cartLine.designSignature === currentSnapshot && cartLine.name === sheetTitle) return;
     const timer = setTimeout(() => {
       void cartSyncRef.current({ silent: true });
     }, CART_SYNC_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [currentSnapshot, cartLine]);
+  }, [currentSnapshot, cartLine, followsCart, sheetTitle]);
+
+  /** "Update the cart": this board's changes go into its cart line, now and from here on. */
+  const followCartWithChanges = () => {
+    if (!cartLine) return;
+    setCartFollowLineId(cartLine.id);
+    void cartSyncRef.current();
+  };
+
+  /**
+   * "Save as a new sheet": the cart keeps its version; the board, with its
+   * changes, becomes a separate sheet with a name of its own. Autosave then
+   * creates it (the board no longer points at the in-cart sheet's record).
+   */
+  const branchFromCartSheet = () => {
+    if (!cartLine) return;
+    const kept = cartLine.name || sheetTitle;
+    const name = nextCopyName(sheetTitle, [
+      ...savedDesigns.map((d: any) => d?.title),
+      ...cartItems.map((line: any) => line?.name),
+    ]);
+    setCartLineId(null);
+    setCartFollowLineId(null);
+    setCurrentLoadedDesignId(null);
+    setCurrentLoadedDesignString(null);
+    setCurrentLoadedDesignTitle(null);
+    setDraftDesignTitle(name);
+    toast.success(`Saving this as a new sheet, “${name}”. Your cart still has “${kept}”.`, { id: "cart-decision" });
+  };
 
   /**
    * Clears the board for a separate sheet, so the next add is a new cart line.
@@ -1643,6 +1748,32 @@ export default function Editor() {
           }}
         />
       </ErrorBoundary>
+      {/* Asked once, on the first change to a sheet that is in the cart. Sits at
+          the bottom, clear of the image toolbar at the top of the sheet. */}
+      {cartDecisionPending && !showCheckoutModal && (
+        <div role="status" className="fixed bottom-28 left-1/2 z-50 -translate-x-1/2 w-[calc(100vw-2rem)] max-w-xl">
+          <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-white px-4 py-3 shadow-lg sm:flex-row sm:items-center">
+            <p className="flex-1 text-[13px] leading-snug text-gray-700">
+              <span className="font-semibold text-gray-900">“{cartLine?.name || sheetTitle}” is in your cart.</span>{" "}
+              Update the cart with these changes, or keep the cart as it is and save this as a new sheet?
+            </p>
+            <div className="flex shrink-0 gap-2">
+              <button
+                onClick={branchFromCartSheet}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-[12px] font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Save as new sheet
+              </button>
+              <button
+                onClick={followCartWithChanges}
+                className="rounded-lg bg-slate-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-slate-800"
+              >
+                Update cart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {cartWarning && (
         <div className="absolute mt-10 top-10 left-1/2 -translate-x-1/2 z-50">
           <div className="inline-flex items-center gap-2 rounded-lg bg-blue-50 border border-blue-500 px-4 py-2 shadow-lg">

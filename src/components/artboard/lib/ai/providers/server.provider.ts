@@ -115,7 +115,8 @@ export const serverProvider: AiEditProvider = {
       const result = await postAssetRef(
         "/customer/assets/ai-edit",
         { url: imageUrl, prompt, intent, seed },
-        { signal },
+        // The server allows the model two minutes; the request waits a little longer.
+        { signal, timeoutMs: 150_000 },
       );
 
       if (signal?.aborted) throw new AiEditAbortedError();

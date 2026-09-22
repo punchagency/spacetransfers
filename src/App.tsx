@@ -39,7 +39,11 @@ export default function App() {
         80px = the toaster's own 16px inset plus the 64px the cards used to add,
         so notices sit exactly where they always have, clear of the 40px header.
       */}
-      <Toaster position="top-center" containerStyle={{ top: 80 }} gutter={10} />
+      {/* Its own boundary: it sits outside the page's, and a crash in it (a
+          browser extension rewriting the page is enough) blanked everything. */}
+      <ErrorBoundary name="Notifications" fallback={null}>
+        <Toaster position="top-center" containerStyle={{ top: 80 }} gutter={10} />
+      </ErrorBoundary>
       {/* Last resort: each part of the editor has its own boundary, so this
           only shows if the page as a whole fails — instead of a blank screen. */}
       <ErrorBoundary name="The page" fullPage>

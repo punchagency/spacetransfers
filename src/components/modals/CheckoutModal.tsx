@@ -372,6 +372,8 @@ export default function CheckoutModal({
     const result = await apiFetch("/customer/orders", {
       method: "POST",
       body: JSON.stringify(safePayload),
+      // Verifies the payment and prepares print files; never retried on its own.
+      timeoutMs: 60_000,
     });
 
     if (result?.id) {

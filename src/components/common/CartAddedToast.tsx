@@ -31,7 +31,7 @@ export const showCartAddedToast = ({
               {sheetName ? `“${sheetName}” is in your cart` : "Sheet added to your cart"}
             </p>
             <p className="mt-0.5 text-[12px] leading-[17px] text-gray-600">
-              It is saved, and any change you make here updates it.
+              It's saved. If you change it, we'll ask whether to update the cart or keep it as a new sheet.
             </p>
           </div>
         </div>
@@ -46,6 +46,7 @@ export const showCartAddedToast = ({
         </button>
       </div>
     ),
-    { duration: 7000, id: "cart-add" },
+    // At the bottom: at the top it sat over the image toolbar for seven seconds.
+    { duration: 7000, id: "cart-add", position: "bottom-center" },
   );
 };
