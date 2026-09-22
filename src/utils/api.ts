@@ -1,7 +1,35 @@
 import { clearAuth, getToken } from "./auth";
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
-export async function apiFetch(endpoint: string, options: RequestInit = {}) {
+/**
+ * How long a request may take before it is given up on. There was no limit, so
+ * a request that never answered left its spinner running for good. Callers
+ * with slow work pass their own `timeoutMs`; 0 turns it off.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
+export type ApiFetchOptions = RequestInit & { timeoutMs?: number };
+
+export async function apiFetch(endpoint: string, fetchOptions: ApiFetchOptions = {}) {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...options } = fetchOptions;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
+  const callerSignal = options.signal;
+  const onCallerAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", onCallerAbort);
+  }
+  try {
+    return await apiFetchWithin(endpoint, { ...options, signal: controller.signal }, () => timedOut);
+  } finally {
+    if (timer) clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  }
+}
+
+async function apiFetchWithin(endpoint: string, options: RequestInit, timedOut: () => boolean) {
   const token = getToken();
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
@@ -22,6 +50,10 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
       headers,
     });
   } catch (err) {
+    if (timedOut()) {
+      console.warn(`[api] ${endpoint}: no answer in time`);
+      throw Object.assign(new Error("This is taking longer than it should. Please try again in a moment."), { timeout: true });
+    }
     // A request the app cancelled on purpose (Stop, a timeout that retries) is
     // not a lost connection: pass it through so callers can tell. It used to be
     // swallowed into the message below.
