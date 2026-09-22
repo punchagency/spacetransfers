@@ -515,6 +515,18 @@ export default function Artboard({
   };
 
   /**
+   * Stores a piece's measured pixel width when it has none. Not an edit: no
+   * undo step, and the sheet's saved/cart comparison ignores this field.
+   */
+  const recordMeasuredWidth = useCallback((id: number, widthPx: number) => {
+    setItems((prev) =>
+      prev.some((it) => it.id === id && !it.nativeWidthPx && !it.croppedWidthPx)
+        ? prev.map((it) => (it.id === id && !it.nativeWidthPx && !it.croppedWidthPx ? { ...it, nativeWidthPx: widthPx } : it))
+        : prev,
+    );
+  }, [setItems]);
+
+  /**
    * Duplicates everything selected, and selects the copies.
    *
    * It used to duplicate only the piece last clicked, however many were
@@ -713,6 +725,7 @@ export default function Artboard({
           onDelete={deleteSelection}
           onCloseProperties={() => setShowProperties({})}
           onRemoveBg={itemActions.removeBg}
+          onMeasured={recordMeasuredWidth}
           onDragStart={handleDragStart}
           onResizeStart={handleResizeStart}
           isDraggingItem={isDraggingItem}

@@ -597,6 +597,9 @@ export default function Editor() {
       // pixel count instead of the DB's original widthPx, preventing upscaling.
       croppedWidthPx: it.croppedWidthPx || undefined,
       croppedHeightPx: it.croppedHeightPx || undefined,
+      // So a reopened sheet knows each piece's resolution without waiting for
+      // the image to download (the DPI check counted it "unknown" till then).
+      nativeWidthPx: typeof it.nativeWidthPx === "number" && it.nativeWidthPx > 0 ? it.nativeWidthPx : undefined,
       widthIn: it.widthIn,
       heightIn: it.heightIn,
       posX: it.posX,
@@ -817,6 +820,7 @@ export default function Editor() {
               // calculator uses the correct pixel count on re-save or checkout.
               croppedWidthPx: typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0 ? it.croppedWidthPx : undefined,
               croppedHeightPx: typeof it.croppedHeightPx === "number" && it.croppedHeightPx > 0 ? it.croppedHeightPx : undefined,
+              nativeWidthPx: typeof it.nativeWidthPx === "number" && it.nativeWidthPx > 0 ? it.nativeWidthPx : undefined,
               rotation: it.rotation || 0,
               // Restored rather than reset: a locked or mirrored piece used to
               // reopen unlocked and unmirrored.
@@ -865,6 +869,16 @@ export default function Editor() {
        * report it as unknown DPI. Designs saved before artwork was required to
        * be uploaded can reference images that exist nowhere any more, and
        * "0 DPI" is not an explanation anyone can act on.
+       *
+       * Two things this check used to get wrong, both seen on a real sheet:
+       *  - It loaded each image without CORS. The browser cached that copy, and
+       *    every later CORS read of the image (its pixel size, its transparency)
+       *    was served the cached copy and failed — so a perfectly good sheet
+       *    showed broken images and "unknown DPI" on every piece.
+       *  - It gave up after 15 seconds and called the image missing. A large
+       *    print file can take longer than that to download, so existing
+       *    artwork was reported as needing to be re-added. Only an actual load
+       *    error counts now; slow is not missing.
        */
       void (async () => {
         const urls = Array.from(
@@ -875,15 +889,9 @@ export default function Editor() {
             (url) =>
               new Promise<boolean>((resolve) => {
                 const img = new Image();
-                const timer = window.setTimeout(() => resolve(false), 15000);
-                img.onload = () => {
-                  window.clearTimeout(timer);
-                  resolve(true);
-                };
-                img.onerror = () => {
-                  window.clearTimeout(timer);
-                  resolve(false);
-                };
+                img.crossOrigin = "anonymous";
+                img.onload = () => resolve(true);
+                img.onerror = () => resolve(false);
                 img.src = url;
               }),
           ),

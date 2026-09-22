@@ -201,6 +201,8 @@ export default function GangsheetPreview({
               return (
                 <img
                   key={i}
+                  // Same CORS mode as the board, so neither leaves a cached copy the other can't read.
+                  crossOrigin="anonymous"
                   src={g.url}
                   alt=""
                   draggable={false}

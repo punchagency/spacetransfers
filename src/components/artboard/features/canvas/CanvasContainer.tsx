@@ -47,6 +47,7 @@ interface CanvasContainerProps {
   onDelete: () => void;
   onCloseProperties: () => void;
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
+  onMeasured?: (id: number, widthPx: number) => void;
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
@@ -119,6 +120,7 @@ export default function CanvasContainer({
   onDelete,
   onCloseProperties,
   onRemoveBg,
+  onMeasured,
   onDragStart,
   onResizeStart,
   isDraggingItem,
@@ -633,6 +635,7 @@ export default function CanvasContainer({
                   onSetPosY={itemActions.setPosY}
                   onCloseProperties={onCloseProperties}
                   onRemoveBg={onRemoveBg}
+                  onMeasured={onMeasured}
                   onDragStart={(e) => onDragStart(e, it.id)}
                   onResizeStart={(e) => onResizeStart(e, it.id)}
                   isDragging={isDraggingItem}

@@ -170,6 +170,10 @@ export default function AiImagePanel({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // While its review dialog is open, Escape belongs to the dialog (it
+      // discards the edit). Both listen on window in the capture phase and this
+      // one was registered first, so it also closed the whole panel.
+      if (document.querySelector("[data-ai-review]")) return;
       e.stopPropagation();
       if (isRunning) onCancel();
       else requestClose();

@@ -36,6 +36,7 @@ interface ArtboardItemProps {
     flowEndCol?: number;
     dpi?: number;
     nativeWidthPx?: number;
+    croppedWidthPx?: number;
     nestRotation?: 0 | 90;
   };
   isSelected: boolean;
@@ -73,6 +74,8 @@ interface ArtboardItemProps {
   onCloseProperties: () => void;
   /** Removes the background from every selected image that has one. */
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
+  /** Reports the image's measured pixel width, for pieces that arrived without one. */
+  onMeasured?: (id: number, widthPx: number) => void;
   /** The whole selection, for the toolbar this piece shows when it is the primary. */
   selection?: SelectionSummary;
   onDragStart: (e: React.MouseEvent) => void;
@@ -125,6 +128,7 @@ function ArtboardItem({
   onSetPosY,
   onCloseProperties,
   onRemoveBg,
+  onMeasured,
   onDragStart,
   onResizeStart,
   isDragging,
@@ -188,6 +192,10 @@ function ArtboardItem({
       setNaturalWidthPx(info.widthPx);
       setNaturalHeightPx(info.heightPx);
       setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
+      // A piece reopened from a saved sheet, a restored cart or a reorder has
+      // no pixel count (it isn't saved), so the DPI check counted it as
+      // "unknown" and flagged the whole sheet. Recorded once measured.
+      if (!item.nativeWidthPx && !item.croppedWidthPx) onMeasured?.(item.id, info.widthPx);
     });
     return () => { cancelled = true; };
   }, [item.url]);
@@ -637,8 +645,15 @@ function ArtboardItem({
             const renderElement = (
               <img
                 key={index}
-                src={item.url}
+                /* crossOrigin before src: React sets attributes in order, and a
+                   src set first starts a plain (non-CORS) download that the
+                   browser caches. Every later CORS read of the same image — the
+                   pixel measure behind the DPI check, the transparency check —
+                   was then served that cached copy with no CORS header and
+                   failed: a reloaded sheet showed broken images, "unknown DPI"
+                   on every piece, and asked for re-uploads. */
                 crossOrigin="anonymous"
+                src={item.url}
                 draggable={false}
                 alt={`copy-${index}`}
                 /* Decode off the main thread. A print-resolution PNG blocks
