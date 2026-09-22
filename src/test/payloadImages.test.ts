@@ -252,6 +252,10 @@ describe("isRetryable", () => {
     expect(isRetryable(new TypeError("Failed to fetch"))).toBe(true);
   });
 
+  it("retries a lost connection as apiFetch reports it", () => {
+    expect(isRetryable(Object.assign(new Error("Can't connect"), { network: true }))).toBe(true);
+  });
+
   it("does not retry our own deliberately-thrown client error", () => {
     // No status, not a TypeError — e.g. materializeOnce's "no url in response".
     expect(isRetryable(new Error("The edited image could not be uploaded."))).toBe(false);

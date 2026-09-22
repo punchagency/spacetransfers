@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { ErrorBoundary } from "./common/ErrorBoundary";
 import toast from "react-hot-toast";
 import Header from "./Header";
 import Artboard from "./Artboard";
@@ -1455,175 +1456,185 @@ export default function Editor() {
 
   return (
     <div className="relative flex flex-col h-screen w-screen bg-white">
-      <Header
-        info={
-          headerInfo
-            ? {
-                ...headerInfo,
-                name: currentLoadedDesignTitle || draftDesignTitle || headerInfo.name,
-              }
-            : undefined
-        }
-        itemCount={itemCount}
-        canUndo={historyState.canUndo}
-        canRedo={historyState.canRedo}
-        onUndo={historyState.undo}
-        onRedo={historyState.redo}
-        onMenuClick={() => setIsSidebarOpen(true)}
-        isSidebarOpen={isSidebarOpen}
-        onCartClick={() => setShowCheckoutModal(true)}
-        onToggleDpiHighlight={
-          dpiFlaggedCount > 0 ? () => setIsDpiHighlighting((v) => !v) : undefined
-        }
-        isDpiHighlighting={isDpiHighlighting}
-        cartCount={cartItems.length}
-        onAddGangSheetToCart={handleAddGangSheetToCart}
-        canAddGangSheetToCart={getCurrentItems().length > 0}
-        cartSheetState={cartSheetState}
-        /* A guest has no account to save to, and should know it before they
-           spend an hour on a sheet. */
-        saveState={
-          !canAutosave && currentItems.length > 0
-            ? isLoggedIn
-              ? "error"
-              : "guest"
-            : saveState
-        }
-        /* Why it is not saved, for the chip's tooltip — otherwise the only way
-           to find out is to click it. */
-        saveErrorMessage={
-          !canAutosave && isLoggedIn
-            ? "Gang sheets are saved to customer accounts."
-            : saveError
-        }
-        isSheetSaved={Boolean(currentLoadedDesignId) && !hasUnsavedChanges}
-        onRetrySave={() => {
-          void saveRef.current().then((result) => {
-            if (result.ok) toast.success("Gang sheet saved");
-            else if (result.reason) toast.error(result.reason);
-          });
-        }}
-        isLoggedIn={isLoggedIn}
-        canSaveLoaded={Boolean(currentLoadedDesignId && hasUnsavedChanges && !isGangsheetBusy)}
-        canRenameDesign
-        onProfileClick={() => {
-          setShowAccountModal(true);
-          setIsSidebarOpen(false);
-        }}
-        profileAvatarUrl={user?.avatarUrl || null}
-        profileName={user?.name || user?.email || undefined}
-        profileLabel={(user?.name || user?.email || "")
-          .trim()
-          .split(/\s+/)
-          .slice(0, 2)
-          .map((s: string) => s.charAt(0).toUpperCase())
-          .join("")}
-        profileBgClass={(() => {
-          const avatarBgClasses = [
-            "bg-red-600",
-            "bg-orange-600",
-            "bg-amber-600",
-            "bg-yellow-600",
-            "bg-lime-600",
-            "bg-green-600",
-            "bg-emerald-600",
-            "bg-teal-600",
-            "bg-cyan-600",
-            "bg-sky-600",
-            "bg-blue-600",
-            "bg-indigo-600",
-            "bg-violet-600",
-            "bg-purple-600",
-            "bg-fuchsia-600",
-            "bg-pink-600",
-            "bg-rose-600",
-          ] as const;
-          const first = (user?.name || "").trim().charAt(0).toUpperCase();
-          const idx = first >= "A" && first <= "Z" ? first.charCodeAt(0) - 65 : 0;
-          return avatarBgClasses[idx % avatarBgClasses.length];
-        })()}
-        onRenameDesign={async (newTitle) => {
-          /*
-           * Nothing saved yet — keep the name locally and let it seed the save
-           * dialog. There is no design record to PATCH, and refusing the rename
-           * is what made a fresh board unnameable.
-           */
-          if (!currentLoadedDesignId) {
-            setDraftDesignTitle(newTitle);
-            return;
+      <ErrorBoundary name="The header">
+        <Header
+          info={
+            headerInfo
+              ? {
+                  ...headerInfo,
+                  name: currentLoadedDesignTitle || draftDesignTitle || headerInfo.name,
+                }
+              : undefined
           }
-          try {
-            await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
-              method: "PATCH",
-              body: JSON.stringify({ title: newTitle }),
-            });
-            setCurrentLoadedDesignTitle(newTitle);
-            updateSavedDesignSnapshot(currentLoadedDesignId, {
-              title: newTitle,
-              time: formatDesignTime(new Date().toISOString()),
-            });
-            toast.success(`Renamed to "${newTitle}" gangsheet`);
-            fetchDesigns();
-          } catch {
-            toast.error("Failed to rename gangsheet");
+          itemCount={itemCount}
+          canUndo={historyState.canUndo}
+          canRedo={historyState.canRedo}
+          onUndo={historyState.undo}
+          onRedo={historyState.redo}
+          onMenuClick={() => setIsSidebarOpen(true)}
+          isSidebarOpen={isSidebarOpen}
+          onCartClick={() => setShowCheckoutModal(true)}
+          onToggleDpiHighlight={
+            dpiFlaggedCount > 0 ? () => setIsDpiHighlighting((v) => !v) : undefined
           }
-        }}
-        onSignInClick={() => {
-          setAuthView("login");
-          setShowAuthModal(true);
-        }}
-        onSaveLoaded={currentLoadedDesignId ? saveLoadedGangsheet : undefined}
-      />
-      <MobileNoticeModal
-        isOpen={showMobileNotice}
-        onDismiss={(dontShowAgain) => {
-          if (dontShowAgain) {
+          isDpiHighlighting={isDpiHighlighting}
+          cartCount={cartItems.length}
+          onAddGangSheetToCart={handleAddGangSheetToCart}
+          canAddGangSheetToCart={getCurrentItems().length > 0}
+          cartSheetState={cartSheetState}
+          /* A guest has no account to save to, and should know it before they
+             spend an hour on a sheet. */
+          saveState={
+            !canAutosave && currentItems.length > 0
+              ? isLoggedIn
+                ? "error"
+                : "guest"
+              : saveState
+          }
+          /* Why it is not saved, for the chip's tooltip — otherwise the only way
+             to find out is to click it. */
+          saveErrorMessage={
+            !canAutosave && isLoggedIn
+              ? "Gang sheets are saved to customer accounts."
+              : saveError
+          }
+          isSheetSaved={Boolean(currentLoadedDesignId) && !hasUnsavedChanges}
+          onRetrySave={() => {
+            void saveRef.current().then((result) => {
+              if (result.ok) toast.success("Gang sheet saved");
+              else if (result.reason) toast.error(result.reason);
+            });
+          }}
+          isLoggedIn={isLoggedIn}
+          canSaveLoaded={Boolean(currentLoadedDesignId && hasUnsavedChanges && !isGangsheetBusy)}
+          canRenameDesign
+          onProfileClick={() => {
+            setShowAccountModal(true);
+            setIsSidebarOpen(false);
+          }}
+          profileAvatarUrl={user?.avatarUrl || null}
+          profileName={user?.name || user?.email || undefined}
+          profileLabel={(user?.name || user?.email || "")
+            .trim()
+            .split(/\s+/)
+            .slice(0, 2)
+            .map((s: string) => s.charAt(0).toUpperCase())
+            .join("")}
+          profileBgClass={(() => {
+            const avatarBgClasses = [
+              "bg-red-600",
+              "bg-orange-600",
+              "bg-amber-600",
+              "bg-yellow-600",
+              "bg-lime-600",
+              "bg-green-600",
+              "bg-emerald-600",
+              "bg-teal-600",
+              "bg-cyan-600",
+              "bg-sky-600",
+              "bg-blue-600",
+              "bg-indigo-600",
+              "bg-violet-600",
+              "bg-purple-600",
+              "bg-fuchsia-600",
+              "bg-pink-600",
+              "bg-rose-600",
+            ] as const;
+            const first = (user?.name || "").trim().charAt(0).toUpperCase();
+            const idx = first >= "A" && first <= "Z" ? first.charCodeAt(0) - 65 : 0;
+            return avatarBgClasses[idx % avatarBgClasses.length];
+          })()}
+          onRenameDesign={async (newTitle) => {
+            /*
+             * Nothing saved yet — keep the name locally and let it seed the save
+             * dialog. There is no design record to PATCH, and refusing the rename
+             * is what made a fresh board unnameable.
+             */
+            if (!currentLoadedDesignId) {
+              setDraftDesignTitle(newTitle);
+              return;
+            }
             try {
-              localStorage.setItem("hideMobileNotice", "1");
-            } catch {}
-          }
-          setShowMobileNotice(false);
-        }}
-      />
-      <UnsavedChangesModal
-        isOpen={Boolean(unsavedPrompt)}
-        title={unsavedPrompt?.title}
-        message={unsavedPrompt?.message || ""}
-        primaryLabel={unsavedPrompt?.primaryLabel || "Save & Continue"}
-        secondaryLabel={unsavedPrompt?.secondaryLabel || "Discard & Continue"}
-        isBusy={isGangsheetBusy}
-        onPrimary={handleSaveAndContinue}
-        onSecondary={handleDiscardAndContinue}
-        onCancel={cancelPendingAction}
-      />
-      <ConfirmModal
-        isOpen={showClearArtboardConfirm}
-        title="Clear Artboard"
-        message="Are you sure you want to clear the artboard? This cannot be undone."
-        confirmLabel="Clear Artboard"
-        danger
-        onConfirm={() => {
-          setShowClearArtboardConfirm(false);
-          clearWorkspace();
-        }}
-        onCancel={() => setShowClearArtboardConfirm(false)}
-      />
-      <UnderUtilizedSheetModal
-        isOpen={showUnderUtilizedCartConfirm}
-        amount={underUtilizedMeta?.billedPrice || 0}
-        usedLengthIn={underUtilizedMeta?.usedLengthIn ?? 0}
-        minLengthIn={underUtilizedMeta?.minLengthIn ?? getMinSheetLengthIn()}
-        sheetWidthIn={underUtilizedMeta?.sheetWidthIn ?? getSheetWidthIn()}
-        onConfirm={async () => {
-          setShowUnderUtilizedCartConfirm(false);
-          setUnderUtilizedMeta(null);
-          await addGangSheetToCartNow(true);
-        }}
-        onCancel={() => {
-          setShowUnderUtilizedCartConfirm(false);
-          setUnderUtilizedMeta(null);
-        }}
-      />
+              await apiFetch(`/customer/designs/${currentLoadedDesignId}`, {
+                method: "PATCH",
+                body: JSON.stringify({ title: newTitle }),
+              });
+              setCurrentLoadedDesignTitle(newTitle);
+              updateSavedDesignSnapshot(currentLoadedDesignId, {
+                title: newTitle,
+                time: formatDesignTime(new Date().toISOString()),
+              });
+              toast.success(`Renamed to "${newTitle}" gangsheet`);
+              fetchDesigns();
+            } catch {
+              toast.error("Failed to rename gangsheet");
+            }
+          }}
+          onSignInClick={() => {
+            setAuthView("login");
+            setShowAuthModal(true);
+          }}
+          onSaveLoaded={currentLoadedDesignId ? saveLoadedGangsheet : undefined}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="That notice" resetKey={showMobileNotice} onDismiss={() => setShowMobileNotice(false)}>
+        <MobileNoticeModal
+          isOpen={showMobileNotice}
+          onDismiss={(dontShowAgain) => {
+            if (dontShowAgain) {
+              try {
+                localStorage.setItem("hideMobileNotice", "1");
+              } catch {}
+            }
+            setShowMobileNotice(false);
+          }}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="That window" resetKey={Boolean(unsavedPrompt)} onDismiss={() => setUnsavedPrompt(null)}>
+        <UnsavedChangesModal
+          isOpen={Boolean(unsavedPrompt)}
+          title={unsavedPrompt?.title}
+          message={unsavedPrompt?.message || ""}
+          primaryLabel={unsavedPrompt?.primaryLabel || "Save & Continue"}
+          secondaryLabel={unsavedPrompt?.secondaryLabel || "Discard & Continue"}
+          isBusy={isGangsheetBusy}
+          onPrimary={handleSaveAndContinue}
+          onSecondary={handleDiscardAndContinue}
+          onCancel={cancelPendingAction}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="That window" resetKey={showClearArtboardConfirm} onDismiss={() => setShowClearArtboardConfirm(false)}>
+        <ConfirmModal
+          isOpen={showClearArtboardConfirm}
+          title="Clear Artboard"
+          message="Are you sure you want to clear the artboard? This cannot be undone."
+          confirmLabel="Clear Artboard"
+          danger
+          onConfirm={() => {
+            setShowClearArtboardConfirm(false);
+            clearWorkspace();
+          }}
+          onCancel={() => setShowClearArtboardConfirm(false)}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="That window" resetKey={showUnderUtilizedCartConfirm} onDismiss={() => setShowUnderUtilizedCartConfirm(false)}>
+        <UnderUtilizedSheetModal
+          isOpen={showUnderUtilizedCartConfirm}
+          amount={underUtilizedMeta?.billedPrice || 0}
+          usedLengthIn={underUtilizedMeta?.usedLengthIn ?? 0}
+          minLengthIn={underUtilizedMeta?.minLengthIn ?? getMinSheetLengthIn()}
+          sheetWidthIn={underUtilizedMeta?.sheetWidthIn ?? getSheetWidthIn()}
+          onConfirm={async () => {
+            setShowUnderUtilizedCartConfirm(false);
+            setUnderUtilizedMeta(null);
+            await addGangSheetToCartNow(true);
+          }}
+          onCancel={() => {
+            setShowUnderUtilizedCartConfirm(false);
+            setUnderUtilizedMeta(null);
+          }}
+        />
+      </ErrorBoundary>
       {cartWarning && (
         <div className="absolute mt-10 top-10 left-1/2 -translate-x-1/2 z-50">
           <div className="inline-flex items-center gap-2 rounded-lg bg-blue-50 border border-blue-500 px-4 py-2 shadow-lg">
@@ -1643,257 +1654,275 @@ export default function Editor() {
           </div>
         </div>
       )}
-      <Artboard
-        onHeaderInfoChange={setHeaderInfo}
-        highlightLowDpi={isDpiHighlighting}
-        onActionPerformed={(action) => {
-          setTimeout(() => {
-            setLastAction(action);
-            if (
-              action?.type === "delete" &&
-              action.id != null &&
-              action.payload?.item
-            ) {
-              setDeletedItems((prev) => ({
-                ...prev,
-                [action.id!]: action.payload.item,
-              }));
+      <ErrorBoundary name="The design area">
+        <Artboard
+          onHeaderInfoChange={setHeaderInfo}
+          highlightLowDpi={isDpiHighlighting}
+          onActionPerformed={(action) => {
+            setTimeout(() => {
+              setLastAction(action);
+              if (
+                action?.type === "delete" &&
+                action.id != null &&
+                action.payload?.item
+              ) {
+                setDeletedItems((prev) => ({
+                  ...prev,
+                  [action.id!]: action.payload.item,
+                }));
+              }
+            }, 0);
+          }}
+          showRulers={settings.showRulers && !isMobile}
+          showGrid={settings.showGrid}
+          snapToGrid={settings.snapToGrid}
+          showMargins={settings.showMargins}
+          marginSize={settings.marginSize}
+          autoNestStickers={settings.autoNestStickers}
+          spacing={settings.spacing}
+          canvasBg={settings.canvasBg}
+          autoCropUploads={settings.autoCropUploads}
+          /* "N" belongs to the board, so it stops while a dialog is in front of it. */
+          shortcutsEnabled={!anyDialogOpen}
+          onRequestAutoNest={(enabled) => updateSetting("autoNestStickers", enabled)}
+          onUpdateSetting={(key, value) => updateSetting(key as keyof typeof settings, value)}
+          onDataChange={setArtboardData}
+          initialData={loadedDesignData}
+          onHistoryChange={setHistoryState}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="The sidebar" resetKey={isSidebarOpen} onDismiss={() => setIsSidebarOpen(false)}>
+        <Sidebar
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+          settings={settings}
+          onUpdateSetting={updateSetting}
+          onCreateGangSheet={() => {
+            setIsSidebarOpen(false);
+            attemptCreateNewGangsheet();
+          }}
+          hasArtwork={currentItems.length > 0}
+          onOpenSaveModal={() => {
+            if (!isLoggedIn) {
+              setAuthView("login");
+              setShowAuthModal(true);
+              setIsSidebarOpen(false);
+              return;
             }
-          }, 0);
-        }}
-        showRulers={settings.showRulers && !isMobile}
-        showGrid={settings.showGrid}
-        snapToGrid={settings.snapToGrid}
-        showMargins={settings.showMargins}
-        marginSize={settings.marginSize}
-        autoNestStickers={settings.autoNestStickers}
-        spacing={settings.spacing}
-        canvasBg={settings.canvasBg}
-        autoCropUploads={settings.autoCropUploads}
-        /* "N" belongs to the board, so it stops while a dialog is in front of it. */
-        shortcutsEnabled={!anyDialogOpen}
-        onRequestAutoNest={(enabled) => updateSetting("autoNestStickers", enabled)}
-        onUpdateSetting={(key, value) => updateSetting(key as keyof typeof settings, value)}
-        onDataChange={setArtboardData}
-        initialData={loadedDesignData}
-        onHistoryChange={setHistoryState}
-      />
-      <Sidebar
-        isOpen={isSidebarOpen}
-        onClose={() => setIsSidebarOpen(false)}
-        settings={settings}
-        onUpdateSetting={updateSetting}
-        onCreateGangSheet={() => {
-          setIsSidebarOpen(false);
-          attemptCreateNewGangsheet();
-        }}
-        hasArtwork={currentItems.length > 0}
-        onOpenSaveModal={() => {
-          if (!isLoggedIn) {
-            setAuthView("login");
-            setShowAuthModal(true);
-            setIsSidebarOpen(false);
-            return;
-          }
-          pendingAfterSaveRef.current = null;
-          setShowSaveModal(true);
-          setIsSidebarOpen(false);
-        }}
-        onOpenLoadModal={() => {
-          if (!isLoggedIn) {
-            setAuthView("login");
-            setShowAuthModal(true);
-            setIsSidebarOpen(false);
-            return;
-          }
-          fetchDesigns();
-          setShowLoadModal(true);
-          setIsSidebarOpen(false);
-        }}
-        onOpenAccountModal={() => {
-          setShowAccountModal(true);
-          setIsSidebarOpen(false);
-        }}
-        onOpenAuthModal={(view) => {
-          setAuthView(view);
-          setShowAuthModal(true);
-          setIsSidebarOpen(false);
-        }}
-        onClearArtboard={() => {
-          setIsSidebarOpen(false);
-          attemptClearArtboard();
-        }}
-        isLoggedIn={isLoggedIn}
-        user={user}
-        onSignOut={() => signOut()}
-      />
-      <SaveGangSheetModal
-        isOpen={showSaveModal}
-        onClose={() => setShowSaveModal(false)}
-        artboardData={artboardData}
-        initialTitle={currentLoadedDesignTitle || draftDesignTitle}
-        onSave={async (title: string, thumbnail: string) => {
-          if (!isLoggedIn) {
-            setAuthView("login");
-            setShowAuthModal(true);
-            return;
-          }
-          /*
-           * The same save autosave uses, with the name this dialog collected.
-           * There used to be a second copy of the create/update logic here, so
-           * the two could disagree about whether a sheet was saved — and only
-           * this one refused to store artwork that had not finished uploading.
-           */
-          const toastId = toast.loading("Saving gang sheet...");
-          const result = await saveRef.current({ title: title.trim() || undefined, thumbnail });
-          if (result.ok) {
-            setShowSaveModal(false);
-            toast.success(`Saved “${title.trim() || currentLoadedDesignTitle || "gang sheet"}”`, { id: toastId });
-            const pending = pendingAfterSaveRef.current;
             pendingAfterSaveRef.current = null;
-            if (pending) await pending();
-          } else {
-            toast.error(result.reason || "Failed to save gang sheet", { id: toastId });
-          }
-        }}
-      />
-      <LoadGangSheetModal
-        isOpen={showLoadModal}
-        onClose={() => {
-          setShowLoadModal(false);
-          fetchDesigns(); // reset list on close
-        }}
-        designs={savedDesigns}
-        onSearch={(term: string) => fetchDesigns(term)}
-        onLoad={(id) => {
-          setShowLoadModal(false);
-          attemptLoadGangsheet(id);
-        }}
-        onRename={async (id, newTitle) => {
-          await apiFetch(`/customer/designs/${id}`, {
-            method: "PATCH",
-            body: JSON.stringify({ title: newTitle }),
-          });
-          setSavedDesigns((prev) =>
-            prev.map((d) => (d.id === id ? { ...d, title: newTitle } : d))
-          );
-        }}
-        onDuplicate={async (id) => {
-          const design = savedDesigns.find((d) => d.id === id);
-          const newTitle = design ? `${design.title} (Copy)` : "Untitled (Copy)";
-          await apiFetch(`/customer/designs/${id}/duplicate`, {
-            method: "POST",
-            body: JSON.stringify({ newTitle }),
-          });
-          fetchDesigns();
-        }}
-        onDelete={async (id) => {
-          await apiFetch(`/customer/designs/${id}`, { method: "DELETE" });
-          setSavedDesigns((prev) => prev.filter((d) => d.id !== id));
-        }}
-      />
-      <AccountSettingsModal
-        isOpen={showAccountModal}
-        onClose={() => setShowAccountModal(false)}
-        user={user}
-        onOpenOrderHistory={() => {
-          setShowAccountModal(false);
-          setShowOrderHistoryModal(true);
-        }}
-        onViewOrderDetails={() => {
-          setShowAccountModal(false);
-          setShowOrderDetailsModal(true);
-        }}
-        onSignOut={() => {
-          signOut();
-          setShowAccountModal(false);
-        }}
-        onAuthSuccess={(userData) => {
-          setIsLoggedIn(true);
-          setUser(userData);
-          setShowAccountModal(false);
-        }}
-        onAddAccount={() => {
-          setIsSubAccountCreation(true);
-          setAuthView("register");
-          setShowAuthModal(true);
-          setShowAccountModal(false);
-        }}
-      />
-      <OrderHistoryModal
-        isOpen={showOrderHistoryModal}
-        onClose={() => setShowOrderHistoryModal(false)}
-        onReorderToCart={handleReorderToCart}
-        onViewDetails={(orderId) => {
-          setSelectedOrderId(orderId);
-          setShowOrderHistoryModal(false);
-          setShowOrderDetailsModal(true);
-        }}
-      />
-      <OrderDetailsModal
-        onReorderToCart={handleReorderToCart}
-        isOpen={showOrderDetailsModal}
-        onClose={() => {
-          setShowOrderDetailsModal(false);
-          setSelectedOrderId(null);
-        }}
-        orderId={selectedOrderId}
-      />
-      <CheckoutModal
-        isLoggedIn={isLoggedIn}
-        onRequireSignIn={() => {
-          // The cart is kept; the modal reopens on top of it after signing in.
-          setAuthView("login");
-          setShowAuthModal(true);
-        }}
-        isOpen={showCheckoutModal}
-        onClose={() => setShowCheckoutModal(false)}
-        cartItems={cartItems}
-        onUpdateCart={setCartItems}
-        onEditSheet={editCartSheet}
-        onStartNewSheet={startNewSheet}
-        onClearCart={() => {
-          setCartItems([]);
-          setCartLineId(null);
-        }}
-        onCheckoutSuccess={() => {
-          /*
-           * The order is placed: the cart is empty and the board starts fresh,
-           * so the next sheet is not built on top of one already bought. The
-           * sheet itself is not lost — it is saved, and the order is in history.
-           */
-          setCartItems([]);
-          clearWorkspace();
-        }}
-      />
-      <AuthModal
-        isOpen={showAuthModal}
-        onClose={() => {
-          setShowAuthModal(false);
-          setIsSubAccountCreation(false);
-          setResetToken(null);
-          setResetEmail(null);
-        }}
-        initialView={authView}
-        isSubAccountCreation={isSubAccountCreation}
-        resetToken={resetToken}
-        resetEmail={resetEmail}
-        onAuthSuccess={(user) => {
-          setIsLoggedIn(true);
-          setUser(user);
-          setShowAuthModal(false);
-          setIsSubAccountCreation(false);
-          setResetToken(null);
-          setResetEmail(null);
-        }}
-        onSubAccountCreated={() => {
-          setShowAuthModal(false);
-          setIsSubAccountCreation(false);
-          setResetToken(null);
-          setResetEmail(null);
-          setShowAccountModal(true);
-        }}
-      />
+            setShowSaveModal(true);
+            setIsSidebarOpen(false);
+          }}
+          onOpenLoadModal={() => {
+            if (!isLoggedIn) {
+              setAuthView("login");
+              setShowAuthModal(true);
+              setIsSidebarOpen(false);
+              return;
+            }
+            fetchDesigns();
+            setShowLoadModal(true);
+            setIsSidebarOpen(false);
+          }}
+          onOpenAccountModal={() => {
+            setShowAccountModal(true);
+            setIsSidebarOpen(false);
+          }}
+          onOpenAuthModal={(view) => {
+            setAuthView(view);
+            setShowAuthModal(true);
+            setIsSidebarOpen(false);
+          }}
+          onClearArtboard={() => {
+            setIsSidebarOpen(false);
+            attemptClearArtboard();
+          }}
+          isLoggedIn={isLoggedIn}
+          user={user}
+          onSignOut={() => signOut()}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="The save window" resetKey={showSaveModal} onDismiss={() => setShowSaveModal(false)}>
+        <SaveGangSheetModal
+          isOpen={showSaveModal}
+          onClose={() => setShowSaveModal(false)}
+          artboardData={artboardData}
+          initialTitle={currentLoadedDesignTitle || draftDesignTitle}
+          onSave={async (title: string, thumbnail: string) => {
+            if (!isLoggedIn) {
+              setAuthView("login");
+              setShowAuthModal(true);
+              return;
+            }
+            /*
+             * The same save autosave uses, with the name this dialog collected.
+             * There used to be a second copy of the create/update logic here, so
+             * the two could disagree about whether a sheet was saved — and only
+             * this one refused to store artwork that had not finished uploading.
+             */
+            const toastId = toast.loading("Saving gang sheet...");
+            const result = await saveRef.current({ title: title.trim() || undefined, thumbnail });
+            if (result.ok) {
+              setShowSaveModal(false);
+              toast.success(`Saved “${title.trim() || currentLoadedDesignTitle || "gang sheet"}”`, { id: toastId });
+              const pending = pendingAfterSaveRef.current;
+              pendingAfterSaveRef.current = null;
+              if (pending) await pending();
+            } else {
+              toast.error(result.reason || "Failed to save gang sheet", { id: toastId });
+            }
+          }}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="Your gang sheets" resetKey={showLoadModal} onDismiss={() => setShowLoadModal(false)}>
+        <LoadGangSheetModal
+          isOpen={showLoadModal}
+          onClose={() => {
+            setShowLoadModal(false);
+            fetchDesigns(); // reset list on close
+          }}
+          designs={savedDesigns}
+          onSearch={(term: string) => fetchDesigns(term)}
+          onLoad={(id) => {
+            setShowLoadModal(false);
+            attemptLoadGangsheet(id);
+          }}
+          onRename={async (id, newTitle) => {
+            await apiFetch(`/customer/designs/${id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ title: newTitle }),
+            });
+            setSavedDesigns((prev) =>
+              prev.map((d) => (d.id === id ? { ...d, title: newTitle } : d))
+            );
+          }}
+          onDuplicate={async (id) => {
+            const design = savedDesigns.find((d) => d.id === id);
+            const newTitle = design ? `${design.title} (Copy)` : "Untitled (Copy)";
+            await apiFetch(`/customer/designs/${id}/duplicate`, {
+              method: "POST",
+              body: JSON.stringify({ newTitle }),
+            });
+            fetchDesigns();
+          }}
+          onDelete={async (id) => {
+            await apiFetch(`/customer/designs/${id}`, { method: "DELETE" });
+            setSavedDesigns((prev) => prev.filter((d) => d.id !== id));
+          }}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="Account settings" resetKey={showAccountModal} onDismiss={() => setShowAccountModal(false)}>
+        <AccountSettingsModal
+          isOpen={showAccountModal}
+          onClose={() => setShowAccountModal(false)}
+          user={user}
+          onOpenOrderHistory={() => {
+            setShowAccountModal(false);
+            setShowOrderHistoryModal(true);
+          }}
+          onViewOrderDetails={() => {
+            setShowAccountModal(false);
+            setShowOrderDetailsModal(true);
+          }}
+          onSignOut={() => {
+            signOut();
+            setShowAccountModal(false);
+          }}
+          onAuthSuccess={(userData) => {
+            setIsLoggedIn(true);
+            setUser(userData);
+            setShowAccountModal(false);
+          }}
+          onAddAccount={() => {
+            setIsSubAccountCreation(true);
+            setAuthView("register");
+            setShowAuthModal(true);
+            setShowAccountModal(false);
+          }}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="Order history" resetKey={showOrderHistoryModal} onDismiss={() => setShowOrderHistoryModal(false)}>
+        <OrderHistoryModal
+          isOpen={showOrderHistoryModal}
+          onClose={() => setShowOrderHistoryModal(false)}
+          onReorderToCart={handleReorderToCart}
+          onViewDetails={(orderId) => {
+            setSelectedOrderId(orderId);
+            setShowOrderHistoryModal(false);
+            setShowOrderDetailsModal(true);
+          }}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="Order details" resetKey={showOrderDetailsModal} onDismiss={() => setShowOrderDetailsModal(false)}>
+        <OrderDetailsModal
+          onReorderToCart={handleReorderToCart}
+          isOpen={showOrderDetailsModal}
+          onClose={() => {
+            setShowOrderDetailsModal(false);
+            setSelectedOrderId(null);
+          }}
+          orderId={selectedOrderId}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="Checkout" resetKey={showCheckoutModal} onDismiss={() => setShowCheckoutModal(false)}>
+        <CheckoutModal
+          isLoggedIn={isLoggedIn}
+          onRequireSignIn={() => {
+            // The cart is kept; the modal reopens on top of it after signing in.
+            setAuthView("login");
+            setShowAuthModal(true);
+          }}
+          isOpen={showCheckoutModal}
+          onClose={() => setShowCheckoutModal(false)}
+          cartItems={cartItems}
+          onUpdateCart={setCartItems}
+          onEditSheet={editCartSheet}
+          onStartNewSheet={startNewSheet}
+          onClearCart={() => {
+            setCartItems([]);
+            setCartLineId(null);
+          }}
+          onCheckoutSuccess={() => {
+            /*
+             * The order is placed: the cart is empty and the board starts fresh,
+             * so the next sheet is not built on top of one already bought. The
+             * sheet itself is not lost — it is saved, and the order is in history.
+             */
+            setCartItems([]);
+            clearWorkspace();
+          }}
+        />
+      </ErrorBoundary>
+      <ErrorBoundary name="Sign in" resetKey={showAuthModal} onDismiss={() => setShowAuthModal(false)}>
+        <AuthModal
+          isOpen={showAuthModal}
+          onClose={() => {
+            setShowAuthModal(false);
+            setIsSubAccountCreation(false);
+            setResetToken(null);
+            setResetEmail(null);
+          }}
+          initialView={authView}
+          isSubAccountCreation={isSubAccountCreation}
+          resetToken={resetToken}
+          resetEmail={resetEmail}
+          onAuthSuccess={(user) => {
+            setIsLoggedIn(true);
+            setUser(user);
+            setShowAuthModal(false);
+            setIsSubAccountCreation(false);
+            setResetToken(null);
+            setResetEmail(null);
+          }}
+          onSubAccountCreated={() => {
+            setShowAuthModal(false);
+            setIsSubAccountCreation(false);
+            setResetToken(null);
+            setResetEmail(null);
+            setShowAccountModal(true);
+          }}
+        />
+      </ErrorBoundary>
     </div>
   );
 }

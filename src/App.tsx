@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Toaster } from "react-hot-toast";
 import IntroAnimation from "./components/IntroAnimation";
 import Editor from "./components/Editor";
+import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { hydratePricePerSqFt, watchPricingSettings } from "./lib/utils/pricingRates";
 
 export default function App() {
@@ -39,11 +40,15 @@ export default function App() {
         so notices sit exactly where they always have, clear of the 40px header.
       */}
       <Toaster position="top-center" containerStyle={{ top: 80 }} gutter={10} />
-      {!showHome ? (
-        <IntroAnimation onComplete={() => setShowHome(true)} />
-      ) : (
-        <Editor />
-      )}
+      {/* Last resort: each part of the editor has its own boundary, so this
+          only shows if the page as a whole fails — instead of a blank screen. */}
+      <ErrorBoundary name="The page" fullPage>
+        {!showHome ? (
+          <IntroAnimation onComplete={() => setShowHome(true)} />
+        ) : (
+          <Editor />
+        )}
+      </ErrorBoundary>
     </>
   );
 }

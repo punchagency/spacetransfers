@@ -102,6 +102,9 @@ export const isRetryable = (error: unknown): boolean => {
   if (error instanceof DOMException && error.name === "AbortError") return true;
   const status = (error as { status?: number } | undefined)?.status;
   if (typeof status === "number") return status >= 500;
+  // `apiFetch` reports a lost connection as `network`, not the raw TypeError,
+  // so both shapes count as transient.
+  if ((error as { network?: boolean } | undefined)?.network) return true;
   return error instanceof TypeError;
 };
 
