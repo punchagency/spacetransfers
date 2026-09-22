@@ -88,6 +88,22 @@ export function isAuthenticated(): boolean {
   return true;
 }
 
+/**
+ * Updates fields on the stored user (name, avatar, availability) in place.
+ * Guarded like the rest of this file: the profile store used to read and
+ * JSON.parse storage directly, so a blocked or corrupted value threw during
+ * render and took the app down on every load.
+ */
+export function updateStoredUser(patch: Partial<AuthUser>): void {
+  try {
+    const user = getUser();
+    if (!user) return;
+    localStorage.setItem(USER_KEY, JSON.stringify({ ...user, ...patch }));
+  } catch {
+    /* storage unavailable — the in-memory state still updates */
+  }
+}
+
 export function setAuth(token: string, user: AuthUser): void {
   try {
     localStorage.setItem(TOKEN_KEY, token);

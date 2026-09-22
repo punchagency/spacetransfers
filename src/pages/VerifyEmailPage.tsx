@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { getToken } from "../utils/auth";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { FiCheckCircle, FiAlertCircle, FiLoader } from "react-icons/fi";
 
@@ -53,7 +54,7 @@ const VerifyEmailPage = () => {
   useEffect(() => {
     if (state !== "success") return;
     if (countdown <= 0) {
-      const isLoggedIn = Boolean(localStorage.getItem("printer_token"));
+      const isLoggedIn = Boolean(getToken());
       navigate(isLoggedIn ? "/profile?emailVerified=1" : "/auth", { replace: true });
       return;
     }
@@ -62,7 +63,7 @@ const VerifyEmailPage = () => {
   }, [state, countdown, navigate]);
 
   const goNow = () => {
-    const isLoggedIn = Boolean(localStorage.getItem("printer_token"));
+    const isLoggedIn = Boolean(getToken());
     navigate(isLoggedIn ? "/profile?emailVerified=1" : "/auth", { replace: true });
   };
 

@@ -4,7 +4,7 @@ import { FiLogOut, FiUser, FiChevronDown, FiSettings } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { useProfileStore } from '../../state/ProfileStore';
 import { UserAvatar } from './UserAvatar';
-import { clearAuth } from '../../utils/auth';
+import { clearAuth, getUser } from '../../utils/auth';
 
 export const UserMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -12,8 +12,7 @@ export const UserMenu = () => {
   const navigate = useNavigate();
   const { avatarUrl: globalAvatarUrl } = useProfileStore();
 
-  const userStr = localStorage.getItem('printer_user');
-  const user = userStr ? JSON.parse(userStr) : { name: 'Printer', email: 'printer@company.com', avatarUrl: null };
+  const user = (getUser() ?? { name: 'Printer', email: 'printer@company.com', avatarUrl: null }) as { name?: string; email?: string; avatarUrl?: string | null; companyName?: string };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

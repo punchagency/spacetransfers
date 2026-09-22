@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getToken } from "../utils/auth";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, triggerAuthedDownload } from "../utils/api";
@@ -82,7 +83,7 @@ const BACKEND_STATUS_RANK: Record<string, number> = {
 };
 
 const getAuthHeader = (): Record<string, string> => {
-  const token = localStorage.getItem("printer_token");
+  const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
@@ -196,7 +197,7 @@ export default function OrderDetailsPage() {
   useEffect(() => {
     if (!jobId) return;
     const ac = new AbortController();
-    const token = localStorage.getItem("printer_token");
+    const token = getToken();
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
     const url = `${getApiBaseUrl()}/orders/${encodeURIComponent(jobId)}/stream`;
 

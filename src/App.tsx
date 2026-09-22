@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import AuthPage from "./pages/AuthPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
 import SetPasswordPage from "./pages/SetPasswordPage";
@@ -34,6 +35,7 @@ function App() {
   return (
     <BrowserRouter>
       <Toaster position="top-right" />
+      <ErrorBoundary fullPage>
       <Routes>
         {/* Public email verification — reachable without a session. */}
         <Route path="/verify-email" element={<VerifyEmailPage />} />
@@ -61,6 +63,7 @@ function App() {
             when there's no session, so a stray URL can't log a user out. */}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 }

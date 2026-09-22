@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { getToken } from "../utils/auth";
 import { apiFetch, getApiBaseUrl } from "../utils/api";
 
 export type PrinterNotificationCategory = "jobs" | "orders" | "system";
@@ -49,7 +50,7 @@ const startSse = async ({
   onEvent: (event: string, data: any) => void;
   signal: AbortSignal;
 }) => {
-  const token = localStorage.getItem("printer_token");
+  const token = getToken();
   const res = await fetch(`${getApiBaseUrl()}${endpoint}`, {
     method: "GET",
     headers: token ? { Authorization: `Bearer ${token}` } : {},

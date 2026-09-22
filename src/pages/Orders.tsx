@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getToken } from "../utils/auth";
 import { FiAlertTriangle, FiX } from "react-icons/fi";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Modal } from "../components/common/Modal";
@@ -117,7 +118,7 @@ const Orders = () => {
   };
 
   const downloadExport = async (exportId: string, fileName: string) => {
-    const token = localStorage.getItem("printer_token");
+    const token = getToken();
     const res = await fetch(`${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
