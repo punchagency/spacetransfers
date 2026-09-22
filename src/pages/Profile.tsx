@@ -13,6 +13,8 @@ const Profile = () => {
   const [activeTab, setActiveTab] = useState<ProfileTabId>("overview");
   const [profile, setProfile] = useState<PrinterProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  // Why the profile didn't load, so the page can say so instead of "not found".
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const { notifications } = useNotificationsStore();
 
@@ -21,8 +23,9 @@ const Profile = () => {
       setLoading(true);
       const data = await apiFetch("/printer/profile");
       setProfile(data);
+      setLoadError(null);
     } catch (error: any) {
-      toast.error(error.message || "Failed to fetch profile");
+      setLoadError(error.message || "Failed to fetch profile");
     } finally {
       setLoading(false);
     }
@@ -64,7 +67,9 @@ const Profile = () => {
         </div>
       ) : !profile ? (
         <div className="flex flex-col items-center justify-center min-h-[400px]">
-          <p className="text-gray-500">Profile not found</p>
+          {/* It exists — it just didn't load. "Profile not found" said otherwise. */}
+          <p className="text-gray-900 font-semibold">Your profile couldn't be loaded</p>
+          {loadError && <p className="text-gray-500 text-sm mt-1 max-w-md text-center">{loadError}</p>}
           <button
             onClick={fetchProfile}
             className="mt-4 text-blue-600 hover:underline"

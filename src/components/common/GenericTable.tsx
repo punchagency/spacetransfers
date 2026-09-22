@@ -17,6 +17,8 @@ interface GenericTableProps<T> {
   footerLabel?: string;
   onRowClick?: (item: T) => void;
   footerRightContent?: ReactNode;
+  /** Shown when there are no rows — e.g. that the data couldn't be loaded, rather than "none". */
+  emptyMessage?: ReactNode;
 }
 
 export function GenericTable<T>({
@@ -28,6 +30,7 @@ export function GenericTable<T>({
   footerLabel = "items",
   onRowClick,
   footerRightContent,
+  emptyMessage = "No data found.",
 }: GenericTableProps<T>) {
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -84,7 +87,7 @@ export function GenericTable<T>({
                   colSpan={columns.length}
                   className="px-6 py-10 text-center text-gray-500 italic"
                 >
-                  No data found.
+                  {emptyMessage}
                 </td>
               </tr>
             )}

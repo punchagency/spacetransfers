@@ -22,6 +22,10 @@ const Orders = () => {
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  // A failed load used to fall through to "You have no jobs yet" and zero
+  // counts — read as fact by a partner. Kept so the page says it didn't load.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [jobs, setJobs] = useState<Order[]>([]);
   const [urgentCount, setUrgentCount] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -104,11 +108,12 @@ const Orders = () => {
     setLoading(true);
     const id = window.setTimeout(() => {
       Promise.all([fetchOrders({ append: false }), refreshSummary()])
-        .catch((e: any) => toast.error(e?.message || "Failed to load orders"))
+        .then(() => setLoadError(null))
+        .catch((e: any) => setLoadError(e?.message || "Failed to load orders"))
         .finally(() => setLoading(false));
     }, 250);
     return () => window.clearTimeout(id);
-  }, [statusParam, query]);
+  }, [statusParam, query, reloadKey]);
 
   const filteredOrders = useMemo(() => jobs, [jobs]);
 
@@ -456,6 +461,17 @@ const Orders = () => {
         {loading ? (
           <div className="flex items-center justify-center min-h-[400px]">
             <SpaceLoader />
+          </div>
+        ) : loadError && filteredOrders.length === 0 ? (
+          <div role="alert" className="bg-white border border-red-200 rounded-xl p-14 flex flex-col items-center gap-3 text-center">
+            <p className="text-gray-900 font-semibold">Your jobs couldn't be loaded</p>
+            <p className="text-gray-500 text-sm max-w-md">{loadError}</p>
+            <button
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="mt-1 px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800"
+            >
+              Try again
+            </button>
           </div>
         ) : filteredOrders.length === 0 ? (
           <div className="bg-white border border-gray-200 rounded-xl p-14 flex flex-col items-center gap-3 text-center">

@@ -64,6 +64,8 @@ const Dashboard = () => {
   const [assignedTotal, setAssignedTotal] = useState(0);
   const [urgentTotal, setUrgentTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Whether the stats have ever arrived, so a failure before then isn't shown as zeros.
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [range, setRange] = useState<Range>("30d");
 
   /*
@@ -79,11 +81,11 @@ const Dashboard = () => {
     if (storeName?.trim()) return storeName.trim();
     try {
       const raw = localStorage.getItem("printer_user");
-      if (!raw) return "there";
+      if (!raw) return "";
       const u = JSON.parse(raw);
-      return String(u?.companyName || u?.name || "there");
+      return String(u?.companyName || u?.name || "");
     } catch {
-      return "there";
+      return "";
     }
   }, [storeName]);
 
@@ -104,6 +106,7 @@ const Dashboard = () => {
     setAssignedTotal(Number(r?.assignedTotal ?? 0));
     setUrgentTotal(Number(r?.urgentTotal ?? 0));
     setLoadError(null);
+    setHasLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -167,7 +170,12 @@ const Dashboard = () => {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 flex items-start justify-between border-b border-gray-200">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Welcome back, {userName}!</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Welcome back{userName ? `, ${userName}` : ""}!</h1>
+          {/* Until the stats arrive there is no count to state: a failed load
+              used to read "You have 0 jobs assigned to you" as fact. */}
+          {!hasLoaded && loadError ? (
+            <p className="text-gray-500 mt-1">Your jobs couldn't be loaded right now.</p>
+          ) : (
           <p className="text-gray-500 mt-1">
             Here's your fulfillment overview for today. You have{" "}
             {/*
@@ -185,6 +193,7 @@ const Dashboard = () => {
             </button>{" "}
             assigned to you{urgentTotal ? ` • ${urgentTotal} urgent` : ""}.
           </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <select

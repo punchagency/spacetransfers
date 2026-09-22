@@ -1,3 +1,4 @@
+import { AlertBanner } from "../components/common/AlertBanner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FiDownload,
@@ -67,6 +68,9 @@ const Earnings = () => {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // A failed load used to leave "No data found" and missing totals with only a
+  // passing toast — read as "no earnings". Kept so the page says it didn't load.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Track whether the initial load has completed so filter changes
   // don't trigger the full-page loader.
@@ -97,8 +101,9 @@ const Earnings = () => {
     const init = async () => {
       try {
         await Promise.all([fetchSummary(), fetchJobs(RANGE_MAP["All Time"])]);
+        setLoadError(null);
       } catch (err: any) {
-        toast.error(err.message || "Failed to load earnings");
+        setLoadError(err.message || "Failed to load earnings");
       } finally {
         setInitialLoading(false);
         didInitialLoad.current = true;
@@ -113,7 +118,8 @@ const Earnings = () => {
     if (!didInitialLoad.current) return;
     setJobsLoading(true);
     fetchJobs(RANGE_MAP[timeFilter])
-      .catch((err: any) => toast.error(err.message || "Failed to load jobs"))
+      .then(() => setLoadError(null))
+      .catch((err: any) => setLoadError(err.message || "Failed to load jobs"))
       .finally(() => setJobsLoading(false));
   }, [timeFilter, fetchJobs]);
 
@@ -122,7 +128,9 @@ const Earnings = () => {
     setRefreshing(true);
     try {
       await Promise.all([fetchSummary(), fetchJobs(RANGE_MAP[timeFilter])]);
+      setLoadError(null);
     } catch (err: any) {
+      setLoadError(err.message || "Failed to refresh");
       toast.error(err.message || "Failed to refresh");
     } finally {
       setRefreshing(false);
@@ -305,6 +313,13 @@ const Earnings = () => {
         </div>
       ) : (
         <>
+          {loadError && (
+            <AlertBanner
+              title="Your earnings couldn't be loaded"
+              message={`${loadError} — the figures below may be missing or out of date. Try Refresh.`}
+              variant="error"
+            />
+          )}
           {/* Payout info banner */}
           {summary && (
             /*
@@ -421,6 +436,7 @@ const Earnings = () => {
               showFooterInfo={true}
               footerLabel="jobs"
               itemsPerPage={10}
+              emptyMessage={loadError ? "Your jobs couldn't be loaded. Try Refresh." : undefined}
               onRowClick={(job) => { setSelectedJob(job); setIsModalOpen(true); }}
               footerRightContent={
                 <div className="flex items-center gap-6">
