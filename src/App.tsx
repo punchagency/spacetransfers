@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { ErrorBoundary, PageBoundary } from './components/common/ErrorBoundary';
 import AuthPage from './pages/AuthPage';
 import { Dashboard } from './pages/Dashboard';
 import { Orders } from './pages/Orders';
@@ -27,7 +28,9 @@ function AuthenticatedShell() {
     return (
         <NotificationsStoreProvider>
             <OrdersStoreProvider>
-                <Outlet />
+                <PageBoundary>
+                    <Outlet />
+                </PageBoundary>
             </OrdersStoreProvider>
         </NotificationsStoreProvider>
     );
@@ -37,6 +40,7 @@ function App() {
     return (
         <BrowserRouter>
             <Toaster position="top-right" />
+            <ErrorBoundary fullPage>
             <Routes>
                 {/* Public — a signed-in admin is bounced to the dashboard. */}
                 <Route element={<PublicOnlyRoute />}>
@@ -63,6 +67,7 @@ function App() {
                     admin out. */}
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
+            </ErrorBoundary>
         </BrowserRouter>
     );
 }

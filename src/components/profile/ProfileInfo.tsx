@@ -95,12 +95,18 @@ export const ProfileInfo = () => {
         avatarUrl,
       });
 
-      const stored = localStorage.getItem("admin_user");
-      const parsed = stored ? JSON.parse(stored) : {};
-      localStorage.setItem(
-        "admin_user",
-        JSON.stringify({ ...parsed, name: fullName, email, avatarUrl: avatarUrl || null })
-      );
+      // The save has succeeded; refreshing the cached copy must not turn that
+      // into a reported failure if storage is blocked or holds a bad value.
+      try {
+        const stored = localStorage.getItem("admin_user");
+        const parsed = stored ? JSON.parse(stored) : {};
+        localStorage.setItem(
+          "admin_user",
+          JSON.stringify({ ...parsed, name: fullName, email, avatarUrl: avatarUrl || null })
+        );
+      } catch {
+        /* the next sign-in refreshes it */
+      }
     } catch (error: any) {
       toast.error(error.message || "Failed to update profile");
     } finally {

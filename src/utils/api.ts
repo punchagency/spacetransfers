@@ -29,9 +29,18 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
       ...options,
       headers,
     });
-  } catch {
-    throw new Error(
-      `API server is not reachable. Check that the backend is running at ${API_BASE_URL}.`,
+  } catch (err) {
+    // A request the app cancelled on purpose (Stop, a timeout that retries) is
+    // not a lost connection: pass it through so callers can tell. It used to be
+    // swallowed into the message below.
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    // The detail is for whoever is debugging; the message is for the person
+    // using the app. It used to name the API address and ask them to check the
+    // backend was running.
+    console.warn(`[api] ${endpoint}: no response from ${API_BASE_URL}`, err);
+    throw Object.assign(
+      new Error("Can't connect to Space Transfers right now. Check your internet connection and try again."),
+      { network: true },
     );
   }
 
