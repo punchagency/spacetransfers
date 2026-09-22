@@ -14,7 +14,8 @@ import { env } from "../config/env.js";
 import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import fs from "fs";
 import path from "path";
-import { smartTrimToFile } from "../utils/aiCrop.js";
+import { trimImage } from "../utils/aiCrop.js";
+import { uprightImage } from "../utils/uprightImage.js";
 import {
   isLegacyCloudinaryUrl,
   isStoredArtworkUrl,
@@ -87,23 +88,6 @@ const computeThumbUrl = (assetUrl: string | null | undefined): string | null => 
 
 // Trim an image buffer using temp files. Returns the trimmed PNG as a Buffer.
 // Temp files are written to os.tmpdir().
-const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
-  const tmpDir = os.tmpdir();
-  const id = crypto.randomUUID();
-  const inputPath = path.join(tmpDir, `${id}-input.png`);
-  const trimmedPath = path.join(tmpDir, `${id}-trim.png`);
-  const cleanup = () => {
-    fs.unlink(inputPath, () => {});
-    fs.unlink(trimmedPath, () => {});
-  };
-  try {
-    await sharp(inputBuffer, { limitInputPixels: false }).png().toFile(inputPath);
-    await smartTrimToFile(inputPath, trimmedPath);
-    return await fs.promises.readFile(trimmedPath);
-  } finally {
-    cleanup();
-  }
-};
 
 /**
  * Converts an embedded image into a hosted one.
@@ -211,14 +195,24 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       sourceBuffer = Buffer.from(await r.arrayBuffer());
     }
 
-    const trimmedBuffer = await trimBuffer(sourceBuffer);
+    const trim = await trimImage(sourceBuffer);
+    if (!trim) {
+      const error = new Error("This image could not be read to trim it.") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
-    const { url: trimmedUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
+    // Nothing to trim: the stored image already is the trimmed one, so it is
+    // reused rather than saved again as a much larger PNG.
+    const trimmedUrl =
+      trim.unchanged && isStoredArtworkUrl(url)
+        ? url
+        : (await storeArtwork(trim.unchanged ? sourceBuffer : trim.buffer, "space-transfers/trimmed")).url;
 
-    const meta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
+    const meta = await sharp(sourceBuffer, { limitInputPixels: false }).metadata();
     const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
-    const trimmedWidthPx = meta.width || null;
-    const trimmedHeightPx = meta.height || null;
+    const trimmedWidthPx = trim.widthPx || null;
+    const trimmedHeightPx = trim.heightPx || null;
     const trimmedWidthIn = trimmedWidthPx ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : null;
     const trimmedHeightIn = trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
 
@@ -2317,10 +2311,10 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const fileBuffer = req.file.buffer;
+    const rawBuffer = req.file.buffer;
 
     // Deduplication: if this user already uploaded the exact same file, reuse it.
-    const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    const contentHash = crypto.createHash("sha256").update(rawBuffer).digest("hex");
     const foundAsset = req.user?.id ? await Asset.findOne({
       user: new mongoose.Types.ObjectId(String(req.user.id)),
       contentHash,
@@ -2352,7 +2346,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
          * silently keep missing what the new rule catches.
          */
         const fadeIsCurrent = foundAsset.fade?.version === TRANSPARENCY_CHECK_VERSION;
-        const cachedFade = fadeIsCurrent ? foundAsset.fade : await detectFade(fileBuffer);
+        const cachedFade = fadeIsCurrent ? foundAsset.fade : await detectFade(rawBuffer);
         if (!fadeIsCurrent) {
           await Asset.findByIdAndUpdate(foundAsset._id, { fade: cachedFade }).catch(() => {
             // A failed backfill is not worth failing the upload over; the
@@ -2414,7 +2408,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
      * SVG likewise: the editor renders it to a PNG at its real size before
      * uploading, so the print pipeline only ever composites raster artwork.
      */
-    const head = fileBuffer.subarray(0, 256).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    const head = rawBuffer.subarray(0, 256).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
     if (req.file.mimetype === "image/svg+xml" || head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) {
       const error = new Error(
         `“${req.file.originalname}” is an SVG. Add it from the editor, which converts it to an image at its real size, or upload a PNG or JPG.`,
@@ -2425,7 +2419,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
 
     if (
       req.file.mimetype === "application/pdf" ||
-      fileBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
+      rawBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
     ) {
       const error = new Error(
         `“${req.file.originalname}” is a PDF. Add it from the editor, which converts each page to an image, or upload a PNG or JPG.`,
@@ -2434,7 +2428,10 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    // Upright before anything reads its size; see `uprightImage`.
+    let fileBuffer = rawBuffer;
     try {
+      fileBuffer = await uprightImage(rawBuffer);
       const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
       widthPx = metadata.width;
       heightPx = metadata.height;
@@ -2472,8 +2469,20 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    // Store the original, exactly as it arrived.
-    const { url: fileUrl } = await storeArtwork(fileBuffer, "space-transfers/assets");
+    /*
+     * Store the original, find the trim and run the fade check at the same time
+     * — they only read the same bytes. They ran one after another, and with the
+     * old trim re-encoding the whole image as PNG twice, a phone photo spent
+     * seconds of CPU before the customer saw anything.
+     */
+    const [{ url: fileUrl }, trim, fade] = await Promise.all([
+      storeArtwork(fileBuffer, "space-transfers/assets"),
+      trimImage(fileBuffer).catch((e: any) => {
+        console.warn(`[UPLOAD] trim failed for ${req.file!.originalname}: ${e?.message}`);
+        return null;
+      }),
+      detectFade(fileBuffer),
+    ]);
 
     const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
@@ -2486,14 +2495,14 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     let trimmedWidthIn: number | undefined;
     let trimmedHeightIn: number | undefined;
     try {
-      const trimmedBuffer = await trimBuffer(fileBuffer);
-      const { url: tUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
-      trimmedUrl = tUrl;
-      const trimmedMeta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
-      trimmedWidthPx = trimmedMeta.width;
-      trimmedHeightPx = trimmedMeta.height;
-      trimmedWidthIn = trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
-      trimmedHeightIn = trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
+      if (trim) {
+        // Nothing to trim (most photos): the original is the trimmed copy.
+        trimmedUrl = trim.unchanged ? fileUrl : (await storeArtwork(trim.buffer, "space-transfers/trimmed")).url;
+        trimmedWidthPx = trim.widthPx;
+        trimmedHeightPx = trim.heightPx;
+        trimmedWidthIn = trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
+        trimmedHeightIn = trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
+      }
     } catch {
       trimmedUrl = undefined;
     }
@@ -2502,16 +2511,10 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     // path computeThumbUrl derives — nothing to generate here.
     const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
 
-    /**
-     * Fade check, on the buffer that is already in memory.
-     *
-     * Done here rather than as a follow-up request because the bytes are right
-     * here: the client would otherwise re-download its own upload just to
-     * inspect the alpha channel. The check short-circuits on images with no
-     * meaningful partial alpha, so the common upload pays only a few
-     * milliseconds of geometry and never reaches the model.
-     */
-    const fade = await detectFade(fileBuffer);
+    // The fade check ran alongside the upload above, on the buffer already in
+    // memory — the client would otherwise re-download its own upload to inspect
+    // the alpha channel. It short-circuits on images with no meaningful partial
+    // alpha, so the common upload pays a few milliseconds and never reaches the model.
     if (fade.hasFade) {
       console.log(
         `[FADE] ${req.file.originalname}: ${fade.kind} ` +
