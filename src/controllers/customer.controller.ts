@@ -1955,9 +1955,16 @@ export const searchDesigns = async (req: Request, res: Response, next: NextFunct
       return res.json({ designs: [] });
     }
 
+    /*
+     * The typed text, matched literally.
+     *
+     * It went into the regex as written, so a name with brackets in it — which
+     * copies now have ("Shirts (2)") — searched as a pattern: typing the "(" on
+     * its own is an invalid regex and the search failed outright.
+     */
     const designs = await Design.find({
       user: req.user?.id,
-      title: { $regex: q, $options: "i" }
+      title: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" }
     })
       .select("title size thumbnail createdAt updatedAt")
       .sort({ updatedAt: -1 });
