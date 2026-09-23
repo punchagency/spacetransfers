@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { CANVAS } from "../config/artboard.config";
 import { usePricingSettings } from "../lib/utils/pricingRates";
@@ -131,8 +131,6 @@ export default function Header({
   canRedo,
   onSignInClick,
   isLoggedIn,
-  onSaveLoaded,
-  canSaveLoaded,
   canRenameDesign,
   onRenameDesign,
   saveState = "idle",
@@ -169,8 +167,6 @@ export default function Header({
   canRedo?: boolean;
   onSignInClick?: () => void;
   isLoggedIn?: boolean;
-  onSaveLoaded?: () => void;
-  canSaveLoaded?: boolean;
   canRenameDesign?: boolean;
   onRenameDesign?: (newTitle: string) => void;
   /** Whether the sheet is saved, saving, could not be saved, or cannot be (signed out). */
@@ -220,7 +216,7 @@ export default function Header({
 
       <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
         <div className="hidden md:flex items-center gap-3 text-xs text-gray-800">
-          {(info?.hasItem || onSaveLoaded) && (
+          {info?.hasItem && (
             <>
               {info?.hasItem && (
                 <>
@@ -249,20 +245,6 @@ export default function Header({
                     <MdRedo className="inline-block w-4 h-4" />
                   </button>
                 </>
-              )}
-              {onSaveLoaded && (
-                <button
-                  onClick={onSaveLoaded}
-                  disabled={!canSaveLoaded}
-                  className={`inline-flex items-center justify-center rounded px-1 ml-1 ${canSaveLoaded
-                    ? "text-black hover:bg-gray-100 cursor-pointer"
-                    : "text-black opacity-40 pointer-events-none"
-                    }`}
-                  aria-label="Save changes"
-                  title="Save gangsheet changes"
-                >
-                  <MdOutlineSaveAlt className="inline-block w-4 h-4" />
-                </button>
               )}
               <span className="text-gray-300">|</span>
             </>

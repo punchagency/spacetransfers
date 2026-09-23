@@ -1742,7 +1742,6 @@ export default function Editor() {
             });
           }}
           isLoggedIn={isLoggedIn}
-          canSaveLoaded={Boolean(currentLoadedDesignId && hasUnsavedChanges && !isGangsheetBusy)}
           canRenameDesign
           onProfileClick={() => {
             setShowAccountModal(true);
@@ -1803,7 +1802,6 @@ export default function Editor() {
             setAuthView("login");
             setShowAuthModal(true);
           }}
-          onSaveLoaded={currentLoadedDesignId ? saveLoadedGangsheet : undefined}
         />
       </ErrorBoundary>
       <ErrorBoundary name="That notice" resetKey={showMobileNotice} onDismiss={() => setShowMobileNotice(false)}>
@@ -1931,17 +1929,6 @@ export default function Editor() {
             attemptCreateNewGangsheet();
           }}
           hasArtwork={currentItems.length > 0}
-          onOpenSaveModal={() => {
-            if (!isLoggedIn) {
-              setAuthView("login");
-              setShowAuthModal(true);
-              setIsSidebarOpen(false);
-              return;
-            }
-            pendingAfterSaveRef.current = null;
-            setShowSaveModal(true);
-            setIsSidebarOpen(false);
-          }}
           onOpenLoadModal={() => {
             if (!isLoggedIn) {
               setAuthView("login");
