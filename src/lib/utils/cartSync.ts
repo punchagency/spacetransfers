@@ -44,12 +44,40 @@ export const writeCartOwner = (userId: string | null) => {
 };
 
 /**
- * Identity of a cart line. A sheet added from the editor carries a signature of
- * its contents, which is what "the same sheet" means; other lines (reorders)
- * have only their id.
+ * Identity of a cart line. A gang sheet is its saved sheet (`designId`): one
+ * saved sheet, one line. Lines from before lines recorded their sheet fall back
+ * to a signature of their contents; other lines (reorders) have only their id.
  */
 export const cartLineKey = (line: any): string =>
-  line?.designSignature ? `sig:${line.designSignature}` : `id:${line?.id}`;
+  line?.designId
+    ? `design:${line.designId}`
+    : line?.designSignature
+    ? `sig:${line.designSignature}`
+    : `id:${line?.id}`;
+
+/**
+ * One line per saved sheet, keeping the newest.
+ *
+ * Lines used to be matched by their contents, so adding a sheet again after
+ * changing it added a second line for the same saved sheet — a cart of three
+ * lines where Load gang sheet showed two sheets. The newest line (ids are
+ * timestamps) is the latest version; it keeps its place in the cart.
+ * Returns the same array when there is nothing to merge.
+ */
+export const dedupeCartByDesign = <T extends Record<string, any>>(lines: T[]): T[] => {
+  const newest = new Map<string, T>();
+  for (const line of lines) {
+    if ((line?.type || "gangsheet") !== "gangsheet" || !line?.designId) continue;
+    const key = String(line.designId);
+    const current = newest.get(key);
+    if (!current || Number(line.id) > Number(current.id)) newest.set(key, line);
+  }
+  const kept = lines.filter(
+    (line) =>
+      (line?.type || "gangsheet") !== "gangsheet" || !line?.designId || newest.get(String(line.designId)) === line,
+  );
+  return kept.length === lines.length ? lines : kept;
+};
 
 /**
  * The account's cart with the browser's lines added after it, minus duplicates.

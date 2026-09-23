@@ -41,20 +41,11 @@ export const nextUntitledName = (existingTitles: ReadonlyArray<string | null | u
 };
 
 /**
- * The name for a sheet branched off another: "Summer shirts (2)", then (3)…
- *
- * Used when a sheet that is in the cart is changed and the customer keeps the
- * cart's version, carrying on with the changes as a separate sheet — it needs a
- * name of its own so the two can be told apart in the cart and the saved list.
- * An untitled sheet just takes the next untitled number.
+ * Whether a customer already has a sheet by this name. Names are unique per
+ * customer (the server enforces it); comparing the same way here lets a clash
+ * be caught while naming a sheet that is not saved yet.
  */
-export const nextCopyName = (title: string, existingTitles: ReadonlyArray<string | null | undefined>): string => {
-  const base = String(title ?? "").trim().replace(/\s*\(\d+\)$/, "");
-  if (!base || /^untitled gang sheet( \d+)?$/i.test(base)) return nextUntitledName(existingTitles);
-  const taken = new Set(existingTitles.map((t) => String(t ?? "").trim().toLowerCase()).filter(Boolean));
-  for (let n = 2; n < 1000; n++) {
-    const candidate = `${base} (${n})`;
-    if (!taken.has(candidate.toLowerCase())) return candidate;
-  }
-  return `${base} (${Date.now()})`;
+export const titleTaken = (title: string, existingTitles: ReadonlyArray<string | null | undefined>): boolean => {
+  const key = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  return existingTitles.some((t) => key(t) === key(title));
 };

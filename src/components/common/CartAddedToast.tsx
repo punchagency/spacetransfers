@@ -31,7 +31,7 @@ export const showCartAddedToast = ({
               {sheetName ? `“${sheetName}” is in your cart` : "Sheet added to your cart"}
             </p>
             <p className="mt-0.5 text-[12px] leading-[17px] text-gray-600">
-              It's saved. If you change it, we'll ask whether to update the cart or keep it as a new sheet.
+              It's saved to your sheets too. Changes you make to it update your cart — for a different sheet, use Start a new sheet.
             </p>
           </div>
         </div>

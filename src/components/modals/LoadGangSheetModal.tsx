@@ -163,6 +163,8 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
                   </button>
                   <button
                     className="hover:text-gray-700"
+                    aria-label={`Delete ${design.title}`}
+                    title="Delete"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDelete(design.id);

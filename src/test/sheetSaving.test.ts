@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { artworkNotUploaded, nextCopyName, nextUntitledName, UNTITLED_SHEET } from "../lib/utils/sheetSaving";
+import { artworkNotUploaded, titleTaken, nextUntitledName, UNTITLED_SHEET } from "../lib/utils/sheetSaving";
 
 describe("artworkNotUploaded", () => {
   it("is true when any image exists only in this browser", () => {
@@ -37,18 +37,9 @@ describe("nextUntitledName", () => {
   });
 });
 
-describe("nextCopyName", () => {
-  it("numbers a branched sheet after the one it came from", () => {
-    expect(nextCopyName("Summer shirts", ["Summer shirts"])).toBe("Summer shirts (2)");
-    expect(nextCopyName("Summer shirts", ["Summer shirts", "Summer shirts (2)"])).toBe("Summer shirts (3)");
-  });
-
-  it("branches a branch from the original name rather than stacking numbers", () => {
-    expect(nextCopyName("Summer shirts (2)", ["Summer shirts", "Summer shirts (2)"])).toBe("Summer shirts (3)");
-  });
-
-  it("gives an untitled sheet the next untitled number", () => {
-    expect(nextCopyName("Untitled gang sheet", ["Untitled gang sheet"])).toBe("Untitled gang sheet 2");
-    expect(nextCopyName("", [])).toBe("Untitled gang sheet");
+describe("titleTaken", () => {
+  it("compares names the way the server does: ignoring case and spacing", () => {
+    expect(titleTaken("Sheet  ONE", ["sheet one"])).toBe(true);
+    expect(titleTaken("sheet one (2)", ["sheet one"])).toBe(false);
   });
 });
