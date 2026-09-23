@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { isTitleTaken, normalizeTitle, titleTakenError, uniqueTitle, UNTITLED_SHEET } from "../utils/designTitles.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { verifyCardPayment } from "../services/paymentVerification.service.js";
 import { User } from "../models/user.model.js";
@@ -1862,7 +1863,19 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 
 export const createDesign = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, thumbnail, size, pricing, artboardData } = req.body;
+    const { title: rawTitle, thumbnail, size, pricing, artboardData, autoName } = req.body;
+
+    /*
+     * Names are unique per customer. One the app chose (autosave, "Untitled gang
+     * sheet") simply takes the next free number; one the customer typed is
+     * refused if taken, so they're never silently given a different name.
+     */
+    const wanted = normalizeTitle(rawTitle) || UNTITLED_SHEET;
+    let title = wanted;
+    if (await isTitleTaken(req.user?.id, wanted)) {
+      if (!autoName) throw titleTakenError(wanted);
+      title = await uniqueTitle(req.user?.id, wanted);
+    }
 
     const design = new Design({
       user: req.user?.id,
@@ -2033,7 +2046,16 @@ export const updateDesign = async (req: Request, res: Response, next: NextFuncti
     const { title, thumbnail, artboardData } = req.body;
 
     const updateData: any = {};
-    if (title !== undefined) updateData.title = title;
+    if (title !== undefined) {
+      const next = normalizeTitle(title);
+      if (!next) {
+        const error = new Error("A sheet needs a name.") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      if (await isTitleTaken(req.user?.id, next, designId)) throw titleTakenError(next);
+      updateData.title = next;
+    }
     if (thumbnail !== undefined) updateData.thumbnail = thumbnail;
     if (artboardData !== undefined) updateData.artboardData = artboardData;
 
@@ -2085,7 +2107,8 @@ export const duplicateDesign = async (req: Request, res: Response, next: NextFun
 
     const copy = new Design({
       user: req.user?.id,
-      title: newTitle.trim(),
+      // A copy is named for the customer, so it always gets a free name.
+      title: await uniqueTitle(req.user?.id, newTitle),
       thumbnail: source.thumbnail,
       size: source.size,
       pricing: source.pricing,
