@@ -7,8 +7,17 @@
 body {
   margin: 0;
   padding: 0;
-  width: 100vw;
+  width: 100%;
+  /*
+   * `dvh` — the viewport as it actually is right now.
+   *
+   * `100vh` on a phone means the viewport with the browser's toolbars hidden,
+   * so the app was taller than the screen: in Chrome on iOS the top bar sat
+   * under the address bar, half cut off, and the page scrolled about behind it.
+   * `vh` stays as the fallback for anything without `dvh`.
+   */
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 

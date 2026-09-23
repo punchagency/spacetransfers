@@ -4,7 +4,7 @@ import { UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
 export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
   return (
     <div className="flex items-center justify-center px-4">
-      <div className="w-[420px] max-w-full sm:max-w-[92vw]">
+      <div className="w-full max-w-[420px]">
         <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-white px-6 py-8 sm:px-10 sm:py-10 text-center shadow-sm">
           <div className="mx-auto mb-5 flex   items-center justify-center rounded-xl  ">
             <img src="/upload.svg" alt="Upload" className="h-10 w-10 text-slate-500" />

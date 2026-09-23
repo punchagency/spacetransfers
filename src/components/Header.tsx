@@ -81,8 +81,10 @@ function SaveStateChip({
         className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 hover:underline"
         title="Sign in and your gang sheets are saved as you work"
       >
-        <MdCloudOff className="h-3.5 w-3.5" aria-hidden />
-        Not saved — sign in
+        <MdCloudOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        {/* The long form needs room the phone's strip does not have — it was
+            squeezing the sheet's name down to one letter. */}
+        <span className="whitespace-nowrap">Not saved<span className="hidden sm:inline"> — sign in</span></span>
       </button>
     );
   }
@@ -251,11 +253,13 @@ export default function Header({
       {/* One row on a laptop, two on a phone: `contents` dissolves this wrapper
           at md and up, so the desktop header is laid out exactly as before. */}
       <div className="flex h-10 items-center justify-between gap-2 md:contents">
+      {/* The name fits on a 375px phone: it was truncating to "spacetrans…"
+          beside a rocket wide enough to push it out. */}
       <div className="flex items-center min-w-0">
-        <span className="text-base md:text-xl font-bold tracking-tight text-slate-900 truncate">
+        <span className="text-[15px] md:text-xl font-bold tracking-tight text-slate-900 truncate">
           spacetransfers
         </span>
-        <img src="/space.svg" alt="space" className="w-9 h-9 md:w-12 md:h-12 -scale-x-100 flex-shrink-0" />
+        <img src="/space.svg" alt="space" className="w-7 h-7 md:w-12 md:h-12 -scale-x-100 flex-shrink-0" />
       </div>
 
       <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">

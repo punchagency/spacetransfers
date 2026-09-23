@@ -1691,7 +1691,7 @@ export default function Editor() {
   }, 0);
 
   return (
-    <div className="relative flex flex-col h-screen w-screen bg-white">
+    <div className="relative flex flex-col h-screen supports-[height:100dvh]:h-dvh w-full bg-white">
       <ErrorBoundary name="The header">
         <Header
           info={

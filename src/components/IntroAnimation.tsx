@@ -40,7 +40,7 @@ export default function IntroAnimation({ onComplete }: IntroAnimationProps) {
   }, [onComplete]);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-black">
+    <div className="relative w-full h-screen supports-[height:100dvh]:h-dvh overflow-hidden bg-black">
       <picture>
         <source srcSet="/space-bg.webp" type="image/webp" />
         <img

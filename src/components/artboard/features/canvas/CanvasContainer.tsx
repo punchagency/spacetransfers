@@ -290,7 +290,14 @@ export default function CanvasContainer({
   }, [menu]);
 
   const pct = Math.max(0, Math.min(100, uploadProgress));
-  const offset = CANVAS.RULER_OFFSET_PX;
+  /*
+   * The gutter the rulers live in — and only when they do.
+   *
+   * It was reserved unconditionally, so with rulers off (always, on a phone)
+   * the sheet sat 32px in from the top and left behind an empty grey band that
+   * reads as a ruler that failed to draw.
+   */
+  const offset = showRulers ? CANVAS.RULER_OFFSET_PX : 0;
   const ppi = CANVAS.PIXELS_PER_INCH;
   const maxSheetHeightIn = 1200; // 100 feet
 
