@@ -334,14 +334,12 @@ export default function Sidebar({
                                      */
                                     hint={hasArtwork ? undefined : "Appears on the sheet once you add artwork"}
                                 />
-                                {!isMobile && (
                                 <IconRow
                                     icon={MdGridView}
                                     label="Snap to Grid"
                                     onClick={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)}
                                     action={<Toggle checked={settings.snapToGrid} onChange={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)} />}
                                 />
-                                )}
 
                                 {/* Preview Background */}
                                 <div className="pt-2 pb-1">
@@ -366,8 +364,10 @@ export default function Sidebar({
                                     </div>
                                 </div>
 
-                                {/* Margin Size Dropdown */}
-                                {!isMobile && (
+                                {/* Margin Size Dropdown. Hidden on phones until
+                                    pieces could be moved there at all; it is a
+                                    plain select and works by touch. */}
+                                <>
                                 <div className="flex items-center justify-between py-2 mt-2 px-2 -mx-2 rounded-lg hover:bg-gray-50 transition-colors">
                                     <div className="flex items-center gap-3 text-gray-600">
                                         <MdStraighten size={20} className="rotate-45" />
@@ -393,7 +393,7 @@ export default function Sidebar({
                                         </div>
                                     </div>
                                 </div>
-                                )}
+                                </>
                             </div>
                         )}
                     </div>

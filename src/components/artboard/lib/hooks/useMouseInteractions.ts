@@ -125,7 +125,7 @@ export const useMouseInteractions = (
     warnedMaxHeightRef.current = true;
   };
 
-  const handleResizeStart = (e: React.MouseEvent, itemId: number) => {
+  const handleResizeStart = (e: React.MouseEvent | React.PointerEvent, itemId: number) => {
     e.stopPropagation();
     const item = itemsRef.current.find((it) => it.id === itemId);
     // A locked piece keeps its size, like its position.
@@ -146,7 +146,7 @@ export const useMouseInteractions = (
     setResizeStart(startData);
   };
 
-  const handleDragStart = (e: React.MouseEvent, itemId: number) => {
+  const handleDragStart = (e: React.MouseEvent | React.PointerEvent, itemId: number) => {
     const current = itemsRef.current;
     const item = current.find((it) => it.id === itemId);
     if (!item || item.locked) return;
@@ -239,7 +239,7 @@ export const useMouseInteractions = (
   useEffect(() => {
     if (!isResizing || !resizeStart || selectedId == null) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       const resize = resizeRef.current;
       if (!resize || !resize.isActive || !resize.start) return;
 
@@ -327,14 +327,14 @@ export const useMouseInteractions = (
       });
     };
 
-    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("pointermove", handlePointerMove);
     return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("pointermove", handlePointerMove);
     };
   }, [isResizing, resizeStart, selectedId, zoom, setItems, canvasWidth, marginSize]);
 
   useEffect(() => {
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       if (resizeRef.current) {
         resizeRef.current.isActive = false;
         resizeRef.current = null;
@@ -343,9 +343,14 @@ export const useMouseInteractions = (
       setResizeStart(null);
     };
 
-    document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("pointerup", handlePointerUp);
+    // A touch the browser takes over (a scroll it decides to start) ends with
+    // `pointercancel` and no `pointerup` — without this the piece would stay
+    // stuck to the finger.
+    document.addEventListener("pointercancel", handlePointerUp);
     return () => {
-      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("pointerup", handlePointerUp);
+      document.removeEventListener("pointercancel", handlePointerUp);
     };
   }, []);
 
@@ -498,12 +503,12 @@ export const useMouseInteractions = (
       if (scrolling && drag.raf == null) drag.raf = requestAnimationFrame(step);
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       drag.latestClient = { x: e.clientX, y: e.clientY };
       if (drag.raf == null) drag.raf = requestAnimationFrame(step);
     };
 
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       if (drag.raf != null) cancelAnimationFrame(drag.raf);
       drag.raf = null;
 
@@ -602,11 +607,13 @@ export const useMouseInteractions = (
       dragRef.current = null;
     };
 
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerup", handlePointerUp);
+    document.addEventListener("pointercancel", handlePointerUp);
     return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerup", handlePointerUp);
+      document.removeEventListener("pointercancel", handlePointerUp);
       if (drag.raf != null) {
         cancelAnimationFrame(drag.raf);
         // Must be reset, not just cancelled — if a dep change re-runs this

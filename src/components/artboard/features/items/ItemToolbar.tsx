@@ -102,8 +102,11 @@ export default function ItemToolbar({ locked, onGroup, groupAction, onRotate, on
     // there could not be selected, right-clicked or dragged.
     <div className="pointer-events-none w-full flex justify-center py-2">
     <div className="flex flex-col items-center gap-1">
-      <div data-action-toolbar className="pointer-events-auto flex items-center px-1 py-1 bg-white border border-gray-200 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.12)] max-md:max-w-[calc(100vw-1rem)] max-md:overflow-x-auto">
-        <div className="flex items-center gap-0.5">
+      {/* On a phone the row wraps onto a second line instead of running off the
+          side: Delete sat outside the screen, reachable only by discovering that
+          the bar scrolled sideways. */}
+      <div data-action-toolbar className="pointer-events-auto flex items-center px-1 py-1 bg-white border border-gray-200 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.12)] max-md:max-w-[calc(100vw-1rem)]">
+        <div className="flex items-center gap-0.5 max-md:flex-wrap max-md:justify-center">
 
           {/* AI — the primary editing entry point, and deliberately the one
               standout in an otherwise monochrome toolbar: a living gradient pill

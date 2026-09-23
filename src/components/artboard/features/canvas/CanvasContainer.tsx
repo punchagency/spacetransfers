@@ -8,6 +8,7 @@ import EmptyState from "./EmptyState";
 import BulkLoadOverlay from "./BulkLoadOverlay";
 import QueueBadge from "./QueueBadge";
 import ArtboardItem from "../items/ArtboardItem";
+import { useIsMobile } from "../../../../lib/useIsMobile";
 import { ArtboardItem as ArtboardItemType, type SelectionSummary } from "../../types";
 import { CANVAS, UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
 import { footprintBounds, getItemVerticalExtent, isDpiFlagged } from "../../lib/utils/layoutHelpers";
@@ -142,6 +143,7 @@ export default function CanvasContainer({
   aiPanel,
 }: CanvasContainerProps) {
   const [menu, setMenu] = useState<null | { x: number; y: number }>(null);
+  const isMobile = useIsMobile();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -453,9 +455,21 @@ export default function CanvasContainer({
       <div
         id="artboard-toolbar-portal"
         className={`absolute z-50 pointer-events-none transition-all duration-200 ease-out ${
-          toolbarHidden ? "-translate-y-3 opacity-0" : "translate-y-0 opacity-100"
+          toolbarHidden
+            ? `${isMobile ? "translate-y-3" : "-translate-y-3"} opacity-0`
+            : "translate-y-0 opacity-100"
         }`}
-        style={{ top: offset, left: offset, right: 0 }}
+        /*
+         * Above the artwork on a laptop; along the bottom of the screen on a
+         * phone. A phone's sheet fills the screen, so a toolbar at the top
+         * landed on top of the piece that had just been tapped — you could not
+         * see what you were editing.
+         */
+        style={
+          isMobile
+            ? { bottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)", left: 0, right: 0 }
+            : { top: offset, left: offset, right: 0 }
+        }
       />
 
       {items.length === 0 ? (
@@ -659,16 +673,20 @@ export default function CanvasContainer({
         </>
       )}
       {/* Persistent drop hint — shown when items exist and not currently dragging */}
-      {items.length > 0 && items.length < CANVAS.MAX_ITEMS && !isSheetFull && !isDragging && !isUploading && (
+      {items.length > 0 && items.length < CANVAS.MAX_ITEMS && !isSheetFull && !isDragging && !isUploading && !(isMobile && selectedId != null) && (
         <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-auto flex justify-center pb-5">
           <button
             onClick={onBrowseFiles}
-            className="group flex items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 backdrop-blur-sm px-7 py-3.5 shadow-md hover:border-slate-500 hover:bg-white hover:shadow-lg transition-all duration-200 cursor-pointer"
+            className="group flex items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 backdrop-blur-sm px-4 py-2.5 sm:px-7 sm:py-3.5 shadow-md hover:border-slate-500 hover:bg-white hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 group-hover:bg-slate-900 group-hover:text-white transition-colors duration-200 flex-shrink-0">
               <MdOutlineFileUpload size={20} />
             </span>
-            <span className="flex flex-col items-start">
+            {/* A phone has no double-click and no keyboard, so it gets the
+                action rather than the instructions — and a pill small enough to
+                leave the sheet visible behind it. */}
+            <span className="text-[13px] font-semibold text-slate-700 sm:hidden">Add artwork</span>
+            <span className="hidden sm:flex flex-col items-start">
               <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
               <span className="text-[11px] text-slate-400 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
                 {UPLOAD_FORMAT_LABELS.slice(0, 7).join(" · ")} & more

@@ -29,9 +29,12 @@ export default function ZoomControls({
   isFit,
 }: ZoomControlsProps) {
   return (
-    <div className="absolute bottom-4 right-4 z-20 flex flex-col items-stretch gap-1 rounded-lg border border-gray-300 bg-white p-1 shadow-lg">
+    /* Top-right on a phone: the bottom of the screen belongs to the selected
+       piece's toolbar and the Add artwork button, and the buttons are sized for
+       a fingertip rather than a cursor. */
+    <div className="absolute bottom-4 right-4 max-md:bottom-auto max-md:top-3 max-md:right-3 z-20 flex flex-col items-stretch gap-1 rounded-lg border border-gray-300 bg-white p-1 shadow-lg">
       <button
-        className="rounded p-1 transition hover:bg-gray-100 cursor-pointer"
+        className="rounded p-1 max-md:p-2.5 transition hover:bg-gray-100 cursor-pointer"
         onClick={onZoomIn}
         title="Zoom in"
         aria-label="Zoom in"
@@ -47,7 +50,7 @@ export default function ZoomControls({
       </div>
 
       <button
-        className="rounded p-1 transition hover:bg-gray-100 cursor-pointer"
+        className="rounded p-1 max-md:p-2.5 transition hover:bg-gray-100 cursor-pointer"
         onClick={onZoomOut}
         title="Zoom out"
         aria-label="Zoom out"
@@ -56,7 +59,7 @@ export default function ZoomControls({
       </button>
 
       <button
-        className={`rounded p-1 transition cursor-pointer ${
+        className={`rounded p-1 max-md:p-2.5 transition cursor-pointer ${
           isFit ? "bg-slate-900 text-white" : "text-gray-700 hover:bg-gray-100"
         }`}
         onClick={onZoomFit}

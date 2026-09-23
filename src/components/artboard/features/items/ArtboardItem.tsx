@@ -667,7 +667,7 @@ function ArtboardItem({
                    for the visible ones, which the browser fetches eagerly
                    regardless, and identical URLs are served from cache. */
                 loading="lazy"
-                className={`object-contain ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
+                className={`object-contain touch-none ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
                   isSelected && renderCopies > 1
                     ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
                     : ""
@@ -704,7 +704,13 @@ function ArtboardItem({
                   maxHeight: "none",
                   transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${totalCssRotation}deg)`,
                 }}
-                onMouseDown={(e) => {
+                /*
+                 * Pointer events, not mouse events: the same handler then works
+                 * for a finger, a stylus and a mouse. With `onMouseDown` a phone
+                 * could select a piece but never move one — a touch drag scrolls
+                 * the page and emits no mouse move at all.
+                 */
+                onPointerDown={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
                   dragActivatedRef.current = false;
@@ -713,7 +719,7 @@ function ArtboardItem({
                   const startY = e.clientY;
                   const THRESHOLD_SQ = 4 * 4;
 
-                  const onMove = (moveEvt: MouseEvent) => {
+                  const onMove = (moveEvt: PointerEvent) => {
                     const dx = moveEvt.clientX - startX;
                     const dy = moveEvt.clientY - startY;
                     if (dx * dx + dy * dy >= THRESHOLD_SQ) {
@@ -724,12 +730,14 @@ function ArtboardItem({
                   };
                   const onUp = () => cleanup();
                   const cleanup = () => {
-                    document.removeEventListener("mousemove", onMove);
-                    document.removeEventListener("mouseup", onUp);
+                    document.removeEventListener("pointermove", onMove);
+                    document.removeEventListener("pointerup", onUp);
+                    document.removeEventListener("pointercancel", onUp);
                     pendingDragRef.current = null;
                   };
-                  document.addEventListener("mousemove", onMove);
-                  document.addEventListener("mouseup", onUp, { once: true });
+                  document.addEventListener("pointermove", onMove);
+                  document.addEventListener("pointerup", onUp, { once: true });
+                  document.addEventListener("pointercancel", onUp, { once: true });
                   pendingDragRef.current = cleanup;
                 }}
               />
@@ -878,20 +886,20 @@ function ArtboardItem({
       {isSelected && (
         <>
           <span
-            className={`absolute -top-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nwse-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -top-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nwse-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
           <span
-            className={`absolute -top-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nesw-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -top-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nesw-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
           <span
-            className={`absolute -bottom-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nesw-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -bottom-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nesw-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
           <span
-            className={`absolute -bottom-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nwse-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -bottom-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nwse-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
         </>
       )}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useCanHover } from "../lib/useIsMobile";
 import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { CANVAS } from "../config/artboard.config";
@@ -185,6 +186,7 @@ export default function Header({
   isSidebarOpen?: boolean;
 }) {
   const { pricePerSqFt } = usePricingSettings();
+  const canHover = useCanHover();
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
 
@@ -205,8 +207,50 @@ export default function Header({
     setIsRenaming(false);
   };
 
+  /**
+   * The sheet's name, and renaming it.
+   *
+   * Written once and used twice: the desktop strip and the phone strip below it
+   * show the same control, and a name you can see but not rename on a phone
+   * would be a worse answer than not showing it at all.
+   */
+  const nameControl = (widthClass: string) =>
+    isRenaming ? (
+      <input
+        value={renameValue}
+        onChange={(e) => setRenameValue(e.target.value)}
+        onBlur={submitRename}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submitRename();
+          if (e.key === "Escape") setIsRenaming(false);
+        }}
+        autoFocus
+        /* Selected on focus so typing replaces the placeholder rather
+           than being appended to "Untitled gang sheet". */
+        onFocus={(e) => e.currentTarget.select()}
+        aria-label="Gang sheet name"
+        maxLength={80}
+        className={`${widthClass} min-w-0 truncate rounded border border-blue-500 px-2 py-0.5 text-xs text-gray-900 outline-none`}
+      />
+    ) : (
+      <span
+        className={`inline-flex ${widthClass} min-w-0 items-center gap-1 truncate ${canRenameDesign ? "cursor-text hover:text-gray-900" : ""}`}
+        title={canRenameDesign ? "Click to rename this gang sheet" : info?.name}
+        /* Click, not only double-click: renaming was there but unfindable. */
+        onClick={() => {
+          if (canRenameDesign) setIsRenaming(true);
+        }}
+      >
+        <span className="truncate">{info?.name || "Gang Sheet"}</span>
+        {canRenameDesign && <MdEdit className="h-3 w-3 shrink-0 text-gray-400" aria-hidden />}
+      </span>
+    );
+
   return (
-    <header className="flex items-center justify-between px-3 md:px-6 h-10 bg-white border-b border-gray-200">
+    <header className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-6 md:h-10 bg-white border-b border-gray-200">
+      {/* One row on a laptop, two on a phone: `contents` dissolves this wrapper
+          at md and up, so the desktop header is laid out exactly as before. */}
+      <div className="flex h-10 items-center justify-between gap-2 md:contents">
       <div className="flex items-center min-w-0">
         <span className="text-base md:text-xl font-bold tracking-tight text-slate-900 truncate">
           spacetransfers
@@ -292,36 +336,7 @@ export default function Header({
           </span>
      
           <span className="text-gray-300">|</span>
-          {isRenaming ? (
-            <input
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={submitRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submitRename();
-                if (e.key === "Escape") setIsRenaming(false);
-              }}
-              autoFocus
-              /* Selected on focus so typing replaces the placeholder rather
-                 than being appended to "Untitled gang sheet". */
-              onFocus={(e) => e.currentTarget.select()}
-              aria-label="Gang sheet name"
-              maxLength={80}
-              className="max-w-xs truncate rounded border border-blue-500 px-2 py-0.5 text-xs text-gray-900 outline-none"
-            />
-          ) : (
-            <span
-              className={`inline-flex max-w-xs items-center gap-1 truncate ${canRenameDesign ? "cursor-text hover:text-gray-900" : ""}`}
-              title={canRenameDesign ? "Click to rename this gang sheet" : info?.name}
-              /* Click, not only double-click: renaming was there but unfindable. */
-              onClick={() => {
-                if (canRenameDesign) setIsRenaming(true);
-              }}
-            >
-              <span className="truncate">{info?.name || "Gang Sheet"}</span>
-              {canRenameDesign && <MdEdit className="h-3 w-3 shrink-0 text-gray-400" aria-hidden />}
-            </span>
-          )}
+          {nameControl("max-w-xs")}
           {/*
             Whether the work is safe, in the place the sheet is named.
 
@@ -398,7 +413,7 @@ export default function Header({
         {!isLoggedIn ? (
           <button
             onClick={onSignInClick}
-            className="px-3 text-xs font-medium rounded-2xl text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            className="px-3 py-2.5 md:py-0 text-xs font-medium rounded-2xl text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
           >
             Sign In
           </button>
@@ -413,7 +428,7 @@ export default function Header({
               ? "This sheet is in your cart and updates with it — open the cart (C)"
               : "Add current gangsheet to cart (C)"
           }
-          className={`inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
+          className={`inline-flex items-center justify-center gap-1.5 min-w-10 min-h-10 sm:min-w-0 sm:min-h-0 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
             canAddGangSheetToCart === false
               ? "text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed"
               : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
@@ -479,12 +494,69 @@ export default function Header({
         ) : null}
         <button
           onClick={onMenuClick}
-          onMouseEnter={onMenuClick}
+          onMouseEnter={canHover ? onMenuClick : undefined}
           className="p-2 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer w-10 h-10 flex items-center justify-center"
           aria-label="Open menu"
         >
           <MdMenu size={24} />
         </button>
+      </div>
+      </div>
+
+      {/*
+        The phone's version of the detail strip.
+
+        All of it — the sheet's name, whether it is saved, low-resolution
+        warnings, the size and the price — used to be `hidden md:flex`, so on a
+        phone you could build a sheet and add it to the cart without ever seeing
+        what it would cost or what it was called. This is the same information in
+        one line, with the same controls behind it.
+      */}
+      <div className="flex md:hidden h-11 items-center gap-2 border-t border-gray-100 text-[11px] text-gray-800">
+        {info?.hasItem && (
+          <>
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              className={`inline-flex h-10 w-10 items-center justify-center rounded ${canUndo ? "active:bg-gray-100" : "opacity-40 pointer-events-none"}`}
+              aria-label="Undo"
+            >
+              <MdUndo className="h-5 w-5" />
+            </button>
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              className={`inline-flex h-10 w-10 items-center justify-center rounded ${canRedo ? "active:bg-gray-100" : "opacity-40 pointer-events-none"}`}
+              aria-label="Redo"
+            >
+              <MdRedo className="h-5 w-5" />
+            </button>
+          </>
+        )}
+        {nameControl("flex-1")}
+        <DpiStatusChip
+          lowDpiCount={info?.lowDpiCount ?? 0}
+          unknownDpiCount={info?.unknownDpiCount ?? 0}
+          onToggleHighlight={onToggleDpiHighlight}
+          isHighlighting={isDpiHighlighting}
+        />
+        <SaveStateChip
+          state={saveState}
+          isSheetSaved={isSheetSaved}
+          onRetry={onRetrySave}
+          onSignIn={onSignInClick}
+          errorMessage={saveErrorMessage}
+        />
+        <span
+          className="shrink-0 font-semibold tabular-nums"
+          title={`${(info?.widthIn ?? 0).toFixed(2)}in wide x ${(info?.heightIn ?? 0).toFixed(2)}in long`}
+        >
+          ${(info?.price ?? 0).toFixed(2)}
+        </span>
+        <span className="shrink-0 text-gray-500 tabular-nums">
+          {(info?.heightIn ?? 0).toFixed(0)}in
+          {info?.atMinimumLength && <span className="ml-0.5 text-[9px] text-gray-400">min</span>}
+        </span>
       </div>
     </header>
   );

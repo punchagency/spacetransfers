@@ -582,7 +582,7 @@ export default function CheckoutModal({
             {step > 0 && step < 4 && (
               <button
                 onClick={() => setStep((s) => s - 1)}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                className="flex h-10 w-10 md:h-8 md:w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                 aria-label="Go back"
               >
                 <MdArrowBack className="h-5 w-5" />
@@ -591,7 +591,7 @@ export default function CheckoutModal({
             {step < 4 ? (
               <button
                 onClick={onClose}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                className="flex h-10 w-10 md:h-8 md:w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
               >
                 <MdClose className="h-5 w-5" />
               </button>
