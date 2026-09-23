@@ -15,6 +15,27 @@
          scalability an SVG favicon is chosen for while costing ~70× the bytes
          of the 32px raster. 512px covers install prompts; apple-touch-icon is
          what iOS uses for a home-screen shortcut. -->
+    <!-- The opening screen's background, fetched with the page rather than after
+         the app has booted: it is the first thing anyone sees, and without it the
+         intro's text sat on black while the video loaded. 32 kB, and the frame the
+         video starts on, so the video fades in over it without a jump. -->
+    <link rel="preload" as="image" href="/space-bg.webp" type="image/webp" fetchpriority="high" />
+    <style>
+      /*
+       * That same background, painted before React mounts.
+       *
+       * The app's JavaScript takes a couple of seconds to arrive, and until then
+       * the page was plain white — so a slow connection saw white, then the
+       * intro. `:empty` stops applying the moment React renders into #root, so
+       * this is only ever the pre-mount screen; the editor is never behind it.
+       */
+      #root:empty {
+        position: fixed;
+        inset: 0;
+        background: #000 url("/space-bg.webp") center / cover no-repeat;
+      }
+    </style>
+
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
