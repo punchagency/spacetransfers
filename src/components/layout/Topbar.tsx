@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AiOutlineSearch } from 'react-icons/ai';
 import { GoBell } from "react-icons/go";
+import { MdMenu } from "react-icons/md";
 import { useNavigate } from "react-router-dom";
 import { UserMenu } from "../common/UserMenu";
 import { useNotificationsStore, type AdminNotificationCategory, type AdminNotificationPriority } from "../../state/NotificationsStore";
 
-export const Topbar = () => {
+export const Topbar = ({ onOpenMenu }: { onOpenMenu?: () => void }) => {
   const {
     notifications,
     unreadCount,
@@ -99,18 +100,26 @@ export const Topbar = () => {
   };
 
   return (
-    <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200">
+    <header className="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 bg-white border-b border-gray-200">
       {/* Left slot intentionally empty. A global search box lived here with no
           value, onChange or state — it was decoration. There is no cross-entity
           search endpoint to wire it to, so it was removed rather than left
           promising something it could not do. */}
-      <div />
+      {/* On a phone this slot carries the way into the menu. */}
+      <button
+        onClick={onOpenMenu}
+        aria-label="Open menu"
+        className="md:hidden flex h-10 w-10 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-50"
+      >
+        <MdMenu size={24} />
+      </button>
+      <div className="hidden md:block" />
 
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-3 md:gap-6">
         <div className="relative" ref={wrapperRef}>
           <button
             onClick={() => setOpen((v) => !v)}
-            className="relative w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-50 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/10"
+            className="relative w-9 h-9 max-md:w-10 max-md:h-10 flex items-center justify-center rounded-lg hover:bg-gray-50 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/10"
             aria-label="Notifications"
           >
             <GoBell className="w-5 h-5 text-gray-600" />
@@ -122,7 +131,10 @@ export const Topbar = () => {
           </button>
 
           {open && (
-            <div className="absolute right-0 mt-3 w-[420px] max-w-[calc(100vw-24px)] rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden z-50">
+            <div
+              className="absolute right-0 mt-3 w-[420px] max-w-[calc(100vw-24px)] rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden z-50
+                max-md:fixed max-md:inset-x-2 max-md:top-[calc(env(safe-area-inset-top,0px)+56px)] max-md:mt-0 max-md:w-auto max-md:max-w-none"
+            >
               <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
                 <div className="font-semibold text-gray-900">Notifications</div>
                 <button
@@ -145,7 +157,7 @@ export const Topbar = () => {
                   />
                 </div>
 
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1">
                   {(["all", "orders", "partners", "system"] as const).map((c) => (
                     <button
                       key={c}
@@ -179,7 +191,7 @@ export const Topbar = () => {
                 </div>
               </div>
 
-              <div className="max-h-[420px] overflow-y-auto">
+              <div className="max-h-[420px] max-md:max-h-[calc(100dvh-260px)] overflow-y-auto overscroll-contain">
                 {loading ? (
                   <div className="p-6 text-sm text-gray-500">Loading…</div>
                 ) : filtered.length === 0 ? (
