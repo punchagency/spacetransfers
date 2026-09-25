@@ -1056,8 +1056,23 @@ export default function Editor() {
     return d.toLocaleString();
   };
 
+  /**
+   * Whether the saved list is being read, and why it last failed.
+   *
+   * The failure used to be swallowed: a dropped request left the list empty and
+   * the gallery said "No designs found", which is the same thing it says to
+   * someone who has never saved a sheet. On a phone — slower connection, more
+   * dropped requests — that reads as "my work is gone".
+   */
+  const [designsLoading, setDesignsLoading] = useState(false);
+  const [designsError, setDesignsError] = useState<string | null>(null);
+  const lastDesignSearchRef = useRef<string | undefined>(undefined);
+
   const fetchDesigns = async (searchQuery?: string) => {
     if (!isLoggedIn) return;
+    lastDesignSearchRef.current = searchQuery;
+    setDesignsLoading(true);
+    setDesignsError(null);
     try {
       const endpoint = searchQuery
         ? `/customer/designs/search?q=${encodeURIComponent(searchQuery)}`
@@ -1073,7 +1088,12 @@ export default function Editor() {
           thumbnail: d.thumbnail,
         }))
       );
-    } catch {
+    } catch (err: any) {
+      setDesignsError(
+        err?.message || "Your saved sheets couldn't be loaded. Check your connection and try again.",
+      );
+    } finally {
+      setDesignsLoading(false);
     }
   };
 
@@ -1998,6 +2018,9 @@ export default function Editor() {
             fetchDesigns(); // reset list on close
           }}
           designs={savedDesigns}
+          isLoading={designsLoading}
+          error={designsError}
+          onRetry={() => fetchDesigns(lastDesignSearchRef.current)}
           onSearch={(term: string) => fetchDesigns(term)}
           onLoad={(id) => {
             setShowLoadModal(false);
