@@ -3651,7 +3651,9 @@ export const getPartnerAssignmentSettings = async (req: Request, res: Response, 
     res.json({
       assignmentRule: value.rule || "nearest-region",
       maxJobsEnabled: value.maxJobsEnabled !== false,
-      maxJobsValue: value.maxJobsValue || 10,
+      // The stored number, whether the limit is on or off, so the console can
+      // show what it would go back to. 10 only stands in for "never set".
+      maxJobsValue: Number(value.maxJobsValue) > 0 ? Math.floor(Number(value.maxJobsValue)) : 10,
       // Normalised, so a document saved before the SLA existed still comes back
       // with usable windows instead of blanks the console would save over.
       sla: normalizeSlaSettings(value.sla),
@@ -3678,10 +3680,33 @@ export const updatePartnerAssignmentSettings = async (req: Request, res: Respons
      * the pricing settings had.
      */
     const existing = await Settings.findOne({ key: "partnerAssignment" }).lean();
+    /*
+     * Switching the limit off keeps the number that was set.
+     *
+     * It used to be written away as null, and the read below then reported the
+     * built-in 10 — so an operator who turned the limit off and on again came
+     * back to 10 instead of the 25 they had configured, with no warning that
+     * every partner's capacity had just changed. Nothing reads the number while
+     * the limit is off (`getEffectiveMaxConcurrent` checks the flag first), so
+     * keeping it costs nothing and preserves the decision.
+     */
+    const enabled = maxJobsEnabled !== false;
+    const previousMax = Number((existing as any)?.value?.maxJobsValue);
+    const keptMax = Number.isFinite(previousMax) && previousMax > 0 ? Math.floor(previousMax) : null;
+    const parsedMax = parseInt(maxJobsValue, 10);
+
+    // A limit that is on must be a real number — storing NaN would disable
+    // capacity checks silently, which is the opposite of what was asked for.
+    if (enabled && (!Number.isFinite(parsedMax) || parsedMax < 1)) {
+      const error = new Error("Maximum jobs per partner must be a whole number of at least 1.") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+
     const settingValue = {
       rule: assignmentRule,
-      maxJobsEnabled: maxJobsEnabled !== false,
-      maxJobsValue: maxJobsEnabled ? Math.max(1, parseInt(maxJobsValue, 10)) : null,
+      maxJobsEnabled: enabled,
+      maxJobsValue: enabled ? parsedMax : keptMax,
       sla: normalizeSlaSettings(sla ?? (existing as any)?.value?.sla),
     };
 
