@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { apiFetch } from "../../utils/api";
 
@@ -35,6 +35,14 @@ export const PartnerSettings = () => {
   const [maxJobsEnabled, setMaxJobsEnabled] = useState(true);
   const [maxJobsValue, setMaxJobsValue] = useState("10");
   /**
+   * The last limit the operator actually chose.
+   *
+   * Switching the limit off used to clear the field and switching it back on
+   * wrote "10" — so a partner limit of 25, toggled off and on, silently became
+   * 10. This remembers the real number so it comes back.
+   */
+  const lastMaxJobsValue = useRef("10");
+  /**
    * Deadlines per stage, per priority.
    *
    * Held as strings because they are text inputs — parsing on save keeps a
@@ -59,7 +67,11 @@ export const PartnerSettings = () => {
         if (cancelled) return;
         setAssignmentRule(data?.assignmentRule === "manual" ? "manual" : "nearest-region");
         setMaxJobsEnabled(data?.maxJobsEnabled !== false);
-        setMaxJobsValue(String(data?.maxJobsValue ?? 10));
+        // The server keeps the number even while the limit is off, so it is
+        // what switching back on should restore.
+        const storedMax = String(data?.maxJobsValue ?? 10);
+        lastMaxJobsValue.current = storedMax;
+        setMaxJobsValue(data?.maxJobsEnabled === false ? "" : storedMax);
         setSlaEnabled(data?.sla?.enabled === true);
         setSla({
           acceptNormal: String(data?.sla?.acceptHours?.normal ?? 24),
@@ -81,9 +93,10 @@ export const PartnerSettings = () => {
 
   const handleMaxJobsToggle = () => {
     if (maxJobsEnabled) {
+      if (maxJobsValue.trim()) lastMaxJobsValue.current = maxJobsValue.trim();
       setMaxJobsValue("");
     } else {
-      setMaxJobsValue("10");
+      setMaxJobsValue(lastMaxJobsValue.current || "10");
     }
     setMaxJobsEnabled(!maxJobsEnabled);
   };
@@ -124,9 +137,14 @@ export const PartnerSettings = () => {
           },
         }),
       });
-      // Re-seed from the response: the server clamps the value, so showing what
-      // it stored keeps the form honest about what actually took effect.
-      setMaxJobsValue(String(data?.maxJobsValue ?? ""));
+      /*
+       * Re-seed from the response: the server clamps the value, so showing what
+       * it stored keeps the form honest about what actually took effect. While
+       * the limit is off the field stays empty, but the stored number is
+       * remembered for when it is switched back on.
+       */
+      if (data?.maxJobsValue) lastMaxJobsValue.current = String(data.maxJobsValue);
+      setMaxJobsValue(maxJobsEnabled ? String(data?.maxJobsValue ?? "") : "");
       toast.success("Partner settings saved");
     } catch (error: any) {
       toast.error(error.message || "Could not save partner settings");
@@ -208,7 +226,10 @@ export const PartnerSettings = () => {
                 type="number"
                 min="1"
                 value={maxJobsValue}
-                onChange={(e) => setMaxJobsValue(e.target.value)}
+                onChange={(e) => {
+                  setMaxJobsValue(e.target.value);
+                  if (e.target.value.trim()) lastMaxJobsValue.current = e.target.value.trim();
+                }}
                 disabled={!maxJobsEnabled || loading}
                 className={`w-24 px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all ${
                   !maxJobsEnabled ? "opacity-50 cursor-not-allowed" : ""
