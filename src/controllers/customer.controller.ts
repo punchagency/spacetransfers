@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { isTitleTaken, normalizeTitle, titleTakenError, uniqueTitle, UNTITLED_SHEET } from "../utils/designTitles.js";
+import { storeDesignThumbnail } from "../utils/designThumbnail.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { verifyCardPayment } from "../services/paymentVerification.service.js";
 import { User } from "../models/user.model.js";
@@ -1880,7 +1881,8 @@ export const createDesign = async (req: Request, res: Response, next: NextFuncti
     const design = new Design({
       user: req.user?.id,
       title,
-      thumbnail,
+      // Kept as a file, not as base64 in this document — see designThumbnail.ts.
+      thumbnail: await storeDesignThumbnail(thumbnail),
       size,
       pricing,
       artboardData
@@ -2063,7 +2065,7 @@ export const updateDesign = async (req: Request, res: Response, next: NextFuncti
       if (await isTitleTaken(req.user?.id, next, designId)) throw titleTakenError(next);
       updateData.title = next;
     }
-    if (thumbnail !== undefined) updateData.thumbnail = thumbnail;
+    if (thumbnail !== undefined) updateData.thumbnail = await storeDesignThumbnail(thumbnail);
     if (artboardData !== undefined) updateData.artboardData = artboardData;
 
     if (Object.keys(updateData).length === 0) {
