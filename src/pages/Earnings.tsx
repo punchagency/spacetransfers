@@ -282,9 +282,9 @@ const Earnings = () => {
   return (
     <div className="flex flex-col gap-8">
       {/* Header — always visible */}
-      <div className="sticky top-0 z-20 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 flex justify-between items-start border-b border-gray-200">
+      <div className="sticky top-0 z-20 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4 flex flex-col md:flex-row gap-3 md:gap-0 md:justify-between md:items-start border-b border-gray-200">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Earnings & Payouts</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Earnings & Payouts</h1>
           <p className="text-gray-500 mt-1">Track your earnings and payout history</p>
         </div>
         <div className="flex items-center gap-2">
@@ -368,7 +368,7 @@ const Earnings = () => {
           )}
 
           {/* Stats Cards */}
-          <div className="grid grid-cols-4 gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6">
             {stats.map((stat, index) => {
               const Icon = stat.icon;
               return (
@@ -380,7 +380,7 @@ const Earnings = () => {
                     </div>
                   </div>
                   <div>
-                    <span className="text-3xl font-bold text-gray-900 tracking-tight">{stat.value}</span>
+                    <span className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">{stat.value}</span>
                     <p className="text-xs text-gray-500 mt-1">{stat.sub}</p>
                   </div>
                 </div>
@@ -389,13 +389,13 @@ const Earnings = () => {
           </div>
 
           {/* Filter & Search */}
-          <div className="flex items-center p-2 bg-white rounded-2xl border border-gray-200 shadow-sm h-[72px]">
-            <div className="flex items-center p-1.5 bg-[#F3F4F6] rounded-xl ml-2">
+          <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-0 p-2 bg-white rounded-2xl border border-gray-200 shadow-sm md:h-[72px]">
+            <div className="flex items-center p-1.5 bg-[#F3F4F6] rounded-xl md:ml-2 overflow-x-auto">
               {TIME_FILTERS.map((filter) => (
                 <button
                   key={filter}
                   onClick={() => setTimeFilter(filter)}
-                  className={`px-6 py-2 text-sm font-semibold rounded-lg transition-all cursor-pointer ${
+                  className={`px-4 md:px-6 py-2 text-sm font-semibold rounded-lg whitespace-nowrap transition-all cursor-pointer ${
                     timeFilter === filter
                       ? "bg-[#3B82F6] text-white shadow-sm"
                       : "text-gray-500 hover:text-gray-900"
@@ -406,9 +406,9 @@ const Earnings = () => {
               ))}
             </div>
 
-            <div className="h-8 w-px bg-gray-200 mx-6" />
+            <div className="hidden md:block h-8 w-px bg-gray-200 mx-6" />
 
-            <div className="relative flex-1 mr-2">
+            <div className="relative flex-1 md:mr-2">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <FiSearch className="h-5 w-5 text-gray-400" />
               </div>

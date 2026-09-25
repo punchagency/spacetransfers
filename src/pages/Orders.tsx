@@ -329,10 +329,10 @@ const Orders = () => {
   return (
     <div className="flex flex-col gap-6">
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4    ">
+      <div className="sticky top-0 z-10 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4    ">
         <div className="flex flex-col gap-6">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Jobs & Orders</h1>
+            <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Jobs & Orders</h1>
             <p className="text-gray-500 mt-1 text-sm">
               Manage and track all your fulfillment jobs.
               {!loading && (tabs.find((t) => t.label === "Pending Review")?.count || urgentCount) ? (
