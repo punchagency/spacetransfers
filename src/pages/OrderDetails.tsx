@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { describeLabelFailure } from "../utils/labelFailure";
 import { getToken } from "../utils/auth";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
@@ -85,6 +86,30 @@ const BACKEND_STATUS_RANK: Record<string, number> = {
 const getAuthHeader = (): Record<string, string> => {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const LabelFailed = ({ error, busy, onRetry }: { error: string; busy: boolean; onRetry: () => void }) => {
+  const { title, body } = describeLabelFailure(error);
+  return (
+    <div role="alert" className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
+      <div>
+        <div className="text-sm font-semibold text-red-800">{title}</div>
+        <p className="mt-1 text-xs leading-relaxed text-red-700">{body}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={busy}
+        className="flex items-center justify-center rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-red-700 border border-red-200 hover:bg-red-100 disabled:opacity-60"
+      >
+        {busy ? "Trying again…" : "Try again"}
+      </button>
+      <details className="text-[11px] text-red-600/80">
+        <summary className="cursor-pointer select-none">Details for support</summary>
+        <div className="mt-1 break-words font-mono">{error}</div>
+      </details>
+    </div>
+  );
 };
 
 export default function OrderDetailsPage() {
@@ -276,6 +301,13 @@ export default function OrderDetailsPage() {
       derivable: overview?.earnings?.derivable !== false,
     };
   }, [overview]);
+
+  const [labelRetryAt, setLabelRetryAt] = useState<number | null>(null);
+  const retryingLabel = labelRetryAt !== null && Date.now() - labelRetryAt < 8000;
+  const retryLabel = async () => {
+    setLabelRetryAt(Date.now());
+    await setStatus("Print Shipping Label");
+  };
 
   const setStatus = async (nextKey: string) => {
     if (!overview) return;
@@ -621,17 +653,29 @@ export default function OrderDetailsPage() {
                       </div>
                     )}
 
-                    <a
-                      href={overview.shipStationLabelUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                      </svg>
-                      Open & Print Label
-                    </a>
+                    {/*
+                      "generated" means ShipStation made the label but sent back no
+                      printable copy. Linking to it opened a page that doesn't exist;
+                      the label modal already treats it this way.
+                    */}
+                    {overview.shipStationLabelUrl !== "generated" ? (
+                      <a
+                        href={overview.shipStationLabelUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                        </svg>
+                        Open & Print Label
+                      </a>
+                    ) : (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+                        The label was created, but ShipStation didn't send back a printable copy.
+                        Contact Space Transfers for the label before you hand the package over.
+                      </div>
+                    )}
 
                     <button
                       disabled={updatingStatus}
@@ -648,12 +692,18 @@ export default function OrderDetailsPage() {
                       Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
                     </div>
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationTriggeredAt ? (
+                ) : overview?.status === "QUALITY_CHECK" && (overview?.shipStationTriggeredAt || retryingLabel) ? (
                   <div className="flex flex-col items-center gap-3 py-4 text-center">
                     <SpaceLoader size={28} layout="inline" />
                     <div className="text-sm font-semibold text-gray-800">Generating shipping label…</div>
                     <div className="text-xs text-gray-500">ShipStation is creating your label. This usually takes a few seconds.</div>
                   </div>
+                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationError ? (
+                  <LabelFailed
+                    error={overview.shipStationError}
+                    busy={updatingStatus}
+                    onRetry={() => void retryLabel()}
+                  />
                 ) : (
                   radioOptions.map((o) => {
                     const isPast = o.rank < currentStatusRank;
