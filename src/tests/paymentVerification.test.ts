@@ -29,7 +29,10 @@ const goodIntent = {
   amount_received: 4600,
   currency: "usd",
   metadata: { userId: USER },
-  charges: { data: [{ payment_method_details: { card: { brand: "visa", last4: "4242" } } }] },
+  // The shape Stripe returns today (API 2022-11-15 on): the card is on the
+  // expanded `latest_charge`. This fixture used the retired `charges` list,
+  // which is why the test passed while no real order ever recorded its card.
+  latest_charge: { payment_method_details: { card: { brand: "visa", last4: "4242" } } },
 };
 
 const deps = (over: Partial<PaymentVerificationDeps> = {}): PaymentVerificationDeps => ({
@@ -58,6 +61,7 @@ describe("card payment verification", () => {
     assert.equal(result.paymentIntentId, "pi_real");
     assert.equal(result.amountReceivedCents, 4600);
     assert.equal(result.cardLast4, "4242");
+    assert.equal(result.cardBrand, "visa");
   });
 
   it("refuses an id Stripe has never issued", async () => {

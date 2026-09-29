@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { formatSheetSize, orderChargeLines } from "../utils/orderPresentation.js";
 import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { rollWidthError } from "../services/pricing.service.js";
 import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
@@ -3243,10 +3244,8 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
 
 
     const formattedItems = (order.items || []).map((item) => {
-      let description = "";
-      if (item.widthIn && item.heightIn) {
-        description = `${item.widthIn}" x ${item.heightIn}"`;
-      }
+      const description =
+        formatSheetSize((item as any).sheetWidthIn ?? item.widthIn, (item as any).sheetHeightIn ?? item.heightIn) || "";
       return {
         name: item.name || "Unknown Item",
         description: description,
@@ -3257,19 +3256,8 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
     });
 
     const pricing = order.pricing || {};
-    const lineItems = [
-      { label: "Subtotal", amount: (pricing.subtotal || 0).toFixed(2) },
-      { label: "Shipping", amount: (pricing.shippingCost || 0).toFixed(2) },
-      { label: "Tax", amount: (pricing.tax || 0).toFixed(2) }
-    ];
-
-    if (pricing.adjustments && pricing.adjustments.length > 0) {
-      pricing.adjustments.forEach(adj => {
-        const label = adj.type.charAt(0).toUpperCase() + adj.type.slice(1);
-        const amount = (adj.type === "discount" || adj.type === "credit") ? -adj.amount : adj.amount;
-        lineItems.push({ label: `${label} (${adj.reason})`, amount: amount.toFixed(2) });
-      });
-    }
+    // Shared with the customer's invoice, so both copies list the same charges.
+    const lineItems = orderChargeLines(order);
 
     const data = {
       // The invoice is the most customer-visible document there is, so it

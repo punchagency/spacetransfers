@@ -26,6 +26,7 @@ import {
   legacyCloudinaryThumbUrl,
   storeArtwork,
 } from "../services/storage.service.js";
+import { customerOrderStatus, formatSheetSize, orderChargeLines } from "../utils/orderPresentation.js";
 import {
   getGlobalPricing,
   priceItems,
@@ -2130,34 +2131,23 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const hasMore = results.length > parsedLimit;
     const orders = hasMore ? results.slice(0, parsedLimit) : results;
 
-    const apiStatusMap: { [key: string]: string } = {
-      PENDING: "Pending",
-      PROCESSING: "Processing",
-      SHIPPED: "Shipped",
-      COMPLETED: "Completed",
-      CANCELLED: "Cancelled"
-    };
-
-    const formatSheetSize = (order: any) => {
-      if (!order.items || order.items.length === 0) return null;
-      const firstItem = order.items[0];
-      if (
-        typeof firstItem.widthIn === "number" &&
-        typeof firstItem.heightIn === "number"
-      ) {
-        return `${firstItem.widthIn}" x ${firstItem.heightIn}"`;
-      }
-      return null;
+    // Only the first sheet was described, so a three-sheet order read as one.
+    const describeSheets = (order: any) => {
+      const items = Array.isArray(order.items) ? order.items : [];
+      if (items.length === 0) return null;
+      if (items.length > 1) return `${items.length} sheets`;
+      const it = items[0];
+      return formatSheetSize(it.sheetWidthIn ?? it.widthIn, it.sheetHeightIn ?? it.heightIn);
     };
 
     const responseOrders = orders.map((order) => ({
       orderId: order.id,
       // Same order number the customer sees on their invoice and in emails.
       displayId: (order as any).displayId || null,
-      status: apiStatusMap[order.status] || order.status,
+      status: customerOrderStatus(order.status),
       date: order.createdAt,
       total: order.pricing?.total ?? null,
-      sheetSize: formatSheetSize(order),
+      sheetSize: describeSheets(order),
       trackingNumber: order.trackingNumber || null
     }));
 
@@ -2183,19 +2173,9 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
-    const apiStatusMap: { [key: string]: string } = {
-      PENDING: "Pending",
-      PROCESSING: "Processing",
-      SHIPPED: "Shipped",
-      COMPLETED: "Completed",
-      CANCELLED: "Cancelled"
-    };
-
     const formattedItems = (order.items || []).map((item) => {
-      let description = "";
-      if (item.widthIn && item.heightIn) {
-        description = `${item.widthIn}" x ${item.heightIn}"`;
-      }
+      const description =
+        formatSheetSize((item as any).sheetWidthIn ?? item.widthIn, (item as any).sheetHeightIn ?? item.heightIn) || "";
 
       return {
         name: item.name || "Unknown Item",
@@ -2235,16 +2215,16 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     });
 
     const pricing = order.pricing || {};
-    const lineItems = [
-      { label: "Subtotal", amount: pricing.subtotal || 0 },
-      { label: `Tax`, amount: pricing.tax || 0 },
-      { label: "Shipping", amount: pricing.shippingCost || 0 }
-    ];
 
     res.json({
       orderId: order.id,
       displayId: (order as any).displayId || null,
-      status: apiStatusMap[order.status] || order.status,
+      status: customerOrderStatus(order.status),
+      // Missing, so the details view fell back to today's date for every order.
+      date: order.createdAt,
+      shippingMethod: (order as any).shippingMethod === "express" ? "express" : "standard",
+      trackingNumber: order.trackingNumber || null,
+      carrier: (order as any).carrier || null,
       items: formattedItems,
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -2260,7 +2240,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         cardLast4: order.payment?.cardLast4 || null
       },
       pricing: {
-        lineItems,
+        lineItems: orderChargeLines(order),
         total: pricing.total || 0,
         currency: pricing.currency || "USD"
       }
@@ -2801,10 +2781,8 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
 
 
     const formattedItems = (order.items || []).map((item) => {
-      let description = "";
-      if (item.widthIn && item.heightIn) {
-        description = `${item.widthIn}" x ${item.heightIn}"`;
-      }
+      const description =
+        formatSheetSize((item as any).sheetWidthIn ?? item.widthIn, (item as any).sheetHeightIn ?? item.heightIn) || "";
       return {
         name: item.name || "Unknown Item",
         description: description,
@@ -2815,11 +2793,8 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
     });
 
     const pricing = order.pricing || {};
-    const lineItems = [
-      { label: "Subtotal", amount: (pricing.subtotal || 0).toFixed(2) },
-      { label: "Shipping", amount: (pricing.shippingCost || 0).toFixed(2) },
-      { label: "Tax", amount: (pricing.tax || 0).toFixed(2) }
-    ];
+    // The same lines as the order details and the admin's copy of this invoice.
+    const lineItems = orderChargeLines(order);
 
     const data = {
       // The invoice is the most customer-visible document there is, so it

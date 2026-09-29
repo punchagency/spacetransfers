@@ -66,7 +66,8 @@ export interface PaymentVerificationDeps {
 
 const defaultDeps: PaymentVerificationDeps = {
   configured: isStripeConfigured,
-  retrieveIntent: (id) => stripe.paymentIntents.retrieve(id),
+  // `latest_charge` expanded: it is where the card's brand and last four live.
+  retrieveIntent: (id) => stripe.paymentIntents.retrieve(id, { expand: ["latest_charge"] }),
   findOrderByIntent: (id) =>
     Order.findOne({ "payment.paymentIntentId": id }).select("_id displayId").lean() as any,
 };
@@ -169,7 +170,14 @@ export const verifyCardPayment = async ({
     throw badRequest(NOT_PAID, 403);
   }
 
-  const card = intent.charges?.data?.[0]?.payment_method_details?.card ?? null;
+  /*
+   * `charges` was dropped from PaymentIntents in Stripe's 2022-11-15 API, and
+   * this client is pinned to 2025-08-27 — so the card was always null and no
+   * order ever recorded which card paid for it. `latest_charge` replaced it.
+   */
+  const charge = typeof intent.latest_charge === "object" ? intent.latest_charge : null;
+  const card =
+    charge?.payment_method_details?.card ?? intent.charges?.data?.[0]?.payment_method_details?.card ?? null;
   return {
     paymentIntentId: id,
     amountReceivedCents: received,
