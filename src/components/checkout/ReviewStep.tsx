@@ -41,11 +41,13 @@ export default function ReviewStep({ formData, shipping, payment }: ReviewStepPr
             Shipping Method
           </h3>
           <div className="text-sm text-gray-600">
-            <p className="font-medium text-gray-900 capitalize">{shipping} Shipping</p>
+            <p className="font-medium text-gray-900">
+              {shipping === "express" ? "Express Shipping (urgent order)" : "Standard Shipping"}
+            </p>
             <p className="mt-1">
-              {shipping === "standard" 
-                ? "Estimated delivery: 5-7 business days" 
-                : "Estimated delivery: 2-3 business days"}
+              {shipping === "standard"
+                ? "Estimated delivery: 5-7 business days"
+                : "Printed first, then 2-3 business days to deliver"}
             </p>
           </div>
         </div>

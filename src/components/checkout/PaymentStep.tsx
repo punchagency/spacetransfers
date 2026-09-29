@@ -1,13 +1,14 @@
-import { MdCreditCard, MdOutlineLocalShipping } from "react-icons/md";
+import { MdCreditCard } from "react-icons/md";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { apiFetch } from "../../lib/utils/api";
+import { toPricedItems } from "../../lib/utils/checkoutQuote";
 import { useEffect, useMemo, useState } from "react";
 
 interface PaymentStepProps {
   payment: "card";
   setPayment: (method: "card") => void;
+  /** Chosen on the Checkout step; sent so the charge is priced for it. */
   shipping: "standard" | "express";
-  setShipping: (method: "standard" | "express") => void;
   cartItems: any[];
   customer: { firstName: string; lastName: string; email: string; phone?: string };
   shippingAddress: {
@@ -154,7 +155,6 @@ export default function PaymentStep({
   payment,
   setPayment,
   shipping,
-  setShipping,
   cartItems,
   customer,
   shippingAddress,
@@ -162,15 +162,7 @@ export default function PaymentStep({
   stripeEnabled,
   onCardCompleteChange,
 }: PaymentStepProps) {
-  const mappedItems = cartItems.map((item) => ({
-    type: item.type || "gangsheet",
-    designId: item.designId || item.id?.toString(),
-    name: item.name || "Gang Sheet",
-    widthIn: item.widthIn || 0,
-    heightIn: item.heightIn || 0,
-    quantity: item.quantity || item.copies || 1,
-    unitPrice: item.price || 0,
-  }));
+  const mappedItems = useMemo(() => toPricedItems(cartItems), [cartItems]);
 
   useEffect(() => {
     if (payment !== "card") {
@@ -188,7 +180,7 @@ export default function PaymentStep({
 
   return (
     <>
-      <div className="bg-white rounded-lg border mb-5 border-gray-200 p-4 sm:p-6">
+      <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
         <div className="flex items-center gap-2 mb-4">
           <MdCreditCard className="w-5 h-5 text-blue-600" />
           <h3 className="text-base font-semibold">Payment Method</h3>
@@ -247,98 +239,6 @@ export default function PaymentStep({
         </p>
       </div>
 
-      <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <MdOutlineLocalShipping className="w-5 h-5 text-blue-600" />
-          <h3 className="text-base font-normal">Shipping Method</h3>
-        </div>
-
-        <div className="bg-blue-50 border border-blue-200 rounded p-3 mb-4 text-sm">
-          <span className="text-blue-800">Shipping to: United States</span>
-          <div className="text-xs text-gray-600 mt-1">
-            Costs calculated based on your region
-          </div>
-        </div>
-
-        <div className="space-y-3">
-          <label
-            className={`border-2 rounded-lg p-4 flex gap-3 cursor-pointer ${
-              shipping === "standard"
-                ? "border-blue-600 bg-blue-50"
-                : "border-gray-200"
-            }`}
-          >
-            <input
-              type="radio"
-              checked={shipping === "standard"}
-              onChange={() => setShipping("standard")}
-              className="h-4 w-4 mt-1"
-            />
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <img
-                  src="/box.svg"
-                  alt="Standard Shipping Icon"
-                  className="h-5 w-5"
-                />
-                <div className="font-normal">Standard Shipping</div>
-              </div>
-              <div className="text-sm text-gray-600">
-                Reliable delivery with tracking
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Estimated delivery: 5-7 business days
-              </div>
-            </div>
-            <div className="font-semibold">$8.99</div>
-          </label>
-
-          <label
-            className={`border-2 rounded-lg p-4 flex gap-3 cursor-pointer ${
-              shipping === "express"
-                ? "border-blue-600 bg-blue-50"
-                : "border-gray-200"
-            }`}
-          >
-            <input
-              type="radio"
-              checked={shipping === "express"}
-              onChange={() => setShipping("express")}
-              className="h-4 w-4 mt-1"
-            />
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <img
-                  src="/Icon.svg"
-                  alt="Express Shipping Icon"
-                  className="h-5 w-5"
-                />
-                <div className="font-normal">Express Shipping</div>
-              </div>
-              <div className="text-sm text-gray-600">
-                {/* This promised "priority handling" while nothing set the
-                    order's priority, so the job queued behind everything else.
-                    Express now actually moves it to the front. */}
-                Jumps the print queue, then ships on a faster service
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Estimated delivery: 2-3 business days
-              </div>
-            </div>
-            <div className="font-semibold">$24.99</div>
-          </label>
-        </div>
-
-        <div className="mt-4 border-t border-gray-200 pt-4">
-          <h4 className="text-sm font-medium text-gray-800 mb-2">Shipping Information</h4>
-          <div className="text-xs text-gray-600 space-y-1">
-            <p>• All orders include tracking number</p>
-            <p>• Shipping times are estimates and may vary</p>
-            <p>• DTF transfers require 1-2 business days for production</p>
-            <p>• International orders may be subject to customs fees</p>
-          </div>
-        </div>
-      </div>
     </>
   );
 }

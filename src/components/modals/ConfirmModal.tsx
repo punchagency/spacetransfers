@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { MdClose } from "react-icons/md";
 
 type ConfirmModalProps = {
@@ -10,6 +11,8 @@ type ConfirmModalProps = {
   danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Detail shown above the buttons, e.g. the list a decision is about. */
+  children?: ReactNode;
 };
 
 export default function ConfirmModal({
@@ -22,6 +25,7 @@ export default function ConfirmModal({
   danger = false,
   onConfirm,
   onCancel,
+  children,
 }: ConfirmModalProps) {
   if (!isOpen) return null;
 
@@ -57,6 +61,7 @@ export default function ConfirmModal({
         </div>
 
         <div className="px-5 py-4">
+          {children ? <div className="mb-4">{children}</div> : null}
           <div className="flex flex-col gap-2">
             <button
               onClick={onConfirm}
