@@ -162,6 +162,21 @@ export default function CheckoutModal({
     rushSurchargePct: number;
   }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8, rushSurchargePct: 10 });
 
+  /*
+   * A finished order is not where the next visit starts. The modal stays
+   * mounted while closed, so closing the success screen by clicking outside it
+   * left `step` at 4 — the next cart visit, or a Reorder, reopened on the old
+   * order's "Order Placed Successfully!" instead of the new cart.
+   */
+  useEffect(() => {
+    if (isOpen && step === 4) {
+      setStep(0);
+      setCheckoutRevealAttempt(0);
+    }
+    // Only on opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;

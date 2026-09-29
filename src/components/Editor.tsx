@@ -1612,6 +1612,29 @@ export default function Editor() {
       return;
     }
 
+    /*
+     * Reorder the sheet itself when it still exists as it was ordered.
+     *
+     * Every reorder used to become a new saved sheet ("Logo sheet 2", "3", …),
+     * though a different sheet should only come from Start a new sheet or
+     * Duplicate. If the saved sheet has been edited or deleted since, the order's
+     * artwork is no longer that sheet, so the line stays a copy (saved as a new
+     * sheet by the cart, as before).
+     */
+    const sameSheet = await Promise.all(
+      orderItems.map(async (item: any) => {
+        if (!item?.designId || !Array.isArray(item?.artboardItems)) return null;
+        try {
+          const design = await apiFetch(`/customer/designs/${item.designId}`);
+          const saved = design?.artboardData?.items;
+          if (!Array.isArray(saved) || getGangsheetSnapshot(saved) !== getGangsheetSnapshot(item.artboardItems)) return null;
+          return { designId: String(item.designId), name: String(design?.title || item?.name || "") };
+        } catch {
+          return null;
+        }
+      }),
+    );
+
     const mapped = orderItems.map((item: any, idx: number) => {
       const quantity = Number(item?.quantity || 1);
       const type = item?.type || "gangsheet";
@@ -1638,9 +1661,11 @@ export default function Editor() {
        */
       const unitPrice = +(billed.areaSf * getPricePerSqFt()).toFixed(2);
 
+      const same = sameSheet[idx];
       return {
         id: Date.now() + idx,
-        name: item?.name || "Gang Sheet",
+        ...(same ? { designId: same.designId } : {}),
+        name: same?.name || item?.name || "Gang Sheet",
         type,
         image: item?.previewImage || "/placeholder-gangsheet.png",
         /*
@@ -1676,9 +1701,19 @@ export default function Editor() {
     }
     if (printable.length === 0) return;
 
-    setCartItems((prev) => [...prev, ...printable]);
+    // A sheet already in the cart is not added twice: one sheet, one line.
+    const inCart = new Set(cartItems.map((line: any) => String(line?.designId ?? "")).filter(Boolean));
+    const adding = printable.filter((line: any) => !line.designId || !inCart.has(String(line.designId)));
+    setCartItems((prev) => [...prev, ...adding]);
+    // Both lists close — from Order details, checkout used to open on top of it.
     setShowOrderHistoryModal(false);
+    setShowOrderDetailsModal(false);
     setShowCheckoutModal(true);
+    if (adding.length === 0) {
+      toast.success(printable.length === 1 ? "That sheet is already in your cart" : "Those sheets are already in your cart");
+    } else {
+      toast.success(adding.length === 1 ? "Added the sheet to your cart" : `Added ${adding.length} sheets to your cart`);
+    }
   };
 
   addToCartRef.current = handleAddGangSheetToCart;
