@@ -40,6 +40,20 @@ function normaliseCountry(raw: string | undefined | null): string {
 
 // ── Retry utility — exported so tests can exercise it directly ────────────────
 
+/**
+ * Whether trying again could help. A 4xx is ShipStation's answer about the
+ * request or the account (402 lapsed billing, 401 bad keys, 400 bad address) —
+ * it comes back the same every time. Retrying those only delayed the fallback:
+ * with the account lapsed, every checkout quote and every charge waited ~11 s
+ * of backoff for an answer that was already final. Timeouts, network errors,
+ * 5xx, 408 and 429 are still retried.
+ */
+export const isRetryable = (err: unknown): boolean => {
+  const status = Number(/→ HTTP (\d{3})/.exec(String((err as any)?.message ?? ""))?.[1]);
+  if (!Number.isFinite(status)) return true;
+  return status >= 500 || status === 408 || status === 429;
+};
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   maxAttempts: number,
@@ -52,6 +66,7 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      if (!isRetryable(err)) break;
       if (attempt < maxAttempts) {
         // Exponential backoff with ±200 ms jitter so concurrent retries don't collide.
         const delay = initialDelayMs * Math.pow(2, attempt - 1) + Math.random() * 200;

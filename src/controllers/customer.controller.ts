@@ -28,6 +28,7 @@ import {
 } from "../services/storage.service.js";
 import {
   getGlobalPricing,
+  priceItems,
   computeTotals as computeOrderTotals,
   deriveItemUnitPrice,
   itemQuantity,
@@ -2682,132 +2683,58 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
 
     // Read once, above the loop: the same rates must price every line item,
     // the shipping and the tax on this quote.
-    const pricing = await getGlobalPricing();
-
-    const quoteItems: any[] = [];
-    let subtotal = 0;
-
-    for (const item of items) {
-      const {
-        name,
-        type,
-        designId,
-        widthIn,
-        heightIn,
-        copies
-      } = item || {};
-
-      if (!name) {
-        const error = new Error("Each item must have a name") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      if (!type) {
-        const error = new Error("Each item must have a type") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      let unitPrice = 0;
-
-      if (type === "gangsheet") {
-        if (!designId) {
-          const error = new Error("designId is required for gangsheet items") as CustomError;
-          error.statusCode = 400;
-          throw error;
-        }
-
-        const design = await Design.findOne({ _id: designId, user: req.user?.id });
-
-        if (!design) {
-          const error = new Error("Design not found for cart item") as CustomError;
-          error.statusCode = 404;
-          throw error;
-        }
-
-        /**
-         * Priced from area x the current global rate, not from the price
-         * stored on the design.
-         *
-         * The stored price is a snapshot of whatever rate was in force when
-         * the sheet was saved, so preferring it meant a rate change never
-         * reached carts holding older designs. Two hard-coded `3.5` fallbacks
-         * sat behind it, which is what actually priced anything that reached
-         * them — a third retail rate, invisible to the admin and disagreeing
-         * with `global_pricing` by a factor of seven.
-         */
-        const areaSqFt =
-          typeof design.pricing?.areaSqFt === "number" && Number.isFinite(design.pricing.areaSqFt)
-            ? design.pricing.areaSqFt
-            : null;
-
-        if (areaSqFt == null || areaSqFt <= 0) {
-          const error = new Error("Unable to determine price for gangsheet item") as CustomError;
-          error.statusCode = 400;
-          throw error;
-        }
-
-        // Same helper the payment intent and the saved order use, so a quote
-        // cannot promise a number the checkout then contradicts.
-        unitPrice = sheetUnitPrice(areaSqFt, pricing);
-      } else {
-        const error = new Error(`Unsupported cart item type: ${type}`) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      const quantity = typeof copies === "number" && copies > 0 ? copies : 1;
-      const lineSubtotal = unitPrice * quantity;
-
-      subtotal += lineSubtotal;
-
-      quoteItems.push({
-        name,
-        unitPrice: roundToTwo(unitPrice),
-        quantity,
-        subtotal: roundToTwo(lineSubtotal)
-      });
+    // A quote may only be asked for sheets the customer owns.
+    const designIds = items
+      .filter((it: any) => String(it?.type || "gangsheet").toLowerCase() === "gangsheet")
+      .map((it: any) => it?.designId);
+    if (designIds.some((id: unknown) => !id)) {
+      const error = new Error("designId is required for gangsheet items") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    const owned = await Design.countDocuments({ _id: { $in: [...new Set(designIds)] }, user: req.user?.id });
+    if (owned !== new Set(designIds.map(String)).size) {
+      const error = new Error("Design not found for cart item") as CustomError;
+      error.statusCode = 404;
+      throw error;
     }
 
-    // Shipping and tax come from the shared pricer so this quote, the Stripe
-    // charge and the saved order cannot disagree. This path previously used its
-    // own rates (express $19.99, 9.4% tax gated on the country string being
-    // exactly "United States") while the charge path used $24.99 and a flat 8%.
-    const shippingQuote = await quoteShipping({
-      totalSqFt: totalBillableSqFt(items, pricing),
-      method: normalizeShippingMethod(shippingMethod),
-      destination: {
-        state: String(req.body?.shippingState || ""),
-        postalCode: String(shippingPostalCode || ""),
-        country: String(shippingCountry || "US"),
-        city: req.body?.shippingCity ? String(req.body.shippingCity) : undefined,
-      },
-      packaging: pricing.packaging,
-      markupPct: pricing.shippingMarkupPct,
-      fallbackRates: pricing.shipping,
-      origin: await predictShippingOrigin(req.body?.shippingState).catch(() => null),
+    /*
+     * Priced by `priceItems`, the function the Stripe charge uses, so the total
+     * checkout shows is the total the card is charged.
+     *
+     * This path used to price on its own: from the area stored on each design
+     * (saved before the minimum sheet length existed, so older sheets quoted
+     * low) and from `copies` only, while the charge reads `quantity`. Nothing
+     * called it, and the storefront showed flat rates instead — so once live
+     * carrier rates were on, the card was charged a shipping figure the
+     * customer had never been shown.
+     */
+    const totals = await priceItems(items, shippingMethod, {
+      state: String(req.body?.shippingState || ""),
+      postalCode: String(shippingPostalCode || ""),
+      country: String(shippingCountry || "US"),
+      city: req.body?.shippingCity ? String(req.body.shippingCity) : undefined,
     });
-
-    const totals = computeOrderTotals({
-      subtotal: roundToTwo(subtotal),
-      shippingMethod,
-      pricing,
-      shippingCost: shippingQuote.cost,
-      // Quoted the same way the order will be priced, so the cart cannot show a
-      // total the checkout then contradicts.
-      priority: priorityForShippingMethod(shippingMethod),
-    });
+    const pricing = await getGlobalPricing();
 
     res.status(200).json({
-      items: quoteItems,
+      items: items.map((it: any) => {
+        const unitPrice = deriveItemUnitPrice(it, pricing);
+        return {
+          name: it?.name,
+          unitPrice,
+          quantity: itemQuantity(it),
+          subtotal: roundToTwo(unitPrice * itemQuantity(it)),
+        };
+      }),
       subtotal: totals.subtotal,
       rushSurcharge: totals.rushSurcharge,
       shippingCost: totals.shippingCost,
       // Named so the storefront can say "USPS Ground Advantage" instead of just
       // a number, and so a fallback is visible rather than silent.
-      shippingService: shippingQuote.serviceName,
-      shippingSource: shippingQuote.source,
+      shippingService: totals.shipping.serviceName,
+      shippingSource: totals.shipping.source,
       tax: totals.tax,
       total: totals.total,
       currency: totals.currency
