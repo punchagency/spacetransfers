@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { rollWidthError } from "../services/pricing.service.js";
 import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
 import {
@@ -1658,7 +1659,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     if (storedArtboardItems && storedSheetWidthIn && storedSheetHeightIn) {
       designArtboardItems = storedArtboardItems;
       designSize = { widthIn: storedSheetWidthIn, heightIn: storedSheetHeightIn };
-      designThumbnail = typeof gangsheetOrderItem?.previewImage === "string" ? gangsheetOrderItem.previewImage : null;
+      designThumbnail = resolveApiFile(req, gangsheetOrderItem?.previewImage);
       gangsheetItems = storedArtboardItems.map((it: any) => {
         const url = it.croppedUrl || it.assetId || null;
         const rawSku = typeof it.assetId === "string" ? it.assetId : "";
@@ -1911,11 +1912,8 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       useLossyPreview: true, // Use fast lossy WebP for admin preview
     });
 
-    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
-    const host = req.get("host") || "";
-    const derivedBase = host ? `${proto}://${host}` : null;
-    const appBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : derivedBase;
-    const previewDataUrl = appBase ? `${appBase}${rendered.relativePath}` : rendered.relativePath;
+    // The API's own address, not APP_URL (the store's) — see utils/publicApiBase.ts.
+    const previewDataUrl = apiFileUrl(req, rendered.relativePath);
 
     res.json({
       previewDataUrl,
@@ -2252,9 +2250,8 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
     await newPartner.save();
 
     /**
-     * A real send, through the shared `sendEmail` — which already tries
-     * SendGrid first and falls back to SMTP, so this needs credentials, not
-     * code. Until they exist it fails and says so; it no longer pretends.
+     * A real send, through the shared `sendEmail` (Resend), so this needs
+     * credentials, not code. Until they exist it fails and says so; it no longer pretends.
      */
     const inviteUrl = `${env.printerAppUrl.replace(/\/$/, "")}/set-password?inviteToken=${encodeURIComponent(inviteToken)}`;
     const invite = await sendEmail({

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { resolveApiFile } from "../utils/publicApiBase.js";
 import { isTitleTaken, normalizeTitle, titleTakenError, uniqueTitle, UNTITLED_SHEET } from "../utils/designTitles.js";
 import { storeDesignThumbnail } from "../utils/designThumbnail.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
@@ -1117,76 +1118,6 @@ export const updateAccount = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-export const getOrderTracking = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { orderId } = req.params;
-    const order = await Order.findOne({ _id: orderId, user: req.user?.id });
-
-    if (!order) {
-      const error = new Error("Order not found") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const isValidTrackingNumber = (tn: any) => typeof tn === "string" && /^[A-Za-z0-9]{10,35}$/.test(tn);
-    let trackingNumber = order.trackingNumber;
-    let carrier = order.carrier || "UPS";
-    let events = (order.trackingEvents || []).map(event => ({
-      time: event.time,
-      location: event.location,
-      description: event.description
-    }));
-
-    if (!isValidTrackingNumber(trackingNumber)) {
-      if (env.nodeEnv !== "production") {
-        trackingNumber = "1Z999AA10123456784";
-        carrier = "UPS";
-
-        if (events.length === 0) {
-          events = [
-            {
-              time: new Date(Date.now() - 3600000),
-              location: (order.shippingAddress?.city || "Los Angeles") + ", " + (order.shippingAddress?.state || "CA"),
-              description: "Arrived at facility"
-            },
-            {
-              time: new Date(Date.now() - 86400000),
-              location: "Los Angeles, CA",
-              description: "Departed facility"
-            }
-          ];
-        }
-      } else {
-        const error = new Error("Tracking not available") as CustomError;
-        error.statusCode = 404;
-        throw error;
-      }
-    }
-
-    const carrierUrls: { [key: string]: string } = {
-      UPS: `https://www.ups.com/track?loc=en_US&tracknum=${trackingNumber}`,
-      FedEx: `https://www.fedex.com/apps/fedextrack/?tracknumbers=${trackingNumber}`,
-      USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${trackingNumber}`,
-      DHL: `https://www.dhl.com/en/express/tracking.html?AWB=${trackingNumber}`
-    };
-
-    const trackingUrl = carrierUrls[carrier] || carrierUrls.UPS;
-    const status = order.status === "SHIPPED" ? "In Transit" : (order.status === "COMPLETED" ? "Delivered" : "Pending");
-
-    events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-
-    res.json({
-      trackingNumber,
-      carrier,
-      trackingUrl,
-      status,
-      events
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const logout = async (req: Request, res: Response, next: NextFunction) => {
   try {
     res.status(200).json({ message: "Logged out successfully" });
@@ -1756,7 +1687,9 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             cropToContent: true,
             format: "webp",
           });
-          const previewUrl = `${env.appUrl}${rendered.relativePath}`;
+          // Stored as a path, not a URL: the host is added when it is read (see
+          // resolveApiFile), so the record survives a change of domain.
+          const previewUrl = rendered.relativePath;
           await Order.updateOne(
             { _id: orderId, "items.type": "gangsheet" },
             { $set: { "items.$.previewImage": previewUrl } }
@@ -2284,7 +2217,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         sheetHeightIn: (item as any).sheetHeightIn ?? item.heightIn ?? null,
         // So the reordered line can point at the same artwork.
         designId: (item as any).designId ?? null,
-        previewImage: (item as any).previewImage ?? null,
+        previewImage: resolveApiFile(req, (item as any).previewImage),
         /*
          * What reorder needs to rebuild the same sheet: where every graphic sat,
          * and the roll and spacing it was laid out with. Without the placements a

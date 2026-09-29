@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import {
   PRINTER_STATUS_LABEL,
@@ -939,7 +940,9 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const bundleBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : `http://localhost:${env.port || 4000}`;
+    // Served by this API, so linked at its own address — APP_URL is the store's,
+    // and with it unset this used to fall back to localhost even in production.
+    const bundleBase = apiFileUrl(req, "");
     res.status(201).json({
       bundleDownloadUrl: `${bundleBase}/api/printer/jobs/${encodeURIComponent(String(job.id))}/assets/bundle/download${
         include === "ALL"
@@ -1537,11 +1540,8 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
     // Build a public-facing base URL from the request so the preview URL works
     // regardless of whether APP_URL is set. Heroku terminates TLS and sets
     // x-forwarded-proto, so we use that header instead of req.protocol.
-    const proto = (req.get("x-forwarded-proto") || req.protocol).split(",")[0].trim();
-    const host = req.get("host") || "";
-    const derivedBase = host ? `${proto}://${host}` : null;
-    const appBase = env.appUrl && !env.appUrl.includes("localhost") ? env.appUrl : derivedBase;
-    const previewDataUrl = appBase ? `${appBase}${rendered.relativePath}` : rendered.relativePath;
+    // The API's own address, not APP_URL (the store's) — see utils/publicApiBase.ts.
+    const previewDataUrl = apiFileUrl(req, rendered.relativePath);
 
     res.json({
       previewDataUrl,
@@ -2290,7 +2290,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
       const displayStatus = printerStatusLabel(order.status);
 
       const thumbnail = typeof firstItem.previewImage === "string" && firstItem.previewImage
-        ? firstItem.previewImage
+        ? resolveApiFile(req, firstItem.previewImage)
         : null;
 
       const orderId = String((order as any)._id);

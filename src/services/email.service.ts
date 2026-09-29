@@ -1,11 +1,52 @@
-import nodemailer from "nodemailer";
-import sgMail from "@sendgrid/mail";
 import { env } from "../config/env.js";
 
-// Initialize SendGrid if API key is available
-if (env.sendgridApiKey) {
-  sgMail.setApiKey(env.sendgridApiKey);
-}
+export type EmailResult = { sent: boolean; messageId: string | null; error: string | null };
+type Message = { to: string; subject: string; html: string };
+
+const RESEND_URL = "https://api.resend.com/emails";
+/** An email is never worth holding a request open for long. */
+const RESEND_TIMEOUT_MS = 15_000;
+
+/**
+ * One message through Resend's API.
+ *
+ * Resend replaced SendGrid: it is the provider the client is opening an account
+ * with, and the only place our ask and our code disagreed. Plain `fetch` rather
+ * than an SDK — it is one JSON POST — and it never throws: a failed email is
+ * reported in the result, never allowed to fail the request that sent it.
+ * `fetchImpl` is only there for the tests.
+ */
+export const sendViaResend = async (
+  message: Message,
+  config: { apiKey: string; from: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<EmailResult> => {
+  try {
+    const response = await fetchImpl(RESEND_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ from: config.from, to: message.to, subject: message.subject, html: message.html }),
+      signal: AbortSignal.timeout(RESEND_TIMEOUT_MS),
+    });
+    const body: any = await response.json().catch(() => null);
+    if (!response.ok) {
+      const reason = `Resend ${response.status}: ${body?.message || body?.name || response.statusText || "request failed"}`;
+      console.error(`[RESEND ERROR] to=${message.to} subject=${message.subject} error=${reason}`);
+      return { sent: false, messageId: null, error: reason };
+    }
+    return { sent: true, messageId: body?.id ? String(body.id) : null, error: null };
+  } catch (e: any) {
+    const reason =
+      e?.name === "TimeoutError" || e?.name === "AbortError"
+        ? `Resend did not respond within ${RESEND_TIMEOUT_MS / 1000}s`
+        : `Resend request failed: ${e?.message || "unknown error"}`;
+    console.error(`[RESEND ERROR] to=${message.to} subject=${message.subject} error=${reason}`);
+    return { sent: false, messageId: null, error: reason };
+  }
+};
 
 export const sendEmail = async ({
   to,
@@ -15,62 +56,22 @@ export const sendEmail = async ({
   to: string;
   subject: string;
   html: string;
-}): Promise<{ sent: boolean; messageId: string | null; error: string | null }> => {
+}): Promise<EmailResult> => {
   if (env.nodeEnv === "test") {
     console.log(`[EMAIL MOCK] to=${to} subject=${subject}`);
     return { sent: false, messageId: null, error: null };
   }
 
-  // Try SendGrid first if configured
-  if (env.sendgridApiKey && env.sendgridFromEmail) {
-    try {
-      const [response] = await sgMail.send({
-        to,
-        from: env.sendgridFromEmail,
-        subject,
-        html
-      });
-      return { sent: true, messageId: String(response.headers["x-message-id"] || ""), error: null };
-    } catch (e: any) {
-      console.error(`[SENDGRID ERROR] to=${to} subject=${subject} error=${e?.message || "unknown"}`);
-      // Fall through to SMTP if SendGrid fails and SMTP is available
-    }
-  }
-
-  const hasSmtp =
-    Boolean(env.smtpHost) &&
-    Boolean(env.smtpPort) &&
-    Boolean(env.smtpUser) &&
-    Boolean(env.smtpPass) &&
-    Boolean(env.smtpFrom);
-
-  if (!hasSmtp) {
-    console.log(`[EMAIL MOCK] to=${to} subject=${subject}`);
+  if (!env.resendApiKey || !env.resendFromEmail) {
+    // Not set up yet: say so plainly rather than pretending it was sent.
+    console.log(`[EMAIL NOT SENT — Resend is not configured] to=${to} subject=${subject}`);
     return { sent: false, messageId: null, error: "email_not_configured" };
   }
 
-  try {
-    const transporter = nodemailer.createTransport({
-      host: env.smtpHost,
-      port: env.smtpPort!,
-      secure: env.smtpSecure ?? env.smtpPort === 465,
-      auth: {
-        user: env.smtpUser,
-        pass: env.smtpPass
-      }
-    });
-
-    const info = await transporter.sendMail({
-      from: env.smtpFrom,
-      to,
-      subject,
-      html
-    });
-
-    return { sent: true, messageId: info?.messageId ? String(info.messageId) : null, error: null };
-  } catch (e: any) {
-    const message = e?.message ? String(e.message) : "email_send_failed";
-    console.error(`[EMAIL ERROR] to=${to} subject=${subject} error=${message}`);
-    return { sent: false, messageId: null, error: message };
-  }
+  /*
+   * Resend is the only route. An SMTP fallback used to sit behind it, and on the
+   * demo it held a previous developer's Gmail login that rejected every send —
+   * a second provider to configure, secure and debug for no benefit.
+   */
+  return sendViaResend({ to, subject, html }, { apiKey: env.resendApiKey, from: env.resendFromEmail });
 };

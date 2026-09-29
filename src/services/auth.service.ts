@@ -7,7 +7,6 @@ import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
 import { env } from "../config/env.js";
-import nodemailer from "nodemailer";
 import { sendEmail } from "./email.service.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { OAuth2Client } from "google-auth-library";
@@ -798,30 +797,20 @@ export const requestPasswordReset = async (
     return `${trim(env.appUrl)}/?resetToken=${token}&email=${encodeURIComponent(user.email)}`;
   })();
 
-  const hasSmtp =
-    Boolean(env.smtpHost) &&
-    Boolean(env.smtpPort) &&
-    Boolean(env.smtpUser) &&
-    Boolean(env.smtpPass) &&
-    Boolean(env.smtpFrom);
-
-  if (hasSmtp) {
-    try {
-      const transporter = nodemailer.createTransport({
-      host: env.smtpHost,
-      port: env.smtpPort!,
-      secure: env.smtpSecure ?? env.smtpPort === 465,
-      auth: {
-        user: env.smtpUser,
-        pass: env.smtpPass
-      }
-    });
-
-    await transporter.sendMail({
-      from: env.smtpFrom,
-      to: user.email,
-      subject: "Reset your Space Transfers password",
-      html: `
+  /*
+   * Through the shared sender, like every other email. This one used to build
+   * its own SMTP transport, so it was the only message that could never go
+   * through Resend: with Resend set up and SMTP gone, password resets would have
+   * stopped arriving while everything else worked.
+   *
+   * A delivery failure must not fail the request. The token is already saved,
+   * and failing only for addresses that exist (an unknown address returns
+   * early) would tell a caller which emails are registered.
+   */
+  const sent = await sendEmail({
+    to: user.email,
+    subject: "Reset your Space Transfers password",
+    html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
           <h2 style="margin: 0 0 12px 0;">Reset your password</h2>
           <p style="margin: 0 0 12px 0;">We received a request to reset your password.</p>
@@ -834,28 +823,16 @@ export const requestPasswordReset = async (
             This link expires in 15 minutes. If you didn’t request this, you can ignore this email.
           </p>
         </div>
-      `
-      });
-    } catch (error: any) {
-      /*
-       * A delivery failure must not fail the request.
-       *
-       * The token is already saved by this point, so an SMTP error answered 500
-       * on an operation that had in fact succeeded. Worse, it answered 500 only
-       * for addresses that exist — an unknown address returns early without
-       * sending — so the status code alone told a caller which emails were
-       * registered, on an endpoint that takes an arbitrary address.
-       */
-      console.error(
-        `[PASSWORD_RESET] token issued but the email could not be sent to ${user.email}: ${error?.message}`,
-      );
-    }
+      `,
+  }).catch((error: any) => ({ sent: false, messageId: null, error: error?.message || "send failed" }));
+  if (!sent.sent) {
+    console.error(`[PASSWORD_RESET] token issued but the email could not be sent to ${user.email}: ${sent.error}`);
   }
 
   /*
    * Outside production the raw token is returned so the flow can be exercised
    * without a working mailbox — including when the send above failed, which is
-   * the state every environment is in until SendGrid is configured.
+   * the state every environment is in until Resend is configured.
    */
   if (env.nodeEnv !== "production") {
     return { resetToken: rawToken };
