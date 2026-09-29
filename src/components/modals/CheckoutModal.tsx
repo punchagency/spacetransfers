@@ -670,7 +670,18 @@ export default function CheckoutModal({
                     />
                   )}
 
-                  {step === 2 && (
+                  {/*
+                    Kept mounted through the review step, not unmounted with it.
+
+                    Stripe's card field has to be on the page when the payment is
+                    confirmed: the handler captured here calls
+                    `elements.getElement(CardElement)` at Place Order time. While
+                    this was only rendered on step 2, moving to Review tore the
+                    field down and every Place Order failed with "Card input is
+                    missing" — checkout could not complete at all.
+                  */}
+                  <div hidden={step !== 2}>
+                    {(step === 2 || step === 3) && (
                     (stripePromise ? (
                       <Elements stripe={stripePromise}>
                         <PaymentStep
@@ -726,7 +737,8 @@ export default function CheckoutModal({
                         }}
                       />
                     ))
-                  )}
+                    )}
+                  </div>
 
                   {step === 3 && (
                     <ReviewStep
