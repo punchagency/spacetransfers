@@ -1297,6 +1297,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         return typeof inline === "string" && inline ? inline : undefined;
       };
 
+      const positivePx = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.round(v) : undefined);
       const normalizedArtboardItems = Array.isArray(artboardItems)
         ? artboardItems
             .filter(Boolean)
@@ -1314,6 +1315,15 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
               flipped: Boolean(it.flipped),
               copies: typeof it.copies === "number" ? it.copies : 1,
               linked: Boolean(it.linked),
+              /*
+               * The image's pixel size. Checkout sent these and they were dropped
+               * here, so a reordered sheet couldn't work out its DPI and flagged
+               * sharp artwork as "resolution couldn't be read", and the print
+               * export never got the size of browser-edited images it asks for.
+               */
+              croppedWidthPx: positivePx(it.croppedWidthPx),
+              croppedHeightPx: positivePx(it.croppedHeightPx),
+              nativeWidthPx: positivePx(it.nativeWidthPx),
               // How auto-nest laid the piece out; the export draws it the same way.
               nestRotation: Number(it.nestRotation) === 90 ? 90 : 0,
               flowCols:

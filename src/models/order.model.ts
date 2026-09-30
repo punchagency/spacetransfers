@@ -34,6 +34,10 @@ export interface IOrderItem {
     nestRotation?: number;
     /** Columns auto-nest wrapped the copies into. */
     flowCols?: number;
+    /** Pixel size of the printed image (and of the original upload). */
+    croppedWidthPx?: number;
+    croppedHeightPx?: number;
+    nativeWidthPx?: number;
   }>;
 }
 
@@ -233,7 +237,11 @@ const orderItemSchema = new Schema<IOrderItem>(
           copies: { type: Number, default: 1 },
           linked: { type: Boolean, default: false },
           nestRotation: { type: Number, enum: [0, 90], default: 0 },
-          flowCols: { type: Number, min: 1 }
+          flowCols: { type: Number, min: 1 },
+          // The image's pixel size, so DPI can be worked out from the order alone.
+          croppedWidthPx: { type: Number },
+          croppedHeightPx: { type: Number },
+          nativeWidthPx: { type: Number }
         }
       ],
       default: undefined
