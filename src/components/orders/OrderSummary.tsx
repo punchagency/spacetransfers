@@ -36,6 +36,26 @@ interface OrderSummaryProps {
             customAttributes?: Record<string, any>;
             fileUrl?: string | null;
         }>;
+        /** Every sheet on the order, each with its own contents. */
+        sheets?: Array<{
+            index: number;
+            name: string;
+            widthIn: number | null;
+            heightIn: number | null;
+            quantity: number;
+            itemCount: number;
+            previewImage: string | null;
+            sheetSize: string;
+            gangsheetItems: Array<{
+                name: string;
+                sku: string;
+                quantity: number;
+                size: string;
+                color: string;
+                customAttributes?: Record<string, any>;
+                fileUrl?: string | null;
+            }>;
+        }>;
         preview?: {
             designId?: string;
             sheetSize?: string;
@@ -64,8 +84,18 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
     const displayName = customer.name
         || `${customer.firstName || ''} ${customer.lastName || ''}`.trim()
         || 'N/A';
-    const gangsheetItems = Array.isArray(order.gangsheetItems) ? order.gangsheetItems : [];
-    const artboardItems = Array.isArray(order.preview?.artboardItems) ? order.preview?.artboardItems : null;
+    /*
+     * Which sheet the contents and preview show. Both described the order's
+     * first sheet only, so a second sheet — paid for, and to be printed — was
+     * invisible here.
+     */
+    const sheets = Array.isArray(order.sheets) ? order.sheets : [];
+    const [sheetIndex, setSheetIndex] = useState(0);
+    const currentSheet = sheets[Math.min(sheetIndex, Math.max(0, sheets.length - 1))];
+    const gangsheetItems = currentSheet
+        ? currentSheet.gangsheetItems || []
+        : Array.isArray(order.gangsheetItems) ? order.gangsheetItems : [];
+    const artboardItems = !currentSheet && Array.isArray(order.preview?.artboardItems) ? order.preview?.artboardItems : null;
     const derivedGangsheetItems = gangsheetItems.length === 0 && artboardItems
         ? artboardItems.map((it) => {
             const rawSku = typeof it.assetId === 'string' ? it.assetId : '';
@@ -106,6 +136,9 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
 
     const GANGSHEET_PAGE_SIZE = 15;
     const [gangsheetPage, setGangsheetPage] = useState(0);
+    // Item pictures that failed to load, shown as the placeholder instead.
+    const [brokenPreviews, setBrokenPreviews] = useState<Set<number>>(() => new Set());
+    useEffect(() => setGangsheetPage(0), [sheetIndex]);
     const gangsheetPageCount = Math.max(1, Math.ceil(effectiveGangsheetItems.length / GANGSHEET_PAGE_SIZE));
     // The order refreshes on a 5s poll, so the list can shrink under a reader
     // sitting on a later page. Clamp rather than render an empty page.
@@ -138,13 +171,16 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
         return () => ro.disconnect();
     }, []);
 
+    // A switched sheet shows nothing until its own preview arrives, never the last one's.
+    useEffect(() => setPreviewDataUrl(null), [sheetIndex]);
+
     useEffect(() => {
         if (!orderId) return;
         let alive = true;
 
         const fetchPreview = async () => {
             try {
-                const r = await apiFetch(`/admin/orders/${encodeURIComponent(orderId)}/gangsheet/preview?resolution=150`);
+                const r = await apiFetch(`/admin/orders/${encodeURIComponent(orderId)}/gangsheet/preview?resolution=150&sheet=${sheetIndex}`);
                 if (!alive) return;
                 setPreviewDataUrl(typeof r?.previewDataUrl === "string" ? r.previewDataUrl : null);
                 setPreviewSheet({
@@ -164,7 +200,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
             alive = false;
             window.clearInterval(intervalId);
         };
-    }, [orderId]);
+    }, [orderId, sheetIndex]);
 
     const dims = useMemo(() => {
         const w =
@@ -251,28 +287,29 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
             {/* Items Ordered */}
             <div className="mb-8">
                 {(() => {
-                    const consolidatedItems = items.reduce((acc, item) => {
-                        const key = `${item.name}-${item.size || 'default'}-${item.price || 0}`;
-                        if (!acc[key]) {
-                            acc[key] = { ...item };
-                        } else {
-                            acc[key].quantity += item.quantity;
-                        }
-                        return acc;
-                    }, {} as Record<string, typeof items[0]>);
-                    const displayItems = Object.values(consolidatedItems);
+                    // One row per sheet. Rows were merged by name, size and
+                    // price, which folded two different sheets into one.
+                    const displayItems = items;
 
                     return (
                         <>
                             <h3 className="text-sm font-medium text-gray-500 mb-4 uppercase tracking-wide">
-                                Items Ordered ({displayItems.length} Unique)
+                                Items Ordered ({displayItems.length})
                             </h3>
                             <div className="space-y-4">
                                 {displayItems.map((item, index) => (
                                     <div key={index} className="flex items-center gap-4 bg-gray-50 p-4 rounded-lg border border-gray-100">
                                         <div className="w-12 h-12 bg-white rounded border border-gray-200 flex items-center justify-center text-gray-400 overflow-hidden shrink-0">
-                                            {item.fileUrl ? (
-                                                <img src={item.fileUrl} alt={item.name} className="w-full h-full object-cover" />
+                                            {item.fileUrl && !brokenPreviews.has(index) ? (
+                                                // A stored picture can be gone (orders placed through
+                                                // another server kept that server's files); fall back to
+                                                // the placeholder rather than a broken image.
+                                                <img
+                                                    src={item.fileUrl}
+                                                    alt={item.name}
+                                                    className="w-full h-full object-contain"
+                                                    onError={() => setBrokenPreviews((prev) => new Set(prev).add(index))}
+                                                />
                                             ) : (
                                                 <FiImage className="w-6 h-6" />
                                             )}
@@ -298,6 +335,37 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                         </>
                     );
                 })()}
+
+                {sheets.length > 1 && (
+                    <div className="mt-6">
+                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                            Sheets on this order ({sheets.length})
+                        </h4>
+                        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Sheets on this order">
+                            {sheets.map((sh) => (
+                                <button
+                                    key={sh.index}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={sh.index === sheetIndex}
+                                    onClick={() => setSheetIndex(sh.index)}
+                                    className={`rounded-lg border px-3 py-1.5 text-left text-xs transition-colors ${
+                                        sh.index === sheetIndex
+                                            ? "border-blue-600 bg-blue-50 text-blue-800"
+                                            : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                                    }`}
+                                >
+                                    <span className="font-semibold">Sheet {sh.index + 1}</span>
+                                    <span className="block max-w-[12rem] truncate">{sh.name}</span>
+                                    <span className="block text-[11px] text-gray-500">
+                                        {sh.sheetSize} · {sh.itemCount} {sh.itemCount === 1 ? "image" : "images"}
+                                        {sh.quantity > 1 ? ` · print ${sh.quantity}` : ""}
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 {effectiveGangsheetItems.length > 0 && (
                     <div className="mt-6">
@@ -391,11 +459,11 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
             {/* Gangsheet Preview */}
             <div>
                 <h3 className="text-sm font-medium text-gray-500 mb-4 uppercase tracking-wide">
-                    Gangsheet Preview
+                    {currentSheet && sheets.length > 1 ? `Gangsheet Preview · Sheet ${currentSheet.index + 1}` : "Gangsheet Preview"}
                 </h3>
-                {order.preview?.sheetSize && (
+                {(currentSheet?.sheetSize || order.preview?.sheetSize) && (
                     <p className="text-xs text-gray-400 mb-3">
-                        Sheet size: <span className="font-medium text-gray-600">{order.preview.sheetSize}</span>
+                        Sheet size: <span className="font-medium text-gray-600">{currentSheet?.sheetSize || order.preview?.sheetSize}</span>
                     </p>
                 )}
                 <div className="w-full flex justify-center">

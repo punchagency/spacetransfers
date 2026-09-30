@@ -104,7 +104,8 @@ export const OrdersTable = ({
       header: "Profits",
       key: "profit" as keyof Order,
       className: "font-bold text-gray-900",
-      sortValue: (o: Order) => Number(String(o.profit || "").replace(/[^0-9.]/g, "")) || 0,
+      // The minus sign is kept, so a loss sorts below every gain.
+      sortValue: (o: Order) => Number(String(o.profit || "").replace(/[^0-9.-]/g, "")) || 0,
       /**
        * Marked "est." until the order ships.
        *
@@ -120,7 +121,13 @@ export const OrdersTable = ({
         const unknown = order.profit === "—";
         return (
           <span
-            className={unknown ? "font-normal text-gray-400 cursor-help" : "font-bold text-gray-900"}
+            className={
+              unknown
+                ? "font-normal text-gray-400 cursor-help"
+                : String(order.profit).startsWith("-")
+                  ? "font-bold text-red-600"
+                  : "font-bold text-gray-900"
+            }
             title={
               unknown
                 ? "No sheet dimensions on this order, so no partner cost can be worked out."

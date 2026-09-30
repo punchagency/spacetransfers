@@ -39,6 +39,8 @@ type Summary = {
   kpis: {
     revenue: Kpi;
     partnerCost: Kpi;
+    /** What revenue carries that isn't the business's to keep. */
+    deductions?: { tax: number; shipping: number; cardFees: number; ordersWithoutFee: number };
     margin: Kpi & { pct: number };
     earned: Kpi & { orderCount: number };
   };
@@ -144,8 +146,8 @@ export const Earnings = () => {
           trendPct: data.kpis.margin.comparable ? data.kpis.margin.trendPct : null,
           trendHint: hint(data.kpis.margin),
           subtitle: isForecast
-            ? `${data.kpis.margin.pct}% of revenue · ${openCount} order${openCount === 1 ? "" : "s"} not yet shipped`
-            : `${data.kpis.margin.pct}% of revenue · all orders shipped`,
+            ? `${data.kpis.margin.pct}% of revenue, after tax, shipping, fees and partners · ${openCount} not yet shipped`
+            : `${data.kpis.margin.pct}% of revenue, after tax, shipping, fees and partners`,
         },
         {
           /*
@@ -208,6 +210,27 @@ export const Earnings = () => {
         </div>
       ) : (
         <StatsGrid cards={statsCards} />
+      )}
+
+      {/*
+        How margin is reached. Margin used to be revenue − partner cost, which
+        counted the state's tax and the carrier's shipping as profit and left out
+        card fees; with those taken off, the cards alone no longer add up.
+      */}
+      {!loadError && data?.kpis.deductions && (
+        <p className="text-sm text-gray-500 -mt-2">
+          Margin is revenue less tax <span className="text-gray-400">({currency(data.kpis.deductions.tax)}, for the state)</span>,
+          shipping <span className="text-gray-400">({currency(data.kpis.deductions.shipping)})</span>, card fees{" "}
+          <span className="text-gray-400">({currency(data.kpis.deductions.cardFees)})</span> and partner cost.
+          {data.kpis.deductions.ordersWithoutFee > 0 && (
+            <>
+              {" "}
+              {data.kpis.deductions.ordersWithoutFee} card order
+              {data.kpis.deductions.ordersWithoutFee === 1 ? " has" : "s have"} no recorded fee yet, so{" "}
+              {data.kpis.deductions.ordersWithoutFee === 1 ? "its fee isn't" : "their fees aren't"} included.
+            </>
+          )}
+        </p>
       )}
 
       {!loadError && (data?.uncostableOrders ?? 0) > 0 && (
