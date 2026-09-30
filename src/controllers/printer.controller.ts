@@ -1,11 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import { orderSheets, pickOrderSheet, sheetSummaries } from "../utils/orderSheets.js";
+import { stageDue } from "../utils/slaStages.js";
 import { formatSheetSize } from "../utils/orderPresentation.js";
 import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import {
   PRINTER_STATUS_LABEL,
   printerStatusLabel,
+  statusChangeMessage,
   statusesForPrinterLabel,
 } from "../utils/orderStatusLabels.js";
 import { deriveParcel } from "../services/packaging.service.js";
@@ -23,7 +25,6 @@ import { changePartnerAvailability } from "../services/partnerAvailability.servi
 import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
-import { resolveOrderDeadlineIso } from "../utils/assignmentDeadline.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import archiver from "archiver";
@@ -195,6 +196,19 @@ const computeGangsheetFaceThumbnail = ({
   return resolveThumbnailUrl(String(best.assetId || ""), assetsById);
 };
 
+
+/** "Accept by" / "Print by" for a job, from the same clock the SLA enforces. */
+const dueFields = (job: any, sla: any) => {
+  const due = stageDue(job, sla);
+  return { deadline: due ? due.dueAt.toISOString() : null, dueStage: due ? due.stage : null };
+};
+
+/** "1 sheet" / "2 sheets" — these rows said "2 Items" for two gang sheets. */
+const sheetCountLabel = (items: unknown) => {
+  const n = orderSheets(items).length;
+  return `${n} ${n === 1 ? "sheet" : "sheets"}`;
+};
+
 export const uploadProfileAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
@@ -242,7 +256,7 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
+    const slaSettings = (await getAssignmentSettings()).sla;
     const printerId = req.user?.id;
 
     /*
@@ -350,9 +364,9 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       id: String(job._id),
       displayId: job?.displayId ? String(job.displayId) : null,
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
-      order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
-      // ISO deadline (assignment + 24h); the frontend renders a live countdown.
-      deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
+      order: sheetCountLabel(job.items),
+      // What is due next (accept by / print by) — the clock the SLA enforces.
+      ...dueFields(job, slaSettings),
       assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: mapStatus(String(job.status || "")),
       isUrgent: String(job.priority || "").toUpperCase() === "URGENT",
@@ -373,8 +387,8 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       id: String(job._id),
       displayId: job?.displayId ? String(job.displayId) : null,
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
-      order: `${Array.isArray(job.items) ? job.items.length : 0} Items`,
-      deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
+      order: sheetCountLabel(job.items),
+      ...dueFields(job, slaSettings),
       assignedAt: job.assignedAt ? new Date(job.assignedAt).toISOString() : null,
       status: "Urgent",
       isUrgent: true,
@@ -446,7 +460,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
 
 export const listPrintQueue = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
+    const slaSettings = (await getAssignmentSettings()).sla;
     const printerId = req.user?.id;
     const { status } = req.query;
 
@@ -493,7 +507,7 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
         sheetSize,
         orderDescription: firstItem.name || "N/A",
         status: job.status,
-        deadline: resolveOrderDeadlineIso(job, slaAcceptHours),
+        ...dueFields(job, slaSettings),
         assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
         createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
         priority: job.priority
@@ -505,59 +519,6 @@ export const listPrintQueue = async (req: Request, res: Response, next: NextFunc
     next(error);
   }
 };
-
-export const updateJobStatus = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { status } = req.body;
-    const printerId = req.user?.id;
-
-    const allowedStatuses = ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "COMPLETED"];
-    if (!status || !allowedStatuses.includes(status)) {
-      const error = new Error("Invalid status provided") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    job.status = status as any;
-    if (!job.statusTimeline) job.statusTimeline = [];
-    job.statusTimeline.push({ status: status as any, time: new Date() });
-    await job.save();
-
-    // Completing (or otherwise moving out of an active state) frees capacity.
-    syncPartnerCapacitySafe(String(printerId));
-
-    // Was a second, disagreeing copy: "Quality Check" here vs "Print Shipping
-    // Label" in the job list, for the same state and the same reader.
-    const pqLabelMap = PRINTER_STATUS_LABEL;
-    notifyPrinter({
-      printerId: String(printerId),
-      category: "jobs",
-      priority: status === "COMPLETED" ? "medium" : "low",
-      title: `Print queue job → ${pqLabelMap[status] || status}`,
-      message: `Order ${(job as any).displayId || job.id} moved to ${pqLabelMap[status] || status}.`,
-      meta: { orderId: job.id, status },
-      settingsKey: "orderUpdates",
-    }).catch(() => {});
-
-    res.json({
-      id: job.id,
-      status: job.status,
-      updatedAt: job.updatedAt.toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 
 export const getJobDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -1036,7 +997,8 @@ export const downloadJobAssetBundle = async (req: Request, res: Response, next: 
       throw error;
     }
 
-    const zipName = `original_assets_${String(job.id).slice(-6).toUpperCase()}.zip`;
+    // Named with the order number the partner sees (DTF-0283), not an id fragment.
+    const zipName = `original_assets_${String((job as any).displayId || String(job.id).slice(-6).toUpperCase())}.zip`;
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
     res.setHeader("Cache-Control", "no-store");
@@ -2196,7 +2158,7 @@ export const updateJobTracking = async (req: Request, res: Response, next: NextF
 
 export const listPrinterOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
+    const slaSettings = (await getAssignmentSettings()).sla;
     const printerId = req.user?.id;
     const { status, q, limit = "30", cursor } = req.query;
 
@@ -2284,11 +2246,15 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const hasNextPage = orders.length > pageSize;
     const pageOrders = hasNextPage ? orders.slice(0, pageSize) : orders;
 
+    const sla = (await getAssignmentSettings()).sla;
     const formattedOrders = pageOrders.map((order) => {
       const firstItem = (Array.isArray(order.items) ? order.items[0] : null) || ({} as any);
-      const sheetSize = (firstItem.widthIn && firstItem.heightIn)
-        ? `${firstItem.widthIn}x${firstItem.heightIn}`
-        : "N/A";
+      // Every sheet: this read the first sheet's size (unrounded) for the whole order.
+      const sheets = sheetSummaries(order.items);
+      const sheetSize =
+        sheets.length > 1
+          ? `${sheets.length} sheets`
+          : formatSheetSize(sheets[0]?.widthIn, sheets[0]?.heightIn) || "N/A";
 
       const location = order.shippingAddress
         ? `${order.shippingAddress.city}, ${order.shippingAddress.state}`
@@ -2301,9 +2267,13 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         : null;
 
       const orderId = String((order as any)._id);
-      // Due date follows the fulfilment deadline (assignment + 24h), not the
-      // order's creation time.
-      const deadlineIso = resolveOrderDeadlineIso(order as any, slaAcceptHours);
+      /*
+       * What is due next, and when — the same clock the SLA enforces. This was
+       * the accept-by deadline shown as "Due Date" on every job: still there
+       * after the job was accepted, and on shipped, completed and cancelled jobs.
+       * Now: accept by (not started), print by (printing), nothing after that.
+       */
+      const due = stageDue(order as any, sla);
       return {
         id: orderId,
         actualId: orderId,
@@ -2313,8 +2283,9 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
         location,
         status: displayStatus,
-        dueDate: formatDueDate(deadlineIso ? new Date(deadlineIso) : order.createdAt),
-        deadline: deadlineIso,
+        dueDate: due ? formatDueDate(due.dueAt) : "",
+        deadline: due ? due.dueAt.toISOString() : null,
+        dueStage: due ? due.stage : null,
         assignedAt: (order as any).assignedAt ? new Date((order as any).assignedAt).toISOString() : null,
         createdAt: order.createdAt ? new Date(order.createdAt).toISOString() : null,
         isUrgent: order.priority === "URGENT",
@@ -2337,7 +2308,7 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
 
 export const getPrinterJobOverview = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const slaAcceptHours = (await getAssignmentSettings()).sla.acceptHours;
+    const slaSettings = (await getAssignmentSettings()).sla;
     const { jobId } = req.params as any;
     const printerId = req.user?.id;
     const id = Array.isArray(jobId) ? String(jobId[0] || "") : String(jobId || "");
@@ -2438,8 +2409,15 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       createdAt: (job as any).createdAt,
       updatedAt: (job as any).updatedAt,
       assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
-      // ISO fulfilment deadline (assignment + 24h); frontend renders a countdown.
-      deadline: resolveOrderDeadlineIso(job as any, slaAcceptHours),
+      /*
+       * What is due next and when — accept by, then print by, then nothing —
+       * from the clock the SLA enforces. This was the accept-by deadline shown
+       * as "Due Date" for the life of the job.
+       */
+      ...(() => {
+        const due = stageDue(job as any, slaSettings);
+        return { deadline: due ? due.dueAt.toISOString() : null, dueStage: due ? due.stage : null };
+      })(),
       faceThumbnail,
       sheets,
       customer: {
@@ -2452,7 +2430,14 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       specs: {
         sheetSize,
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
-        itemsCount: Array.isArray((job as any).items) ? (job as any).items.length : 0
+        itemsCount: Array.isArray((job as any).items) ? (job as any).items.length : 0,
+        // What is actually on the order: sheets, the graphics placed on them,
+        // and how many prints in total (a sheet can be ordered more than once).
+        sheetCount: sheets.length,
+        graphicCount: sheets.reduce((n, sh) => n + sh.itemCount, 0),
+        printCount: sheets.reduce((n, sh) => n + sh.quantity, 0),
+        // The resolution print files are exported at — the page said 600.
+        printDpi: GANGSHEET_PRINT_DPI,
       },
       notes: (job as any).notes || "",
       timeline: ((job as any).statusTimeline || []).map((t: any) => ({
@@ -2658,6 +2643,32 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
       throw error;
     }
 
+    /*
+     * Two steps a partner cannot skip to.
+     *
+     * COMPLETED means delivered, and it makes the job payable. A partner could
+     * set it from any earlier state — the job list's "Select all → Mark as
+     * Complete" did exactly that — so jobs could be paid out without being
+     * printed or shipped. Delivery is confirmed by the carrier's tracking.
+     *
+     * SHIPPED means the package has its label and is waiting for pickup. It was
+     * reachable straight from "not started".
+     */
+    if (next === "COMPLETED" && current !== "COMPLETED") {
+      const error = new Error(
+        "Jobs complete automatically when the carrier confirms delivery.",
+      ) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+    if (next === "SHIPPED" && current !== "SHIPPED" && (current !== "QUALITY_CHECK" || !(job as any).shipStationLabelUrl)) {
+      const error = new Error(
+        "A job can be marked shipped once its shipping label is ready.",
+      ) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+
     if (!job.statusTimeline) job.statusTimeline = [];
     const now = new Date();
     const timelineHas = (s: string) =>
@@ -2666,7 +2677,7 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
       (job.statusTimeline as any).push({
         status: s as any,
         time: now,
-        message: `Printer updated status to ${s}`,
+        message: statusChangeMessage("PRINTER", s),
         actorRole: "PRINTER",
         actorId: String(printerId || ""),
         actorName: null

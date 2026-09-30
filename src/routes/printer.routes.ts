@@ -3,7 +3,6 @@ import { authenticate, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
 import {
   listPrintQueue,
-  updateJobStatus,
   listPrinterOrders,
   getDashboardStats,
   getJobDetails,
@@ -76,7 +75,6 @@ router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.patch("/jobs/:jobId/specs", updateJobSpecs);
 router.patch("/jobs/:jobId/tracking", updateJobTracking);
 router.post("/jobs/:jobId/actions", executeJobAction);
-router.patch("/print-queue/:jobId/status", updateJobStatus);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);

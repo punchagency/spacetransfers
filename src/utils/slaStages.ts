@@ -84,17 +84,24 @@ export const SLA_REASON_PREFIX = "SLA breach";
  * The breach for an order, or null if it is on time, not in a timed stage, or
  * the clock has no start.
  */
-export const evaluateSla = (
-  order: {
-    status?: string;
-    priority?: string;
-    assignedAt?: Date | string | null;
-    assignmentDeadline?: Date | string | null;
-    statusTimeline?: Array<{ status?: string; time?: Date | string }>;
-  },
+type SlaOrder = {
+  status?: string;
+  priority?: string;
+  assignedAt?: Date | string | null;
+  assignmentDeadline?: Date | string | null;
+  statusTimeline?: Array<{ status?: string; time?: Date | string }>;
+};
+
+/**
+ * The stage an order is in and when that stage is due, or null when it is not
+ * in a timed stage (unassigned, past printing, finished) or its clock has no
+ * start. Shared by the SLA sweeper and the partner's "Accept by" / "Print by",
+ * so what a partner is shown is the deadline that is actually enforced.
+ */
+export const stageDue = (
+  order: SlaOrder,
   sla: SlaSettings,
-  now: Date = new Date(),
-): SlaBreach | null => {
+): { stage: SlaStage; dueAt: Date; hoursAllowed: number } | null => {
   const status = String(order?.status || "").toUpperCase();
 
   const stage: SlaStage | null =
@@ -133,6 +140,18 @@ export const evaluateSla = (
     stored && !Number.isNaN(stored.getTime())
       ? stored
       : new Date(startedAt.getTime() + hoursAllowed * HOUR_MS);
+
+  return { stage, dueAt, hoursAllowed };
+};
+
+export const evaluateSla = (
+  order: SlaOrder,
+  sla: SlaSettings,
+  now: Date = new Date(),
+): SlaBreach | null => {
+  const due = stageDue(order, sla);
+  if (!due) return null;
+  const { stage, dueAt, hoursAllowed } = due;
 
   const overdueMs = now.getTime() - dueAt.getTime();
   if (overdueMs <= 0) return null;

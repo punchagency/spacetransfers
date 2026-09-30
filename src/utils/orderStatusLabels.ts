@@ -51,3 +51,47 @@ export const PRINTER_LABEL_STATUSES: Record<string, string[]> = Object.entries(
 /** The stored statuses behind a partner-facing label, or null if unrecognised. */
 export const statusesForPrinterLabel = (label: unknown): string[] | null =>
   PRINTER_LABEL_STATUSES[String(label || "")] ?? null;
+
+/**
+ * What an admin calls each status — mirrors `ORDER_STATUS_LABEL` in the admin
+ * app, so a timeline sentence written here uses the words on the admin's screen.
+ */
+export const ADMIN_STATUS_LABEL: Record<string, string> = {
+  PENDING: "Unassigned",
+  PROCESSING: "Assigned",
+  PRINTING: "Printing",
+  QUALITY_CHECK: "Ready to Ship",
+  SHIPPED: "Shipped",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
+};
+
+/** What a partner's move means, in words both apps recognise. */
+const PARTNER_STEP_MESSAGE: Record<string, string> = {
+  PROCESSING: "Partner moved the job back to not started",
+  PRINTING: "Partner started printing",
+  QUALITY_CHECK: "Partner finished printing and requested the shipping label",
+  SHIPPED: "Partner confirmed the package is ready for pickup",
+  CANCELLED: "Partner cancelled the job",
+};
+
+/**
+ * The timeline sentence for a status change.
+ *
+ * These were "Printer updated status to QUALITY_CHECK" — a database code on the
+ * admin's screen, for a step the partner's own app calls "Print Shipping Label"
+ * and the admin's list calls "Ready to Ship".
+ */
+export const statusChangeMessage = (actor: "PRINTER" | "ADMIN", status: unknown): string => {
+  const s = String(status || "").toUpperCase();
+  if (actor === "PRINTER") return PARTNER_STEP_MESSAGE[s] || `Partner moved the job to ${printerStatusLabel(s)}`;
+  return `Admin set the status to ${ADMIN_STATUS_LABEL[s] || s}`;
+};
+
+/** Rewrites the old raw-code sentences already stored on orders. */
+export const describeTimelineMessage = (message: unknown): string | null => {
+  if (typeof message !== "string" || !message) return null;
+  const legacy = /^(Printer|Admin) updated status to ([A-Z_]+)$/.exec(message.trim());
+  if (!legacy) return message;
+  return statusChangeMessage(legacy[1] === "Printer" ? "PRINTER" : "ADMIN", legacy[2]);
+};

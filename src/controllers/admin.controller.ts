@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { describeTimelineMessage, statusChangeMessage } from "../utils/orderStatusLabels.js";
 import { computeOrderFinancials } from "../services/orderFinancials.service.js";
 import { recordMissingProcessingFee } from "../services/paymentVerification.service.js";
 import { formatSheetSize, orderChargeLines } from "../utils/orderPresentation.js";
@@ -1342,7 +1343,7 @@ export const updateOrderStatus = async (req: Request, res: Response, next: NextF
     order.statusTimeline.push({
       status: dbStatus,
       time: new Date(),
-      message: `Admin updated status to ${status}`,
+      message: statusChangeMessage("ADMIN", status),
       actorRole: "ADMIN",
       actorId: String(req.user?.id || ""),
       actorName: null
@@ -1748,7 +1749,8 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       statusTimeline: (order.statusTimeline || []).map(entry => ({
         status: entry.status,
         time: entry.time,
-        message: (entry as any).message || null,
+        // Older entries read "Printer updated status to QUALITY_CHECK".
+        message: describeTimelineMessage((entry as any).message),
         actorRole: (entry as any).actorRole || null,
         actorId: (entry as any).actorId || null,
         actorName: (entry as any).actorName ?? null
