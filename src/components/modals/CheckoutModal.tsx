@@ -280,6 +280,8 @@ export default function CheckoutModal({
             // pre-crop original, not the canvas-cropped dimensions).
             croppedWidthPx: typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0 ? it.croppedWidthPx : undefined,
             croppedHeightPx: typeof it.croppedHeightPx === "number" && it.croppedHeightPx > 0 ? it.croppedHeightPx : undefined,
+            // The upload's own width — what DPI falls back to without a cropped size.
+            nativeWidthPx: typeof it.nativeWidthPx === "number" && it.nativeWidthPx > 0 ? it.nativeWidthPx : undefined,
             autoCrop: typeof it.autoCrop === "boolean" ? it.autoCrop : undefined,
             widthIn: Number(it.widthIn),
             heightIn: Number(it.heightIn),

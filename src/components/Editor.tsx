@@ -1466,11 +1466,21 @@ export default function Editor() {
               const design = await apiFetch(`/customer/designs/${designId}`);
               const savedItems = Array.isArray(design?.artboardData?.items) ? design.artboardData.items : [];
               if (savedItems.length === 0) continue;
-              const items = await designItemsForBoard(savedItems);
+              const items = await withPixelSizes(await designItemsForBoard(savedItems));
               const sheet = sheetSettingsFromSaved(design?.artboardData);
               const designSignature = getGangsheetSnapshot(items);
               const name = design?.title || line.name;
+              /*
+               * A line whose pieces can't be drawn or measured is refreshed even
+               * when nothing else changed: reorders used to add lines in the
+               * order's stored shape (no `url`, no pixel size), so the cart
+               * showed no preview and flagged sharp art as unreadable DPI.
+               */
+              const lineComplete = (Array.isArray(line.items) ? line.items : []).every(
+                (it: any) => it?.url && (it?.croppedWidthPx > 0 || it?.nativeWidthPx > 0),
+              );
               if (
+                lineComplete &&
                 designSignature === line.designSignature &&
                 name === line.name &&
                 sheet.autoNestStickers === line.autoNest &&
@@ -1604,6 +1614,46 @@ export default function Editor() {
     await addGangSheetToCartNow();
   };
 
+  /**
+   * Pixel sizes for pieces that lack them, measured from the image itself.
+   *
+   * DPI is pixels ÷ inches, so a piece without a pixel size has no DPI and is
+   * flagged "resolution couldn't be read". Orders placed before they stored
+   * pixel sizes have none, so reordering one flagged every piece — sharp
+   * artwork included. Measured once, as the line is added.
+   */
+  const withPixelSizes = async (items: any[]): Promise<any[]> => {
+    const missing = items.filter((it) => !(it?.croppedWidthPx > 0) && !(it?.nativeWidthPx > 0) && (it?.croppedUrl || it?.url));
+    if (missing.length === 0) return items;
+    const measured = new Map<any, { w: number; h: number }>();
+    const measure = (src: string) =>
+      new Promise<{ w: number; h: number } | null>((resolve) => {
+        const img = new Image();
+        // Before src — a non-CORS load poisons the cache for every later read.
+        img.crossOrigin = "anonymous";
+        const done = (v: { w: number; h: number } | null) => {
+          clearTimeout(timer);
+          resolve(v);
+        };
+        const timer = setTimeout(() => done(null), 20_000);
+        img.onload = () => done(img.naturalWidth > 0 ? { w: img.naturalWidth, h: img.naturalHeight } : null);
+        img.onerror = () => done(null);
+        img.src = src;
+      });
+    for (let i = 0; i < missing.length; i += 4) {
+      await Promise.all(
+        missing.slice(i, i + 4).map(async (it) => {
+          const size = await measure(String(it.croppedUrl || it.url));
+          if (size) measured.set(it, size);
+        }),
+      );
+    }
+    return items.map((it) => {
+      const size = measured.get(it);
+      return size ? { ...it, croppedWidthPx: size.w, croppedHeightPx: size.h } : it;
+    });
+  };
+
   const handleReorderToCart = async (orderId: string) => {
     const order = await apiFetch(`/customer/orders/${orderId}`);
     const orderItems = Array.isArray(order?.items) ? order.items : [];
@@ -1628,7 +1678,8 @@ export default function Editor() {
           const design = await apiFetch(`/customer/designs/${item.designId}`);
           const saved = design?.artboardData?.items;
           if (!Array.isArray(saved) || getGangsheetSnapshot(saved) !== getGangsheetSnapshot(item.artboardItems)) return null;
-          return { designId: String(item.designId), name: String(design?.title || item?.name || "") };
+          // The saved sheet's own pieces carry their pixel sizes; the order's may not.
+          return { designId: String(item.designId), name: String(design?.title || item?.name || ""), items: saved };
         } catch {
           return null;
         }
@@ -1673,7 +1724,7 @@ export default function Editor() {
          * checkout with no artwork and became an order the printer could not
          * print.
          */
-        items: Array.isArray(item?.artboardItems) ? item.artboardItems : undefined,
+        items: sameSheet[idx]?.items ?? (Array.isArray(item?.artboardItems) ? item.artboardItems : undefined),
         itemSpacingIn: typeof item?.itemSpacingIn === "number" ? item.itemSpacingIn : undefined,
         sheetMarginIn: typeof item?.sheetMarginIn === "number" ? item.sheetMarginIn : undefined,
         price: unitPrice,
@@ -1717,7 +1768,7 @@ export default function Editor() {
       toAdd.map(async (line: any) => {
         let ready: any = line;
         try {
-          ready = { ...line, items: await designItemsForBoard(line.items || []) };
+          ready = { ...line, items: await withPixelSizes(await designItemsForBoard(line.items || [])) };
         } catch {
           // Keep the stored shape; checkout can still price and place it.
         }
