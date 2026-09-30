@@ -42,6 +42,7 @@ import { quoteShipping } from "../services/shipping.service.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
+import { renderOrderSheetPreviews } from "../services/orderPreview.service.js";
 import { exportGangsheetPng24, orderSheetWidthIn, printedSheetExtentIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
@@ -1609,6 +1610,9 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       paymentIntentId: verifiedPayment.paymentIntentId,
       cardBrand: verifiedPayment.cardBrand ?? undefined,
       cardLast4: verifiedPayment.cardLast4 ?? undefined,
+      // Stripe's fee, so profit is counted after it. Filled in later if Stripe
+      // hadn't settled the charge yet (see `recordMissingProcessingFee`).
+      processingFee: verifiedPayment.processingFee ?? undefined,
     };
 
     const order = new Order({
@@ -1658,49 +1662,13 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     // DB assets so the job list shows the same quality as the OrderDetails preview.
     // Runs after save so it never blocks the checkout response.
     const orderId = order.id;
-    const gangsheetOrderItem = orderItems.find((it: any) => it.type === "gangsheet");
-    if (gangsheetOrderItem && Array.isArray(gangsheetOrderItem.artboardItems) && gangsheetOrderItem.artboardItems.length > 0) {
-      (async () => {
-        try {
-          const thumbItems = (gangsheetOrderItem.artboardItems as any[]).map((it: any) => ({
-            assetId: String(it.assetId || ""),
-            widthIn: Number(it.widthIn),
-            heightIn: Number(it.heightIn),
-            posX: Number(it.posX),
-            posY: Number(it.posY),
-            rotation: typeof it.rotation === "number" ? it.rotation : 0,
-            flipped: Boolean(it.flipped),
-            copies: typeof it.copies === "number" ? it.copies : 1,
-            nestRotation: it.nestRotation,
-            flowCols: it.flowCols,
-          }));
-          const rendered = await exportGangsheetPng24({
-            // The sheet's own spacing and margin — without them the thumbnail
-            // laid copies out on the export's fallback gap.
-            itemSpacingIn: gangsheetOrderItem.itemSpacingIn,
-            sheetMarginIn: gangsheetOrderItem.sheetMarginIn,
-            jobId: String(orderId),
-            printerId: "order-preview",
-            // The roll this order was built on — see `orderSheetWidthIn`.
-            sheetWidthIn: orderSheetWidthIn(gangsheetOrderItem),
-            sheetHeightIn: typeof gangsheetOrderItem.sheetHeightIn === "number" ? gangsheetOrderItem.sheetHeightIn : undefined,
-            artboardItems: thumbItems,
-            dpi: 600,
-            cropToContent: true,
-            format: "webp",
-          });
-          // Stored as a path, not a URL: the host is added when it is read (see
-          // resolveApiFile), so the record survives a change of domain.
-          const previewUrl = rendered.relativePath;
-          await Order.updateOne(
-            { _id: orderId, "items.type": "gangsheet" },
-            { $set: { "items.$.previewImage": previewUrl } }
-          );
-        } catch (err: any) {
-          console.warn(`[ORDER_THUMB] orderId=${orderId} thumbnail generation failed (non-fatal): ${err?.message}`);
-        }
-      })();
-    }
+    /*
+     * A preview for every sheet, not only the first. This rendered
+     * `orderItems.find(gangsheet)` and saved it with `items.$`, so on a
+     * multi-sheet order every sheet after the first had no picture — in order
+     * history, on the admin's order and on the printer's job.
+     */
+    void renderOrderSheetPreviews(order.id, orderItems);
 
     // Fire-and-forget: geocode to verify/correct state code and get precise coordinates.
     // The assignment service uses detectedRegion from the order — this updates it in the background.

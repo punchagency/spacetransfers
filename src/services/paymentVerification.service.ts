@@ -31,6 +31,8 @@ export interface VerifiedPayment {
   currency: string;
   cardBrand: string | null;
   cardLast4: string | null;
+  /** Stripe's fee in dollars; null while Stripe has not settled it. */
+  processingFee: number | null;
 }
 
 const badRequest = (message: string, statusCode = 400, code?: string) => {
@@ -66,8 +68,8 @@ export interface PaymentVerificationDeps {
 
 const defaultDeps: PaymentVerificationDeps = {
   configured: isStripeConfigured,
-  // `latest_charge` expanded: it is where the card's brand and last four live.
-  retrieveIntent: (id) => stripe.paymentIntents.retrieve(id, { expand: ["latest_charge"] }),
+  // `latest_charge` expanded for the card, and its balance transaction for the fee.
+  retrieveIntent: (id) => stripe.paymentIntents.retrieve(id, { expand: ["latest_charge.balance_transaction"] }),
   findOrderByIntent: (id) =>
     Order.findOne({ "payment.paymentIntentId": id }).select("_id displayId").lean() as any,
 };
@@ -184,5 +186,49 @@ export const verifyCardPayment = async ({
     currency: String(intent.currency || currency).toUpperCase(),
     cardBrand: card?.brand ? String(card.brand) : null,
     cardLast4: card?.last4 ? String(card.last4) : null,
+    processingFee: stripeFeeOf(charge),
   };
+};
+
+/**
+ * Stripe's fee for a charge, in dollars, from its (expanded) balance
+ * transaction. Null when the transaction is not available yet — a charge can
+ * settle a moment after it succeeds — so the fee is filled in later rather
+ * than recorded as zero.
+ */
+export const stripeFeeOf = (charge: any): number | null => {
+  const bt = charge && typeof charge.balance_transaction === "object" ? charge.balance_transaction : null;
+  const fee = Number(bt?.fee);
+  return bt && Number.isFinite(fee) ? Math.round(fee) / 100 : null;
+};
+
+/**
+ * Fills in Stripe's fee on an order that doesn't have it — orders placed before
+ * fees were recorded, or whose charge had not settled at checkout. Returns the
+ * fee (existing or found), or null when it can't be had. Never throws: the
+ * admin page that calls it must load regardless.
+ */
+export const recordMissingProcessingFee = async (
+  order: any,
+  deps: Pick<PaymentVerificationDeps, "configured" | "retrieveIntent"> = defaultDeps,
+): Promise<number | null> => {
+  const payment = order?.payment || {};
+  if (typeof payment.processingFee === "number") return payment.processingFee;
+  if (payment.method !== "card" || !deps.configured()) return null;
+  // Only a real Stripe payment has a fee to look up. Orders from before Stripe
+  // was connected carry placeholder ids ("mock_txn_…") that would be asked for,
+  // and refused, on every visit.
+  if (!/^pi_/.test(String(payment.paymentIntentId || ""))) return null;
+  try {
+    const intent = await deps.retrieveIntent(String(payment.paymentIntentId));
+    const charge = typeof intent?.latest_charge === "object" ? intent.latest_charge : null;
+    const fee = stripeFeeOf(charge);
+    if (fee === null) return null;
+    await Order.updateOne({ _id: order._id }, { $set: { "payment.processingFee": fee } });
+    if (order.payment) order.payment.processingFee = fee;
+    return fee;
+  } catch (err: any) {
+    console.warn(`[payment] fee lookup failed for order ${order?._id}: ${err?.message}`);
+    return null;
+  }
 };

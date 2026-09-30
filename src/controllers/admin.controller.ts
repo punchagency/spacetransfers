@@ -1,5 +1,9 @@
 import { Request, Response, NextFunction } from "express";
+import { computeOrderFinancials } from "../services/orderFinancials.service.js";
+import { recordMissingProcessingFee } from "../services/paymentVerification.service.js";
 import { formatSheetSize, orderChargeLines } from "../utils/orderPresentation.js";
+import { orderSheets, pickOrderSheet, sheetContents, sheetSummaries } from "../utils/orderSheets.js";
+import { Asset } from "../models/asset.model.js";
 import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { rollWidthError } from "../services/pricing.service.js";
 import { resolveOrderPriorityInput, resolveOrderStatusInput } from "../utils/orderStatusInput.js";
@@ -30,7 +34,6 @@ import { addAdminNotificationClient, publishAdminNotificationEvent, removeAdminN
 import { notifyAllAdmins, createAdminNotification } from "../services/adminNotifications.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import {
-  calculateOrderPartnerEarning,
   canDerivePartnerEarning,
   getOrderPartnerCostBreakdown,
   isPartnerEarningRealized,
@@ -191,19 +194,12 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
     // per order.
     const partnerPayRate = await getPartnerPayRate();
 
+    // Profit after tax, shipping, partner cost and card fees — the one
+    // definition in `orderFinancials.service`. Null when no partner cost can be
+    // derived (an order with no sheet dimensions), never an invented zero.
     const calculateOrderFinancials = (order: any) => {
-      const customerCharge = order.pricing?.total || 0;
-      const partnerPricing = partnerPayRate;
-
-      // Null, not zero, when there is nothing to derive a cost from — see
-      // `canDerivePartnerEarning`. Subtracting a zero we invented is how an
-      // order with no sheet dimensions came to report 100% margin.
-      if (!canDerivePartnerEarning(order)) {
-        return { customerCharge, partnerPayout: null, profit: null };
-      }
-
-      const partnerPayout = calculateOrderPartnerEarning(order, partnerPricing);
-      return { customerCharge, partnerPayout, profit: customerCharge - partnerPayout };
+      const f = computeOrderFinancials(order, partnerPayRate);
+      return { customerCharge: f.customerPaid, partnerPayout: f.partnerCost, profit: f.profit };
     };
  
     const recentOrders = recentOrdersRaw.map(order => {
@@ -1068,20 +1064,16 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const partnerPayRate = await getPartnerPayRate();
 
     const formattedOrders = results.map(order => {
-      const firstItem = order.items?.[0] || {};
-      const sheetSize = firstItem.widthIn && firstItem.heightIn 
-        ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
-        : "N/A";
+      // Every sheet, not the first one's size for the whole order.
+      const sheetList = sheetSummaries(order.items);
+      const sheetSize = sheetList.length > 1
+        ? `${sheetList.length} sheets`
+        : formatSheetSize(sheetList[0]?.widthIn, sheetList[0]?.heightIn) || "N/A";
 
       // Same source as the dashboard and as real payouts — see
       // calculateOrderFinancials above for why the flat rate was wrong.
-      const customerCharge = order.pricing?.total || 0;
       const regionInfo = resolveRegionInfo(order, userRegionMap);
-      const derivable = canDerivePartnerEarning(order);
-      const profits = derivable
-        ? customerCharge -
-          calculateOrderPartnerEarning(order, partnerPayRate)
-        : null;
+      const profits = computeOrderFinancials(order, partnerPayRate).profit;
   
       return {
         id: order._id,
@@ -1607,10 +1599,12 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     const formattedItems = (order.items || []).map(item => ({
       name: item.name,
-      size: item.widthIn && item.heightIn ? `${item.widthIn}" x ${item.heightIn}"` : "Custom",
+      size: formatSheetSize((item as any).sheetWidthIn ?? item.widthIn, (item as any).sheetHeightIn ?? item.heightIn) || "Custom",
       quantity: item.quantity,
       price: item.unitPrice,
-      subtotal: item.subtotal
+      subtotal: item.subtotal,
+      // The sheet's own picture; the list showed a blank icon for every sheet.
+      fileUrl: resolveApiFile(req, (item as any).previewImage) || undefined,
     }));
 
     const assignedPrinterId = (order as any).assignedPrinter?._id
@@ -1632,10 +1626,9 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
      * 100% margin on orders with no cost data at all.
      */
     const costDerivable = canDerivePartnerEarning(order);
-    const totalPartnerCost = costDerivable ? breakdown.subtotal : null;
-
-    const customerPaid = order.pricing?.total || 0;
-    const adminProfit = totalPartnerCost === null ? null : customerPaid - totalPartnerCost;
+    // An order from before fees were recorded gets its Stripe fee now, once.
+    await recordMissingProcessingFee(order);
+    const money = computeOrderFinancials(order, await getPartnerPayRate());
 
     const gangsheetOrderItem = (order.items || []).find((it: any) => it?.type === "gangsheet") as any | null;
     const designId = gangsheetOrderItem?.designId || order.items?.[0]?.designId || null;
@@ -1762,7 +1755,13 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       })),
 
       financials: {
-        customerPaid: Number(customerPaid.toFixed(2)),
+        customerPaid: money.customerPaid,
+        // What the business does not keep, listed so the profit below adds up.
+        tax: money.tax,
+        shippingCharged: money.shippingCharged,
+        shippingCost: money.shippingCost,
+        shippingCostSource: money.shippingCostSource,
+        processingFees: money.processingFee,
         /**
          * The rush surcharge, broken out.
          *
@@ -1773,8 +1772,8 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
          */
         rushFee: costDerivable ? Number(breakdown.rushFee.toFixed(2)) : null,
         baseCost: costDerivable ? Number(breakdown.base.toFixed(2)) : null,
-        partnerCost: totalPartnerCost === null ? null : Number(totalPartnerCost.toFixed(2)),
-        adminProfit: adminProfit === null ? null : Number(adminProfit.toFixed(2)),
+        partnerCost: money.partnerCost,
+        adminProfit: money.profit,
         // False until the job ships: the partner is not paid before then, so
         // the margin is a forecast — same rule the Orders table uses.
         profitRealized: isPartnerEarningRealized(order),
@@ -1802,7 +1801,35 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       }
     };
 
-    (orderSummary as any).gangsheetItems = gangsheetItems;
+    // Uploaded file names for every graphic on the order, to label the contents.
+    const assetObjectIds = [
+      ...new Set(
+        orderSheets(order.items).flatMap((sh: any) =>
+          (Array.isArray(sh.artboardItems) ? sh.artboardItems : [])
+            .map((it: any) => String(it?.assetId || ""))
+            .filter((id: string) => /^[0-9a-fA-F]{24}$/.test(id)),
+        ),
+      ),
+    ];
+    const assetNames = new Map<string, string>(
+      (assetObjectIds.length
+        ? await Asset.find({ _id: { $in: assetObjectIds } }).select("originalFilename").lean()
+        : []
+      )
+        .filter((a: any) => a?.originalFilename)
+        .map((a: any) => [String(a._id), String(a.originalFilename)]),
+    );
+    (orderSummary as any).gangsheetItems = designArtboardItems ? sheetContents(designArtboardItems, assetNames) : gangsheetItems;
+    /*
+     * Every sheet on the order. `preview` and `gangsheetItems` above describe
+     * the first only (kept for older screens); a second sheet was invisible to
+     * the admin, though the customer paid for it.
+     */
+    (orderSummary as any).sheets = sheetSummaries(order.items, (v) => resolveApiFile(req, v)).map((summary) => ({
+      ...summary,
+      sheetSize: formatSheetSize(summary.widthIn, summary.heightIn) || "N/A",
+      gangsheetItems: sheetContents(orderSheets(order.items)[summary.index]?.artboardItems, assetNames),
+    }));
 
     res.status(200).json(orderSummary);
   } catch (error) {
@@ -1871,7 +1898,7 @@ export const getOrderGangsheetPreview = async (req: Request, res: Response, next
       throw error;
     }
 
-    const gangsheetItem = (orderRaw.items || []).find((i: any) => i?.type === "gangsheet") || (orderRaw.items || [])[0] || {};
+    const { sheet: gangsheetItem } = pickOrderSheet(orderRaw.items, req.query?.sheet);
     const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
     if (artboardItems.length === 0) {
       const error = new Error("No artboard items found for this order") as CustomError;
@@ -1960,10 +1987,10 @@ export const exportOrders = async (req: Request, res: Response, next: NextFuncti
 
     for (let order = await cursor.next(); order != null; order = await cursor.next()) {
       const customerName = `${order.customer?.firstName || ''} ${order.customer?.lastName || ''}`.trim();
-      const firstItem = order.items?.[0] || {};
-      const sheetSize = firstItem.widthIn && firstItem.heightIn 
-        ? `${firstItem.widthIn}" x ${firstItem.heightIn}"`
-        : 'N/A';
+      const sheetList = sheetSummaries(order.items);
+      const sheetSize = sheetList.length > 1
+        ? `${sheetList.length} sheets`
+        : formatSheetSize(sheetList[0]?.widthIn, sheetList[0]?.heightIn) || 'N/A';
       
       const completedAt = order.status === 'COMPLETED' ? (order.updatedAt || order.createdAt).toISOString() : 'N/A';
 
@@ -3140,21 +3167,12 @@ export const adjustOrderFinancials = async (req: Request, res: Response, next: N
     
     await order.save();
 
-    const partner = order.assignedPrinter
-      ? await User.findById(order.assignedPrinter).select("settings.pricing").lean()
-      : null;
-    const breakdown = computePartnerCostBreakdown({
-      items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: await getPartnerPayRate(),
-      priority: (order as any).priority,
-      adjustments: (order as any)?.pricing?.adjustments || []
-    });
-    const partnerPayout = breakdown.subtotal;
-    const margin = order.pricing.total - partnerPayout;
+    // Same profit definition as every other admin screen.
+    const margin = computeOrderFinancials(order.toObject ? order.toObject() : order, await getPartnerPayRate()).profit;
 
     res.status(200).json({
       customerCharge: Number(order.pricing.total.toFixed(2)),
-      margin: Number(margin.toFixed(2)),
+      margin,
       currency: order.pricing.currency
     });
   } catch (error) {
@@ -3193,13 +3211,17 @@ export const getOrderFinancials = async (req: Request, res: Response, next: Next
     const breakdown = derivable
       ? getOrderPartnerCostBreakdown(order, await getPartnerPayRate())
       : null;
-    const partnerPayout = breakdown ? breakdown.subtotal : null;
-    const margin = partnerPayout === null ? null : customerCharge - partnerPayout;
+    const money = computeOrderFinancials(order, await getPartnerPayRate());
+    const partnerPayout = money.partnerCost;
 
     res.status(200).json({
       customerCharge: Number(customerCharge.toFixed(2)),
-      partnerPayout: partnerPayout === null ? null : Number(partnerPayout.toFixed(2)),
-      margin: margin === null ? null : Number(margin.toFixed(2)),
+      partnerPayout,
+      tax: money.tax,
+      shippingCost: money.shippingCost,
+      shippingCostSource: money.shippingCostSource,
+      processingFee: money.processingFee,
+      margin: money.profit,
       // Says why the two above are absent, so the panel can explain itself
       // rather than showing a blank with no reason.
       marginUnavailableReason: derivable ? undefined : "This order has no sheet dimensions to derive a partner cost from.",
@@ -3447,67 +3469,53 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
     // One rate, from global pricing — the same breakdown the order-financials
     // view and the payout system use, so no two screens disagree on cost.
     const payRate = await getPartnerPayRate();
-    const partnerCostOf = (o: any): number =>
-      computePartnerCostBreakdown({
-        items: Array.isArray(o.items) ? o.items : [],
-        partnerPricing: payRate,
-        priority: o.priority,
-        adjustments: o.pricing?.adjustments || []
-      }).subtotal;
 
     const totalsFor = (list: any[]) => {
       let revenue = 0;
       let cost = 0;
+      let tax = 0;
+      let shipping = 0;
+      let cardFees = 0;
+      let feesMissing = 0;
+      let margin = 0;
       let earned = 0;
       let earnedOrders = 0;
       let uncostable = 0;
 
       for (const o of list) {
-        const p = o.pricing || {};
-        /*
-         * Everything the customer paid — printing, rush, shipping and tax. This
-         * is money into the company account on the order, which is the figure an
-         * admin reconciles against.
-         *
-         * Note for when tax collection is switched on: tax is collected on
-         * behalf of a state and remitted, so it will inflate both revenue and
-         * margin by the tax line. Every order currently carries $0.00 tax, so
-         * nothing is overstated today.
-         */
-        revenue += p.total || 0;
+        // Everything the customer paid — printing, rush, shipping and tax: the
+        // money into the company account, which is what an admin reconciles.
+        revenue += o.pricing?.total || 0;
 
         /*
-         * An order with no sheet dimensions yields no derivable partner cost.
-         * Treating that as zero would report its whole price as margin — the
-         * same invention the orders table now renders as "—".
+         * Margin per order from the shared definition: after tax (the state's),
+         * shipping (the carrier's), partner cost and card fees. This used to be
+         * revenue − partner cost, which counted tax and shipping as profit —
+         * and it subtracted partner cost from ALL revenue while leaving
+         * uncostable orders out of cost, so their whole price landed in margin.
          */
-        if (!canDerivePartnerEarning(o)) {
+        const f = computeOrderFinancials(o, payRate);
+        if (f.profit === null || f.partnerCost === null) {
           uncostable += 1;
           continue;
         }
+        cost += f.partnerCost;
+        tax += f.tax;
+        shipping += f.shippingCost;
+        cardFees += f.processingFee ?? 0;
+        // Only real Stripe payments have a fee to be missing; pre-Stripe
+        // placeholder payments ("mock_txn_…") never did.
+        if (f.processingFee === null && /^pi_/.test(String(o.payment?.paymentIntentId || ""))) feesMissing += 1;
+        margin += f.profit;
 
-        const c = partnerCostOf(o);
-        cost += c;
-
-        /*
-         * Realized margin: the same subtraction, restricted to orders that have
-         * actually shipped. Everything else is a forecast, because an order can
-         * still be cancelled or re-costed before it leaves a partner.
-         */
-        if (isPartnerEarningRealized(o)) {
-          earned += (p.total || 0) - c;
+        // Realized: the same figure, restricted to orders that have shipped.
+        if (f.profitRealized) {
+          earned += f.profit;
           earnedOrders += 1;
         }
       }
 
-      return {
-        revenue,
-        cost,
-        margin: revenue - cost,
-        earned,
-        earnedOrders,
-        uncostable
-      };
+      return { revenue, cost, tax, shipping, cardFees, feesMissing, margin, earned, earnedOrders, uncostable };
     };
 
     const current = totalsFor(orders);
@@ -3606,6 +3614,14 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
       kpis: {
         revenue: { value: Number(current.revenue.toFixed(2)), ...trendFor(current.revenue, prior.revenue) },
         partnerCost: { value: Number(current.cost.toFixed(2)), ...trendFor(current.cost, prior.cost) },
+        // What revenue carries that is not the business's, so the page can show
+        // revenue − these − partner cost = margin.
+        deductions: {
+          tax: Number(current.tax.toFixed(2)),
+          shipping: Number(current.shipping.toFixed(2)),
+          cardFees: Number(current.cardFees.toFixed(2)),
+          ordersWithoutFee: current.feesMissing,
+        },
         margin: {
           value: Number(current.margin.toFixed(2)),
           pct: current.revenue > 0 ? Number(((current.margin / current.revenue) * 100).toFixed(1)) : 0,

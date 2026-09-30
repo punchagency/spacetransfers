@@ -259,6 +259,9 @@ interface SSCreateLabelResponse {
   /** URL-based download links — present in ShipStation REST v3 */
   labelDownload?: { pdf?: string; png?: string; href?: string; zpl?: string };
   carrierCode: string;
+  /** What the label cost, as charged to the account. */
+  shipmentCost?: number;
+  insuranceCost?: number;
 }
 
 interface SSRate {
@@ -371,6 +374,8 @@ export const createShipStationLabel = (params: {
   trackingNumber: string;
   labelUrl: string;
   carrier: string;
+  /** The label's cost (postage + insurance); null if ShipStation didn't say. */
+  labelCost: number | null;
 }> =>
   withRetry(
     async () => {
@@ -429,6 +434,9 @@ export const createShipStationLabel = (params: {
         trackingNumber: String(result.trackingNumber ?? ""),
         labelUrl,
         carrier: String(result.carrierCode ?? params.carrierCode ?? ""),
+        labelCost: Number.isFinite(Number(result.shipmentCost))
+          ? Math.round((Number(result.shipmentCost) + (Number(result.insuranceCost) || 0)) * 100) / 100
+          : null,
       };
     },
     3,
@@ -591,7 +599,7 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
     }
 
     // ── Step 3: Generate shipping label ───────────────────────────────────
-    const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
+    const { shipStationShipmentId, trackingNumber, labelUrl, carrier, labelCost } =
       await createShipStationLabel({ shipStationOrderId, shipFrom });
 
     console.log(
@@ -624,6 +632,8 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
           shipStationOrderId,
           shipStationShipmentId,
           shipStationLabelUrl: finalLabelUrl,
+          // Shipping's real cost to the business, for the admin's profit figure.
+          shipStationLabelCost: labelCost,
           shipStationError: null,
           updatedAt: now,
         },

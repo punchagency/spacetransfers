@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from "express";
+import { orderSheets, pickOrderSheet, sheetSummaries } from "../utils/orderSheets.js";
+import { formatSheetSize } from "../utils/orderPresentation.js";
 import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import {
@@ -1150,7 +1152,10 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
       throw error;
     }
 
-    const gangsheetItem = (job.items || []).find((i: any) => i?.type === "gangsheet") || (job.items || [])[0] || {};
+    // Which sheet: an order can hold several, and each is printed separately.
+    const { sheet: gangsheetItem, index: sheetIndex, count: sheetCount } = pickOrderSheet(job.items, req.body?.sheet ?? req.query?.sheet);
+    // "…_sheet2of2.png" when the order has more than one, so the files can be told apart.
+    const sheetSuffix = sheetCount > 1 ? `_sheet${sheetIndex + 1}of${sheetCount}` : "";
     const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
     if (artboardItems.length === 0) {
       const error = new Error("No artboard items found for this job") as CustomError;
@@ -1302,7 +1307,7 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           format: "png",
           dpi: rendered.dpi,
           sheet: rendered.sheet,
-          fileName: rendered.fileName,
+          fileName: sheetSuffix ? rendered.fileName.replace(/(\.[a-z0-9]+)$/i, `${sheetSuffix}$1`) : rendered.fileName,
           filePath: rendered.filePath,
           byteSize: rendered.byteSize,
           validation: rendered.validation,
@@ -1455,7 +1460,7 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       throw error;
     }
 
-    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
+    const { sheet: gangsheetItem } = pickOrderSheet(jobRaw.items, req.body?.sheet ?? req.query?.sheet);
     const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
     if (artboardItems.length === 0) {
       const error = new Error("No artboard items found for this job") as CustomError;
@@ -1675,7 +1680,7 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    const gangsheetItem = (jobRaw.items || []).find((i: any) => i?.type === "gangsheet") || (jobRaw.items || [])[0] || {};
+    const { sheet: gangsheetItem, index: sheetIndex, count: sheetCount } = pickOrderSheet(jobRaw.items, req.body?.sheet ?? req.query?.sheet);
     const artboardItems = Array.isArray(gangsheetItem.artboardItems) ? gangsheetItem.artboardItems : [];
     if (artboardItems.length === 0) {
       const error = new Error("No artboard items found for this job") as CustomError;
@@ -1855,7 +1860,9 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
         const dtfRaw = jobRaw.displayId ? String(jobRaw.displayId) : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
         // Strip non-alphanumeric but preserve the numeric part. E.g. "DTF-0171" → "0171", "ORD-AB12" → "AB12"
         const dtfNum = dtfRaw.replace(/^[A-Za-z]+-?/g, "").replace(/[^a-zA-Z0-9]/g, "") || dtfRaw.replace(/[^a-zA-Z0-9]/g, "");
-        const baseFilename = `${safeName}_DTF${dtfNum}`;
+        // Per sheet on a multi-sheet order — both sheets used to write the same
+        // file name into the same folder, so the second export replaced the first.
+        const baseFilename = `${safeName}_DTF${dtfNum}${sheetCount > 1 ? `_sheet${sheetIndex + 1}of${sheetCount}` : ""}`;
 
         const exportDir = path.join(process.cwd(), "uploads", "exports", "printers", String(printerId), String(jobId));
         await fs.promises.mkdir(exportDir, { recursive: true });
@@ -2349,8 +2356,12 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
 
     const items = Array.isArray((job as any).items) ? (job as any).items : [];
     const firstItem: any = (job as any).items?.[0] || {};
+    // Every sheet on the order — the page used to describe (and print) only the first.
+    const sheets = sheetSummaries(items, (v) => resolveApiFile(req, v));
     const sheetSize =
-      firstItem.widthIn && firstItem.heightIn ? `${firstItem.widthIn}x${firstItem.heightIn}` : "N/A";
+      sheets.length > 1
+        ? `${sheets.length} sheets`
+        : formatSheetSize(sheets[0]?.widthIn, sheets[0]?.heightIn) || "N/A";
 
     const designIdsRaw =
       (job as any).items?.filter((i: any) => i.designId).map((i: any) => String(i.designId)) || [];
@@ -2364,11 +2375,11 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         if (item.assetId) assetIds.add(String(item.assetId));
       });
     }
-    const gangsheetItem = ((job as any).items || []).find((i: any) => i?.type === "gangsheet") || ((job as any).items || [])[0] || {};
-    const jobArtboardItems = Array.isArray((gangsheetItem as any).artboardItems) ? (gangsheetItem as any).artboardItems : [];
-    jobArtboardItems.forEach((it: any) => {
-      if (it?.assetId) assetIds.add(String(it.assetId));
-    });
+    for (const sheet of orderSheets(items)) {
+      (Array.isArray(sheet.artboardItems) ? sheet.artboardItems : []).forEach((it: any) => {
+        if (it?.assetId) assetIds.add(String(it.assetId));
+      });
+    }
     const { ids, urls } = splitAssetRefs(assetIds);
     const assets =
       ids.length || urls.length
@@ -2430,6 +2441,7 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       // ISO fulfilment deadline (assignment + 24h); frontend renders a countdown.
       deadline: resolveOrderDeadlineIso(job as any, slaAcceptHours),
       faceThumbnail,
+      sheets,
       customer: {
         name: `${(job as any).customer?.firstName || ""} ${(job as any).customer?.lastName || ""}`.trim(),
         email: (job as any).customer?.email || null,

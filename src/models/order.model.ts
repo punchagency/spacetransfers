@@ -86,6 +86,8 @@ export interface IOrder extends Document {
     cardLast4?: string;
     cardBrand?: string;
     paymentIntentId?: string;
+    /** Stripe's fee for this payment, in the order's currency. */
+    processingFee?: number;
   };
   pricing: {
     subtotal?: number;
@@ -123,6 +125,8 @@ export interface IOrder extends Document {
   shipStationOrderId?: string;
   shipStationShipmentId?: string;
   shipStationLabelUrl?: string;
+  /** What the purchased label cost, as ShipStation charged it. */
+  shipStationLabelCost?: number;
   shipStationTriggeredAt?: Date | null;
   shipStationError?: string | null;
   priority: "NORMAL" | "URGENT";
@@ -283,7 +287,9 @@ const orderSchema = new Schema<IOrder>(
       method: { type: String, required: true, enum: ["card"] },
       cardLast4: { type: String },
       cardBrand: { type: String },
-      paymentIntentId: { type: String }
+      paymentIntentId: { type: String },
+      // Stripe's actual fee (its balance transaction), so profit is after fees.
+      processingFee: { type: Number }
     },
     pricing: {
       subtotal: { type: Number },
@@ -377,6 +383,8 @@ const orderSchema = new Schema<IOrder>(
     shipStationOrderId: { type: String, default: null },
     shipStationShipmentId: { type: String, default: null },
     shipStationLabelUrl: { type: String, default: null },
+    // The label's real cost — shipping's actual cost to the business.
+    shipStationLabelCost: { type: Number, default: null },
     shipStationTriggeredAt: { type: Date, default: null },
     shipStationError: { type: String, default: null },
     priority: {
