@@ -211,6 +211,10 @@ export default function OrderDetailsModal({
                       src={item.previewImage}
                       alt=""
                       className="h-14 w-14 shrink-0 rounded border border-gray-200 bg-[#E9F2F1] object-contain"
+                      // A stored picture can be gone; hide it rather than show a broken image.
+                      onError={(e) => {
+                        e.currentTarget.style.display = "none";
+                      }}
                     />
                   ) : null}
                   <div className="min-w-0 flex-1">

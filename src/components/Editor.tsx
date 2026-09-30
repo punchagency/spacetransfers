@@ -1703,7 +1703,36 @@ export default function Editor() {
 
     // A sheet already in the cart is not added twice: one sheet, one line.
     const inCart = new Set(cartItems.map((line: any) => String(line?.designId ?? "")).filter(Boolean));
-    const adding = printable.filter((line: any) => !line.designId || !inCart.has(String(line.designId)));
+    const toAdd = printable.filter((line: any) => !line.designId || !inCart.has(String(line.designId)));
+
+    /*
+     * Lines enter the cart as the board holds pieces, like every other line.
+     * The order stores them in the saved shape (no `url`), which the cart's
+     * preview can't draw — a reordered sheet with no stored picture showed an
+     * empty box. And a copy is saved as its own sheet first, so it arrives with
+     * its own unique name instead of sitting in the cart under the original's
+     * name until the background save renamed it.
+     */
+    const adding = await Promise.all(
+      toAdd.map(async (line: any) => {
+        let ready: any = line;
+        try {
+          ready = { ...line, items: await designItemsForBoard(line.items || []) };
+        } catch {
+          // Keep the stored shape; checkout can still price and place it.
+        }
+        if (!ready.designId) {
+          try {
+            const saved = await saveCartLineAsSheet(ready);
+            if (saved) ready = { ...ready, designId: saved.id, name: saved.title };
+          } catch {
+            // Left for the cart's own background save to retry.
+          }
+        }
+        return ready;
+      }),
+    );
+    if (adding.some((line: any) => line.designId && !inCart.has(String(line.designId)))) fetchDesigns();
     setCartItems((prev) => [...prev, ...adding]);
     // Both lists close — from Order details, checkout used to open on top of it.
     setShowOrderHistoryModal(false);
