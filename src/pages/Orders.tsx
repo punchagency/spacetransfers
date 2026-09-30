@@ -220,27 +220,36 @@ const Orders = () => {
       for (let i = 0; i < selectedJobs.length; i += 1) {
         const id = selectedJobs[i];
         setBulkExportProgress({ current: i + 1, total: selectedJobs.length });
-        const r = await apiFetch(`/printer/jobs/${encodeURIComponent(id)}/gangsheet/export`, {
-          method: "POST",
-          body: JSON.stringify({ format: "PNG", toDrive: false }),
-        });
-        const exportJobId = String(r?.exportJobId || "");
-        if (!exportJobId) throw new Error("Export failed");
+        /*
+         * Every sheet on the job. This exported the first sheet only, so a
+         * two-sheet order came out of a bulk export half-printed.
+         */
+        const ov = await apiFetch(`/printer/jobs/${encodeURIComponent(id)}/overview`).catch(() => null);
+        const sheetCount = Math.max(1, Array.isArray(ov?.sheets) ? ov.sheets.length : 1);
+        for (let sheet = 0; sheet < sheetCount; sheet += 1) {
+          const r = await apiFetch(`/printer/jobs/${encodeURIComponent(id)}/gangsheet/export`, {
+            method: "POST",
+            body: JSON.stringify({ format: "PNG", toDrive: false, sheet }),
+          });
+          const exportJobId = String(r?.exportJobId || "");
+          if (!exportJobId) throw new Error("Export failed");
 
-        let exportId = "";
-        while (true) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 500));
-          const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
-          if (statusRes.status === "done") {
-            exportId = String(statusRes.result?.exportId || "");
-            break;
-          } else if (statusRes.status === "failed") {
-            throw new Error(statusRes.error || "Export failed");
+          let exportId = "";
+          while (true) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 500));
+            const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
+            if (statusRes.status === "done") {
+              exportId = String(statusRes.result?.exportId || "");
+              break;
+            } else if (statusRes.status === "failed") {
+              throw new Error(statusRes.error || "Export failed");
+            }
           }
-        }
 
-        if (exportId) {
-          await downloadExport(exportId, `gangsheet_${getDisplayIdFor(id)}_300dpi.png`);
+          if (exportId) {
+            const suffix = sheetCount > 1 ? `_sheet${sheet + 1}of${sheetCount}` : "";
+            await downloadExport(exportId, `gangsheet_${getDisplayIdFor(id)}${suffix}.png`);
+          }
         }
       }
       toast.success("Export started");

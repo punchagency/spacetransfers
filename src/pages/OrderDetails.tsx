@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { describeLabelFailure } from "../utils/labelFailure";
 import { getToken } from "../utils/auth";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -15,9 +15,13 @@ import { SpaceLoader } from "../components/common/SpaceLoader";
 import { DriveSaveModal } from "../components/drive/DriveSaveModal";
 import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResumable } from "../utils/drive";
 import { GangsheetPreview } from "../components/print/download-gangsheet/GangsheetPreview";
+import { SheetPicker, type JobSheet } from "../components/print/SheetPicker";
 
 type Overview = {
   id: string;
+  sheets?: JobSheet[];
+  /** Why the last label attempt failed; cleared when a label is made. */
+  shipStationError?: string | null;
   orderId: string;
   displayId?: string | null;
   status: string;
@@ -123,6 +127,25 @@ export default function OrderDetailsPage() {
     widthIn: null,
     heightIn: null,
   });
+  /*
+   * Which of the order's sheets is shown and exported. The preview and both
+   * exports used to take the first sheet only, so the second sheet of a
+   * two-sheet order was never seen here and never printed.
+   */
+  const [sheetIndex, setSheetIndex] = useState(0);
+  const sheetRef = useRef(0);
+  sheetRef.current = sheetIndex;
+  const previewPath = () =>
+    `/printer/jobs/${encodeURIComponent(String(jobId))}/gangsheet/preview?resolution=600&sheet=${sheetRef.current}`;
+  /** Applies a preview only if it is for the sheet still on screen. */
+  const applyPreview = (forSheet: number, prev: any) => {
+    if (forSheet !== sheetRef.current) return;
+    setPreviewDataUrl(prev?.previewDataUrl || null);
+    setPreviewSheet({
+      widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
+      heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
+    });
+  };
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
   const [pngExportProgress, setPngExportProgress] = useState<{ phase: string; pct: number } | null>(null);
@@ -142,6 +165,8 @@ export default function OrderDetailsPage() {
     return id ? `#${id.slice(-8).toUpperCase()}` : "—";
   }, [overview?.displayId, jobId]);
 
+  const sheets: JobSheet[] = Array.isArray(overview?.sheets) ? overview!.sheets! : [];
+
   const selectedStatus = useMemo(() => {
     if (!overview) return "Pending Review";
     return statusForRadio(labelOf(overview));
@@ -156,19 +181,15 @@ export default function OrderDetailsPage() {
   useEffect(() => {
     if (!jobId) return;
     setLoading(true);
-    const previewFetch = apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`)
-      .catch(() => null);
+    const forSheet = sheetRef.current;
+    const previewFetch = apiFetch(previewPath()).catch(() => null);
     Promise.all([
       apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
       previewFetch,
     ])
       .then(([ov, prev]) => {
         setOverview(ov || null);
-        setPreviewDataUrl(prev?.previewDataUrl || null);
-        setPreviewSheet({
-          widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
-          heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
-        });
+        applyPreview(forSheet, prev);
       })
       .catch((e: any) => {
         toast.error(e?.message || "Failed to load job");
@@ -176,6 +197,17 @@ export default function OrderDetailsPage() {
       })
       .finally(() => setLoading(false));
   }, [jobId, navigate]);
+
+  // A different sheet chosen: show its preview.
+  useEffect(() => {
+    if (!jobId) return;
+    const forSheet = sheetIndex;
+    setPreviewDataUrl(null);
+    apiFetch(previewPath())
+      .then((prev) => applyPreview(forSheet, prev))
+      .catch(() => applyPreview(forSheet, null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetIndex]);
 
   // Poll every 3 s while ShipStation is generating the label (QUALITY_CHECK, no labelUrl yet).
   useEffect(() => {
@@ -198,17 +230,14 @@ export default function OrderDetailsPage() {
     let alive = true;
     const poll = async () => {
       try {
+        const forSheet = sheetRef.current;
         const [ov, prev] = await Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`).catch(() => null),
+          apiFetch(previewPath()).catch(() => null),
         ]);
         if (!alive) return;
         setOverview(ov || null);
-        setPreviewDataUrl(prev?.previewDataUrl || null);
-        setPreviewSheet({
-          widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
-          heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
-        });
+        applyPreview(forSheet, prev);
       } catch {
       }
     };
@@ -233,17 +262,14 @@ export default function OrderDetailsPage() {
       if (pendingRefresh != null) return;
       pendingRefresh = window.setTimeout(() => {
         pendingRefresh = null;
+        const forSheet = sheetRef.current;
         Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`).catch(() => null),
+          apiFetch(previewPath()).catch(() => null),
         ])
           .then(([ov, prev]) => {
             setOverview(ov || null);
-            setPreviewDataUrl(prev?.previewDataUrl || null);
-            setPreviewSheet({
-              widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
-              heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
-            });
+            applyPreview(forSheet, prev);
           })
           .catch(() => {});
       }, 250);
@@ -333,6 +359,7 @@ export default function OrderDetailsPage() {
     try {
       const startRes = await apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/gangsheet/png-export`, {
         method: "POST",
+        body: JSON.stringify({ sheet: sheetIndex }),
       });
       const exportJobId = String(startRes?.exportJobId || "");
       if (!exportJobId) throw new Error("Export failed to start");
@@ -377,7 +404,7 @@ export default function OrderDetailsPage() {
     try {
       const r = await apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/gangsheet/export`, {
         method: "POST",
-        body: JSON.stringify({ format: "PNG", toDrive: false }),
+        body: JSON.stringify({ format: "PNG", toDrive: false, sheet: sheetIndex }),
       });
       const exportJobId = String(r?.exportJobId || "");
       if (!exportJobId) throw new Error("Export failed");
@@ -467,8 +494,11 @@ export default function OrderDetailsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
           <div className="lg:col-span-2 space-y-6">
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Gangsheet Preview</div>
+              <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
+                {sheets.length > 1 ? `Gangsheet Preview · ${sheets.length} sheets` : "Gangsheet Preview"}
+              </div>
               <div className="p-4">
+                <SheetPicker sheets={sheets} value={sheetIndex} onChange={setSheetIndex} />
                 <GangsheetPreview
                   showTitle={false}
                   previewDataUrl={previewDataUrl}
@@ -494,6 +524,8 @@ export default function OrderDetailsPage() {
                           />
                         </span>
                       </span>
+                    ) : sheets.length > 1 ? (
+                      `Export Sheet ${sheetIndex + 1} PNG`
                     ) : (
                       "Export PNG"
                     )}

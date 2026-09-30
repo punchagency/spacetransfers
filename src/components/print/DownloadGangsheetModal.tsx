@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SheetPicker, type JobSheet } from "./SheetPicker";
 import { FiDownload } from "react-icons/fi";
 import toast from "react-hot-toast";
 import { Modal } from "../common/Modal";
@@ -38,6 +39,21 @@ export const DownloadGangsheetModal = ({
   const [showProgress, setShowProgress] = useState(false);
   const [progressLabel, setProgressLabel] = useState("Preparing export…");
   const [driveLink, setDriveLink] = useState<string | null>(null);
+  // Which sheet to preview and export; an order can hold several.
+  const [sheets, setSheets] = useState<JobSheet[]>([]);
+  const [sheetIndex, setSheetIndex] = useState(0);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setSheetIndex(0);
+    let alive = true;
+    apiFetch(`/printer/jobs/${encodeURIComponent(job.id)}/overview`)
+      .then((ov) => alive && setSheets(Array.isArray(ov?.sheets) ? ov.sheets : []))
+      .catch(() => alive && setSheets([]));
+    return () => {
+      alive = false;
+    };
+  }, [isOpen, job.id]);
 
   const toggleSetting = (key: keyof ExportSettingsState) => {
     setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -55,7 +71,7 @@ export const DownloadGangsheetModal = ({
       try {
         // Resolution 72 is plenty for an in-modal preview; the export uses 300 DPI anyway.
         const r = await apiFetch(
-          `/printer/jobs/${encodeURIComponent(job.id)}/gangsheet/preview?resolution=72`,
+          `/printer/jobs/${encodeURIComponent(job.id)}/gangsheet/preview?resolution=72&sheet=${sheetIndex}`,
           { signal: controller.signal },
         );
         if (!alive || controller.signal.aborted) return;
@@ -84,7 +100,7 @@ export const DownloadGangsheetModal = ({
       alive = false;
       controller.abort();
     };
-  }, [isOpen, job.id]);
+  }, [isOpen, job.id, sheetIndex]);
 
   const downloadExport = (exportId: string) => {
     // Native browser download — streams straight to disk. Essential for large
@@ -103,7 +119,7 @@ export const DownloadGangsheetModal = ({
     try {
       const res = await apiFetch(`/printer/jobs/${encodeURIComponent(job.id)}/gangsheet/export`, {
         method: "POST",
-        body: JSON.stringify({ format: "PNG", toDrive }),
+        body: JSON.stringify({ format: "PNG", toDrive, sheet: sheetIndex }),
       });
 
       const exportJobId = String(res?.exportJobId || "");
@@ -165,6 +181,7 @@ export const DownloadGangsheetModal = ({
       title={headerContent}
     >
       <div className="space-y-6">
+        <SheetPicker sheets={sheets} value={sheetIndex} onChange={setSheetIndex} />
         {previewLoading ? (
           <div>
             <h3 className="text-sm font-bold text-gray-900 mb-3">Gangsheet Preview</h3>
