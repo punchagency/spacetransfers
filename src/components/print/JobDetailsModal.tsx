@@ -158,12 +158,8 @@ export const JobDetailsModal = ({
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-4">
-            <StatusTimeline job={job} timeline={overview?.timeline || []} />
-            <PrintSpecifications
-              job={job}
-              itemsCount={overview?.specs?.itemsCount}
-              exportDpi={600}
-            />
+            <StatusTimeline job={job} timeline={overview?.timeline || []} backendStatus={overview?.status} assignedAt={overview?.assignedAt} />
+            <PrintSpecifications job={job} specs={overview?.specs} sheets={overview?.sheets || []} />
             <ProductionNotes jobId={job.id} initialNotes={String(overview?.notes || "")} />
           </div>
 
@@ -185,8 +181,9 @@ export const JobDetailsModal = ({
             <OrderDetails
               orderId={job.orderId}
               createdAt={formatDateTime(overview?.createdAt)}
-              dueDate={formatDateTime(overview?.deadline)}
-              itemsCount={typeof overview?.specs?.itemsCount === "number" ? overview.specs.itemsCount : 0}
+              dueLabel={overview?.dueStage === "PRINT" ? "Print by" : overview?.dueStage === "ACCEPT" ? "Accept by" : null}
+              dueDate={overview?.deadline ? formatDateTime(overview.deadline) : null}
+              sheetCount={overview?.specs?.sheetCount ?? (typeof overview?.specs?.itemsCount === "number" ? overview.specs.itemsCount : 0)}
             />
           </div>
         </div>

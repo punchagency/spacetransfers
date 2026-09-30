@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getToken } from "../utils/auth";
-import { FiAlertTriangle, FiX } from "react-icons/fi";
+import { FiAlertTriangle } from "react-icons/fi";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Modal } from "../components/common/Modal";
 import { SearchInput } from "../components/common/SearchInput";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { JobCard } from "../components/orders/JobCard";
 import { ShippingLabelModal } from "../components/orders/ShippingLabelModal";
+import { ConfirmDialog } from "../components/common/ConfirmDialog";
+import { confirmCopy, type ConfirmableStep } from "../utils/statusActions";
 import type { OrdersTab, OrdersTabLabel, Order } from "../types/orders";
-import { apiFetch, getApiBaseUrl } from "../utils/api";
+import { apiFetch } from "../utils/api";
 import toast from "react-hot-toast";
 
 const Orders = () => {
@@ -19,7 +20,6 @@ const Orders = () => {
     const valid: OrdersTabLabel[] = ["All Jobs", "Pending Review", "In Progress - Printing", "Print Shipping Label", "Order Shipped", "Completed", "Cancelled"];
     return tab && valid.includes(tab) ? tab : "All Jobs";
   });
-  const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   // A failed load used to fall through to "You have no jobs yet" and zero
@@ -29,9 +29,9 @@ const Orders = () => {
   const [jobs, setJobs] = useState<Order[]>([]);
   const [urgentCount, setUrgentCount] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [bulkExporting, setBulkExporting] = useState(false);
-  const [bulkExportProgress, setBulkExportProgress] = useState<{ current: number; total: number } | null>(null);
-  const [showBulkExportProgress, setShowBulkExportProgress] = useState(false);
+  // A step waiting for the partner to confirm it (Accept & Start, Print Shipping Label).
+  const [pendingStep, setPendingStep] = useState<{ id: string; step: ConfirmableStep } | null>(null);
+  const [stepBusy, setStepBusy] = useState(false);
   const [labelModal, setLabelModal] = useState<{ jobId: string; displayId: string; triggerUpdate: boolean } | null>(null);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
@@ -62,6 +62,8 @@ const Orders = () => {
       sheetSize: String(o.sheetSize || ""),
       filmType: String(o.filmType || "DTF"),
       dueDate: String(o.dueDate || ""),
+      deadline: typeof o.deadline === "string" ? o.deadline : null,
+      dueStage: o.dueStage === "ACCEPT" || o.dueStage === "PRINT" ? o.dueStage : null,
       location: String(o.location || ""),
       status,
       statusDescription: String(o.statusDescription || ""),
@@ -104,7 +106,6 @@ const Orders = () => {
   };
 
   useEffect(() => {
-    setSelectedJobs([]);
     setLoading(true);
     const id = window.setTimeout(() => {
       Promise.all([fetchOrders({ append: false }), refreshSummary()])
@@ -117,28 +118,6 @@ const Orders = () => {
 
   const filteredOrders = useMemo(() => jobs, [jobs]);
 
-  const getDisplayIdFor = (id: string) => {
-    const found = jobs.find((j) => j.id === id);
-    return found?.displayId || id;
-  };
-
-  const downloadExport = async (exportId: string, fileName: string) => {
-    const token = getToken();
-    const res = await fetch(`${getApiBaseUrl()}/printer/exports/${encodeURIComponent(exportId)}/file`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) throw new Error("Download failed");
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
-
   const updateStatus = async (orderId: string, to: string) => {
     await apiFetch(`/printer/orders/${encodeURIComponent(orderId)}/status`, {
       method: "PATCH",
@@ -147,25 +126,48 @@ const Orders = () => {
     await Promise.all([fetchOrders({ append: false }), refreshSummary()]);
   };
 
-  const handlePrimaryAction = async (id: string, current: Order["status"]) => {
+  /*
+   * Moves that change the job for the customer and the admin ask first: every
+   * move is forward-only, and these fired on the first click.
+   */
+  const handlePrimaryAction = (id: string, current: Order["status"]) => {
+    if (current === "Pending Review") {
+      setPendingStep({ id, step: "In Progress - Printing" });
+      return;
+    }
+    if (current === "In Progress - Printing") {
+      setPendingStep({ id, step: "Print Shipping Label" });
+      return;
+    }
+    if (current === "Print Shipping Label") {
+      // Viewing the label changes nothing, so it doesn't ask.
+      const found = jobs.find((j) => j.id === id);
+      setLabelModal({ jobId: id, displayId: found?.displayId || id, triggerUpdate: false });
+      return;
+    }
+    // Shipped, completed and cancelled jobs open their details.
+    navigate(`/orders/${encodeURIComponent(id)}`);
+  };
+
+  const confirmPendingStep = async () => {
+    if (!pendingStep) return;
+    const { id, step } = pendingStep;
+    if (step === "Print Shipping Label") {
+      // The label dialog makes the move and follows the label being bought.
+      const found = jobs.find((j) => j.id === id);
+      setPendingStep(null);
+      setLabelModal({ jobId: id, displayId: found?.displayId || id, triggerUpdate: true });
+      return;
+    }
+    setStepBusy(true);
     try {
-      if (current === "Pending Review") {
-        await updateStatus(id, "In Progress - Printing");
-        navigate(`/orders/${encodeURIComponent(id)}`);
-        return;
-      }
-      if (current === "In Progress - Printing") {
-        const found = jobs.find((j) => j.id === id);
-        setLabelModal({ jobId: id, displayId: found?.displayId || id, triggerUpdate: true });
-        return;
-      }
-      if (current === "Print Shipping Label") {
-        const found = jobs.find((j) => j.id === id);
-        setLabelModal({ jobId: id, displayId: found?.displayId || id, triggerUpdate: false });
-        return;
-      }
+      await updateStatus(id, step);
+      setPendingStep(null);
+      navigate(`/orders/${encodeURIComponent(id)}`);
     } catch (e: any) {
       toast.error(e?.message || "Action failed");
+    } finally {
+      setStepBusy(false);
     }
   };
 
@@ -193,107 +195,6 @@ const Orders = () => {
       setCancelLoading(false);
     }
   };
-
-  const handleBulkComplete = async () => {
-    try {
-      for (const id of selectedJobs) {
-        await apiFetch(`/printer/orders/${encodeURIComponent(id)}/status`, {
-          method: "PATCH",
-          body: JSON.stringify({ status: "Completed" }),
-        });
-      }
-      toast.success("Updated selected jobs");
-      setSelectedJobs([]);
-      await Promise.all([fetchOrders({ append: false }), refreshSummary()]);
-    } catch (e: any) {
-      toast.error(e?.message || "Bulk update failed");
-    }
-  };
-
-  const handleBulkExport = async () => {
-    if (bulkExporting) return;
-    setBulkExporting(true);
-    setBulkExportProgress({ current: 0, total: selectedJobs.length });
-    setShowBulkExportProgress(false);
-    const timer = window.setTimeout(() => setShowBulkExportProgress(true), 1000);
-    try {
-      for (let i = 0; i < selectedJobs.length; i += 1) {
-        const id = selectedJobs[i];
-        setBulkExportProgress({ current: i + 1, total: selectedJobs.length });
-        /*
-         * Every sheet on the job. This exported the first sheet only, so a
-         * two-sheet order came out of a bulk export half-printed.
-         */
-        const ov = await apiFetch(`/printer/jobs/${encodeURIComponent(id)}/overview`).catch(() => null);
-        const sheetCount = Math.max(1, Array.isArray(ov?.sheets) ? ov.sheets.length : 1);
-        for (let sheet = 0; sheet < sheetCount; sheet += 1) {
-          const r = await apiFetch(`/printer/jobs/${encodeURIComponent(id)}/gangsheet/export`, {
-            method: "POST",
-            body: JSON.stringify({ format: "PNG", toDrive: false, sheet }),
-          });
-          const exportJobId = String(r?.exportJobId || "");
-          if (!exportJobId) throw new Error("Export failed");
-
-          let exportId = "";
-          while (true) {
-            await new Promise<void>((resolve) => setTimeout(resolve, 500));
-            const statusRes = await apiFetch(`/printer/jobs/export-status/${encodeURIComponent(exportJobId)}`);
-            if (statusRes.status === "done") {
-              exportId = String(statusRes.result?.exportId || "");
-              break;
-            } else if (statusRes.status === "failed") {
-              throw new Error(statusRes.error || "Export failed");
-            }
-          }
-
-          if (exportId) {
-            const suffix = sheetCount > 1 ? `_sheet${sheet + 1}of${sheetCount}` : "";
-            await downloadExport(exportId, `gangsheet_${getDisplayIdFor(id)}${suffix}.png`);
-          }
-        }
-      }
-      toast.success("Export started");
-    } catch (e: any) {
-      toast.error(e?.message || "Export failed");
-    } finally {
-      window.clearTimeout(timer);
-      setShowBulkExportProgress(false);
-      setBulkExportProgress(null);
-      setBulkExporting(false);
-    }
-  };
-
-  const handleToggleJob = (id: string) => {
-    setSelectedJobs((prev) =>
-      prev.includes(id) ? prev.filter((jobId) => jobId !== id) : [...prev, id],
-    );
-  };
-
-  const handleSelectAll = () => {
-    const visibleIds = filteredOrders.map((job) => job.id);
-    const allVisibleSelected = visibleIds.every((id) =>
-      selectedJobs.includes(id),
-    );
-
-    if (allVisibleSelected) {
-      // Deselect all visible
-      setSelectedJobs((prev) => prev.filter((id) => !visibleIds.includes(id)));
-    } else {
-      // Select all visible (merge with existing non-visible selections)
-      setSelectedJobs((prev) => {
-        const newSelection = new Set([...prev, ...visibleIds]);
-        return Array.from(newSelection);
-      });
-    }
-  };
-
-  const isAllVisibleSelected =
-    filteredOrders.length > 0 &&
-    filteredOrders.every((job) => selectedJobs.includes(job.id));
-
-  const isSomeVisibleSelected =
-    filteredOrders.some((job) => selectedJobs.includes(job.id)) &&
-    !isAllVisibleSelected;
 
   const getTabActiveStyles = (label: string) => {
     switch (label) {
@@ -396,64 +297,14 @@ const Orders = () => {
             />
           </div>
 
-          {/* Bulk Action Bar */}
-          {selectedJobs.length > 0 && (
-            <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 flex items-center justify-between animate-in fade-in slide-in-from-top-2 duration-200">
-              <div className="flex items-center gap-4">
-                <span className="text-blue-700 font-medium text-sm pl-2">
-                  {selectedJobs.length} job
-                  {selectedJobs.length !== 1 ? "s" : ""} selected
-                </span>
-                <div className="h-4 w-px bg-blue-200" />
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => void handleBulkComplete()}
-                    className="px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-                  >
-                    Mark as Complete
-                  </button>
-                  <button
-                    disabled={bulkExporting}
-                    onClick={() => void handleBulkExport()}
-                    className="px-3 py-1.5 bg-white text-gray-700 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
-                  >
-                    Export Selected
-                  </button>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedJobs([])}
-                className="p-1 hover:bg-blue-100 rounded-full text-blue-500 transition-colors"
-              >
-                <FiX className="w-5 h-5" />
-              </button>
-            </div>
-          )}
-
-          {bulkExporting && showBulkExportProgress && bulkExportProgress && (
-            <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
-              <SpaceLoader label={`Exporting selected… ${bulkExportProgress.current}/${bulkExportProgress.total}`} />
-            </div>
-          )}
-
-          {/* Select All Row */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={isAllVisibleSelected}
-                ref={(input) => {
-                  if (input) {
-                    input.indeterminate = isSomeVisibleSelected;
-                  }
-                }}
-                onChange={handleSelectAll}
-                className="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-              />
-              <span className="text-sm text-gray-700 font-medium">
-                Select All
-              </span>
-            </div>
+          {/*
+            The selection checkboxes and their bulk bar are gone. "Mark as
+            Complete" skipped printing and shipping and made jobs payable (the
+            server now refuses it), and "Export Selected" pulled full-size print
+            files one after another; exporting from each job, sheet by sheet,
+            is the way to do it.
+          */}
+          <div className="flex items-center justify-end">
             <div className="text-sm text-gray-500 font-medium">
               Showing{" "}
               <span className="text-gray-900 font-bold">
@@ -499,9 +350,7 @@ const Orders = () => {
             <JobCard
               key={job.id}
               job={job}
-              selected={selectedJobs.includes(job.id)}
-              onToggle={handleToggleJob}
-              onPrimaryAction={(id, status) => void handlePrimaryAction(id, status)}
+              onPrimaryAction={(id, status) => handlePrimaryAction(id, status)}
               onSecondaryAction={(id) => navigate(`/orders/${encodeURIComponent(id)}`)}
               onCancel={handleCancelClick}
             />
@@ -519,6 +368,16 @@ const Orders = () => {
           </button>
         </div>
       )}
+
+      <ConfirmDialog
+        isOpen={pendingStep !== null}
+        busy={stepBusy}
+        {...(pendingStep
+          ? confirmCopy(pendingStep.step, jobs.find((j) => j.id === pendingStep.id)?.displayId || "this job")
+          : { title: "", body: "", confirmLabel: "" })}
+        onConfirm={() => void confirmPendingStep()}
+        onCancel={() => setPendingStep(null)}
+      />
 
       {/* Shipping Label Modal */}
       {labelModal && (

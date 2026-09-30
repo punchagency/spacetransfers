@@ -16,6 +16,9 @@ export interface Order {
   sheetSize: string;
   filmType: string;
   dueDate: string;
+  /** When the next step is due (ISO), and which step: accept, then print. */
+  deadline?: string | null;
+  dueStage?: "ACCEPT" | "PRINT" | null;
   location: string;
   status: OrderStatus;
   statusDescription?: string;

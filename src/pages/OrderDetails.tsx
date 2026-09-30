@@ -16,6 +16,8 @@ import { DriveSaveModal } from "../components/drive/DriveSaveModal";
 import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResumable } from "../utils/drive";
 import { GangsheetPreview } from "../components/print/download-gangsheet/GangsheetPreview";
 import { SheetPicker, type JobSheet } from "../components/print/SheetPicker";
+import { ConfirmDialog } from "../components/common/ConfirmDialog";
+import { confirmCopy, type ConfirmableStep } from "../utils/statusActions";
 
 type Overview = {
   id: string;
@@ -30,11 +32,20 @@ type Overview = {
   priority: string;
   createdAt: string;
   assignedAt?: string | null;
-  /** ISO fulfilment deadline (assignment + 24h). */
+  /** When the next step is due (ISO): accept by, then print by; null after that. */
   deadline?: string | null;
+  dueStage?: "ACCEPT" | "PRINT" | null;
   customer: { name: string; email: string | null; phone: string | null; region: string | null };
   shippingAddress: any | null;
-  specs: { sheetSize: string; filmType: string; itemsCount: number };
+  specs: {
+    sheetSize: string;
+    filmType: string;
+    itemsCount: number;
+    sheetCount?: number;
+    graphicCount?: number;
+    printCount?: number;
+    printDpi?: number;
+  };
   notes: string;
   timeline: { status: string; time: string; message?: string | null }[];
   faceThumbnail?: string | null;
@@ -328,6 +339,10 @@ export default function OrderDetailsPage() {
     };
   }, [overview]);
 
+  // A status move waiting for the partner to confirm it. Every move is
+  // forward-only, and the status options used to act on the first click.
+  const [pendingStep, setPendingStep] = useState<ConfirmableStep | null>(null);
+
   const [labelRetryAt, setLabelRetryAt] = useState<number | null>(null);
   const retryingLabel = labelRetryAt !== null && Date.now() - labelRetryAt < 8000;
   const retryLabel = async () => {
@@ -431,7 +446,7 @@ export default function OrderDetailsPage() {
         },
       });
 
-      const fileName = downloaded.filename || `gangsheet_${overview.orderId}_600dpi.png`;
+      const fileName = downloaded.filename || `gangsheet_${overview.orderId}.png`;
       const mimeType = downloaded.contentType || "image/png";
 
       setDriveProgress({ phase: "upload", loaded: 0, total: Math.max(downloaded.blob.size, 1) });
@@ -576,6 +591,8 @@ export default function OrderDetailsPage() {
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
                   }}
                   timeline={overview.timeline || []}
+                  backendStatus={overview.status}
+                  assignedAt={overview.assignedAt || null}
                 />
                 <PrintSpecifications
                   job={{
@@ -589,8 +606,8 @@ export default function OrderDetailsPage() {
                     createdAt: overview.createdAt,
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
                   }}
-                  itemsCount={overview.specs.itemsCount}
-                  exportDpi={600}
+                  specs={overview.specs}
+                  sheets={sheets}
                 />
                 <ProductionNotes jobId={overview.id} initialNotes={overview.notes} />
               </>
@@ -711,7 +728,7 @@ export default function OrderDetailsPage() {
 
                     <button
                       disabled={updatingStatus}
-                      onClick={() => void setStatus("Order Shipped")}
+                      onClick={() => setPendingStep("Order Shipped")}
                       className="flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors disabled:opacity-60"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -756,7 +773,10 @@ export default function OrderDetailsPage() {
                           name="status"
                           checked={isCurrent}
                           disabled={updatingStatus || isPast}
-                          onChange={() => { if (!isPast) void setStatus(o.key); }}
+                          onChange={() => {
+                            if (isPast || isCurrent) return;
+                            if (o.key === "In Progress - Printing" || o.key === "Print Shipping Label") setPendingStep(o.key);
+                          }}
                           className="w-4 h-4"
                         />
                         <div className={`text-sm font-semibold ${isPast ? "text-gray-400" : "text-gray-800"}`}>
@@ -842,8 +862,9 @@ export default function OrderDetailsPage() {
                 <OrderDetails
                   orderId={overview.orderId}
                   createdAt={formatDateTime(overview.createdAt)}
-                  dueDate={formatDateTime(overview.deadline)}
-                  itemsCount={overview.specs.itemsCount}
+                  dueLabel={overview.dueStage === "PRINT" ? "Print by" : overview.dueStage === "ACCEPT" ? "Accept by" : null}
+                  dueDate={overview.deadline ? formatDateTime(overview.deadline) : null}
+                  sheetCount={overview.specs.sheetCount ?? overview.specs.itemsCount}
                 />
               </>
             )}
@@ -865,10 +886,22 @@ export default function OrderDetailsPage() {
         }} />
       )}
 
+      <ConfirmDialog
+        isOpen={pendingStep !== null}
+        busy={updatingStatus}
+        {...(pendingStep ? confirmCopy(pendingStep, displayId) : { title: "", body: "", confirmLabel: "" })}
+        onConfirm={() => {
+          const step = pendingStep;
+          if (!step) return;
+          void setStatus(step).finally(() => setPendingStep(null));
+        }}
+        onCancel={() => setPendingStep(null)}
+      />
+
       <DriveSaveModal
         isOpen={driveModalOpen}
         onClose={() => setDriveModalOpen(false)}
-        fileName={overview ? `gangsheet_${overview.orderId}_600dpi.png` : "gangsheet.png"}
+        fileName={overview ? `gangsheet_${overview.orderId}.png` : "gangsheet.png"}
         clientId={driveClientId}
         onConnected={(v) => void saveGangsheetToDrive(v)}
       />

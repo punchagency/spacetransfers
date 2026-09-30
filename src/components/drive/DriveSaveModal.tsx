@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { Modal } from "../common/Modal";
 import { SpaceLoader } from "../common/SpaceLoader";
-import { getGoogleDriveAccessToken, listGoogleDriveFolders } from "../../utils/drive";
+import { getGoogleDriveAccessToken,
+  getSavedDriveToken, listGoogleDriveFolders } from "../../utils/drive";
 
 type DriveFolder = { id: string; name: string };
 
@@ -46,14 +47,19 @@ export const DriveSaveModal = ({
       return;
     }
     if (!canUseDrive) return;
+    /*
+     * Only a saved connection is used on open. Asking Google here opened its
+     * window without a click, which browsers block — and the dialog then spun
+     * on "Connecting…" forever. Without one, "Connect Google Drive" asks, from
+     * the click, where the window is allowed.
+     */
+    const saved = getSavedDriveToken();
+    if (!saved) return;
     setLoading(true);
-    getGoogleDriveAccessToken({ clientId: String(clientId), prompt: "" })
-      .then((t) => {
-        setAccessToken(t);
-        return listGoogleDriveFolders(t);
-      })
+    setAccessToken(saved);
+    listGoogleDriveFolders(saved)
       .then((f) => setFolders(f))
-      .catch(() => {})
+      .catch(() => setAccessToken(null))
       .finally(() => setLoading(false));
   }, [isOpen, canUseDrive, clientId]);
 

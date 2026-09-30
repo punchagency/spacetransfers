@@ -1,116 +1,109 @@
-import { FiBox, FiCheck, FiDroplet, FiMapPin, FiPrinter, FiTruck } from "react-icons/fi";
+import { FiBox, FiCheck, FiInbox, FiMapPin, FiPrinter, FiTruck, FiXCircle } from "react-icons/fi";
 import type { PrintJob } from "../../../types/printQueue";
 
 interface StatusTimelineProps {
   job: PrintJob;
   timeline?: { status: string; time: string; message?: string | null }[];
+  /** The job's stored status — the source of truth for where it is. */
+  backendStatus?: string;
+  /** When the job was assigned to this partner. */
+  assignedAt?: string | null;
 }
 
-export const StatusTimeline = ({ job, timeline }: StatusTimelineProps) => {
-  // The first timeline entry ("Order Placed") is anchored to the order's created
-  // time. Prefer the explicit createdAt; fall back to deadline only for older
-  // callers that haven't been updated yet.
-  const created = new Date(job.createdAt || job.deadline);
-  const createdAt = Number.isNaN(created.getTime()) ? null : created;
+/*
+ * One step per real status, named as the rest of the app names them.
+ *
+ * This was six steps shifted one place from the statuses behind them: an
+ * accepted-but-unstarted job lit "Printing", a job actually printing lit
+ * "Curing" — a stage no order records and neither the admin nor the customer
+ * ever sees — and the fallback read "In Progress - Printing" as not started.
+ */
+const STEPS = [
+  { key: "RECEIVED", label: "Received", icon: FiInbox, statuses: ["PENDING", "PROCESSING"] },
+  { key: "PRINTING", label: "Printing", icon: FiPrinter, statuses: ["PRINTING"] },
+  { key: "LABEL", label: "Shipping Label", icon: FiBox, statuses: ["QUALITY_CHECK"] },
+  { key: "SHIPPED", label: "Shipped", icon: FiTruck, statuses: ["SHIPPED"] },
+  { key: "DELIVERED", label: "Delivered", icon: FiMapPin, statuses: ["COMPLETED"] },
+] as const;
+
+export const StatusTimeline = ({ job, timeline, backendStatus, assignedAt }: StatusTimelineProps) => {
+  const entries = Array.isArray(timeline) ? timeline : [];
+  const status = String(backendStatus || entries[entries.length - 1]?.status || "PROCESSING").toUpperCase();
+  const cancelled = status === "CANCELLED";
 
   const formatTime = (d: Date) =>
-    d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
-  const currentBackendStatus = (() => {
-    const last = Array.isArray(timeline) && timeline.length ? timeline[timeline.length - 1] : null;
-    const fromTimeline = String(last?.status || "").toUpperCase();
-    if (fromTimeline) return fromTimeline;
-
-    const label = String(job.status || "");
-    if (label === "Pending Review") return "PENDING";
-    if (label === "In Progress" || label === "In Progress - Printing") return "PROCESSING";
-    if (label === "Print Shipping Label" || label === "Ready for Packaging" || label === "Ready") return "QUALITY_CHECK";
-    if (label === "Shipped") return "SHIPPED";
-    if (label === "Delivered" || label === "Completed") return "COMPLETED";
-    if (label === "Cancelled") return "CANCELLED";
-    return "PENDING";
-  })();
-
-  const steps = [
-    { key: "CREATED", label: "Created", icon: FiCheck, match: new Set(["PENDING"]) },
-    { key: "PRINTING", label: "Printing", icon: FiPrinter, match: new Set(["PROCESSING"]) },
-    { key: "CURING", label: "Curing", icon: FiDroplet, match: new Set(["PRINTING"]) },
-    { key: "PACKED", label: "Label Printed", icon: FiBox, match: new Set(["QUALITY_CHECK"]) },
-    { key: "SHIPPED", label: "Shipped", icon: FiTruck, match: new Set(["SHIPPED"]) },
-    { key: "DELIVERED", label: "Delivered", icon: FiMapPin, match: new Set(["COMPLETED"]) },
-  ] as const;
-
-  const currentStepIndex = (() => {
-    if (currentBackendStatus === "CANCELLED") return 0;
-    const idx = steps.findIndex((s) => s.match.has(currentBackendStatus as any));
-    return idx >= 0 ? idx : 0;
-  })();
-
-  const stepTime = (idx: number) => {
-    if (idx === 0) return createdAt;
-    const match = steps[idx]?.match;
-    if (!match) return null;
-    const entries = Array.isArray(timeline) ? timeline : [];
-    for (const t of entries) {
-      if (match.has(String(t?.status || "").toUpperCase())) {
-        const d = new Date(String(t?.time || ""));
+  /** When the job first reached a step, from its timeline. */
+  const reachedAt = (idx: number): Date | null => {
+    if (idx === 0) {
+      const t = new Date(assignedAt || job.createdAt || "");
+      return Number.isNaN(t.getTime()) ? null : t;
+    }
+    const wanted = STEPS[idx].statuses as readonly string[];
+    for (const e of entries) {
+      if (wanted.includes(String(e?.status || "").toUpperCase())) {
+        const d = new Date(String(e?.time || ""));
         if (!Number.isNaN(d.getTime())) return d;
       }
     }
     return null;
   };
 
-  const progressPct =
-    steps.length <= 1 ? 0 : Math.round((currentStepIndex / (steps.length - 1)) * 100);
-     
-  const isOverallComplete = currentBackendStatus === "COMPLETED";
+  const currentIdx = Math.max(
+    0,
+    STEPS.findIndex((s) => (s.statuses as readonly string[]).includes(status)),
+  );
+  const delivered = status === "COMPLETED";
+  const progressPct = cancelled ? 0 : Math.round((currentIdx / (STEPS.length - 1)) * 100);
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
       <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Production Timeline</div>
 
       <div className="p-4">
-        <div className="relative px-1">
-          <div className="absolute left-0 right-0 top-5 h-1 rounded-full bg-gray-200" />
-          <div className="absolute left-0 top-5 h-1 rounded-full bg-blue-600" style={{ width: `${progressPct}%` }} />
-
-          <ol className="relative z-10 flex items-start justify-between" aria-label="Production timeline">
-            {steps.map((s, idx) => {
-              const isCompleted =
-                currentBackendStatus !== "CANCELLED" &&
-                (idx < currentStepIndex || (isOverallComplete && idx === steps.length - 1 && idx === currentStepIndex));
-              const isActive = idx === currentStepIndex && currentBackendStatus !== "CANCELLED";
-              const Icon = isCompleted ? FiCheck : s.icon;
-              const circleCls = isCompleted
-                ? "bg-blue-600 border-blue-600 text-white"
-                : "bg-white border-gray-200 text-gray-400";
-
-              const t = stepTime(idx);
-              const showCompletedPill = idx === steps.length - 1 && isOverallComplete;
-
-              return (
-                <li
-                  key={s.key}
-                  className="flex flex-col items-center min-w-0"
-                  aria-current={isActive ? "step" : undefined}
-                >
-                  <div className={`w-11 h-11 rounded-full border flex items-center justify-center ${circleCls}`}>
-                    <Icon className="w-5 h-5" />
-                  </div>
-                  <div className="mt-3 flex flex-col items-center justify-start">
-                    <div className="text-sm font-semibold text-gray-900">{s.label}</div>
-                    <div className="mt-1 text-xs text-gray-500">{t ? formatTime(t) : "—"}</div>
-                    {showCompletedPill ? (
-                      <div className="mt-2 px-3 py-1 rounded-full bg-green-50 text-green-700 border border-green-100 text-[11px] font-semibold">
-                        Completed
+        {cancelled ? (
+          <div className="flex items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+            <FiXCircle className="h-4 w-4 shrink-0" /> This job was cancelled.
+          </div>
+        ) : (
+          <div className="relative px-1">
+            <div className="absolute left-5 right-5 top-5 h-1 rounded-full bg-gray-200" />
+            <div
+              className="absolute left-5 top-5 h-1 rounded-full bg-blue-600"
+              style={{ width: `calc((100% - 2.5rem) * ${progressPct / 100})` }}
+            />
+            <ol className="relative z-10 flex items-start justify-between" aria-label="Production timeline">
+              {STEPS.map((s, idx) => {
+                const done = idx < currentIdx || (delivered && idx === currentIdx);
+                const active = idx === currentIdx && !delivered;
+                const Icon = done ? FiCheck : s.icon;
+                const t = idx <= currentIdx ? reachedAt(idx) : null;
+                return (
+                  <li key={s.key} className="flex min-w-0 flex-1 flex-col items-center" aria-current={active ? "step" : undefined}>
+                    <div
+                      className={`flex h-10 w-10 items-center justify-center rounded-full border ${
+                        done
+                          ? "border-blue-600 bg-blue-600 text-white"
+                          : active
+                            ? "border-blue-600 bg-white text-blue-600 ring-4 ring-blue-50"
+                            : "border-gray-200 bg-white text-gray-400"
+                      }`}
+                    >
+                      <Icon className="h-5 w-5" />
+                    </div>
+                    <div className="mt-2 text-center">
+                      <div className={`text-xs font-semibold sm:text-sm ${idx <= currentIdx ? "text-gray-900" : "text-gray-400"}`}>
+                        {s.label}
                       </div>
-                    ) : null} 
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        </div>
+                      <div className="mt-0.5 text-[10px] text-gray-500 sm:text-xs">{t ? formatTime(t) : "—"}</div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
       </div>
     </div>
   );

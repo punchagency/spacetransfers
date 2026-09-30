@@ -9,14 +9,12 @@ import type { Order } from "../../types/orders";
 
 interface JobCardProps {
   job: Order;
-  selected: boolean;
-  onToggle: (id: string) => void;
   onPrimaryAction?: (id: string, status: Order["status"]) => void;
   onSecondaryAction?: (id: string) => void;
   onCancel?: (id: string) => void;
 }
 
-export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryAction, onCancel }: JobCardProps) => {
+export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: JobCardProps) => {
   const getStatusBadgeStyles = (status: string) => {
     switch (status) {
       case "Pending Review":
@@ -76,10 +74,11 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
         );
       case "Completed":
         return (
+          // Opened nothing: the page's action handler had no case for Completed.
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onPrimaryAction?.(job.id, job.status);
+              onSecondaryAction?.(job.id);
             }}
             className="w-full sm:w-auto px-3.5 py-2 bg-white text-gray-700 border border-gray-200 rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-gray-50 transition-colors"
           >
@@ -103,13 +102,24 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
     }
   };
 
-  const isDueSoon =
-    job.dueDate.includes("Today") || job.dueDate.includes("Tomorrow");
+  /*
+   * What is due next, in the partner's own time: accept by, then print by, and
+   * nothing once the label is requested. This showed the accept-by deadline as
+   * "Due Date" for the life of the job, formatted on the server's clock.
+   */
+  const dueAt = job.deadline ? new Date(job.deadline) : null;
+  const hasDue = Boolean(dueAt && !Number.isNaN(dueAt.getTime()) && job.dueStage);
+  const msLeft = hasDue ? (dueAt as Date).getTime() - Date.now() : 0;
+  const isOverdue = hasDue && msLeft < 0;
+  const isDueSoon = hasDue && !isOverdue && msLeft < 24 * 60 * 60 * 1000;
+  const dueText = hasDue
+    ? (dueAt as Date).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "—";
 
   return (
     <div
       onClick={() => onSecondaryAction?.(job.id)}
-      className={`bg-white rounded-xl p-4 sm:p-6 border transition-all cursor-pointer ${selected ? "border-blue-500 ring-1 ring-blue-500" : "border-gray-200 hover:border-gray-300"}`}
+      className={`bg-white rounded-xl p-4 sm:p-6 border transition-all cursor-pointer border-gray-200 hover:border-gray-300`}
     >
       {/*
         Switches to a single row at `xl` rather than `lg`: the row's content
@@ -118,18 +128,8 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
         card. Below `xl` it stays in the already-correct stacked layout.
       */}
       <div className="flex flex-col xl:flex-row gap-4 xl:gap-6 items-start xl:items-center">
-        {/* Checkbox & Thumbnail */}
-        <div className="flex items-start gap-4 min-w-[260px] flex-shrink-0">
-          <div className="pt-8">
-            <input
-              type="checkbox"
-              checked={selected}
-              onClick={(e) => e.stopPropagation()}
-              onChange={() => onToggle(job.id)}
-              className="w-5 h-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-            />
-          </div>
-
+        {/* Thumbnail */}
+        <div className="flex items-start gap-4 min-w-0 sm:min-w-[260px] flex-shrink-0">
           <div className="relative w-20 h-20 bg-gray-100 rounded-2xl flex items-center justify-center overflow-hidden flex-shrink-0">
             <img
               src={job.thumbnail || "/space.svg"}
@@ -161,7 +161,7 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
         <div className="flex-1 min-w-[280px] grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 xl:gap-6 w-full">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide whitespace-nowrap">
-              <FiLayers /> Sheet size
+              <FiLayers /> {/sheets$/.test(job.sheetSize) ? "Sheets" : "Sheet size"}
             </div>
             <div className="font-medium text-gray-900 whitespace-nowrap">{job.sheetSize}</div>
           </div>
@@ -177,12 +177,15 @@ export const JobCard = ({ job, selected, onToggle, onPrimaryAction, onSecondaryA
 
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide whitespace-nowrap">
-              <FiCalendar /> Due Date
+              <FiCalendar /> {job.dueStage === "PRINT" ? "Print by" : job.dueStage === "ACCEPT" ? "Accept by" : "Due"}
             </div>
             <div
-              className={`font-medium whitespace-nowrap ${isDueSoon ? "text-orange-600" : "text-gray-900"}`}
+              className={`font-medium whitespace-nowrap ${
+                isOverdue ? "text-red-600" : isDueSoon ? "text-orange-600" : hasDue ? "text-gray-900" : "text-gray-400"
+              }`}
             >
-              {job.dueDate}
+              {dueText}
+              {isOverdue ? " · overdue" : ""}
             </div>
             <div className="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap">
               <FiMapPin className="w-3 h-3 flex-shrink-0" />
