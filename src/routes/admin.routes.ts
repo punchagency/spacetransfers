@@ -5,12 +5,9 @@ import { UserRoles } from "../models/user.model.js";
 import { 
   listOrders, 
   assignOrder, 
-  updateOrderStatus, 
-  setOrderTracking, 
   downloadOrderInvoice, 
   getOrderById, 
   getOrderGangsheetPreview,
-  adjustOrderFinancials, 
   listPartners, 
   getPartnerById, 
   getPartnerOrders, 
@@ -22,7 +19,6 @@ import {
   updatePartner, 
   getEarningsSummary, 
   getAdminDashboardStats, 
-  exportOrders, 
   getGlobalPricing, 
   updateGlobalPricing, 
   getAdminSecuritySettings,
@@ -66,15 +62,11 @@ router.get("/notifications", listAdminNotifications);
 router.get("/notifications/stream", streamAdminNotifications);
 router.patch("/notifications/:id/read", setAdminNotificationRead);
 router.post("/notifications/mark-all-read", markAllAdminNotificationsRead);
-router.get("/orders/export", exportOrders);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/gangsheet/preview", getOrderGangsheetPreview);
 router.post("/orders/:orderId/assign", assignOrder);
-router.patch("/orders/:orderId/status", updateOrderStatus);
-router.patch("/orders/:orderId/tracking", setOrderTracking);
 router.get("/orders/:orderId/invoice", downloadOrderInvoice);
-router.patch("/orders/:orderId/financials", adjustOrderFinancials);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 
 router.get("/partners/pending", listPendingPrinters);

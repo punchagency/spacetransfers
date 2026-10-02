@@ -89,6 +89,7 @@ Partners can only move a job forward. `SHIPPED` needs a shipping label, and `COM
 - **Checkout** shows the server's quote, and the card is charged by the same calculation.
 - **Order lines** on the invoice, the order details and the confirmation email come from one helper (`utils/orderPresentation.ts`).
 - **Admin profit** is what the customer paid, less tax, shipping cost, partner cost and the Stripe fee (`services/orderFinancials.service.ts`).
+- **Payouts** gather a partner's shipped, unpaid jobs. A payout must be approved and then paid by an admin (`/payouts/admin/*`); the weekly scheduler only creates payouts for review.
 - **Partner pay** is a per-square-foot rate plus a rush percentage (`services/partnerEarnings.service.ts`).
 
 More detail: [PAYMENTS.md](PAYMENTS.md) and [AI_EDITING.md](AI_EDITING.md).
@@ -102,7 +103,7 @@ Started by `server.ts` in every environment except tests:
 | Payment check | Every 10 minutes, reports any card payment that has no order to the admins |
 | Tracking poller | Marks shipped orders completed when the carrier confirms delivery |
 | SLA monitor | Reassigns or escalates late jobs; off until enabled in the admin console |
-| Payout scheduler | Weekly partner payouts through Stripe Connect |
+| Payout scheduler | Each Friday, puts partners' shipped, unpaid jobs into payouts for an admin to review |
 | Notification email batches | Sends queued admin notification emails |
 
 ## Scripts

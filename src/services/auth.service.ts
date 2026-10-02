@@ -1,4 +1,6 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
+import { Design } from "../models/design.model.js";
+import { Order } from "../models/order.model.js";
 import { buildLegalAcceptance, type LegalAcceptanceInput } from "../config/legal.js";
 import { normalizeRegion } from "../utils/region.js";
 import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
@@ -602,6 +604,22 @@ export const deleteSubAccount = async (actorUserId: string, subAccountId: string
     throw error;
   }
 
+  // An order still being made or shipped needs its account: the customer
+  // follows it there. Finished orders stay on record after the account goes.
+  const openOrders = await Order.countDocuments({
+    user: sub._id,
+    status: { $nin: ["COMPLETED", "CANCELLED"] },
+  });
+  if (openOrders > 0) {
+    const error = new Error(
+      `This account has ${openOrders} order${openOrders === 1 ? "" : "s"} still in progress. It can be removed once ${openOrders === 1 ? "it is" : "they are"} delivered or cancelled.`,
+    ) as any;
+    error.statusCode = 409;
+    throw error;
+  }
+
+  // Its saved sheets go with it. Artwork files are kept: past orders print from them.
+  await Design.deleteMany({ user: sub._id });
   await User.deleteOne({ _id: sub._id });
 };
 
