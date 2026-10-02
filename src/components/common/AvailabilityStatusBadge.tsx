@@ -62,13 +62,6 @@ export const AvailabilityStatusBadge = () => {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [capacityLocked, setCapacityLocked] = useState(false);
-  /*
-   * Distinct from `capacityLocked`, which is only "at the limit right now".
-   * This is "the system paused you and will unpause you" — the promise of
-   * automatic recovery holds for a pause the monitor made, and not for one you
-   * chose. Both used to read the same flag, so pausing yourself while at your
-   * limit told you you would be reopened automatically. You would not have been.
-   */
   const [capacityPaused, setCapacityPaused] = useState(false);
   const [maxJobs, setMaxJobs] = useState<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -99,11 +92,6 @@ export const AvailabilityStatusBadge = () => {
       } else if (detail.reason === "capacity_recovered") {
         toast.success("You're available again — status set back to Open.");
       } else if (detail.reason === "admin_changed") {
-        /*
-         * An admin can now change this too, and the change lands here live. It
-         * used to arrive with no explanation at all — the pill simply moved on
-         * its own, which reads as a bug rather than as someone acting.
-         */
         const who = typeof detail.changedBy === "string" && detail.changedBy ? detail.changedBy : "An administrator";
         if (detail.availabilityStatus === "paused") {
           toast(`${who} set your availability to Paused.`, { icon: "⏸️" });

@@ -138,11 +138,6 @@ export default function OrderDetailsPage() {
     widthIn: null,
     heightIn: null,
   });
-  /*
-   * Which of the order's sheets is shown and exported. The preview and both
-   * exports used to take the first sheet only, so the second sheet of a
-   * two-sheet order was never seen here and never printed.
-   */
   const [sheetIndex, setSheetIndex] = useState(0);
   const sheetRef = useRef(0);
   sheetRef.current = sheetIndex;
@@ -164,12 +159,6 @@ export default function OrderDetailsPage() {
   const [savingToDrive, setSavingToDrive] = useState(false);
   const [driveProgress, setDriveProgress] = useState<{ phase: "download" | "upload"; loaded: number; total: number } | null>(null);
 
-  /**
-   * The canonical order number (DTF-####), which is what the customer, the
-   * admin console, invoices and ShipStation all use. This used to derive its
-   * own "ORD-9CA3" from the ObjectId, so the same order carried a different
-   * number here than everywhere else.
-   */
   const displayId = useMemo(() => {
     if (overview?.displayId) return String(overview.displayId);
     const id = String(jobId || "");
@@ -339,8 +328,6 @@ export default function OrderDetailsPage() {
     };
   }, [overview]);
 
-  // A status move waiting for the partner to confirm it. Every move is
-  // forward-only, and the status options used to act on the first click.
   const [pendingStep, setPendingStep] = useState<ConfirmableStep | null>(null);
 
   const [labelRetryAt, setLabelRetryAt] = useState<number | null>(null);

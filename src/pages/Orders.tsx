@@ -22,8 +22,6 @@ const Orders = () => {
   });
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
-  // A failed load used to fall through to "You have no jobs yet" and zero
-  // counts — read as fact by a partner. Kept so the page says it didn't load.
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [jobs, setJobs] = useState<Order[]>([]);
@@ -297,13 +295,6 @@ const Orders = () => {
             />
           </div>
 
-          {/*
-            The selection checkboxes and their bulk bar are gone. "Mark as
-            Complete" skipped printing and shipping and made jobs payable (the
-            server now refuses it), and "Export Selected" pulled full-size print
-            files one after another; exporting from each job, sheet by sheet,
-            is the way to do it.
-          */}
           <div className="flex items-center justify-end">
             <div className="text-sm text-gray-500 font-medium">
               Showing{" "}

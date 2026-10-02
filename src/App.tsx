@@ -6,7 +6,6 @@ import SetPasswordPage from "./pages/SetPasswordPage";
 import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
 import OrderDetails from "./pages/OrderDetails";
-import PrintQueue from "./pages/PrintQueue";
 import Earnings from "./pages/Earnings";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
@@ -52,7 +51,6 @@ function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/orders" element={<Orders />} />
             <Route path="/orders/:jobId" element={<OrderDetails />} />
-            <Route path="/print-queue" element={<PrintQueue />} />
             <Route path="/earnings" element={<Earnings />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/settings" element={<Settings />} />

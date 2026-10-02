@@ -5,6 +5,7 @@ import {
   FiLayers,
   FiPrinter,
 } from "react-icons/fi";
+import { jobDue } from "../../utils/jobDue";
 import type { Order } from "../../types/orders";
 
 interface JobCardProps {
@@ -102,18 +103,12 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
     }
   };
 
-  /*
-   * What is due next, in the partner's own time: accept by, then print by, and
-   * nothing once the label is requested. This showed the accept-by deadline as
-   * "Due Date" for the life of the job, formatted on the server's clock.
-   */
-  const dueAt = job.deadline ? new Date(job.deadline) : null;
-  const hasDue = Boolean(dueAt && !Number.isNaN(dueAt.getTime()) && job.dueStage);
-  const msLeft = hasDue ? (dueAt as Date).getTime() - Date.now() : 0;
-  const isOverdue = hasDue && msLeft < 0;
-  const isDueSoon = hasDue && !isOverdue && msLeft < 24 * 60 * 60 * 1000;
-  const dueText = hasDue
-    ? (dueAt as Date).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+  const due = jobDue(job.deadline, job.dueStage);
+  const hasDue = due.at !== null;
+  const isOverdue = due.overdue;
+  const isDueSoon = due.soon;
+  const dueText = due.at
+    ? due.at.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : "—";
 
   return (
@@ -177,7 +172,7 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
 
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-xs text-gray-500 uppercase font-medium tracking-wide whitespace-nowrap">
-              <FiCalendar /> {job.dueStage === "PRINT" ? "Print by" : job.dueStage === "ACCEPT" ? "Accept by" : "Due"}
+              <FiCalendar /> {due.label}
             </div>
             <div
               className={`font-medium whitespace-nowrap ${

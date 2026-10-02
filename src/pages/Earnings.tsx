@@ -68,8 +68,6 @@ const Earnings = () => {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
-  // A failed load used to leave "No data found" and missing totals with only a
-  // passing toast — read as "no earnings". Kept so the page says it didn't load.
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Track whether the initial load has completed so filter changes
@@ -227,11 +225,6 @@ const Earnings = () => {
     },
     {
       header: "Completed",
-      /*
-       * Null until a job actually ships. This rendered `updatedAt` for every
-       * row, so an unfinished job showed a "completed" date — the day someone
-       * last touched it.
-       */
       render: (job: EarningsJob) => (
         <span className="text-gray-600">
           {job.completedAt ? (

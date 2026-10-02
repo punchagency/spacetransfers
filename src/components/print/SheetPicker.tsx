@@ -9,13 +9,6 @@ export type JobSheet = {
   itemCount: number;
 };
 
-/**
- * Chooses which of a job's sheets is previewed and exported.
- *
- * The preview and exports used to take an order's first sheet only, so on a
- * two-sheet order the second was never seen by the partner and never printed.
- * Renders nothing for a one-sheet job, so those screens look as they did.
- */
 export function SheetPicker({
   sheets,
   value,

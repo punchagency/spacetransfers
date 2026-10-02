@@ -81,8 +81,6 @@ export const JobEarningsModal = ({
             <h4 className="text-xs font-medium text-gray-500 mb-1.5">
               Completed Date
             </h4>
-            {/* Null until the job ships; it used to print `updatedAt`, so an
-                unfinished job showed a completion date it did not have. */}
             <p className="text-sm font-bold text-gray-900">
               {job.completedAt
                 ? new Date(job.completedAt).toLocaleDateString()

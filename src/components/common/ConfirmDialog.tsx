@@ -1,10 +1,5 @@
 import { Modal } from "./Modal";
 
-/**
- * Asks before a step that changes a job for someone else — the customer's
- * order, the label bought, the admin's view. Status buttons used to act on the
- * first click, so a stray tap moved a job forward, and moves are forward-only.
- */
 export function ConfirmDialog({
   isOpen,
   title,

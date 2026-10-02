@@ -12,8 +12,6 @@ export const UserMenu = () => {
   const navigate = useNavigate();
   const { avatarUrl: globalAvatarUrl, name: storeName } = useProfileStore();
 
-  // No invented identity when the stored user can't be read: this used to show
-  // "Printer · printer@company.com", an address that belongs to nobody.
   const user = (getUser() ?? {}) as { name?: string; email?: string; avatarUrl?: string | null; companyName?: string };
   const displayName = user.companyName || storeName || user.name || 'Your account';
 

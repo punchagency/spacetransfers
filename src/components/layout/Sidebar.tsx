@@ -11,7 +11,6 @@ import { fetchAvailability } from "../../utils/availability";
 const nav = [
   { label: "Home", icon: FiHome, path: "/dashboard" },
   { label: "Jobs & Orders", iconSrc: "/menu.svg", path: "/orders" },
-  // { label: "Print Queue", icon: LuPrinter, path: "/print-queue" },
   { label: "Earnings & Payouts", icon: AiOutlineDollar, path: "/earnings" },
 ];
 
@@ -106,14 +105,6 @@ const CapacityFooter = () => {
   );
 };
 
-/**
- * The menu: a fixed column on a laptop, a drawer on a phone.
- *
- * It used to be the same 260px column at every width. On a 390px phone that is
- * two thirds of the screen, leaving 130px for the page itself — every table,
- * heading and button ran off the side. `open`/`onClose` are only read below
- * `md`, so the desktop layout is untouched.
- */
 export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: () => void }) => {
   const navigate = useNavigate();
   const location = useLocation();

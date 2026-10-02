@@ -68,14 +68,6 @@ const Dashboard = () => {
   const [hasLoaded, setHasLoaded] = useState(false);
   const [range, setRange] = useState<Range>("30d");
 
-  /*
-   * The same name the top bar shows. This read `name` while `UserMenu` reads
-   * `companyName || name`, so one screen greeted you by two different names.
-   *
-   * Read from the profile store rather than localStorage directly, so editing
-   * your name on Profile updates the greeting instead of leaving it stale until
-   * the next sign-in.
-   */
   const { name: storeName } = useProfileStore();
   const userName = useMemo(() => {
     if (storeName?.trim()) return storeName.trim();
@@ -110,11 +102,6 @@ const Dashboard = () => {
   }, []);
 
   useEffect(() => {
-    /*
-     * Recorded, not swallowed. A failed load used to leave empty cards and an
-     * empty table with nothing saying so — a partner would read "$0.00 earned,
-     * no jobs" as fact rather than as a request that never returned.
-     */
     fetchData(range)
       .catch((e: any) => setLoadError(e?.message || "Could not load your dashboard"))
       .finally(() => setLoading(false));
@@ -171,8 +158,6 @@ const Dashboard = () => {
       <div className="sticky top-0 z-10 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4 flex flex-col md:flex-row gap-3 md:gap-0 md:items-start md:justify-between border-b border-gray-200">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Welcome back{userName ? `, ${userName}` : ""}!</h1>
-          {/* Until the stats arrive there is no count to state: a failed load
-              used to read "You have 0 jobs assigned to you" as fact. */}
           {!hasLoaded && loadError ? (
             <p className="text-gray-500 mt-1">Your jobs couldn't be loaded right now.</p>
           ) : (
