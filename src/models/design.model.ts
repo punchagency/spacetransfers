@@ -25,13 +25,6 @@ export interface IDesignItem {
   locked?: boolean;
   /** Pieces sharing a group id were bundled in the editor to act as one. */
   groupId?: string;
-  /**
-   * Pixel size of the image the piece shows. Kept so a reopened sheet knows
-   * each piece's resolution at once: without it the DPI check had nothing to
-   * go on until every image had downloaded, and flagged the sheet meanwhile.
-   * `croppedWidthPx`/`Height` were already sent by the editor for canvas crops
-   * and silently dropped here, not being in the schema.
-   */
   nativeWidthPx?: number;
   croppedWidthPx?: number;
   croppedHeightPx?: number;

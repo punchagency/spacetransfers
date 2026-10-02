@@ -1,24 +1,3 @@
-/**
- * Turns an order into a parcel a carrier can rate.
- *
- * Every ShipStation order was previously declared as `weight: 1 lb,
- * dimensions: 12 x 10 x 2 in` — hard-coded, identical for a 1 sq ft sheet and a
- * 78 sq ft one. Nothing can be rated against that: a quote for a fictional
- * parcel is precise-looking and wrong. It is also why labels may be coming back
- * with carrier adjustment charges, since carriers bill on actual weight and
- * dimensions rather than the declared ones.
- *
- * The profile is expressed as size bands rather than a tube-or-flat choice,
- * because how a gang sheet is packed is a question about the operation, not
- * about the code. Bands describe whatever is actually done — one band for a
- * single mailer, several for "small flat, large rolled" — and the admin
- * calibrates them against real shipments.
- *
- * THE DEFAULTS BELOW ARE PLACEHOLDERS. They are the right shape and the wrong
- * numbers, and the admin console says so. Replace them by weighing and
- * measuring real parcels.
- */
-
 export interface PackagingBand {
   /** Upper bound of this band in square feet; null means "and above". */
   maxSqFt: number | null;
@@ -54,10 +33,6 @@ export const DEFAULT_PACKAGING_PROFILE: PackagingProfile = {
   ],
 };
 
-/**
- * Last resort when a profile has no usable bands at all. Deliberately generous
- * rather than the old 1 lb: under-declaring is what gets charged back.
- */
 const FALLBACK_BAND: PackagingBand = {
   maxSqFt: null,
   lengthIn: 26,

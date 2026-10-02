@@ -1,23 +1,3 @@
-/**
- * Server-side status labels, one map per audience.
- *
- * Three separate maps used to describe the same states to the same person:
- * the job list called QUALITY_CHECK "Print Shipping Label" while the print-queue
- * notification called it "Quality Check", and PROCESSING was "In Progress -
- * Printing" in one and "Processing" in the other. A partner could be told two
- * different things about one job depending on which surface they read.
- */
-
-/**
- * What a print partner sees. Deliberately action-oriented — it says what to do
- * next, not what the database calls it.
- *
- * PROCESSING and PENDING share a label on purpose. A partner only ever sees
- * jobs assigned to them, so both mean the same thing from their seat: this job
- * is yours and you have not started it. PROCESSING previously read "In Progress
- * - Printing", which told a partner their job was on the press before they had
- * touched it.
- */
 export const PRINTER_STATUS_LABEL: Record<string, string> = {
   PENDING: "Pending Review",
   PROCESSING: "Pending Review",
@@ -75,20 +55,12 @@ const PARTNER_STEP_MESSAGE: Record<string, string> = {
   CANCELLED: "Partner cancelled the job",
 };
 
-/**
- * The timeline sentence for a status change.
- *
- * These were "Printer updated status to QUALITY_CHECK" — a database code on the
- * admin's screen, for a step the partner's own app calls "Print Shipping Label"
- * and the admin's list calls "Ready to Ship".
- */
 export const statusChangeMessage = (actor: "PRINTER" | "ADMIN", status: unknown): string => {
   const s = String(status || "").toUpperCase();
   if (actor === "PRINTER") return PARTNER_STEP_MESSAGE[s] || `Partner moved the job to ${printerStatusLabel(s)}`;
   return `Admin set the status to ${ADMIN_STATUS_LABEL[s] || s}`;
 };
 
-/** Rewrites the old raw-code sentences already stored on orders. */
 export const describeTimelineMessage = (message: unknown): string | null => {
   if (typeof message !== "string" || !message) return null;
   const legacy = /^(Printer|Admin) updated status to ([A-Z_]+)$/.exec(message.trim());

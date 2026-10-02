@@ -13,8 +13,6 @@ import {
   aiEditCapabilities,
   aiEditPlan,
   fadeCheckAsset,
-  updateAccount,
-  logout,
   listAssets,
   createDesign,
   listDesigns,
@@ -59,8 +57,6 @@ router.get("/pricing", maybeAuthenticate, getPricingConfig);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));
 
-router.patch("/account", updateAccount);
-router.post("/account/logout", logout);
 router.post("/orders", createOrder);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);

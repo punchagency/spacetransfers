@@ -13,11 +13,6 @@ export const connectToDatabase = async (): Promise<void> => {
     });
     console.log("Connected to MongoDB");
 
-    // Reconcile model indexes with the database. Without this, schema changes
-    // to indexes (e.g. swapping the broken googleId sparse+unique index for a
-    // partial unique index) leave the old broken index in place and the new
-    // one is only created alongside it. syncIndexes drops anything not in the
-    // schema and creates anything missing.
     try {
       await User.syncIndexes();
     } catch (err) {

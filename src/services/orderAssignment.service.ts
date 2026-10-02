@@ -63,19 +63,6 @@ export const REGION_FALLBACKS: Record<string, string[]> = {
   South:     ["Midwest", "Northeast", "West"],
 };
 
-/**
- * Core matching algorithm — pure function, no I/O.
- *
- * `autoAssignOrder` delegates to this after building its candidate list, so the
- * rule that runs in production is the rule these tests cover. That was not
- * previously true: this function blocked cross-region assignment outright while
- * production fell back to adjacent regions, and a large suite asserted a rule
- * the system did not enforce.
- *
- * Preference order is the customer's own region first, then the fallback chain.
- * Within whichever pool is used: nearest → lowest utilisation → highest rating
- * → id, so the result is deterministic.
- */
 export const selectPrinterFromCandidates = (
   customerState: string | null | undefined,
   candidates: PrinterCandidate[],
@@ -308,23 +295,6 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       const hasConcurrentCapacity = !isAtCapacity(activeCount, maxConcurrent);
       const hasDailyCapacity = !dailyMax || dailyCount < dailyMax;
       const acceptingOrders = !p.availabilityStatus || p.availabilityStatus === "open";
-      /*
-       * Business hours removed as a gate.
-       *
-       * It answered the same question as Pause — "am I taking work right now" —
-       * but did it on a recurring schedule nobody could see: it was invisible in
-       * the admin console, so a partner silently dropped out of assignment with
-       * no way for anyone to work out why.
-       *
-       * It was also wrong. `isPrinterAvailableAt` compared against the SERVER's
-       * clock (`at.getHours()`) and no partner has a timezone stored, so across
-       * four US regions "9am-5pm" meant nine-to-five wherever the server happens
-       * to run. On a UTC host that is 1am-9am for a West-region partner.
-       *
-       * Printing is batch work — a job assigned overnight is picked up in the
-       * morning — so delaying assignment bought nothing and cost the order time
-       * against its SLA. Pause is the control: explicit, notified, admin-visible.
-       */
       const available = acceptingOrders && autoAccept && hasConcurrentCapacity && hasDailyCapacity;
 
       return {
@@ -370,10 +340,6 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     );
   }
 
-  // Selection itself is delegated to the pure `selectPrinterFromCandidates`
-  // above, so the rule that runs here is exactly the rule the unit tests cover.
-  // This block previously reimplemented the region fallback and the sort, and
-  // the two implementations had already drifted apart.
   const selection = selectPrinterFromCandidates(customerState, eligibleCandidates);
   const candidatesSameRegion = eligibleCandidates.filter(
     (c) => c.printerRegion === customerRegion,
@@ -428,17 +394,6 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
       (order as any).priority,
       (await getAssignmentSettings()).sla.acceptHours,
     );
-  /**
-   * Assignment moves the order to PROCESSING.
-   *
-   * PENDING previously meant two different things — "no partner yet" and
-   * "partner attached, not started" — so the Orders list could not show which
-   * orders still needed a partner, which is the only case an admin has to act
-   * on. It also left the timeline's "Assigned to {partner}" branch unreachable.
-   *
-   * Only from PENDING: re-assigning an order already in PRINTING or beyond must
-   * not drag it backwards.
-   */
   if (String(order.status || "").toUpperCase() === "PENDING") {
     order.status = "PROCESSING";
   }
@@ -457,20 +412,6 @@ export const autoAssignOrder = async (orderId: string): Promise<AssignmentResult
     actorName: selected.printerName
   } as any);
 
-  /*
-   * A record of what was true at auto-assign time — NOT current state, and not
-   * what any screen should read.
-   *
-   * The orders table used to badge from this field. Nothing clears it, and only
-   * this path writes it, so it went stale the moment an order was reassigned:
-   * DTF-0239/0240/0241 sat in the console badged "West → Northeast" long after
-   * they were back with a Californian partner, contradicting their own details
-   * page. Both surfaces now derive from `resolveRegionInfo` instead.
-   *
-   * Kept only because it is queryable history — how often the network had to
-   * fall back out of region. `assignmentHistory` carries the same facts per
-   * assignment if this is ever dropped.
-   */
   (order as any).crossRegionAssignment = isCrossRegion
     ? { customerRegion: customerRegion || "Unknown", assignedRegion, at: assignedAt }
     : null;

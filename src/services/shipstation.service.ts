@@ -3,7 +3,6 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { Order } from "../models/order.model.js";
 import { User } from "../models/user.model.js";
 import { env } from "../config/env.js";
-import { publishOrderEvent } from "./orderSyncHub.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
 
@@ -172,11 +171,6 @@ export const createShipStationOrder = (params: {
   country: string;
   items: Array<{ name: string; quantity: number; unitPrice: number }>;
   totalAmount: number;
-  /**
-   * The real parcel. Optional only so existing callers keep compiling; when it
-   * is absent the old fiction is used and a warning is logged, because a
-   * mis-declared parcel is billed back by the carrier after the fact.
-   */
   parcel?: { weightLb: number; lengthIn: number; widthIn: number; heightIn: number };
   /**
    * The assigned partner's own warehouse. Omitted, the HQ default is used.

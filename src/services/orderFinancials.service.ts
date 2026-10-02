@@ -4,26 +4,6 @@ import {
   isPartnerEarningRealized,
 } from "./partnerEarnings.service.js";
 
-/**
- * What an order is worth to the business — the one definition every admin
- * screen uses (order page, Orders table, Home, Earnings).
- *
- * Profit used to be `what the customer paid − partner cost`, which counted two
- * things the business never keeps:
- *
- *  - Tax. Collected for the state and remitted.
- *  - Shipping. Collected to pay for the label; only any markup over the
- *    label's real cost is the business's.
- *
- * and ignored one it always pays: the card processor's fee.
- *
- * Shipping cost is the purchased label's real cost when there is one, else the
- * carrier's quote at checkout. With neither (flat-rate fallback, no label yet)
- * shipping is treated as passed through at cost: no markup is claimed, because
- * none is known. The card fee is Stripe's actual fee for the payment; an order
- * whose fee was never recorded is flagged rather than guessed.
- */
-
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 

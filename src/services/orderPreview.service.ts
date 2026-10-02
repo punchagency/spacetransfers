@@ -1,15 +1,6 @@
 import { Order } from "../models/order.model.js";
 import { exportGangsheetPng24, orderSheetWidthIn } from "./gangsheetExport.service.js";
 
-/**
- * Renders a preview picture for every gang sheet on an order and stores each on
- * its own item (`items.<i>.previewImage`).
- *
- * Only the first sheet used to get one — the order was rendered with
- * `items.find(gangsheet)` and saved with the positional `items.$` — so every
- * later sheet on a multi-sheet order showed no picture anywhere. Failures are
- * logged per sheet and never fail the order.
- */
 export const renderOrderSheetPreviews = async (
   orderId: string,
   items: any[],

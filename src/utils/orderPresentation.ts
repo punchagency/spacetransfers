@@ -1,14 +1,4 @@
 /**
- * How an order is described to people outside the shop floor — the customer's
- * order history, their invoice, and the admin's copy of that invoice.
- *
- * These were written out separately in each place and had drifted: none listed
- * Express's rush fee or the admin's adjustments, so on an Express order (or one
- * with a discount) the lines did not add up to the total printed under them,
- * and the admin's invoice showed adjustments the customer's did not.
- */
-
-/**
  * The customer-facing status. Deliberately coarser than the internal states: a
  * customer needs to know their sheet is being made, not whether it is on the
  * press or in quality check. Those two had no label, so the raw codes

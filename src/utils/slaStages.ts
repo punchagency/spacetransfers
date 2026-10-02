@@ -124,17 +124,6 @@ export const stageDue = (
 
   const hoursAllowed = hoursForStage(stage, order.priority, sla);
 
-  /**
-   * ACCEPT honours the deadline stored at assignment; only PRINT is derived
-   * from the current settings.
-   *
-   * Recomputing ACCEPT from live settings meant tightening the window took work
-   * away from partners who were told they had longer — and the countdown in
-   * their own app still showed the old figure, because that reads the stored
-   * value. Two sources of truth, disagreeing, with someone's job in the middle.
-   * Honouring the stored deadline makes the promise and the enforcement the
-   * same number, and a shortened window applies from the next assignment on.
-   */
   const stored = stage === "ACCEPT" && order.assignmentDeadline ? new Date(order.assignmentDeadline) : null;
   const dueAt =
     stored && !Number.isNaN(stored.getTime())

@@ -20,24 +20,6 @@ import { env } from "../config/env.js";
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-/**
- * Model candidates, tried in order.
- *
- * Lists rather than single names, because a pinned Gemini model id is a
- * liability: Google retires them on its own schedule and a retired id returns
- * 404 "no longer available to new users" — which reads in logs like a broken
- * integration rather than an expired model. A per-model quota also means one
- * capped model must not dark the others.
- *
- * The text list leads with `gemini-flash-latest`, a moving alias. For a parsing
- * job like planning, tracking the current flash model automatically is worth
- * more than pinning a version: there is no prompt tuned to a specific model's
- * quirks here, and the failure mode of a stale pin is the whole planner going
- * dark.
- *
- * An explicit env override wins outright — an operator naming a model has a
- * reason, and silently falling through to a different one would hide it.
- */
 const IMAGE_MODELS = env.geminiImageModel
   ? [env.geminiImageModel]
   : ["gemini-2.5-flash-image", "gemini-3.1-flash-lite-image", "gemini-3.1-flash-image"];
@@ -129,18 +111,6 @@ const blockModel = (model: string, reason: ModelBlock) => {
 const availableModels = (candidates: string[]): string[] =>
   candidates.filter((model) => !isBlocked(model));
 
-/**
- * Clears every block immediately.
- *
- * The escape hatch for the case the timers exist to paper over: an operator has
- * just enabled billing, or topped up a quota, and should not have to wait out a
- * pause — or restart the server — to see it take effect.
- */
-export const resetGeminiBlocks = () => {
-  blocked.clear();
-  console.log("[GEMINI] model blocks cleared — all models will be re-probed");
-};
-
 /** The most informative block reason across a set of candidates. */
 const worstBlock = (candidates: string[]): ModelBlock | null => {
   // Ordered by how much operator action each needs: billing first, since it is
@@ -227,7 +197,6 @@ export const geminiTextModel = () => availableModels(TEXT_MODELS)[0] ?? TEXT_MOD
  * numeric limit tells them apart.
  */
 export const classifyFailure = (status: number, body: string): ModelBlock | null => {
-  // A retired model id — the message is "no longer available to new users".
   if (status === 404 || /no longer available|not found for API version/i.test(body)) {
     return "retired";
   }
@@ -634,10 +603,6 @@ export const planEditWithGemini = async (
   history: Array<{ role: "user" | "assistant"; text: string }> = [],
   signal?: AbortSignal,
 ): Promise<EditPlan | null> => {
-  // Gated on the *text* models, not the image ones. This was the second bug
-  // behind the reported failure: planning was gated on `geminiReady()`, so a
-  // capped image tier also disabled prompt understanding — even though the two
-  // run on different models with entirely separate quotas.
   if (!geminiPlanningReady()) return null;
 
   for (const model of availableModels(TEXT_MODELS)) {

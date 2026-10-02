@@ -68,10 +68,5 @@ export const sendEmail = async ({
     return { sent: false, messageId: null, error: "email_not_configured" };
   }
 
-  /*
-   * Resend is the only route. An SMTP fallback used to sit behind it, and on the
-   * demo it held a previous developer's Gmail login that rejected every send —
-   * a second provider to configure, secure and debug for no benefit.
-   */
   return sendViaResend({ to, subject, html }, { apiKey: env.resendApiKey, from: env.resendFromEmail });
 };

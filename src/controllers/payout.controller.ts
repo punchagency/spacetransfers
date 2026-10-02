@@ -3,8 +3,7 @@ import { User } from "../models/user.model.js";
 import { Order } from "../models/order.model.js";
 import { Payout } from "../models/payout.model.js";
 import {
-  stripe,
-  createConnectAccount,
+    createConnectAccount,
   createConnectAccountLink,
   getConnectAccount,
   processPayoutTransfer,
@@ -18,8 +17,7 @@ import { getPartnerPayRate } from "../services/pricing.service.js";
 import mongoose from "mongoose";
 import {
   getEligibleJobsForPrinter,
-  RESERVING_PAYOUT_STATUSES,
-  calculateOrderPartnerEarning
+    calculateOrderPartnerEarning
 } from "../services/partnerEarnings.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import type { IPayout, PayoutStatus } from "../models/payout.model.js";

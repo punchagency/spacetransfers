@@ -623,13 +623,6 @@ export const classifyFadeWithAi = async (
   }
 };
 
-/**
- * The fade check. AI-first by design, geometry as the safety net.
- *
- * Never throws: a failed fade check must not fail an upload. The worst case is
- * a verdict derived from geometry alone, which is what the whole feature used to
- * be — so the floor here is strictly better than the previous behaviour.
- */
 export const detectFade = async (buffer: Buffer): Promise<FadeResult> => {
   let analysis: FadeAnalysis;
   try {

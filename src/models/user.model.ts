@@ -36,9 +36,6 @@ export interface IUser extends Document {
   emailVerificationTokenHash?: string | null;
   emailVerificationExpiresAt?: Date | null;
   emailVerificationSentAt?: Date | null;
-  otpCode?: string | null;
-  otpExpiresAt?: Date | null;
-  otpAttempts?: number;
   stripeConnectAccountId?: string | null;
   stripeConnectOnboarded?: boolean;
   payoutsEnabled?: boolean;
@@ -133,12 +130,6 @@ export interface IUser extends Document {
         specialInkFlat: number;
       };
     };
-    /**
-     * Two-factor was a stored boolean that nothing enforced — login never read
-     * it, there was no TOTP secret, and the "QR code" carried the literal
-     * string MOCKSECRET. It was removed rather than left advertising protection
-     * the account did not have.
-     */
     security?: {
       lastPasswordChange?: Date;
     };
@@ -245,19 +236,6 @@ const userSchema = new Schema<IUser>(
       default: "Active"
     },
 
-    /*
-     * Every status change, with the reason and who made it.
-     *
-     * Rejecting or suspending a partner is consequential and was previously a
-     * one-click, unexplained, permanent act: the only trace was the status field
-     * itself. Nothing recorded why, who decided, or when — so a partner
-     * re-applying months later met an approver with no way to know whether the
-     * last rejection was about print quality or a duplicate signup.
-     *
-     * One trail for all of them rather than a `rejectionReason` beside a
-     * `suspensionReason`, so a new status cannot arrive without somewhere to
-     * explain itself.
-     */
     statusHistory: [
       {
         from: { type: String, default: null },
@@ -310,18 +288,6 @@ const userSchema = new Schema<IUser>(
     emailVerificationSentAt: {
       type: Date,
       default: null
-    },
-    otpCode: {
-      type: String,
-      default: null
-    },
-    otpExpiresAt: {
-      type: Date,
-      default: null
-    },
-    otpAttempts: {
-      type: Number,
-      default: 0
     },
     stripeConnectAccountId: { type: String, default: null },
     stripeConnectOnboarded: { type: Boolean, default: false },
@@ -378,21 +344,6 @@ const userSchema = new Schema<IUser>(
        *
        * Date of birth and national ID are the ones worth naming: storing staff
        * identity documents with no purpose is a liability, not a feature.
-       */
-      /*
-       * `businessHours` and `printingCapabilities` were removed from this
-       * schema.
-       *
-       * Business hours gated auto-assignment and separately refused a partner
-       * permission to accept a job already assigned to them (403) while that
-       * job's SLA clock kept running. The check compared against the SERVER's
-       * clock and no partner has a timezone stored, so "9-5" meant nine to five
-       * wherever the server happened to run. Pause answers "am I taking work"
-       * explicitly, visibly to admins, and with a notification.
-       *
-       * Printing capabilities (max sheet size, inks, films, formats, DPI) were
-       * consulted by no assignment or pricing decision, and both editors for
-       * them had already been removed as decorative.
        */
       jobCapacity: {
         maxConcurrent: Number,

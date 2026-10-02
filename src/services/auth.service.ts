@@ -1,7 +1,6 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
-import { buildLegalAcceptance, type LegalAcceptanceInput, type LegalAcceptanceRecord } from "../config/legal.js";
-import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
-import { isUSCountry } from "../utils/geocoding.js";
+import { buildLegalAcceptance, type LegalAcceptanceInput } from "../config/legal.js";
+import { normalizeRegion } from "../utils/region.js";
 import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
@@ -797,16 +796,6 @@ export const requestPasswordReset = async (
     return `${trim(env.appUrl)}/?resetToken=${token}&email=${encodeURIComponent(user.email)}`;
   })();
 
-  /*
-   * Through the shared sender, like every other email. This one used to build
-   * its own SMTP transport, so it was the only message that could never go
-   * through Resend: with Resend set up and SMTP gone, password resets would have
-   * stopped arriving while everything else worked.
-   *
-   * A delivery failure must not fail the request. The token is already saved,
-   * and failing only for addresses that exist (an unknown address returns
-   * early) would tell a caller which emails are registered.
-   */
   const sent = await sendEmail({
     to: user.email,
     subject: "Reset your Space Transfers password",

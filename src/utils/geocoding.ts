@@ -84,16 +84,6 @@ export async function geocodeAddress(input: AddressInput): Promise<GeocodeResult
   return result;
 }
 
-/** Force-clear the cache (useful in tests or admin operations). */
-export function clearGeocodingCache(): void {
-  _cache.clear();
-}
-
-/** Returns monitoring stats for the cache. */
-export function getGeocodingCacheStats(): { size: number; ttlHours: number } {
-  return { size: _cache.size, ttlHours: CACHE_TTL_MS / 3_600_000 };
-}
-
 // ---------------------------------------------------------------------------
 // US Census Bureau implementation
 // ---------------------------------------------------------------------------

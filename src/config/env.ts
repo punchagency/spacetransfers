@@ -62,7 +62,6 @@ interface Env {
   shipStationFromPostalCode?: string;
   shipStationFromCountry?: string;
   /** Effort level for the copyright vision pass. Higher = more accurate, slower, costlier. */
-  copyrightScanEffort?: string;
   /**
    * Google Gemini — the primary (and free) generative editing tier. An AI
    * Studio key needs no card and covers ~500 image edits/day, so it is tried
@@ -131,7 +130,6 @@ export const env: Env = {
   shipStationMaxPollingDays: process.env.SHIPSTATION_MAX_POLLING_DAYS
     ? Number(process.env.SHIPSTATION_MAX_POLLING_DAYS)
     : 30,
-  copyrightScanEffort: cleanEnvString(process.env.COPYRIGHT_SCAN_EFFORT),
   // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
   // shows on the key page, and copying it verbatim should just work.
   geminiApiKey:

@@ -158,14 +158,6 @@ export const verifyCardPayment = async ({
     throw badRequest(NOT_PAID);
   }
 
-  /*
-   * `metadata.userId` is stamped when the intent is created, so a receipt from
-   * one account cannot be presented by another.
-   *
-   * Only enforced when the metadata is present: an intent created before this
-   * was stamped has no userId, and refusing those would reject legitimate
-   * in-flight checkouts on deploy.
-   */
   const intentUser = String(intent.metadata?.userId || "");
   if (intentUser && intentUser !== String(userId)) {
     console.warn(`[payment] intent ${id} belongs to ${intentUser}, not ${userId}`);

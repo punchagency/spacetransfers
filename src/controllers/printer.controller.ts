@@ -1,23 +1,21 @@
 import { Request, Response, NextFunction } from "express";
+import { partnerTransitionError } from "../utils/partnerStatusRules.js";
 import { orderSheets, pickOrderSheet, sheetSummaries } from "../utils/orderSheets.js";
 import { stageDue } from "../utils/slaStages.js";
 import { formatSheetSize } from "../utils/orderPresentation.js";
 import { apiFileUrl, resolveApiFile } from "../utils/publicApiBase.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import {
-  PRINTER_STATUS_LABEL,
-  printerStatusLabel,
+    printerStatusLabel,
   statusChangeMessage,
   statusesForPrinterLabel,
 } from "../utils/orderStatusLabels.js";
-import { deriveParcel } from "../services/packaging.service.js";
-import { getGlobalPricing, getPartnerPayRate, totalBillableSqFt } from "../services/pricing.service.js";
+import { getPartnerPayRate } from "../services/pricing.service.js";
 import { Order } from "../models/order.model.js";
 import { Payout } from "../models/payout.model.js";
 import { Asset } from "../models/asset.model.js";
 import { Design } from "../models/design.model.js";
 import { User } from "../models/user.model.js";
-import { Settings } from "../models/settings.model.js";
 import { PrinterNotification } from "../models/printerNotification.model.js";
 import { addPrinterNotificationClient, publishPrinterNotificationEvent, removePrinterNotificationClient } from "../services/printerNotificationsHub.js";
 import { broadcastToAllAdmins } from "../services/adminNotificationsHub.js";
@@ -40,12 +38,9 @@ import {
   exportGangsheetPng24,
   computeItemVerticalSpansIn,
   computeGangsheetCuts,
-  GANGSHEET_SHEET_WIDTH_IN,
-  orderSheetWidthIn,
-  GANGSHEET_PRINT_DPI,
-} from "../services/gangsheetExport.service.js";
+    orderSheetWidthIn,
+  GANGSHEET_PRINT_DPI } from "../services/gangsheetExport.service.js";
 import { uploadPngToDrive } from "../services/googleDrive.service.js";
-import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import {
   calculateOrderPartnerEarning,
   getOrderPartnerCostBreakdown,
@@ -58,15 +53,10 @@ import {
   syncPartnerCapacity,
   syncPartnerCapacitySafe,
   getAssignmentSettings,
-  getEffectiveMaxConcurrent,
-  countActiveJobs,
   ACTIVE_ORDER_STATUSES,
 } from "../services/partnerCapacity.service.js";
 import {
   triggerShipStationWorkflow,
-  isShipStationConfigured,
-  createShipStationOrder,
-  createShipStationLabel,
 } from "../services/shipstation.service.js";
 import { storeArtwork } from "../services/storage.service.js";
 import { isValidPhone } from "../utils/accountFields.js";
@@ -91,10 +81,6 @@ interface InMemoryExportJob {
   createdAt: number;
 }
 const exportJobStore = new Map<string, InMemoryExportJob>();
-
-/** The artboard's fixed sheet width. Exports must match it exactly. */
-/** Re-exported locally for readability; the definition lives with the renderer. */
-const GANGSHEET_WIDTH_IN = GANGSHEET_SHEET_WIDTH_IN;
 
 /**
  * Target printed length per exported part.
@@ -196,7 +182,6 @@ const computeGangsheetFaceThumbnail = ({
   return resolveThumbnailUrl(String(best.assetId || ""), assetsById);
 };
 
-
 /** "Accept by" / "Print by" for a job, from the same clock the SLA enforces. */
 const dueFields = (job: any, sla: any) => {
   const due = stageDue(job, sla);
@@ -245,14 +230,6 @@ export const uploadProfileAsset = async (req: Request, res: Response, next: Next
     next(error);
   }
 };
-
-/*
- * The local `calcEarning` is gone. It summed item subtotals — the price the
- * CUSTOMER paid — and was copied verbatim into the payout controller as well.
- * Nine call sites showed a partner the platform's revenue as their own earnings,
- * overstated by the whole margin. `partnerEarnings.service` is the single
- * definition now.
- */
 
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -442,79 +419,12 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       ],
       urgentJobs: formattedUrgentJobs,
       assignedJobs,
-      /*
-       * The true totals. The lists above are capped for the page, and the client
-       * used to render `assignedJobs.length` as "you have N jobs assigned" — so
-       * past the cap it quietly under-reported a partner's own workload.
-       */
       assignedTotal,
       urgentTotal,
       assignedShown: assignedJobs.length,
       urgentShown: formattedUrgentJobs.length,
       period: { range: rangeKey, label: periodLabel },
     });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const listPrintQueue = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const slaSettings = (await getAssignmentSettings()).sla;
-    const printerId = req.user?.id;
-    const { status } = req.query;
-
-    const query: any = {
-      assignedPrinter: printerId
-    };
-
-    if (status) {
-      const normalizedStatus = (status as string).trim().toLowerCase();
-      if (normalizedStatus === "urgent") {
-        query.priority = "URGENT";
-      } else {
-        const statusMap: { [key: string]: string } = {
-          pending: "PENDING",
-          processing: "PROCESSING",
-          printing: "PRINTING",
-          "quality-check": "QUALITY_CHECK",
-          completed: "COMPLETED"
-        };
-        const backendStatus = statusMap[normalizedStatus];
-        if (backendStatus) {
-          query.status = backendStatus;
-        }
-      }
-    } else {
-      query.status = { $in: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK"] };
-    }
-
-    const jobs = await Order.find(query)
-      .sort({ createdAt: 1, priority: -1 })
-      .limit(100);
-
-    const formattedJobs = jobs.map(job => {
-      const firstItem = job.items[0] || {};
-      const sheetSize = (firstItem.widthIn && firstItem.heightIn) 
-        ? `${firstItem.widthIn}x${firstItem.heightIn}` 
-        : "N/A";
-
-      return {
-        id: job.id,
-        orderId: (job as any)?.displayId ? String((job as any).displayId) : job.id,
-        displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
-        customer: `${job.customer.firstName} ${job.customer.lastName}`,
-        sheetSize,
-        orderDescription: firstItem.name || "N/A",
-        status: job.status,
-        ...dueFields(job, slaSettings),
-        assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
-        createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
-        priority: job.priority
-      };
-    });
-
-    res.json({ jobs: formattedJobs });
   } catch (error) {
     next(error);
   }
@@ -558,39 +468,6 @@ export const getJobDetails = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-export const getJobCustomerInfo = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const printerId = req.user?.id;
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const customer = job.customer || {};
-    const shippingAddress = job.shippingAddress || {};
-
-    res.json({
-      name: `${customer.firstName || ""} ${customer.lastName || ""}`.trim(),
-      email: customer.email || "N/A",
-      phone: customer.phone || "N/A",
-      shippingAddress: {
-        street: shippingAddress.street || "N/A",
-        city: shippingAddress.city || "N/A",
-        state: shippingAddress.state || "N/A",
-        postalCode: shippingAddress.postalCode || "N/A",
-        country: shippingAddress.country || "N/A"
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const updateJobNotes = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
@@ -625,139 +502,6 @@ export const updateJobNotes = async (req: Request, res: Response, next: NextFunc
       notes: job.notes,
       updatedAt: job.updatedAt.toISOString()
     });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updateJobSpecs = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { filmType, passes, temperatureC, pressSeconds } = req.body;
-    const printerId = req.user?.id;
-
-    const allowedFilmTypes = ["DTF", "UV", "Screen", "Sublimation"];
-    if (filmType && !allowedFilmTypes.includes(filmType)) {
-      const error = new Error("Invalid filmType. Must be one of: DTF | UV | Screen | Sublimation.") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    if (!job.specs) {
-      job.specs = {};
-    }
-
-    if (filmType !== undefined) job.specs.filmType = filmType;
-    if (passes !== undefined) job.specs.passes = passes;
-    if (temperatureC !== undefined) job.specs.temperatureC = temperatureC;
-    if (pressSeconds !== undefined) job.specs.pressSeconds = pressSeconds;
-
-    job.markModified("specs");
-    await job.save();
-
-    res.json({
-      id: job.id,
-      specs: job.specs,
-      updatedAt: job.updatedAt.toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const executeJobAction = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { action, reason } = req.body;
-    const printerId = req.user?.id;
-
-    const allowedActions = ["ACCEPT", "START"];
-    if (!action || !allowedActions.includes(action)) {
-      const error = new Error("Invalid action. Must be one of: ACCEPT | START") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    /*
-     * The business-hours block on ACCEPT is gone.
-     *
-     * This refused a partner permission to accept a job that had already been
-     * assigned to them — 403, "Action not allowed outside your configured
-     * business hours" — while that job's SLA clock kept running. A partner with
-     * Mon-Wed hours could not accept work on a Thursday at all. And the check
-     * ran on the server's clock, not theirs, so the window was wrong for anyone
-     * outside the server's timezone. Pausing is how a partner declines work.
-     */
-
-    let nextStatus: any;
-    switch (action) {
-      case "ACCEPT":
-        if (job.status !== "PENDING") {
-          const error = new Error(`Cannot ACCEPT job in ${job.status} state. ACCEPT transitions Pending -> Processing.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "PROCESSING";
-        break;
-      /*
-       * REJECT, PAUSE and RESUME removed with the REJECTED and PAUSED statuses.
-       * Declining a job is `cancelPrinterOrder`, which returns the order to
-       * PENDING and reassigns it — the order gets re-homed rather than stranded
-       * in a terminal state, and unlike these it is reachable from the app.
-       */
-      case "START":
-        if (job.status !== "PROCESSING") {
-          const error = new Error(`Cannot START job in ${job.status} state. START transitions Processing -> Printing.`) as CustomError;
-          error.statusCode = 409;
-          throw error;
-        }
-        nextStatus = "PRINTING";
-        break;
-    }
-
-    job.status = nextStatus;
-    if (!job.statusTimeline) job.statusTimeline = [];
-    job.statusTimeline.push({
-      status: nextStatus as any,
-      time: new Date(),
-    });
-    await job.save();
-
-    const displayId = (job as any).displayId || String(job._id).slice(-6).toUpperCase();
-
-    const actionLabelMap: Record<string, { title: string; priority: "high" | "medium" | "low" }> = {
-      ACCEPT: { title: "Job accepted",         priority: "medium" },
-      START:  { title: "Job started printing", priority: "low"    },
-    };
-    const { title: actionTitle, priority: actionPriority } =
-      actionLabelMap[action] || { title: `Job action: ${action}`, priority: "low" as const };
-
-    notifyPrinter({
-      printerId: String(printerId),
-      category: "jobs",
-      priority: actionPriority,
-      title: actionTitle,
-      message: `Order #${displayId} — ${actionTitle.toLowerCase()}.`,
-      meta: { orderId: String(job._id), action, status: nextStatus },
-      settingsKey: "orderUpdates",
-    }).catch(() => {});
-
-    res.json({ id: job.id, status: job.status });
   } catch (error) {
     next(error);
   }
@@ -903,8 +647,6 @@ export const createJobAssetBundle = async (req: Request, res: Response, next: Ne
       throw error;
     }
 
-    // Served by this API, so linked at its own address — APP_URL is the store's,
-    // and with it unset this used to fall back to localhost even in production.
     const bundleBase = apiFileUrl(req, "");
     res.status(201).json({
       bundleDownloadUrl: `${bundleBase}/api/printer/jobs/${encodeURIComponent(String(job.id))}/assets/bundle/download${
@@ -1218,11 +960,6 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           }
 
           if (effectiveDpis.length > 0) {
-            // Reported, not applied. Taking the MIN across sources used to set
-            // the whole sheet's DPI, which let one low-resolution graphic
-            // shrink the printed sheet's pixel width for every other graphic on
-            // it. Per-placement under-resolution still surfaces through
-            // `rendered.validation`.
             const lowest = Math.min(...effectiveDpis);
             if (lowest < GANGSHEET_PRINT_DPI) {
               console.warn(
@@ -1482,22 +1219,6 @@ export const getJobGangsheetPreview = async (req: Request, res: Response, next: 
       artboardItems: fullResItems,
       dpi: resolution,
       cropToContent: true,
-      /**
-       * Every placement is rendered — no composite cap.
-       *
-       * This used to pass `maxComposites: 500`, which silently dropped
-       * everything past the 500th placement. Real sheets run 1,200–2,600
-       * placements, so the printer was shown roughly a third of the job, with
-       * holes wherever the discarded pieces belonged: the crop bounds are
-       * computed from *all* items, so the space was still reserved, it just
-       * came out empty. That is the gaps-and-missing-artwork report.
-       *
-       * The cap also bought nothing. Unique images are decoded up front and
-       * shared between placements, so a dropped placement only skips a buffer
-       * blit, not a decode. Measured on the two largest live jobs, removing it
-       * was no slower — 1,200 items: 3.8s → 3.1s; 2,612 items: 4.3s → 4.0s —
-       * while the rendered output went from 766KB to 2.3MB of actual artwork.
-       */
       format: previewFormat,
       useLossyPreview: true, // Use fast lossy WebP for preview
       itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
@@ -1688,23 +1409,6 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
 
         setProgress(10, "Generating PNG...");
 
-        /**
-         * The sheet renders at the print DPI, always.
-         *
-         * This used to take the *minimum* effective source DPI across every item
-         * and render the whole sheet at that, to avoid ever upscaling. The
-         * intent was right and the scope was wrong: one 150-DPI logo dropped the
-         * entire sheet to 150, so a 23.5" sheet came out 3,525px instead of
-         * 7,050 and every other graphic on it was downsampled by half to
-         * accommodate the worst one. Resolution is a property of each image, not
-         * of the sheet they share.
-         *
-         * Under-resolution is still detected and still reported — the renderer
-         * records `asset_<id>_insufficient_px` for any placement whose source has
-         * fewer pixels than its slot, and the customer is warned about the same
-         * artwork at upload time by the low-DPI check. What no longer happens is
-         * one soft image quietly resizing the printed sheet.
-         */
         const uniqueAssetIdsForDpi: string[] = Array.from(
           new Set<string>(
             (fullResItems as any[])
@@ -1713,7 +1417,6 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
           )
         );
         const exportDpi = GANGSHEET_PRINT_DPI;
-        /** Diagnostic only — no longer resizes the sheet. */
         let lowestSourceDpi: number | null = null;
         if (uniqueAssetIdsForDpi.length > 0) {
           const sourceAssets = await Asset.find({
@@ -1775,22 +1478,6 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
         });
         const needsSplit = sheetHeightIn > GANGSHEET_TARGET_LENGTH_IN && cuts.length > 1;
 
-        /**
-         * Renders one window of the sheet at full print resolution.
-         *
-         * A whole 23.5"×1200" roll at 300 DPI is 7,050 × 360,000px — 10 GB of
-         * RGBA, far past the renderer's 2 GB buffer ceiling, so it used to be
-         * rendered once at whatever DPI *did* fit (~138) and sliced afterwards.
-         * Every part therefore inherited that reduced resolution: 3,243px wide
-         * instead of 7,050. Rendering per part instead keeps each canvas about
-         * 23.5"×100" — well inside the ceiling — so the width is 7,050px at
-         * 300 DPI for a sheet of any length.
-         *
-         * The window is expressed in sheet inches and handed to the renderer,
-         * which offsets placements by its origin exactly as `cropToContent`
-         * always did. No second layout is involved: item positions, ordering,
-         * spacing and nesting are read unchanged.
-         */
         const renderWindow = (windowIn?: { topIn: number; heightIn: number }) =>
           exportGangsheetPng24({
             jobId: String(jobId),
@@ -1822,13 +1509,10 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
         const dtfRaw = jobRaw.displayId ? String(jobRaw.displayId) : `ORD-${String(jobId).slice(-4).toUpperCase()}`;
         // Strip non-alphanumeric but preserve the numeric part. E.g. "DTF-0171" → "0171", "ORD-AB12" → "AB12"
         const dtfNum = dtfRaw.replace(/^[A-Za-z]+-?/g, "").replace(/[^a-zA-Z0-9]/g, "") || dtfRaw.replace(/[^a-zA-Z0-9]/g, "");
-        // Per sheet on a multi-sheet order — both sheets used to write the same
-        // file name into the same folder, so the second export replaced the first.
         const baseFilename = `${safeName}_DTF${dtfNum}${sheetCount > 1 ? `_sheet${sheetIndex + 1}of${sheetCount}` : ""}`;
 
         const exportDir = path.join(process.cwd(), "uploads", "exports", "printers", String(printerId), String(jobId));
         await fs.promises.mkdir(exportDir, { recursive: true });
-
 
         let finalFilePath: string;
         let finalFileName: string;
@@ -1852,16 +1536,6 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
           const zipArchive = archiver("zip", { zlib: { level: 6 } });
           zipArchive.pipe(zipOutput);
 
-          /**
-           * Each part is its own full-resolution render of its own band.
-           *
-           * Previously the whole sheet was rendered once and `sharp.extract`
-           * carved the parts out of it, which is why every part inherited the
-           * downscaled DPI the giant buffer had forced. The band boundaries are
-           * the same `cuts` either way — back-to-back, so the parts still tile
-           * the sheet exactly with nothing repeated and nothing dropped — and
-           * part 1 is already rendered above.
-           */
           for (let i = 0; i < numParts; i++) {
             const heightIn = cuts[i].endIn - cuts[i].startIn;
             if (!(heightIn > 0)) continue;
@@ -1949,216 +1623,8 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
   }
 };
 
-export const createJobShippingLabel = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { carrierId, serviceCode } = req.body;
-    const printerId = req.user?.id;
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    if (!isShipStationConfigured()) {
-      const error = new Error("ShipStation is not configured on this server") as CustomError;
-      error.statusCode = 503;
-      throw error;
-    }
-
-    const addr = (job as any).shippingAddress;
-    if (!addr?.street || !addr?.city || !addr?.state || !addr?.postalCode) {
-      const error = new Error("Incomplete shipping address — cannot generate label") as CustomError;
-      error.statusCode = 422;
-      throw error;
-    }
-
-    // Clear idempotency lock so this manual trigger works even if a previous attempt failed.
-    if ((job as any).shipStationTriggeredAt) {
-      await Order.updateOne({ _id: job._id }, { $set: { shipStationTriggeredAt: null } });
-    }
-
-    const displayId = String((job as any).displayId ?? String(job._id).slice(-6).toUpperCase());
-
-    const items = ((job as any).items ?? []).map((it: any) => ({
-      name: String(it.name ?? it.type ?? "Print Item"),
-      quantity: Number(it.quantity ?? 1),
-      unitPrice: Number(it.unitPrice ?? 0),
-    }));
-
-    // Use the printer's business address as the ship-from address.
-    const printer = await User.findById(printerId)
-      .select("name companyName phone businessAddress shipStationWarehouseId")
-      .lean();
-    const bAddr = (printer as any)?.businessAddress;
-    const shipFrom = bAddr?.street
-      ? {
-          name: String((printer as any).companyName || (printer as any).name || "Print Partner"),
-          street1: String(bAddr.street),
-          city: String(bAddr.city || ""),
-          state: String(bAddr.state || ""),
-          postalCode: String(bAddr.postalCode || ""),
-          country: String(bAddr.country || "US"),
-          phone: String((printer as any).phone || ""),
-        }
-      : undefined;
-
-    const { shipStationOrderId } = await createShipStationOrder({
-      displayId,
-      customerFirstName: (job as any).customer.firstName,
-      customerLastName: (job as any).customer.lastName,
-      customerEmail: (job as any).customer.email,
-      phone: (job as any).customer.phone,
-      street: addr.street,
-      city: addr.city,
-      state: addr.state,
-      postalCode: addr.postalCode,
-      country: addr.country ?? "US",
-      items,
-      totalAmount: Number((job as any).pricing?.total ?? 0),
-      // This partner's own warehouse when the client has created one for them;
-      // null falls back to the HQ default inside the service.
-      warehouseId: (printer as any)?.shipStationWarehouseId ?? null,
-      // The parcel recorded when the order was placed, so the label declares
-      // the same thing the rate was quoted against. Falls back to deriving it
-      // for orders that predate the field.
-      parcel: (job as any).shippingQuote?.parcel?.weightLb
-        ? {
-            weightLb: Number((job as any).shippingQuote.parcel.weightLb),
-            lengthIn: Number((job as any).shippingQuote.parcel.lengthIn),
-            widthIn: Number((job as any).shippingQuote.parcel.widthIn),
-            heightIn: Number((job as any).shippingQuote.parcel.heightIn),
-          }
-        : await (async () => {
-            // The same roll rule the quote and the invoice use, so a label
-            // printed later describes the parcel the customer actually paid for.
-            const gp = await getGlobalPricing();
-            return deriveParcel(totalBillableSqFt((job as any).items || [], gp), gp.packaging);
-          })(),
-    });
-
-    const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
-      await createShipStationLabel({ shipStationOrderId, carrierCode: carrierId, serviceCode, shipFrom });
-
-    const now = new Date();
-    const timelineEntry = {
-      status: "QUALITY_CHECK" as any,
-      time: now,
-      message: `Shipping label generated. Carrier: ${carrier}, Tracking: ${trackingNumber}. Awaiting printer confirmation.`,
-      actorRole: "PRINTER",
-      actorId: String(printerId || ""),
-      actorName: null,
-    };
-
-    await Order.updateOne(
-      { _id: job._id },
-      {
-        $set: {
-          trackingNumber,
-          carrier,
-          shipStationOrderId,
-          shipStationShipmentId,
-          shipStationLabelUrl: labelUrl,
-          shipStationTriggeredAt: now,
-          updatedAt: now,
-        },
-        $push: { statusTimeline: timelineEntry },
-      }
-    );
-
-    res.status(201).json({
-      trackingNumber,
-      labelUrl,
-      carrier,
-      shipStationOrderId,
-      shipStationShipmentId,
-      message: "Label generated — open the order to review and confirm shipment",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const reprintShippingLabel = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const printerId = req.user?.id;
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId })
-      .select("shipStationLabelUrl shipStationShipmentId status")
-      .lean();
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const labelUrl = String((job as any).shipStationLabelUrl || "");
-    if (labelUrl) {
-      return res.json({ labelUrl });
-    }
-
-    const error = new Error("No shipping label on file for this order") as CustomError;
-    error.statusCode = 404;
-    throw error;
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const updateJobTracking = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { jobId } = req.params;
-    const { carrier, trackingNumber } = req.body;
-    const printerId = req.user?.id;
-
-    if (!carrier || !trackingNumber) {
-      const error = new Error("Carrier and trackingNumber are required") as CustomError;
-      error.statusCode = 400;
-      throw error;
-    }
-
-    const job = await Order.findOne({ _id: jobId, assignedPrinter: printerId });
-
-    if (!job) {
-      const error = new Error("Job not found or not assigned to this printer") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    job.carrier = carrier;
-    job.trackingNumber = trackingNumber;
-    
-    let shippedNow = false;
-    if (!["SHIPPED", "COMPLETED"].includes(job.status)) {
-      job.status = "SHIPPED" as any;
-      shippedNow = true;
-      if (!job.statusTimeline) job.statusTimeline = [];
-      job.statusTimeline.push({ status: "SHIPPED" as any, time: new Date() });
-    }
-
-    await job.save();
-
-    // Shipping moves the job out of the active set, freeing a capacity slot.
-    if (shippedNow) syncPartnerCapacitySafe(String(printerId));
-
-    res.json({
-      // `orderId` means the canonical DTF-#### number on every other printer
-      // endpoint; this one returned the raw ObjectId under the same name.
-      orderId: (job as any).displayId ? String((job as any).displayId) : job.id,
-      trackingNumber: job.trackingNumber,
-      updatedAt: job.updatedAt.toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const listPrinterOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const slaSettings = (await getAssignmentSettings()).sla;
     const printerId = req.user?.id;
     const { status, q, limit = "30", cursor } = req.query;
 
@@ -2249,7 +1715,6 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const sla = (await getAssignmentSettings()).sla;
     const formattedOrders = pageOrders.map((order) => {
       const firstItem = (Array.isArray(order.items) ? order.items[0] : null) || ({} as any);
-      // Every sheet: this read the first sheet's size (unrounded) for the whole order.
       const sheets = sheetSummaries(order.items);
       const sheetSize =
         sheets.length > 1
@@ -2327,7 +1792,6 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
 
     const items = Array.isArray((job as any).items) ? (job as any).items : [];
     const firstItem: any = (job as any).items?.[0] || {};
-    // Every sheet on the order — the page used to describe (and print) only the first.
     const sheets = sheetSummaries(items, (v) => resolveApiFile(req, v));
     const sheetSize =
       sheets.length > 1
@@ -2409,11 +1873,6 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       createdAt: (job as any).createdAt,
       updatedAt: (job as any).updatedAt,
       assignedAt: (job as any).assignedAt ? new Date((job as any).assignedAt).toISOString() : null,
-      /*
-       * What is due next and when — accept by, then print by, then nothing —
-       * from the clock the SLA enforces. This was the accept-by deadline shown
-       * as "Due Date" for the life of the job.
-       */
       ...(() => {
         const due = stageDue(job as any, slaSettings);
         return { deadline: due ? due.dueAt.toISOString() : null, dueStage: due ? due.stage : null };
@@ -2448,15 +1907,6 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         actorId: t.actorId || null,
         actorName: t.actorName ?? null
       })),
-      /*
-       * `payment.status` used to answer "secured" for every order that was not
-       * cancelled. Nothing on the order records whether the customer's payment
-       * actually succeeded — `payment` holds a method and an unverified
-       * `paymentIntentId` and no captured flag — so "Payment secured" was a
-       * reassurance the server had no basis for. A partner is paid by the
-       * platform regardless of the customer's card, so it was never their
-       * question to begin with; only the method is reported now.
-       */
       payment: {
         method: (job as any).payment?.method || null,
       },
@@ -2617,54 +2067,9 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     const current = String((job as any).status || "").toUpperCase();
     const next = normalized;
 
-    // Status rank — higher number = further along. Transitions must never decrease rank.
-    const STATUS_RANK: Record<string, number> = {
-      PENDING: 0,
-      PROCESSING: 1,
-      PRINTING: 2,
-      QUALITY_CHECK: 3,
-      SHIPPED: 4,
-      COMPLETED: 5,
-    };
-    const currentRank = STATUS_RANK[current] ?? -1;
-    const nextRank    = STATUS_RANK[next]    ?? -1;
-
-    const canTransition = (() => {
-      if (next === current) return true;          // no-op always fine
-      if (next === "CANCELLED") return true;      // cancel is a separate semantic action
-      if (current === "COMPLETED") return false;  // terminal state
-      if (nextRank < 0 || currentRank < 0) return false; // unknown status
-      return nextRank > currentRank;              // forward-only
-    })();
-
-    if (!canTransition) {
-      const error = new Error(`Invalid status transition from ${current} to ${next}`) as CustomError;
-      error.statusCode = 409;
-      throw error;
-    }
-
-    /*
-     * Two steps a partner cannot skip to.
-     *
-     * COMPLETED means delivered, and it makes the job payable. A partner could
-     * set it from any earlier state — the job list's "Select all → Mark as
-     * Complete" did exactly that — so jobs could be paid out without being
-     * printed or shipped. Delivery is confirmed by the carrier's tracking.
-     *
-     * SHIPPED means the package has its label and is waiting for pickup. It was
-     * reachable straight from "not started".
-     */
-    if (next === "COMPLETED" && current !== "COMPLETED") {
-      const error = new Error(
-        "Jobs complete automatically when the carrier confirms delivery.",
-      ) as CustomError;
-      error.statusCode = 409;
-      throw error;
-    }
-    if (next === "SHIPPED" && current !== "SHIPPED" && (current !== "QUALITY_CHECK" || !(job as any).shipStationLabelUrl)) {
-      const error = new Error(
-        "A job can be marked shipped once its shipping label is ready.",
-      ) as CustomError;
+    const refusal = partnerTransitionError(current, next, Boolean((job as any).shipStationLabelUrl));
+    if (refusal) {
+      const error = new Error(refusal) as CustomError;
       error.statusCode = 409;
       throw error;
     }
@@ -2953,17 +2358,6 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
   }
 };
 
-/*
- * `getEarningsSummary` was removed from the printer controller.
- *
- * No client ever called `/printer/earnings/summary` — the Earnings page reads
- * `/payouts/printer/summary` for its cards and `/printer/earnings/jobs` for its
- * table. It also computed with the old customer-price `calcEarning`, so had
- * anything started calling it, it would have disagreed with both. The admin
- * controller keeps its own `getEarningsSummary`, which is live and is what
- * `earningsChartBuckets.test.ts` pins.
- */
-
 /**
  * The rows behind the earnings table, shared with the CSV export so the file a
  * partner downloads is the table they are looking at.
@@ -2980,12 +2374,6 @@ const buildEarningsRows = async (
 
     const partnerPricing = await getPartnerPayRate();
 
-    /*
-     * Which of this partner's orders are already committed to a payout, and at
-     * what stage. "Paid" used to mean nothing more than SHIPPED — so with no
-     * payouts in existence at all, every shipped job displayed as Paid to a
-     * partner who had never been paid a penny.
-     */
     const payouts = await Payout.find({
       printerId: new mongoose.Types.ObjectId(String(printerId)),
     })
@@ -3144,7 +2532,6 @@ export const exportEarningsCsv = async (req: Request, res: Response, next: NextF
   }
 };
 
-
 export const getPrinterProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const printerId = req.user?.id;
@@ -3156,11 +2543,6 @@ export const getPrinterProfile = async (req: Request, res: Response, next: NextF
       throw error;
     }
 
-    /*
-     * Cancelled and rejected orders excluded. This counted every order ever
-     * pointed at the partner, so work that was pulled back or that they turned
-     * down still inflated their "Total Jobs" — a number they are judged on.
-     */
     const totalJobs = await Order.countDocuments({
       assignedPrinter: printerId,
       status: { $nin: ["CANCELLED", "REJECTED"] },
@@ -3306,8 +2688,6 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
         state: pick(businessAddress.state, existing.state),
         postalCode: pick(businessAddress.postalCode, existing.postalCode),
         country: pick(businessAddress.country, existing.country),
-        // Any edit invalidates a previous verification — it is no longer the
-        // address that was checked.
         verified: false,
       };
       // Only carried when it actually exists; assigning undefined is the bug above.
@@ -3432,23 +2812,8 @@ export const updatePrinterProfile = async (req: Request, res: Response, next: Ne
 
     await user.save();
 
-    /*
-     * A partner moving premises changes which region they serve, and therefore
-     * which orders can be routed to them and what origin their labels declare.
-     * That used to happen silently. Admins are told, for the same reason they
-     * are told about an availability change — it alters who work can go to.
-     */
     const regionAfter = Array.isArray(user.regions) ? user.regions[0] ?? null : null;
 
-    /*
-     * Push the change to every open admin console.
-     *
-     * A partner's company name, phone, website, address and region are all
-     * shown on the admin's partner pages, and all of them are now editable by
-     * the partner. Without this an admin reading a partner's details could be
-     * looking at an address they no longer print from — the console had no way
-     * to learn the record had moved under it.
-     */
     broadcastToAllAdmins("partner.profile_updated", {
       partnerId: String(user._id),
       name: user.companyName || user.name,
@@ -3829,13 +3194,6 @@ export const updateAvailabilityStatus = async (req: Request, res: Response, next
       throw e;
     }
 
-    /*
-     * Routed through the shared service so a partner pausing themselves reaches
-     * the admin console and their own other sessions. This used to update the
-     * row and broadcast to admins who had no handler for it, and push nothing
-     * back to the partner — so a change made in one tab left every other tab
-     * showing a stale pill until refresh.
-     */
     const result = await changePartnerAvailability({
       partnerId: String(printerId),
       to: status as "open" | "paused",

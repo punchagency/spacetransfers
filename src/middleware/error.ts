@@ -84,20 +84,6 @@ export const errorHandler = (err: CustomError, req: Request, res: Response, next
     return;
   }
 
-  /*
-   * An error carrying a statusCode was raised deliberately, and its message was
-   * written to be read by whoever made the request. Anything else reached here
-   * by accident, and its message describes our internals.
-   *
-   * Those used to be echoed verbatim. A malformed cursor on the public orders
-   * feed answered with `Cast to ObjectId failed for value "…" at path "_id" for
-   * model "Order"` — handing an anonymous caller the model name and schema path.
-   * Third-party failures are worse: a Stripe or ShipStation error message can
-   * carry account identifiers, and it would have gone straight to the client.
-   *
-   * The detail still exists; it goes to the server log where it is useful and
-   * not to the response where it is a disclosure.
-   */
   if (typeof err.statusCode === "number") {
     res.status(err.statusCode).json({ message: rawMessage });
     return;

@@ -20,12 +20,6 @@ export const getRecentOrders = async (req: Request, res: Response, next: NextFun
     const parsedLimit = Math.min(parseInt(limit as string, 10) || 10, 50);
     const query: any = {};
 
-    /*
-     * Scoping. The route requires a session now, so there is no anonymous
-     * branch: this used to serve unauthenticated callers a feed of real orders —
-     * customer names, item names, totals and timing — and no client ever asked
-     * for it.
-     */
     if (!req.user) {
       const error = new Error("Authentication required") as any;
       error.statusCode = 401;

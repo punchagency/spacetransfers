@@ -142,14 +142,6 @@ export interface IOrder extends Document {
     pressSeconds?: number;
   };
   statusTimeline?: IStatusTimeline[];
-  /**
-   * Set when an order was fulfilled outside the customer's own region.
-   *
-   * Auto-assignment falls back to adjacent regions when nothing in-region is
-   * free, which keeps orders moving but means longer, costlier shipping. The
-   * fact was previously only recoverable by parsing a timeline message, so it
-   * was invisible in the admin UI and impossible to query.
-   */
   crossRegionAssignment?: {
     customerRegion: string;
     assignedRegion: string;
@@ -319,16 +311,6 @@ const orderSchema = new Schema<IOrder>(
     },
     status: {
       type: String,
-      /**
-       * REJECTED, PAUSED, PAID and "paid" were removed: nothing reachable wrote
-       * them. REJECTED and PAUSED were only ever set by `executeJobAction`,
-       * which no UI calls; PAID/"paid" were never written at all and the
-       * lower-case duplicate would have split any query that did.
-       *
-       * Declining a job is `cancelPrinterOrder`, which returns the order to
-       * PENDING and reassigns it — better than a terminal rejected state, since
-       * the order gets re-homed instead of stranded.
-       */
       enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"],
       default: "PENDING"
     },

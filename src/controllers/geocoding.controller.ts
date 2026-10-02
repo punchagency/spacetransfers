@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { geocodeAddress, isUSCountry, getGeocodingCacheStats } from "../utils/geocoding.js";
+import { geocodeAddress, isUSCountry } from "../utils/geocoding.js";
 import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 
 /**
@@ -93,12 +93,4 @@ export const validateAddress = async (req: Request, res: Response, next: NextFun
   } catch (error) {
     next(error);
   }
-};
-
-/**
- * GET /api/geocode/cache-stats
- * Returns geocoding cache stats for monitoring dashboards.
- */
-export const cacheStats = (_req: Request, res: Response) => {
-  res.json(getGeocodingCacheStats());
 };
