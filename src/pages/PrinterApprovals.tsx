@@ -34,20 +34,8 @@ interface PendingPrinter {
 export const PrinterApprovals = () => {
   const [pendingPrinters, setPendingPrinters] = useState<PendingPrinter[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  /*
-   * A failed load used to be indistinguishable from an empty queue: the catch
-   * fired a toast, the list stayed empty, and the page rendered a green tick
-   * and "All caught up!". The toast fades after a few seconds; the false
-   * reassurance stays on screen, so an admin walks away from a queue of waiting
-   * applications believing there were none.
-   */
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  /*
-   * The rejection being composed. A reason is required by the server, so this
-   * replaces the `window.confirm` that used to be the whole interaction — a
-   * yes/no box cannot collect one, and rejection is permanent.
-   */
   const [rejecting, setRejecting] = useState<PendingPrinter | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
@@ -92,8 +80,6 @@ export const PrinterApprovals = () => {
       setPendingPrinters(prev => prev.filter(p => p.id !== id));
     } catch (error: any) {
       toast.error(error.message || 'Failed to approve printer');
-      // The server rejects anything no longer Pending. That means this list is
-      // stale, so reload it rather than leaving a row that cannot be acted on.
       fetchPendingPrinters();
     } finally {
       setBusyId(null);

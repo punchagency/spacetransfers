@@ -5,14 +5,6 @@ import { apiFetch } from "../../utils/api";
 import { setAuth } from "../../utils/auth";
 import toast from "react-hot-toast";
 
-/**
- * Sign-in only.
- *
- * The admin console is the platform operator's own tool, not a product anyone
- * signs up for — admin accounts are provisioned directly against the database.
- * Self-service registration was removed rather than hidden, so there is no
- * registration path left in this app to re-enable by accident.
- */
 export const AuthForm = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");

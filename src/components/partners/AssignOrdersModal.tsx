@@ -212,9 +212,6 @@ export const AssignOrdersModal = ({
   const toggleAll = () => {
     setSelectedOrderIds((prev) => {
       const next = new Set(prev);
-      // Acts on the visible rows only, and merges rather than replaces —
-      // selecting all under a search used to discard everything chosen before
-      // it, silently.
       if (allFilteredSelected) filteredOrders.forEach((o) => next.delete(o.id));
       else filteredOrders.forEach((o) => next.add(o.id));
       return next;
@@ -278,14 +275,6 @@ export const AssignOrdersModal = ({
         toast.success(`Assigned ${assigned.length} order${assigned.length === 1 ? '' : 's'}`);
       }
 
-      /**
-       * Only the orders that actually succeeded are marked assigned.
-       *
-       * This used to update every selected row whenever *any* of them
-       * succeeded, so a partial failure made the failed orders disappear from
-       * the unassigned list while remaining unassigned in the database — the
-       * admin was shown work as done that nobody was doing.
-       */
       const assignedSet = new Set(assigned);
       setOrders((prev) =>
         prev.map((o) => (assignedSet.has(o.id) ? { ...o, assignedPartnerId: selectedPartnerId } : o)),

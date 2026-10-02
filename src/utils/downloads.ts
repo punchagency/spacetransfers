@@ -64,3 +64,14 @@ export const downloadOrderInvoice = async (
     ),
   );
 };
+
+/** Downloads the payouts list as a CSV, with the same filters as the screen. */
+export const downloadPayoutsCsv = async (status: string): Promise<void> => {
+  const token = getToken();
+  const response = await fetch(
+    `${getApiBaseUrl()}/payouts/admin/export?status=${encodeURIComponent(status)}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+  );
+  if (!response.ok) throw new Error(`Export failed (${response.status})`);
+  saveBlob(await response.blob(), `payouts-${new Date().toISOString().slice(0, 10)}.csv`);
+};

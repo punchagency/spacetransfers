@@ -95,12 +95,18 @@ export const ProfileInfo = () => {
         avatarUrl,
       });
 
-      const stored = localStorage.getItem("admin_user");
-      const parsed = stored ? JSON.parse(stored) : {};
-      localStorage.setItem(
-        "admin_user",
-        JSON.stringify({ ...parsed, name: fullName, email, avatarUrl: avatarUrl || null })
-      );
+      // The save has succeeded; refreshing the cached copy must not turn that
+      // into a reported failure if storage is blocked or holds a bad value.
+      try {
+        const stored = localStorage.getItem("admin_user");
+        const parsed = stored ? JSON.parse(stored) : {};
+        localStorage.setItem(
+          "admin_user",
+          JSON.stringify({ ...parsed, name: fullName, email, avatarUrl: avatarUrl || null })
+        );
+      } catch {
+        /* the next sign-in refreshes it */
+      }
     } catch (error: any) {
       toast.error(error.message || "Failed to update profile");
     } finally {
@@ -120,15 +126,6 @@ export const ProfileInfo = () => {
 
     setUploadingAvatar(true);
     try {
-      /**
-       * Uploaded as a file, not a base64 data URL.
-       *
-       * This previously read the image with FileReader and PATCHed the whole
-       * `data:` URL onto the profile, so the image was stored on the user
-       * document — and `authenticate` loads that document on every
-       * authenticated request. The server now resizes it, encodes WebP and
-       * puts it on Cloudinary, and only the URL is stored.
-       */
       const form = new FormData();
       form.append("file", file);
 

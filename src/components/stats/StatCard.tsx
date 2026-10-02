@@ -1,15 +1,6 @@
 import { HiArrowTrendingDown, HiArrowTrendingUp, HiMinusSmall } from "react-icons/hi2";
 import { type StatCardProps } from "../../types/dashboard";
 
-/**
- * Direction is derived from the number, not from the formatted string.
- *
- * This previously did `trend.trim().startsWith("-")` and treated everything
- * else as growth — so a flat period would have rendered a green upward arrow.
- * It never actually showed one only because `0` is falsy and the caller
- * suppressed the whole element, which made "unchanged" indistinguishable from
- * "no data".
- */
 export const StatCard = ({ title, value, trendPct, trendHint, subtitle }: StatCardProps) => {
   const hasTrend = typeof trendPct === "number";
   const direction = !hasTrend ? "none" : trendPct > 0 ? "up" : trendPct < 0 ? "down" : "flat";

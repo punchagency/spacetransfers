@@ -102,11 +102,17 @@ describe("apiFetch — 403 is not a session failure", () => {
 });
 
 describe("apiFetch — unreachable server", () => {
-  it("says the backend is unreachable rather than surfacing a raw fetch error", async () => {
+  it("says the connection failed, in words for the person using the app", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
 
     await expect(apiFetch("/admin/dashboard/stats")).rejects.toThrow(
-      /API server is not reachable/,
+      /Can't connect to Space Transfers right now/,
     );
+  });
+
+  it("passes a deliberate cancel through untouched", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("aborted", "AbortError")));
+
+    await expect(apiFetch("/admin/dashboard/stats")).rejects.toMatchObject({ name: "AbortError" });
   });
 });

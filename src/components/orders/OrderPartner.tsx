@@ -43,7 +43,6 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
     const isUrgent = priority === 'URGENT';
     const rushFee = order.financials?.rushFee ?? null;
 
-
     const partner = order.assignedPartner;
     const region = order.regionInfo;
     const currency = order.financials?.currency || 'USD';
@@ -64,16 +63,6 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
                 )}
             </div>
 
-            {/*
-              Read-only. Priority is fixed by the customer's shipping choice at
-              checkout and holds for the order's whole life.
-
-              This used to be a NORMAL/URGENT toggle. It changed only the
-              partner's side, so flipping up paid a rush nobody had been
-              charged for, and flipping down kept a rush the customer had paid
-              and would no longer receive — a refund owed with no record of it.
-              Both were invisible, and flipping down read as *higher* margin.
-            */}
             <div className="flex items-center justify-between gap-3 mb-6 pb-6 border-b border-gray-100">
                 <div>
                     <p className="text-sm text-gray-600">Priority</p>

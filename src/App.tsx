@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { ErrorBoundary, PageBoundary } from './components/common/ErrorBoundary';
 import AuthPage from './pages/AuthPage';
 import { Dashboard } from './pages/Dashboard';
 import { Orders } from './pages/Orders';
@@ -7,6 +8,7 @@ import { FulfilmentPartners } from './pages/FulfilmentPartners';
 import { PrinterApprovals } from './pages/PrinterApprovals';
 import { PartnerDetails } from './pages/PartnerDetails';
 import { Earnings } from './pages/Earnings';
+import { Payouts } from './pages/Payouts';
 import { Profile } from './pages/Profile';
 import { Settings } from './pages/Settings';
 import { Toaster } from 'react-hot-toast';
@@ -27,7 +29,9 @@ function AuthenticatedShell() {
     return (
         <NotificationsStoreProvider>
             <OrdersStoreProvider>
-                <Outlet />
+                <PageBoundary>
+                    <Outlet />
+                </PageBoundary>
             </OrdersStoreProvider>
         </NotificationsStoreProvider>
     );
@@ -37,6 +41,7 @@ function App() {
     return (
         <BrowserRouter>
             <Toaster position="top-right" />
+            <ErrorBoundary fullPage>
             <Routes>
                 {/* Public — a signed-in admin is bounced to the dashboard. */}
                 <Route element={<PublicOnlyRoute />}>
@@ -53,6 +58,7 @@ function App() {
                         <Route path="/printer-approvals" element={<PrinterApprovals />} />
                         <Route path="/dashboard/fulfilment-partners/:id" element={<PartnerDetails />} />
                         <Route path="/earnings" element={<Earnings />} />
+                        <Route path="/payouts" element={<Payouts />} />
                         <Route path="/profile" element={<Profile />} />
                         <Route path="/settings" element={<Settings />} />
                     </Route>
@@ -63,6 +69,7 @@ function App() {
                     admin out. */}
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
+            </ErrorBoundary>
         </BrowserRouter>
     );
 }

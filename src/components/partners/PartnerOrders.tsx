@@ -75,11 +75,6 @@ export const PartnerOrders = ({
                             onChange={(e) => setStatusFilter(e.target.value)}
                             className="w-full pl-4 pr-10 py-2 border border-gray-100 bg-gray-50/50 rounded-lg text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:bg-white focus:border-blue-500 transition-all"
                         >
-                            {/* Matches the console's shared vocabulary. This
-                                offered "Pending" and "In Progress" — the old
-                                names — and had no option at all for
-                                Ready to Ship, so those orders were unreachable
-                                from this tab. */}
                             <option>All Status</option>
                             <option>Unassigned</option>
                             <option>Assigned</option>

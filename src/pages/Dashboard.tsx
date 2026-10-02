@@ -98,8 +98,6 @@ export const Dashboard = () => {
         ]);
       } catch (error: any) {
         if (cancelled) return;
-        // Previously console.error only, so a failed load left the cards blank
-        // with no explanation.
         toast.error(error?.message || "Could not load dashboard stats");
       } finally {
         if (!cancelled) setLoading(false);

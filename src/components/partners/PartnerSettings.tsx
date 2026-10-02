@@ -67,12 +67,6 @@ export const PartnerSettings = ({
                 method: 'PATCH',
                 body: JSON.stringify({ status: nextStatus, reason }),
             });
-            /*
-             * Suspension stops all work reaching them and locks them out, so
-             * whether the message arrived is part of the outcome. This used to
-             * report a flat "Partner status updated" for a change the partner
-             * was never told about at all.
-             */
             if (res?.notified === false) {
                 toast.error(
                     `Status updated, but the partner could not be emailed (${res.notifyError}).`,
@@ -166,14 +160,6 @@ export const PartnerSettings = ({
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/*
-                  Titled "Shipping" rather than "Production Settings": the two
-                  production fields were removed as duplicates of the global
-                  limit, Auto-Accept has now gone the same way, and what is left
-                  is one ShipStation field. A card promising production settings
-                  and holding a warehouse id sends people looking for controls
-                  that are not there.
-                */}
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 space-y-8">
                     <h2 className="text-[16px] font-bold text-gray-900">Shipping</h2>
 
@@ -203,16 +189,6 @@ export const PartnerSettings = ({
                             </p>
                         </div>
 
-                        {/*
-                          Auto-Accept was shown here, read-only, after it was
-                          found overwriting the partner's own choice on every
-                          save. It is gone from both portals now: it did the
-                          same job as Pause — remove the partner from automatic
-                          assignment — without telling anyone, recording a
-                          reason, or syncing. Pause, on the Overview tab, is the
-                          one switch. Every partner is stored `true`, so nothing
-                          changed about who receives work.
-                        */}
                     </div>
                 </div>
 

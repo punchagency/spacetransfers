@@ -9,6 +9,12 @@ interface OrderFinancialsProps {
     order: {
         financials?: {
             customerPaid: number;
+            /** Collected for the state; not the business's money. */
+            tax?: number;
+            shippingCharged?: number;
+            /** What shipping costs the business, and where that figure came from. */
+            shippingCost?: number;
+            shippingCostSource?: 'label' | 'quote' | 'at-cost';
             partnerCost: number | null;
             processingFees?: number | null;
             adminProfit: number | null;
@@ -30,21 +36,21 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
     const currency = f?.currency || order.pricing?.currency || 'USD';
     const customerPaid = f?.customerPaid ?? order.pricing?.total ?? 0;
 
-    /**
-     * `null` means the server could not derive a partner cost — an order whose
-     * items carry no sheet dimensions has an unknown cost, not a zero one.
-     *
-     * This used to fall back to `customerPaid * 0.6`, inventing a 60% cost out
-     * of nothing and deriving Admin Profit from it, so the panel could show a
-     * confident margin built entirely on a guess.
-     */
     const partnerCost = f?.partnerCost ?? null;
     const adminProfit = f?.adminProfit ?? null;
 
-    // Never computed anywhere. Showing $0.00 read as "we checked, there are
-    // none" — but Stripe is not configured, so no fee has been calculated at
-    // all. Once it is, this must be subtracted before Admin Profit is credible.
+    // Stripe's actual fee for this payment. Null means it was never recorded
+    // (not "no fee"), so profit is shown before it and says so.
     const processingFees = f?.processingFees ?? null;
+    const tax = f?.tax ?? null;
+    const shippingCost = f?.shippingCost ?? null;
+    const shippingNote =
+        f?.shippingCostSource === 'label'
+            ? 'What the label cost'
+            : f?.shippingCostSource === 'quote'
+              ? "The carrier's quote at checkout; replaced by the label's cost once one is bought"
+              : 'No carrier cost known yet, so shipping is counted as passed through at what the customer paid';
+    const minus = (n: number | null) => (n === null ? '—' : `−${fmt(n)}`);
 
     const fmt = (n: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(n);
     const money = (n: number | null) => (n === null ? '—' : fmt(n));
@@ -82,26 +88,43 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                         Internal — not shown to the customer
                     </p>
                 </div>
+                {tax !== null && (
+                    <div className="flex justify-between items-center text-sm">
+                        <span className="text-gray-600">Tax <span className="text-gray-400">(for the state)</span></span>
+                        <span className="font-medium text-gray-900">{minus(tax)}</span>
+                    </div>
+                )}
+                {shippingCost !== null && (
+                    <div className="flex justify-between items-center text-sm">
+                        <span className="text-gray-600 cursor-help" title={shippingNote}>
+                            Shipping{' '}
+                            <span className="text-gray-400">
+                                ({f?.shippingCostSource === 'label' ? 'label' : f?.shippingCostSource === 'quote' ? 'quoted' : 'at cost'})
+                            </span>
+                        </span>
+                        <span className="font-medium text-gray-900">{minus(shippingCost)}</span>
+                    </div>
+                )}
                 <div className="flex justify-between items-center text-sm">
                     <span className="text-gray-600">Partner Cost</span>
                     <span
                         className={`font-medium ${partnerCost === null ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
                         title={partnerCost === null ? f?.unavailableReason : undefined}
                     >
-                        {money(partnerCost)}
+                        {minus(partnerCost)}
                     </span>
                 </div>
                 <div className="flex justify-between items-center text-sm">
-                    <span className="text-gray-600">Processing Fees</span>
+                    <span className="text-gray-600">Card Processing Fee</span>
                     <span
                         className={`font-medium ${processingFees === null ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
                         title={
                             processingFees === null
-                                ? 'Not calculated. Card processing is not configured yet, so no fee has been worked out for this order.'
+                                ? "Stripe's fee for this payment isn't recorded, so it isn't taken off the profit below."
                                 : undefined
                         }
                     >
-                        {money(processingFees)}
+                        {processingFees === null ? 'Not recorded' : minus(processingFees)}
                     </span>
                 </div>
                 <div className="flex justify-between items-center text-sm pt-4 border-t border-gray-100">
@@ -130,7 +153,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                 </div>
                 {processingFees === null && adminProfit !== null && (
                     <p className="text-xs text-gray-400 pt-1">
-                        Before card processing fees, which are not calculated yet.
+                        Before the card processing fee, which isn't recorded for this order.
                     </p>
                 )}
             </div>

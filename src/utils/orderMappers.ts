@@ -42,7 +42,11 @@ export const mapAdminOrderToRow = (o: any): OrderRow => {
     profit:
       o.profits === null || o.profits === undefined
         ? "—"
-        : `$${Number(o.profits).toFixed(2)}`,
+        : Number(o.profits) < 0
+          // A loss reads "-$1.23", not "$-1.23". Profit is after tax, shipping,
+          // partner cost and card fees, so a small order can come out below zero.
+          ? `-$${Math.abs(Number(o.profits)).toFixed(2)}`
+          : `$${Number(o.profits).toFixed(2)}`,
     profitRealized: Boolean(o.profitsRealized),
     // Already on the wire from listOrders and rendered nowhere: an admin could
     // add 10% to a payout and then never see which orders carried it.

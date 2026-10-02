@@ -8,25 +8,6 @@ import { apiFetch } from "../utils/api";
 import toast from "react-hot-toast";
 import type { StatCardItem } from "../types/dashboard";
 
-/**
- * Earnings.
- *
- * The page answers four questions: how much came in, how much went out to
- * partners, what is left, and how much of that has actually been earned. Then it
- * shows the trend and where the money came from.
- *
- * The est./actual split is the load-bearing idea, and it follows the dashboard's
- * convention: a figure covering orders that have not shipped is a forecast and
- * says so, both in its label and in a subtitle naming what is still open. Only
- * "Earned so far" counts orders that have actually shipped.
- *
- * It previously led with a product-profitability table grouped by item name.
- * Every item in this business is a gang sheet, so that table was permanently one
- * row, with a product-name search box and a "High Margin / Low Margin" control
- * labelled "All Statuses" sitting above it. None of it told an admin anything
- * the cards did not, so it is gone rather than fixed.
- */
-
 const RANGES = [
   { key: "7d", label: "Last 7 days" },
   { key: "30d", label: "Last 30 days" },
@@ -39,6 +20,8 @@ type Summary = {
   kpis: {
     revenue: Kpi;
     partnerCost: Kpi;
+    /** What revenue carries that isn't the business's to keep. */
+    deductions?: { tax: number; shipping: number; cardFees: number; ordersWithoutFee: number };
     margin: Kpi & { pct: number };
     earned: Kpi & { orderCount: number };
   };
@@ -144,8 +127,8 @@ export const Earnings = () => {
           trendPct: data.kpis.margin.comparable ? data.kpis.margin.trendPct : null,
           trendHint: hint(data.kpis.margin),
           subtitle: isForecast
-            ? `${data.kpis.margin.pct}% of revenue · ${openCount} order${openCount === 1 ? "" : "s"} not yet shipped`
-            : `${data.kpis.margin.pct}% of revenue · all orders shipped`,
+            ? `${data.kpis.margin.pct}% of revenue, after tax, shipping, fees and partners · ${openCount} not yet shipped`
+            : `${data.kpis.margin.pct}% of revenue, after tax, shipping, fees and partners`,
         },
         {
           /*
@@ -208,6 +191,22 @@ export const Earnings = () => {
         </div>
       ) : (
         <StatsGrid cards={statsCards} />
+      )}
+
+      {!loadError && data?.kpis.deductions && (
+        <p className="text-sm text-gray-500 -mt-2">
+          Margin is revenue less tax <span className="text-gray-400">({currency(data.kpis.deductions.tax)}, for the state)</span>,
+          shipping <span className="text-gray-400">({currency(data.kpis.deductions.shipping)})</span>, card fees{" "}
+          <span className="text-gray-400">({currency(data.kpis.deductions.cardFees)})</span> and partner cost.
+          {data.kpis.deductions.ordersWithoutFee > 0 && (
+            <>
+              {" "}
+              {data.kpis.deductions.ordersWithoutFee} card order
+              {data.kpis.deductions.ordersWithoutFee === 1 ? " has" : "s have"} no recorded fee yet, so{" "}
+              {data.kpis.deductions.ordersWithoutFee === 1 ? "its fee isn't" : "their fees aren't"} included.
+            </>
+          )}
+        </p>
       )}
 
       {!loadError && (data?.uncostableOrders ?? 0) > 0 && (
