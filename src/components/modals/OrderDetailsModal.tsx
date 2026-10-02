@@ -249,7 +249,9 @@ export default function OrderDetailsModal({
                 </>
               ) : (
                 <p className="text-gray-500 mt-1">
-                  {order.status === "Cancelled" ? "This order was cancelled." : "Tracking appears here once it ships."}
+                  {order.status === "Cancelled"
+                    ? order.refundNote || "This order was cancelled."
+                    : "Tracking appears here once it ships."}
                 </p>
               )}
             </div>
