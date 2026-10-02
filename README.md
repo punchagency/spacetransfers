@@ -7,7 +7,7 @@ It talks to the API in `space-transfer-server`. Customers use `space-transfers`,
 ## What an admin can do
 
 - **Home.** Revenue, order counts and recent orders for a chosen period.
-- **Orders.** Every order with its region, partner, status, amount and profit. An order's page shows the customer, each sheet's contents and preview, the timeline, the assigned partner and the financials, and downloads the customer's invoice.
+- **Orders.** Every order with its region, partner, status, amount and profit. An order's page shows the customer, each sheet's contents and preview, the timeline, the assigned partner and the financials, and downloads the customer's invoice. Until an order ships it can be cancelled from its page, which refunds the customer in full.
 - **Fulfilment Partners.** The partner list, each partner's details and performance, and manual order assignment.
 - **Approvals.** Approve or reject partners who signed up in the printer portal.
 - **Earnings.** Revenue, partner cost, margin and what has been earned, with revenue by region.

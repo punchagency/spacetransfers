@@ -9,6 +9,9 @@ interface OrderFinancialsProps {
     order: {
         financials?: {
             customerPaid: number;
+            /** True once the order is cancelled; `refunded` is what went back to the customer. */
+            cancelled?: boolean;
+            refunded?: number;
             /** Collected for the state; not the business's money. */
             tax?: number;
             shippingCharged?: number;
@@ -42,8 +45,10 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
     // Stripe's actual fee for this payment. Null means it was never recorded
     // (not "no fee"), so profit is shown before it and says so.
     const processingFees = f?.processingFees ?? null;
-    const tax = f?.tax ?? null;
-    const shippingCost = f?.shippingCost ?? null;
+    // A cancelled order has no tax, shipping or partner cost to count: only the refund and the fee.
+    const cancelled = Boolean(f?.cancelled);
+    const tax = cancelled ? null : f?.tax ?? null;
+    const shippingCost = cancelled ? null : f?.shippingCost ?? null;
     const shippingNote =
         f?.shippingCostSource === 'label'
             ? 'What the label cost'
@@ -55,7 +60,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
     const fmt = (n: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(n);
     const money = (n: number | null) => (n === null ? '—' : fmt(n));
 
-    const isEstimate = f?.profitRealized === false && adminProfit !== null;
+    const isEstimate = !f?.cancelled && f?.profitRealized === false && adminProfit !== null;
 
     const handleInvoice = async () => {
         if (!orderId) return;
@@ -105,6 +110,13 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                         <span className="font-medium text-gray-900">{minus(shippingCost)}</span>
                     </div>
                 )}
+                {cancelled && (
+                    <div className="flex justify-between items-center text-sm">
+                        <span className="text-gray-600">Refunded to customer</span>
+                        <span className="font-medium text-gray-900">{minus(f?.refunded ?? 0)}</span>
+                    </div>
+                )}
+                {!cancelled && (
                 <div className="flex justify-between items-center text-sm">
                     <span className="text-gray-600">Partner Cost</span>
                     <span
@@ -114,6 +126,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                         {minus(partnerCost)}
                     </span>
                 </div>
+                )}
                 <div className="flex justify-between items-center text-sm">
                     <span className="text-gray-600">Card Processing Fee</span>
                     <span
