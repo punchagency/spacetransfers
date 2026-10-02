@@ -4,6 +4,7 @@ import { BsBoxSeam } from "react-icons/bs";
 import { apiFetch } from "../../lib/utils/api";
 import { setToken } from "../../lib/utils/auth";
 import toast from "react-hot-toast";
+import ConfirmModal from "./ConfirmModal";
 
 interface AccountSettingsModalProps {
   isOpen: boolean;
@@ -96,6 +97,24 @@ export default function AccountSettingsModal({
       setSubAccountsError(error?.message || "Failed to switch account");
     } finally {
       setSwitchingAccountId(null);
+    }
+  };
+
+  // Only the main account can remove a sub-account, and never the one in use.
+  const [removing, setRemoving] = useState<any | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const handleRemoveAccount = async () => {
+    if (!removing) return;
+    setRemoveBusy(true);
+    try {
+      await apiFetch(`/auth/sub-accounts/${removing.id}`, { method: "DELETE" });
+      toast.success(`Removed ${removing.name || "the account"}`);
+      setRemoving(null);
+      await fetchSubAccounts();
+    } catch (error: any) {
+      toast.error(error?.message || "The account couldn't be removed");
+    } finally {
+      setRemoveBusy(false);
     }
   };
 
@@ -275,17 +294,33 @@ export default function AccountSettingsModal({
                         <p className="text-xs text-gray-500">{account.email}</p>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      disabled={Boolean(isSwitching)}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSwitchAccount(account.id);
-                      }}
-                      className="text-sm font-medium text-blue-600 hover:underline disabled:opacity-50"
-                    >
-                      {isSwitching ? "Switching..." : isCurrent ? "Current" : "Switch"}
-                    </button>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <button
+                        type="button"
+                        disabled={Boolean(isSwitching)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchAccount(account.id);
+                        }}
+                        className="text-sm font-medium text-blue-600 hover:underline disabled:opacity-50"
+                      >
+                        {isSwitching ? "Switching..." : isCurrent ? "Current" : "Switch"}
+                      </button>
+                      {/* The list leaves out whoever is signed in, so no main entry means the main account is viewing. */}
+                      {!linkedMainAccount && !isCurrent && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRemoving(account);
+                          }}
+                          aria-label={`Remove ${account.name || "account"}`}
+                          className="text-sm font-medium text-red-600 hover:underline"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -336,6 +371,17 @@ export default function AccountSettingsModal({
           </button>
         </div>
       </div>
+      <ConfirmModal
+        isOpen={removing !== null}
+        title={`Remove ${removing?.name || "this account"}?`}
+        message="Its sign-in and saved gang sheets are deleted for good. Past orders stay on record."
+        confirmLabel={removeBusy ? "Removing…" : "Remove account"}
+        cancelLabel="Keep account"
+        danger
+        isBusy={removeBusy}
+        onConfirm={() => void handleRemoveAccount()}
+        onCancel={() => setRemoving(null)}
+      />
     </div>
   );
 }

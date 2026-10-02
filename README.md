@@ -12,6 +12,7 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 - **Edit with AI.** Board commands such as "12 copies" or "make it 4 inches wide" run in the browser. Image edits go to the API.
 - **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery.
 - **Check out.** The cart holds one line per saved sheet. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
+- **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
 - **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order.
 
 ## Stack
@@ -47,7 +48,7 @@ Every `VITE_*` value is compiled into the public bundle. Never put a secret in o
 
 ## Layout
 
-```
+```ts
 src/
   components/
     Editor.tsx       The page: board, cart, saving, sign-in, order history

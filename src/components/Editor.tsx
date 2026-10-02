@@ -164,11 +164,8 @@ export default function Editor() {
       setArtboardData({ items: [], counter: Date.now() });
       setLoadedDesignData({ items: [], counter: Date.now() });
       setCurrentLoadedDesignId(null);
-      setCurrentLoadedDesignString(null);
       setCurrentLoadedDesignTitle(null);
       setSavedDesigns([]);
-      setLastAction(null);
-      setDeletedItems({});
       setCartWarning(null);
       setShowLoadModal(false);
       setShowSaveModal(false);
@@ -420,16 +417,9 @@ export default function Editor() {
     }>
   >([]);
   const [artboardData, setArtboardData] = useState<any>(null);
-  const [lastAction, setLastAction] = useState<{
-    type: string;
-    id?: number;
-    payload?: any;
-  } | null>(null);
-  const [deletedItems, setDeletedItems] = useState<Record<number, any>>({});
   const [loadedDesignData, setLoadedDesignData] = useState<any>(null);
   const [cartWarning, setCartWarning] = useState<string | null>(null);
   const [currentLoadedDesignId, setCurrentLoadedDesignId] = useState<string | null>(null);
-  const [currentLoadedDesignString, setCurrentLoadedDesignString] = useState<string | null>(null);
   const [currentLoadedDesignTitle, setCurrentLoadedDesignTitle] = useState<string | null>(null);
   const [draftDesignTitle, setDraftDesignTitle] = useState<string | null>(null);
   const prevUserIdRef = useRef<string | null>(null);
@@ -519,10 +509,7 @@ export default function Editor() {
     setArtboardData({ items: [], counter: Date.now() });
     setLoadedDesignData({ items: [], counter: Date.now() });
     setCurrentLoadedDesignId(null);
-    setCurrentLoadedDesignString(null);
     setCurrentLoadedDesignTitle(null);
-    setLastAction(null);
-    setDeletedItems({});
     setBaselineSnapshot(getGangsheetSnapshot([]));
     // A new sheet starts from the defaults. View settings are the customer's
     // and carry over; spacing, margin and auto-nest belong to the sheet.
@@ -678,7 +665,6 @@ export default function Editor() {
       }
       fetchDesigns();
       setBaselineSnapshot(snapshot);
-      setCurrentLoadedDesignString(snapshot);
       setSaveState("saved");
       setSaveError(null);
       return { ok: true, designId: savedId, title: savedTitle };
@@ -823,11 +809,8 @@ export default function Editor() {
       setArtboardData({ items: mappedItems, counter: Date.now() });
       // If this sheet is in the cart, the board is now its cart line (see `cartLine`).
       setCurrentLoadedDesignId(id);
-      setCurrentLoadedDesignString(nextSnapshot);
       setBaselineSnapshot(nextSnapshot);
       setCurrentLoadedDesignTitle(res?.title || null);
-      setLastAction(null);
-      setDeletedItems({});
       toast.success("Gangsheet loaded", { id: toastId });
 
       void (async () => {
@@ -1884,21 +1867,6 @@ export default function Editor() {
         <Artboard
           onHeaderInfoChange={setHeaderInfo}
           highlightLowDpi={isDpiHighlighting}
-          onActionPerformed={(action) => {
-            setTimeout(() => {
-              setLastAction(action);
-              if (
-                action?.type === "delete" &&
-                action.id != null &&
-                action.payload?.item
-              ) {
-                setDeletedItems((prev) => ({
-                  ...prev,
-                  [action.id!]: action.payload.item,
-                }));
-              }
-            }, 0);
-          }}
           showRulers={settings.showRulers && !isMobile}
           showGrid={settings.showGrid}
           snapToGrid={settings.snapToGrid}

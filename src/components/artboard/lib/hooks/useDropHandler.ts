@@ -484,8 +484,6 @@ export const useDropHandler = (
       return baseItem;
     };
 
-    let created: ArtboardItem[] = [];
-
     if (dropped.length > 0) {
       const token = (batchTokenRef.current += 1);
       const uploadUiStart = Date.now();

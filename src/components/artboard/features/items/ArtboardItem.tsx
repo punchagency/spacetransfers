@@ -149,7 +149,6 @@ function ArtboardItem({
   const [isRemovingBg, setIsRemovingBg] = useState(false);
   const [bgProgress, setBgProgress] = useState<{ phase: string; pct: number } | null>(null);
   const [naturalWidthPx, setNaturalWidthPx] = useState<number | null>(null);
-  const [naturalHeightPx, setNaturalHeightPx] = useState<number | null>(null);
   const [isDpiEnhancing, setIsDpiEnhancing] = useState(false);
   const [dpiProgress, setDpiProgress] = useState<string | null>(null);
   const [dpiEnhanced, setDpiEnhanced] = useState(false);
@@ -182,7 +181,6 @@ function ArtboardItem({
   useEffect(() => {
     setBgStatus('detecting');
     setNaturalWidthPx(null);
-    setNaturalHeightPx(null);
     setDpiEnhanced(false);
     setBgJustRemoved(false);
     let cancelled = false;
@@ -190,7 +188,6 @@ function ArtboardItem({
       if (cancelled) return;
       if (!info) { setBgStatus('has-bg'); return; }
       setNaturalWidthPx(info.widthPx);
-      setNaturalHeightPx(info.heightPx);
       setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
       // A piece reopened from a saved sheet, a restored cart or a reorder has
       // no pixel count (it isn't saved), so the DPI check counted it as
