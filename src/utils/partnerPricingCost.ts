@@ -24,18 +24,6 @@ export const computePartnerCostBreakdown = ({
   const rushPct = typeof surchargesCfg.rushPct === "number" ? surchargesCfg.rushPct : 0;
   const specialInkFlat = typeof surchargesCfg.specialInkFlat === "number" ? surchargesCfg.specialInkFlat : 0;
 
-  /**
-   * Exact area, unrounded.
-   *
-   * This used to be rounded to two decimals before anything was priced, which
-   * quietly changed the amount paid: a 23.5in x 23.5in sheet is 3.835069 sq ft,
-   * became 3.84, and at $2.50/sq ft was billed $9.60 instead of $9.59. Money is
-   * now rounded once, at the end — area is not a currency and rounding it early
-   * moves the payout in whichever direction the third decimal happens to fall.
-   *
-   * Tier selection uses the exact figure too, so a sheet just under a boundary
-   * is not rounded up into a different rate.
-   */
   const exactSqFt =
     (Array.isArray(items) ? items : []).reduce((sum: number, it: any) => {
       const w =
@@ -57,7 +45,6 @@ export const computePartnerCostBreakdown = ({
       return sum + sqft * Math.max(1, qty);
     }, 0);
 
-  // Returned for display only — never used to compute money.
   const totalSqFt = roundMoney(exactSqFt);
 
   const appliedTier = tiers.find((t: any) => {

@@ -1,13 +1,13 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
-import { buildLegalAcceptance, type LegalAcceptanceInput, type LegalAcceptanceRecord } from "../config/legal.js";
-import { getRegionFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
-import { isUSCountry } from "../utils/geocoding.js";
+import { Design } from "../models/design.model.js";
+import { Order } from "../models/order.model.js";
+import { buildLegalAcceptance, type LegalAcceptanceInput } from "../config/legal.js";
+import { normalizeRegion } from "../utils/region.js";
 import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
 import { signJwt } from "../utils/jwt.js";
 import crypto from "crypto";
 import { env } from "../config/env.js";
-import nodemailer from "nodemailer";
 import { sendEmail } from "./email.service.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { OAuth2Client } from "google-auth-library";
@@ -604,6 +604,22 @@ export const deleteSubAccount = async (actorUserId: string, subAccountId: string
     throw error;
   }
 
+  // An order still being made or shipped needs its account: the customer
+  // follows it there. Finished orders stay on record after the account goes.
+  const openOrders = await Order.countDocuments({
+    user: sub._id,
+    status: { $nin: ["COMPLETED", "CANCELLED"] },
+  });
+  if (openOrders > 0) {
+    const error = new Error(
+      `This account has ${openOrders} order${openOrders === 1 ? "" : "s"} still in progress. It can be removed once ${openOrders === 1 ? "it is" : "they are"} delivered or cancelled.`,
+    ) as any;
+    error.statusCode = 409;
+    throw error;
+  }
+
+  // Its saved sheets go with it. Artwork files are kept: past orders print from them.
+  await Design.deleteMany({ user: sub._id });
   await User.deleteOne({ _id: sub._id });
 };
 
@@ -798,30 +814,10 @@ export const requestPasswordReset = async (
     return `${trim(env.appUrl)}/?resetToken=${token}&email=${encodeURIComponent(user.email)}`;
   })();
 
-  const hasSmtp =
-    Boolean(env.smtpHost) &&
-    Boolean(env.smtpPort) &&
-    Boolean(env.smtpUser) &&
-    Boolean(env.smtpPass) &&
-    Boolean(env.smtpFrom);
-
-  if (hasSmtp) {
-    try {
-      const transporter = nodemailer.createTransport({
-      host: env.smtpHost,
-      port: env.smtpPort!,
-      secure: env.smtpSecure ?? env.smtpPort === 465,
-      auth: {
-        user: env.smtpUser,
-        pass: env.smtpPass
-      }
-    });
-
-    await transporter.sendMail({
-      from: env.smtpFrom,
-      to: user.email,
-      subject: "Reset your Space Transfers password",
-      html: `
+  const sent = await sendEmail({
+    to: user.email,
+    subject: "Reset your Space Transfers password",
+    html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
           <h2 style="margin: 0 0 12px 0;">Reset your password</h2>
           <p style="margin: 0 0 12px 0;">We received a request to reset your password.</p>
@@ -834,28 +830,16 @@ export const requestPasswordReset = async (
             This link expires in 15 minutes. If you didn’t request this, you can ignore this email.
           </p>
         </div>
-      `
-      });
-    } catch (error: any) {
-      /*
-       * A delivery failure must not fail the request.
-       *
-       * The token is already saved by this point, so an SMTP error answered 500
-       * on an operation that had in fact succeeded. Worse, it answered 500 only
-       * for addresses that exist — an unknown address returns early without
-       * sending — so the status code alone told a caller which emails were
-       * registered, on an endpoint that takes an arbitrary address.
-       */
-      console.error(
-        `[PASSWORD_RESET] token issued but the email could not be sent to ${user.email}: ${error?.message}`,
-      );
-    }
+      `,
+  }).catch((error: any) => ({ sent: false, messageId: null, error: error?.message || "send failed" }));
+  if (!sent.sent) {
+    console.error(`[PASSWORD_RESET] token issued but the email could not be sent to ${user.email}: ${sent.error}`);
   }
 
   /*
    * Outside production the raw token is returned so the flow can be exercised
    * without a working mailbox — including when the send above failed, which is
-   * the state every environment is in until SendGrid is configured.
+   * the state every environment is in until Resend is configured.
    */
   if (env.nodeEnv !== "production") {
     return { resetToken: rawToken };

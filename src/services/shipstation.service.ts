@@ -1,8 +1,8 @@
 import mongoose from "mongoose";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { Order } from "../models/order.model.js";
 import { User } from "../models/user.model.js";
 import { env } from "../config/env.js";
-import { publishOrderEvent } from "./orderSyncHub.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { notifyPrinter } from "./printerNotifications.service.js";
 
@@ -39,6 +39,20 @@ function normaliseCountry(raw: string | undefined | null): string {
 
 // ── Retry utility — exported so tests can exercise it directly ────────────────
 
+/**
+ * Whether trying again could help. A 4xx is ShipStation's answer about the
+ * request or the account (402 lapsed billing, 401 bad keys, 400 bad address) —
+ * it comes back the same every time. Retrying those only delayed the fallback:
+ * with the account lapsed, every checkout quote and every charge waited ~11 s
+ * of backoff for an answer that was already final. Timeouts, network errors,
+ * 5xx, 408 and 429 are still retried.
+ */
+export const isRetryable = (err: unknown): boolean => {
+  const status = Number(/→ HTTP (\d{3})/.exec(String((err as any)?.message ?? ""))?.[1]);
+  if (!Number.isFinite(status)) return true;
+  return status >= 500 || status === 408 || status === 429;
+};
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   maxAttempts: number,
@@ -51,6 +65,7 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       lastError = err;
+      if (!isRetryable(err)) break;
       if (attempt < maxAttempts) {
         // Exponential backoff with ±200 ms jitter so concurrent retries don't collide.
         const delay = initialDelayMs * Math.pow(2, attempt - 1) + Math.random() * 200;
@@ -82,11 +97,11 @@ async function ssRequest<T>(method: string, path: string, body?: unknown): Promi
     `${env.shipStationApiKey}:${env.shipStationApiSecret}`
   ).toString("base64");
 
-  const res = await fetch(`${SS_BASE}${path}`, {
+  const res = await fetchWithTimeout(`${SS_BASE}${path}`, {
     method,
     headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  }, 30_000, "ShipStation");
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -101,10 +116,10 @@ async function ssRequest<T>(method: string, path: string, body?: unknown): Promi
 export async function ssRequestByUrl<T>(fullUrl: string): Promise<T> {
   if (!isShipStationConfigured()) throw new Error("ShipStation credentials not configured");
   const creds = Buffer.from(`${env.shipStationApiKey}:${env.shipStationApiSecret}`).toString("base64");
-  const res = await fetch(fullUrl, {
+  const res = await fetchWithTimeout(fullUrl, {
     method: "GET",
     headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/json" },
-  });
+  }, 30_000, "ShipStation");
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`ShipStation GET ${fullUrl} → HTTP ${res.status}: ${text.slice(0, 400)}`);
@@ -156,11 +171,6 @@ export const createShipStationOrder = (params: {
   country: string;
   items: Array<{ name: string; quantity: number; unitPrice: number }>;
   totalAmount: number;
-  /**
-   * The real parcel. Optional only so existing callers keep compiling; when it
-   * is absent the old fiction is used and a warning is logged, because a
-   * mis-declared parcel is billed back by the carrier after the fact.
-   */
   parcel?: { weightLb: number; lengthIn: number; widthIn: number; heightIn: number };
   /**
    * The assigned partner's own warehouse. Omitted, the HQ default is used.
@@ -243,6 +253,9 @@ interface SSCreateLabelResponse {
   /** URL-based download links — present in ShipStation REST v3 */
   labelDownload?: { pdf?: string; png?: string; href?: string; zpl?: string };
   carrierCode: string;
+  /** What the label cost, as charged to the account. */
+  shipmentCost?: number;
+  insuranceCost?: number;
 }
 
 interface SSRate {
@@ -355,6 +368,8 @@ export const createShipStationLabel = (params: {
   trackingNumber: string;
   labelUrl: string;
   carrier: string;
+  /** The label's cost (postage + insurance); null if ShipStation didn't say. */
+  labelCost: number | null;
 }> =>
   withRetry(
     async () => {
@@ -413,6 +428,9 @@ export const createShipStationLabel = (params: {
         trackingNumber: String(result.trackingNumber ?? ""),
         labelUrl,
         carrier: String(result.carrierCode ?? params.carrierCode ?? ""),
+        labelCost: Number.isFinite(Number(result.shipmentCost))
+          ? Math.round((Number(result.shipmentCost) + (Number(result.insuranceCost) || 0)) * 100) / 100
+          : null,
       };
     },
     3,
@@ -575,7 +593,7 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
     }
 
     // ── Step 3: Generate shipping label ───────────────────────────────────
-    const { shipStationShipmentId, trackingNumber, labelUrl, carrier } =
+    const { shipStationShipmentId, trackingNumber, labelUrl, carrier, labelCost } =
       await createShipStationLabel({ shipStationOrderId, shipFrom });
 
     console.log(
@@ -608,6 +626,8 @@ export const triggerShipStationWorkflow = async (orderId: string): Promise<void>
           shipStationOrderId,
           shipStationShipmentId,
           shipStationLabelUrl: finalLabelUrl,
+          // Shipping's real cost to the business, for the admin's profit figure.
+          shipStationLabelCost: labelCost,
           shipStationError: null,
           updatedAt: now,
         },

@@ -11,21 +11,6 @@ import {
   isAtCapacity,
 } from "./partnerCapacity.service.js";
 
-/**
- * The one route by which a partner's availability changes.
- *
- * Availability was previously only settable by the partner, and the two sides
- * never learned about each other: the manual endpoint broadcast
- * `partner.availability_changed` to admins, whose console had no handler for it
- * and rendered the field nowhere, and it pushed nothing back to the partner's
- * own other sessions. Only the capacity auto-pause bothered to notify anyone.
- *
- * Now both sides can set it and both sides are told, through here. Availability
- * is deliberately distinct from account status: `status` (Active / Suspended /
- * Rejected) is an account-level judgement that blocks sign-in, while this is an
- * operational "am I taking work right now" that blocks only auto-assignment.
- */
-
 export type AvailabilityStatus = "open" | "paused";
 
 export interface AvailabilityActor {

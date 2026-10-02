@@ -150,17 +150,6 @@ export interface CapacityDecision {
   capacityPaused: boolean;
 }
 
-/**
- * Pure decision for how a partner's availability should react to their current
- * load. No I/O — exported so the auto-pause / auto-recover state machine can be
- * unit-tested without a database.
- *
- * Rules:
- *  • At/over the limit while Open        → auto-pause (capacityPaused = true).
- *  • Below the limit while capacity-paused & currently Paused → auto-reopen.
- *  • Below the limit, capacity-paused, but no longer Paused   → just clear the flag.
- *  • Manual pause (capacityPaused = false) is never auto-reopened.
- */
 export const decideCapacityTransition = (input: {
   availabilityStatus: "open" | "paused";
   capacityPaused: boolean;

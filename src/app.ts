@@ -66,30 +66,6 @@ app.use(
     },
   }),
 );
-/**
- * Body limits, scoped by what each route legitimately carries.
- *
- * A single 50 MB ceiling on every route was both too permissive and not
- * actually sufficient. Too permissive because `express.json` buffers the entire
- * body in the Node heap before parsing, so a handful of concurrent large
- * requests can exhaust it — a 50 MB limit on `/orders` is a memory-exhaustion
- * vector for no benefit. Not sufficient because an order carrying embedded
- * artwork sailed past it anyway and still 413'd.
- *
- * The architectural fix is that artwork never travels in an order at all: the
- * artboard uploads canvas results as they are produced (see `materializeAsset`)
- * and every later request carries a URL. Orders are therefore geometry,
- * pricing and addresses — kilobytes — and the tight limit below is the thing
- * that keeps them that way rather than letting the old shape creep back in.
- *
- * Three tiers:
- *  - `materialize` takes one image as raw bytes. Generous, and bounded to one
- *    image per request.
- *  - The rest of `/customer/assets/*` takes one image as a `data:` URL in JSON
- *    (`trim`, `fade-check`, `upscale`, `ai-edit`). Same job, base64-inflated.
- *  - Everything else is metadata. 2 MB is ample for a sheet of several thousand
- *    placements once artwork is referenced rather than embedded.
- */
 const RAW_IMAGE_LIMIT = "64mb";
 const IMAGE_JSON_LIMIT = "25mb";
 const STANDARD_BODY_LIMIT = "2mb";
@@ -102,6 +78,11 @@ app.use(
 );
 // Prefix mount, so a route added to this family later inherits the right limit
 // instead of silently falling to the 2 MB tier.
+// Stripe signs the exact bytes it sends, so its webhook must reach the handler
+// unparsed. The route's own `express.raw` ran after the global JSON parser below
+// and found the body already consumed, so every genuine event failed signature
+// verification with a 400 — payout and Connect account updates never landed.
+app.use("/api/payouts/webhook", express.raw({ type: "application/json", limit: STANDARD_BODY_LIMIT }));
 app.use("/api/customer/assets", express.json({ limit: IMAGE_JSON_LIMIT }));
 app.use(express.json({ limit: STANDARD_BODY_LIMIT }));
 app.use(express.urlencoded({ limit: STANDARD_BODY_LIMIT, extended: true }));
@@ -139,18 +120,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // never end up in the request logs.
 const redactUrl = (url: string) => url.replace(/([?&]token=)[^&]+/gi, "$1REDACTED");
 
-/**
- * Response bodies are logged in development only.
- *
- * They used to be logged everywhere, which put working credentials into stdout:
- * a successful `/auth/login` or `/auth/register` writes its JWT, and every order
- * response writes the customer's name, email and address. On a hosted platform
- * stdout is captured and retained, so a log reader held live sessions for as
- * long as those tokens were valid.
- *
- * The status line — method, URL, status, duration — is what actually helps in
- * production, and it carries nothing sensitive.
- */
 const LOG_RESPONSE_BODIES = env.nodeEnv === "development";
 
 /**

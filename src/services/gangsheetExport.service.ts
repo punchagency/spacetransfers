@@ -170,33 +170,6 @@ export interface PlacementGeometryInput {
   flowCols?: number | null;
 }
 
-/**
- * How the artboard draws one placement, in the terms the renderer needs.
- *
- * The export used to derive this with rules of its own, and they disagreed
- * with the artboard in three ways. Measured on a real layout, 39% of the
- * printed ink landed outside the cells the customer had approved:
- *
- *   - `nestRotation`, the quarter turn auto-nest applies to fit a piece, was
- *     never stored, so a piece nested on its side printed upright, across
- *     whatever had been packed beside it;
- *   - copies were spread over as many columns as fit, while the artboard wraps
- *     them into the columns the layout engine chose (`flowCols`);
- *   - a customer's rotation arrives with width and height already swapped
- *     (`rotateSelected` swaps them so the box matches what is drawn), and the
- *     image was resized to those swapped dimensions *before* being rotated —
- *     squashed, then turned back across its own cell.
- *
- * The rules, mirroring `ArtboardItem`:
- *   - the cell is `widthIn × heightIn`, swapped once more when nested;
- *   - the image's own upright size is `widthIn × heightIn`, swapped back when
- *     the customer's rotation is an odd quarter turn;
- *   - it is drawn at that size, turned by the customer's rotation plus the nest
- *     turn, and centred in the cell, which it then fills exactly.
- *
- * Orders stored before these fields existed carry neither and fall back to the
- * old column rule, which is all the information they have.
- */
 export const resolvePlacement = (
   it: PlacementGeometryInput,
   effectiveWidthIn: number,
@@ -511,24 +484,6 @@ const MAX_BUFFER_BYTES = 2 * 1024 * 1024 * 1024;
 /** WebP cannot encode a dimension beyond this, whatever the buffer allows. */
 const MAX_WEBP_DIM = 16383;
 
-/**
- * The DPI a single canvas of this size can actually be rendered at.
- *
- * This is a *memory* limit, not a print decision, and that distinction is the
- * whole reason long sheets came out at the wrong pixel width. A 23.5"×1200"
- * roll at 300 DPI is 7,050 × 360,000px — around 10 GB of RGBA — so this
- * function correctly refuses, and the render silently dropped to ~138 DPI,
- * taking the sheet's width down to 3,243px with it.
- *
- * The answer is not to raise the ceiling but to render less at a time: a
- * 23.5"×100" band is ~846 MB and comfortably clears it at full resolution. So
- * callers producing a final export split into bands (see `renderWindowIn`) and
- * this cap then never binds. It remains as the backstop that stops an
- * unreasonable canvas from being attempted at all.
- *
- * Pure and exported so the relationship between sheet size, DPI and pixel
- * width is testable without rendering anything.
- */
 export const resolveRenderDpi = ({
   widthIn,
   heightIn,
@@ -902,9 +857,6 @@ const _doExport = async ({
     }
   }
 
-  // Free all decoded source image buffers now — we've blitted everything into the
-  // accumulator so the per-image RGBA buffers are no longer needed. Releasing them
-  // before the Sharp encode step halves peak memory on large sheets.
   preparedItems.length = 0;
   bufCache.clear();
 

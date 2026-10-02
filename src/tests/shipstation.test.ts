@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { withRetry, isDeliveredStatus } from "../services/shipstation.service.js";
+import { withRetry, isRetryable, isDeliveredStatus } from "../services/shipstation.service.js";
 import { shouldPollOrder } from "../services/trackingPoller.service.js";
 
 // ── withRetry ─────────────────────────────────────────────────────────────────
@@ -74,6 +74,32 @@ describe("withRetry", () => {
   it("resolves with undefined when the function returns void", async () => {
     const result = await withRetry(async () => {}, 2, 1, "test");
     assert.equal(result, undefined);
+  });
+
+  it("gives up at once on an answer that cannot change (402 lapsed account)", async () => {
+    let calls = 0;
+    await assert.rejects(() =>
+      withRetry(
+        async () => {
+          calls++;
+          throw new Error("ShipStation POST /shipments/getrates → HTTP 402: 402 Payment Required");
+        },
+        3,
+        1,
+        "test",
+      ),
+    );
+    assert.equal(calls, 1);
+  });
+
+  it("still retries server errors, timeouts and rate limits", () => {
+    for (const status of [500, 502, 503, 408, 429]) {
+      assert.equal(isRetryable(new Error(`ShipStation GET /x → HTTP ${status}: nope`)), true, String(status));
+    }
+    for (const status of [400, 401, 402, 403, 404]) {
+      assert.equal(isRetryable(new Error(`ShipStation GET /x → HTTP ${status}: nope`)), false, String(status));
+    }
+    assert.equal(isRetryable(new Error("ShipStation request timed out after 30000ms")), true);
   });
 });
 

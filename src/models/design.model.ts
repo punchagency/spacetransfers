@@ -25,6 +25,9 @@ export interface IDesignItem {
   locked?: boolean;
   /** Pieces sharing a group id were bundled in the editor to act as one. */
   groupId?: string;
+  nativeWidthPx?: number;
+  croppedWidthPx?: number;
+  croppedHeightPx?: number;
 }
 
 export interface IDesign extends Document {
@@ -105,7 +108,10 @@ const designItemSchema = new Schema<IDesignItem>({
   flowCols: { type: Number, min: 1 },
   pinned: { type: Boolean, default: false },
   locked: { type: Boolean, default: false },
-  groupId: { type: String }
+  groupId: { type: String },
+  nativeWidthPx: { type: Number, min: 1 },
+  croppedWidthPx: { type: Number, min: 1 },
+  croppedHeightPx: { type: Number, min: 1 },
 });
 
 const designSchema = new Schema<IDesign>(

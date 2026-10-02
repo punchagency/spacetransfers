@@ -11,14 +11,8 @@ interface Env {
   appUrl: string;
   printerAppUrl: string;
   adminAppUrl: string;
-  smtpHost?: string;
-  smtpPort?: number;
-  smtpUser?: string;
-  smtpPass?: string;
-  smtpFrom?: string;
-  smtpSecure?: boolean;
-  sendgridApiKey?: string;
-  sendgridFromEmail?: string;
+  resendApiKey?: string;
+  resendFromEmail?: string;
   googleDriveClientEmail?: string;
   googleDrivePrivateKey?: string;
   googleDriveFolderId?: string;
@@ -68,7 +62,6 @@ interface Env {
   shipStationFromPostalCode?: string;
   shipStationFromCountry?: string;
   /** Effort level for the copyright vision pass. Higher = more accurate, slower, costlier. */
-  copyrightScanEffort?: string;
   /**
    * Google Gemini — the primary (and free) generative editing tier. An AI
    * Studio key needs no card and covers ~500 image edits/day, so it is tried
@@ -105,14 +98,8 @@ export const env: Env = {
   // which is part of why CORS was left open to everything.
   adminAppUrl: cleanEnvString(process.env.ADMIN_APP_URL) || "http://localhost:5174",
 
-  smtpHost: cleanEnvString(process.env.SMTP_HOST),
-  smtpPort: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : undefined,
-  smtpUser: cleanEnvString(process.env.SMTP_USER),
-  smtpPass: cleanEnvString(process.env.SMTP_PASS),
-  smtpFrom: cleanEnvString(process.env.SMTP_FROM),
-  smtpSecure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === "true" : undefined,
-  sendgridApiKey: cleanEnvString(process.env.SENDGRID_API_KEY),
-  sendgridFromEmail: cleanEnvString(process.env.SENDGRID_FROM_EMAIL),
+  resendApiKey: cleanEnvString(process.env.RESEND_API_KEY),
+  resendFromEmail: cleanEnvString(process.env.RESEND_FROM_EMAIL),
 
   googleDriveClientEmail: cleanEnvString(process.env.GOOGLE_DRIVE_CLIENT_EMAIL),
   googleDrivePrivateKey: cleanEnvString(process.env.GOOGLE_DRIVE_PRIVATE_KEY),
@@ -143,7 +130,6 @@ export const env: Env = {
   shipStationMaxPollingDays: process.env.SHIPSTATION_MAX_POLLING_DAYS
     ? Number(process.env.SHIPSTATION_MAX_POLLING_DAYS)
     : 30,
-  copyrightScanEffort: cleanEnvString(process.env.COPYRIGHT_SCAN_EFFORT),
   // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
   // shows on the key page, and copying it verbatim should just work.
   geminiApiKey:

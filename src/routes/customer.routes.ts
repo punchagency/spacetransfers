@@ -13,8 +13,6 @@ import {
   aiEditCapabilities,
   aiEditPlan,
   fadeCheckAsset,
-  updateAccount,
-  logout,
   listAssets,
   createDesign,
   listDesigns,
@@ -28,8 +26,7 @@ import {
   getCartQuote,
   getPricingConfig,
   sendGangsheetUtilizationWarning,
-  downloadInvoice,
-  getOrderTracking
+  downloadInvoice
 } from "../controllers/customer.controller.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload } from "../middleware/upload.js";
@@ -60,13 +57,10 @@ router.get("/pricing", maybeAuthenticate, getPricingConfig);
 
 router.use(authenticate, requireRoles(UserRoles.CUSTOMER));
 
-router.patch("/account", updateAccount);
-router.post("/account/logout", logout);
 router.post("/orders", createOrder);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
-router.get("/orders/:orderId/tracking", getOrderTracking);
 router.get("/cart", getCart);
 router.put("/cart", updateCart);
 router.post("/designs", createDesign);

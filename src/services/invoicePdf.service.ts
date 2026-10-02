@@ -59,6 +59,12 @@ const money = (v: unknown) => {
   return Number.isFinite(n) ? n.toFixed(2) : String(v ?? "0.00");
 };
 
+/** "$6.86", and "-$2.00" for a discount — not "$-2.00". */
+const dollars = (v: unknown) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n < 0 ? `-$${money(-n)}` : `$${money(v)}`;
+};
+
 /** Column layout for the items table, in points from the left margin. */
 const COLS = { name: 50, desc: 190, qty: 330, unit: 390, sub: 470 };
 const COL_W = { name: 135, desc: 135, qty: 55, unit: 75, sub: 85 };
@@ -130,8 +136,8 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
     doc.text(String(item.name ?? ""), COLS.name, y, { width: COL_W.name });
     doc.text(String(item.description ?? ""), COLS.desc, y, { width: COL_W.desc });
     doc.text(String(item.quantity ?? ""), COLS.qty, y, { width: COL_W.qty, align: "right" });
-    doc.text(`$${money(item.unitPrice)}`, COLS.unit, y, { width: COL_W.unit, align: "right" });
-    doc.text(`$${money(item.subtotal)}`, COLS.sub, y, { width: COL_W.sub, align: "right" });
+    doc.text(dollars(item.unitPrice), COLS.unit, y, { width: COL_W.unit, align: "right" });
+    doc.text(dollars(item.subtotal), COLS.sub, y, { width: COL_W.sub, align: "right" });
 
     y += rowH;
     doc.moveTo(COLS.name, y - 4).lineTo(555, y - 4).strokeColor(RULE).stroke();
@@ -147,7 +153,7 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
   doc.fontSize(10).font("Helvetica").fillColor(INK);
   for (const li of data.pricing?.lineItems || []) {
     doc.text(`${li.label}:`, COLS.unit - 90, y, { width: 160, align: "right" });
-    doc.text(`$${money(li.amount)}`, COLS.sub, y, { width: COL_W.sub, align: "right" });
+    doc.text(dollars(li.amount), COLS.sub, y, { width: COL_W.sub, align: "right" });
     y += 16;
   }
 
@@ -155,7 +161,7 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
   y += 10;
   doc.fontSize(12).font("Helvetica-Bold");
   doc.text("Total:", COLS.unit - 90, y, { width: 160, align: "right" });
-  doc.text(`$${money(data.pricing?.total)} ${data.pricing?.currency || "USD"}`, COLS.sub, y, {
+  doc.text(`${dollars(data.pricing?.total)} ${data.pricing?.currency || "USD"}`, COLS.sub, y, {
     width: COL_W.sub,
     align: "right",
   });

@@ -5,14 +5,9 @@ import { UserRoles } from "../models/user.model.js";
 import { 
   listOrders, 
   assignOrder, 
-  updateOrderStatus, 
-  setOrderTracking, 
   downloadOrderInvoice, 
   getOrderById, 
   getOrderGangsheetPreview,
-  getOrderTimeline, 
-  getOrderFinancials, 
-  adjustOrderFinancials, 
   listPartners, 
   getPartnerById, 
   getPartnerOrders, 
@@ -24,12 +19,8 @@ import {
   updatePartner, 
   getEarningsSummary, 
   getAdminDashboardStats, 
-  getRevenueChart, 
-  exportOrders, 
   getGlobalPricing, 
   updateGlobalPricing, 
-  getAdminNotificationSettings, 
-  updateAdminNotificationSettings, 
   getAdminSecuritySettings,
   getAdminLoginActivity,
   getAdminProfile,
@@ -44,7 +35,9 @@ import {
   approvePrinter,
   rejectPrinter,
   getPartnerAssignmentSettings,
-  updatePartnerAssignmentSettings
+  updatePartnerAssignmentSettings,
+  getAdminNotificationSettings,
+  updateAdminNotificationSettings,
 } from "../controllers/admin.controller.js";
 
 const router = express.Router();
@@ -52,12 +45,9 @@ const router = express.Router();
 router.use(authenticate, requireRoles(UserRoles.ADMIN));
 
 router.get("/dashboard/stats", getAdminDashboardStats);
-router.get("/earnings/revenue-chart", getRevenueChart);
 router.get("/pricing/global", getGlobalPricing);
 router.post("/pricing/global", updateGlobalPricing);
 router.patch("/pricing/global", updateGlobalPricing);
-router.get("/settings/notifications", getAdminNotificationSettings);
-router.patch("/settings/notifications", updateAdminNotificationSettings);
 router.get("/settings/security", getAdminSecuritySettings);
 router.get("/security/login-activity", getAdminLoginActivity);
 router.get("/settings/partner-assignment", getPartnerAssignmentSettings);
@@ -72,17 +62,11 @@ router.get("/notifications", listAdminNotifications);
 router.get("/notifications/stream", streamAdminNotifications);
 router.patch("/notifications/:id/read", setAdminNotificationRead);
 router.post("/notifications/mark-all-read", markAllAdminNotificationsRead);
-router.get("/orders/export", exportOrders);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/gangsheet/preview", getOrderGangsheetPreview);
 router.post("/orders/:orderId/assign", assignOrder);
-router.patch("/orders/:orderId/status", updateOrderStatus);
-router.patch("/orders/:orderId/tracking", setOrderTracking);
 router.get("/orders/:orderId/invoice", downloadOrderInvoice);
-router.get("/orders/:orderId/timeline", getOrderTimeline);
-router.get("/orders/:orderId/financials", getOrderFinancials);
-router.patch("/orders/:orderId/financials", adjustOrderFinancials);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 
 router.get("/partners/pending", listPendingPrinters);

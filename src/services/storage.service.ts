@@ -3,38 +3,8 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { env } from "../config/env.js";
 import sharp from "sharp";
 
-/**
- * Where a customer's artwork goes.
- *
- * R2 only. Cloudinary is gone.
- *
- * Cloudinary capped an image at 10MB, so every upload was downscaled on the way
- * in and the file that got printed was not the file the customer sent — which
- * for a transfer business is the product being quietly degraded at the door.
- * R2 has no such cap and the bytes are stored exactly as they arrived.
- *
- * There is deliberately no fallback. An unconfigured server fails loudly on the
- * first upload rather than silently storing artwork somewhere nobody intends to
- * keep it.
- *
- * The one thing Cloudinary did that plain storage does not is generate
- * thumbnails by URL transformation. Every upload therefore writes a second
- * small object beside the original, following the `-thumb200.webp` convention
- * the codebase already used for local files.
- */
-
 export type StoredObject = { url: string; publicId: string };
 
-/**
- * All five are required. A half-configured R2 is the dangerous state — it would
- * take the no-downscale path and then fail to store anything.
- *
- * The public base URL is one of them. Without it there is no address a browser
- * can load the artwork from: the account endpoint (`<account>.r2.cloudflarestorage.com`)
- * is R2's S3 API and answers only signed requests, so an upload would succeed
- * and then show as a broken image everywhere. It used to be optional, with that
- * endpoint as a fallback described as working.
- */
 export const isR2Configured = (): boolean =>
   Boolean(
     env.r2AccountId && env.r2AccessKeyId && env.r2SecretAccessKey && env.r2Bucket && env.r2PublicBaseUrl,
@@ -47,6 +17,10 @@ const r2 = (): S3Client => {
   client = new S3Client({
     // R2 is S3-compatible but single-region; "auto" is what Cloudflare expects.
     region: "auto",
+    // No limits by default: a stuck connection to storage held the upload (and
+    // the customer's progress bar) open indefinitely. 5 seconds to connect, or
+    // 2 minutes with no data moving, and it fails with an error instead.
+    requestHandler: { connectionTimeout: 5_000, requestTimeout: 120_000 },
     endpoint: `https://${env.r2AccountId}.r2.cloudflarestorage.com`,
     credentials: {
       accessKeyId: env.r2AccessKeyId!,

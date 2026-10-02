@@ -1,6 +1,5 @@
 import mongoose from "mongoose";
 import { Order } from "../models/order.model.js";
-import { User } from "../models/user.model.js";
 import { Payout } from "../models/payout.model.js";
 import { computePartnerCostBreakdown } from "../utils/partnerPricingCost.js";
 import { getPartnerPayRate } from "./pricing.service.js";

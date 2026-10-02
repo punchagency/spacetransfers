@@ -84,17 +84,24 @@ export const SLA_REASON_PREFIX = "SLA breach";
  * The breach for an order, or null if it is on time, not in a timed stage, or
  * the clock has no start.
  */
-export const evaluateSla = (
-  order: {
-    status?: string;
-    priority?: string;
-    assignedAt?: Date | string | null;
-    assignmentDeadline?: Date | string | null;
-    statusTimeline?: Array<{ status?: string; time?: Date | string }>;
-  },
+type SlaOrder = {
+  status?: string;
+  priority?: string;
+  assignedAt?: Date | string | null;
+  assignmentDeadline?: Date | string | null;
+  statusTimeline?: Array<{ status?: string; time?: Date | string }>;
+};
+
+/**
+ * The stage an order is in and when that stage is due, or null when it is not
+ * in a timed stage (unassigned, past printing, finished) or its clock has no
+ * start. Shared by the SLA sweeper and the partner's "Accept by" / "Print by",
+ * so what a partner is shown is the deadline that is actually enforced.
+ */
+export const stageDue = (
+  order: SlaOrder,
   sla: SlaSettings,
-  now: Date = new Date(),
-): SlaBreach | null => {
+): { stage: SlaStage; dueAt: Date; hoursAllowed: number } | null => {
   const status = String(order?.status || "").toUpperCase();
 
   const stage: SlaStage | null =
@@ -117,22 +124,23 @@ export const evaluateSla = (
 
   const hoursAllowed = hoursForStage(stage, order.priority, sla);
 
-  /**
-   * ACCEPT honours the deadline stored at assignment; only PRINT is derived
-   * from the current settings.
-   *
-   * Recomputing ACCEPT from live settings meant tightening the window took work
-   * away from partners who were told they had longer — and the countdown in
-   * their own app still showed the old figure, because that reads the stored
-   * value. Two sources of truth, disagreeing, with someone's job in the middle.
-   * Honouring the stored deadline makes the promise and the enforcement the
-   * same number, and a shortened window applies from the next assignment on.
-   */
   const stored = stage === "ACCEPT" && order.assignmentDeadline ? new Date(order.assignmentDeadline) : null;
   const dueAt =
     stored && !Number.isNaN(stored.getTime())
       ? stored
       : new Date(startedAt.getTime() + hoursAllowed * HOUR_MS);
+
+  return { stage, dueAt, hoursAllowed };
+};
+
+export const evaluateSla = (
+  order: SlaOrder,
+  sla: SlaSettings,
+  now: Date = new Date(),
+): SlaBreach | null => {
+  const due = stageDue(order, sla);
+  if (!due) return null;
+  const { stage, dueAt, hoursAllowed } = due;
 
   const overdueMs = now.getTime() - dueAt.getTime();
   if (overdueMs <= 0) return null;

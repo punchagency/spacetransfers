@@ -224,16 +224,6 @@ export const shipStationWebhook = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    /*
-     * Token check, and it fails closed.
-     *
-     * This used to be wrapped in `if (secret)`, so an unset
-     * SHIPSTATION_WEBHOOK_SECRET left the endpoint open to anyone: a public URL
-     * that mutates order state and tracking on request. An unset secret is a
-     * misconfiguration, and the safe reading of a misconfiguration is "reject",
-     * not "accept everything" — the same rule `SHIPSTATION_LABELS_ENABLED`
-     * follows for spending money.
-     */
     const secret = env.shipStationWebhookSecret;
     if (!secret) {
       console.error(

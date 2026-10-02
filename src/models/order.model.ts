@@ -34,6 +34,10 @@ export interface IOrderItem {
     nestRotation?: number;
     /** Columns auto-nest wrapped the copies into. */
     flowCols?: number;
+    /** Pixel size of the printed image (and of the original upload). */
+    croppedWidthPx?: number;
+    croppedHeightPx?: number;
+    nativeWidthPx?: number;
   }>;
 }
 
@@ -86,6 +90,8 @@ export interface IOrder extends Document {
     cardLast4?: string;
     cardBrand?: string;
     paymentIntentId?: string;
+    /** Stripe's fee for this payment, in the order's currency. */
+    processingFee?: number;
   };
   pricing: {
     subtotal?: number;
@@ -123,6 +129,8 @@ export interface IOrder extends Document {
   shipStationOrderId?: string;
   shipStationShipmentId?: string;
   shipStationLabelUrl?: string;
+  /** What the purchased label cost, as ShipStation charged it. */
+  shipStationLabelCost?: number;
   shipStationTriggeredAt?: Date | null;
   shipStationError?: string | null;
   priority: "NORMAL" | "URGENT";
@@ -134,14 +142,6 @@ export interface IOrder extends Document {
     pressSeconds?: number;
   };
   statusTimeline?: IStatusTimeline[];
-  /**
-   * Set when an order was fulfilled outside the customer's own region.
-   *
-   * Auto-assignment falls back to adjacent regions when nothing in-region is
-   * free, which keeps orders moving but means longer, costlier shipping. The
-   * fact was previously only recoverable by parsing a timeline message, so it
-   * was invisible in the admin UI and impossible to query.
-   */
   crossRegionAssignment?: {
     customerRegion: string;
     assignedRegion: string;
@@ -229,7 +229,11 @@ const orderItemSchema = new Schema<IOrderItem>(
           copies: { type: Number, default: 1 },
           linked: { type: Boolean, default: false },
           nestRotation: { type: Number, enum: [0, 90], default: 0 },
-          flowCols: { type: Number, min: 1 }
+          flowCols: { type: Number, min: 1 },
+          // The image's pixel size, so DPI can be worked out from the order alone.
+          croppedWidthPx: { type: Number },
+          croppedHeightPx: { type: Number },
+          nativeWidthPx: { type: Number }
         }
       ],
       default: undefined
@@ -283,7 +287,9 @@ const orderSchema = new Schema<IOrder>(
       method: { type: String, required: true, enum: ["card"] },
       cardLast4: { type: String },
       cardBrand: { type: String },
-      paymentIntentId: { type: String }
+      paymentIntentId: { type: String },
+      // Stripe's actual fee (its balance transaction), so profit is after fees.
+      processingFee: { type: Number }
     },
     pricing: {
       subtotal: { type: Number },
@@ -305,16 +311,6 @@ const orderSchema = new Schema<IOrder>(
     },
     status: {
       type: String,
-      /**
-       * REJECTED, PAUSED, PAID and "paid" were removed: nothing reachable wrote
-       * them. REJECTED and PAUSED were only ever set by `executeJobAction`,
-       * which no UI calls; PAID/"paid" were never written at all and the
-       * lower-case duplicate would have split any query that did.
-       *
-       * Declining a job is `cancelPrinterOrder`, which returns the order to
-       * PENDING and reassigns it — better than a terminal rejected state, since
-       * the order gets re-homed instead of stranded.
-       */
       enum: ["PENDING", "PROCESSING", "PRINTING", "QUALITY_CHECK", "SHIPPED", "COMPLETED", "CANCELLED"],
       default: "PENDING"
     },
@@ -377,6 +373,8 @@ const orderSchema = new Schema<IOrder>(
     shipStationOrderId: { type: String, default: null },
     shipStationShipmentId: { type: String, default: null },
     shipStationLabelUrl: { type: String, default: null },
+    // The label's real cost — shipping's actual cost to the business.
+    shipStationLabelCost: { type: Number, default: null },
     shipStationTriggeredAt: { type: Date, default: null },
     shipStationError: { type: String, default: null },
     priority: {

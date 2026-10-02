@@ -1,31 +1,26 @@
 import sharp from "sharp";
 
-/**
- * Robust auto-crop: detects transparency vs solid background, then finds the
- * tight bounding box of actual content and extracts it.
- *
- * Strategy:
- *  - Downscale to ≤1200px probe for fast pixel scanning.
- *  - If ANY probe pixel has alpha < 250 → use alpha-threshold detection.
- *  - Otherwise → sample the full border strip (outermost ~2% ring) to get the
- *    average background color, then use color-distance to find foreground.
- *  - Scale the found bounding box back to original resolution and extract.
- */
-export const smartTrimToFile = async (
-  inputPath: string,
-  outputPath: string,
-): Promise<void> => {
-  const meta = await sharp(inputPath, { limitInputPixels: false }).metadata();
+/** The content's bounding box, in the source image's own pixels. */
+export interface TrimBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  /** The whole image, for telling "nothing to trim" apart from a real crop. */
+  fullWidth: number;
+  fullHeight: number;
+  hasTransparency: boolean;
+}
+
+export const findTrimBox = async (input: Buffer | string): Promise<TrimBox | null> => {
+  const meta = await sharp(input, { limitInputPixels: false }).metadata();
   const origW = meta.width || 0;
   const origH = meta.height || 0;
 
-  if (!origW || !origH) {
-    await sharp(inputPath, { limitInputPixels: false }).png().toFile(outputPath);
-    return;
-  }
+  if (!origW || !origH) return null;
 
   const maxProbe = 1200;
-  const probe = await sharp(inputPath, { limitInputPixels: false })
+  const probe = await sharp(input, { limitInputPixels: false })
     .ensureAlpha()
     .resize({
       width: Math.min(origW, maxProbe),
@@ -106,10 +101,8 @@ export const smartTrimToFile = async (
     }
   }
 
-  if (!found || maxX < minX || maxY < minY) {
-    await sharp(inputPath, { limitInputPixels: false }).png().toFile(outputPath);
-    return;
-  }
+  const whole: TrimBox = { left: 0, top: 0, width: origW, height: origH, fullWidth: origW, fullHeight: origH, hasTransparency };
+  if (!found || maxX < minX || maxY < minY) return whole;
 
   // Scale probe coordinates back to original image resolution
   const scaleX = origW / w;
@@ -119,8 +112,29 @@ export const smartTrimToFile = async (
   const right = Math.min(origW, Math.ceil((maxX + 1) * scaleX));
   const bottom = Math.min(origH, Math.ceil((maxY + 1) * scaleY));
 
-  await sharp(inputPath, { limitInputPixels: false })
-    .extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) })
+  return {
+    ...whole,
+    left,
+    top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+  };
+};
+
+/** The trimmed image, or `unchanged` when there was nothing to trim. */
+export type TrimResult =
+  | { unchanged: true; widthPx: number; heightPx: number }
+  | { unchanged: false; buffer: Buffer; widthPx: number; heightPx: number };
+
+export const trimImage = async (input: Buffer): Promise<TrimResult | null> => {
+  const box = await findTrimBox(input);
+  if (!box) return null;
+  if (box.left === 0 && box.top === 0 && box.width === box.fullWidth && box.height === box.fullHeight) {
+    return { unchanged: true, widthPx: box.fullWidth, heightPx: box.fullHeight };
+  }
+  const { data, info } = await sharp(input, { limitInputPixels: false })
+    .extract({ left: box.left, top: box.top, width: box.width, height: box.height })
     .png()
-    .toFile(outputPath);
+    .toBuffer({ resolveWithObject: true });
+  return { unchanged: false, buffer: data, widthPx: info.width, heightPx: info.height };
 };

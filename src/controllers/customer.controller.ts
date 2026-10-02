@@ -1,4 +1,8 @@
 import { Request, Response, NextFunction } from "express";
+import { resolveApiFile } from "../utils/publicApiBase.js";
+import { isTitleTaken, normalizeTitle, titleTakenError, uniqueTitle, UNTITLED_SHEET } from "../utils/designTitles.js";
+import { storeDesignThumbnail } from "../utils/designThumbnail.js";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { verifyCardPayment } from "../services/paymentVerification.service.js";
 import { User } from "../models/user.model.js";
 import { isValidPhone } from "../utils/accountFields.js";
@@ -9,25 +13,25 @@ import { Settings } from "../models/settings.model.js";
 import sharp from "sharp";
 import mongoose from "mongoose";
 import crypto from "node:crypto";
-import os from "node:os";
-import { env } from "../config/env.js";
 import { renderInvoicePdf } from "../services/invoicePdf.service.js";
 import fs from "fs";
 import path from "path";
-import { smartTrimToFile } from "../utils/aiCrop.js";
+import { trimImage } from "../utils/aiCrop.js";
+import { uprightImage } from "../utils/uprightImage.js";
 import {
   isLegacyCloudinaryUrl,
   isStoredArtworkUrl,
   legacyCloudinaryThumbUrl,
   storeArtwork,
 } from "../services/storage.service.js";
+import { customerOrderStatus, formatSheetSize, orderChargeLines } from "../utils/orderPresentation.js";
 import {
   getGlobalPricing,
+  priceItems,
   computeTotals as computeOrderTotals,
   deriveItemUnitPrice,
   itemQuantity,
-  sheetUnitPrice,
-  normalizeShippingMethod,
+    normalizeShippingMethod,
   priorityForShippingMethod,
   totalBillableSqFt,
 } from "../services/pricing.service.js";
@@ -35,7 +39,9 @@ import { quoteShipping } from "../services/shipping.service.js";
 import { deriveParcel } from "../services/packaging.service.js";
 import { predictShippingOrigin } from "../services/orderAssignment.service.js";
 import { autoAssignOrder } from "../services/orderAssignment.service.js";
-import { exportGangsheetPng24, orderSheetWidthIn, printedSheetExtentIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
+import { renderOrderSheetPreviews } from "../services/orderPreview.service.js";
+import { sendOrderConfirmationEmail } from "../services/orderEmails.service.js";
+import { orderSheetWidthIn, printedSheetExtentIn, printedSheetLengthIn } from "../services/gangsheetExport.service.js";
 import { getRegionFromState, getLatLngFromState, getRegionFromCoords, normalizeRegion } from "../utils/region.js";
 import { geocodeAddress } from "../utils/geocoding.js";
 import { assertPersistable } from "../utils/documentSize.js";
@@ -56,7 +62,6 @@ import {
   geminiStatus,
   verifyGeminiKey,
   geminiUnavailableReason,
-  hasGemini,
   planEditWithGemini,
 } from "../services/gemini.service.js";
 import { conformToSource, readSourceGeometry } from "../utils/generativeImage.js";
@@ -87,23 +92,6 @@ const computeThumbUrl = (assetUrl: string | null | undefined): string | null => 
 
 // Trim an image buffer using temp files. Returns the trimmed PNG as a Buffer.
 // Temp files are written to os.tmpdir().
-const trimBuffer = async (inputBuffer: Buffer): Promise<Buffer> => {
-  const tmpDir = os.tmpdir();
-  const id = crypto.randomUUID();
-  const inputPath = path.join(tmpDir, `${id}-input.png`);
-  const trimmedPath = path.join(tmpDir, `${id}-trim.png`);
-  const cleanup = () => {
-    fs.unlink(inputPath, () => {});
-    fs.unlink(trimmedPath, () => {});
-  };
-  try {
-    await sharp(inputBuffer, { limitInputPixels: false }).png().toFile(inputPath);
-    await smartTrimToFile(inputPath, trimmedPath);
-    return await fs.promises.readFile(trimmedPath);
-  } finally {
-    cleanup();
-  }
-};
 
 /**
  * Converts an embedded image into a hosted one.
@@ -193,7 +181,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
           error.statusCode = 404;
           throw error;
         }
-        const r = await fetch(url);
+        const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
         if (!r.ok) {
           const error = new Error("Asset file not found") as CustomError;
           error.statusCode = 404;
@@ -202,7 +190,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
         sourceBuffer = Buffer.from(await r.arrayBuffer());
       }
     } else {
-      const r = await fetch(url);
+      const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
       if (!r.ok) {
         const error = new Error("Asset file not found") as CustomError;
         error.statusCode = 404;
@@ -211,14 +199,24 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
       sourceBuffer = Buffer.from(await r.arrayBuffer());
     }
 
-    const trimmedBuffer = await trimBuffer(sourceBuffer);
+    const trim = await trimImage(sourceBuffer);
+    if (!trim) {
+      const error = new Error("This image could not be read to trim it.") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
 
-    const { url: trimmedUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
+    // Nothing to trim: the stored image already is the trimmed one, so it is
+    // reused rather than saved again as a much larger PNG.
+    const trimmedUrl =
+      trim.unchanged && isStoredArtworkUrl(url)
+        ? url
+        : (await storeArtwork(trim.unchanged ? sourceBuffer : trim.buffer, "space-transfers/trimmed")).url;
 
-    const meta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
+    const meta = await sharp(sourceBuffer, { limitInputPixels: false }).metadata();
     const normalizedDpi = Math.max(150, Math.round(meta.density || 300));
-    const trimmedWidthPx = meta.width || null;
-    const trimmedHeightPx = meta.height || null;
+    const trimmedWidthPx = trim.widthPx || null;
+    const trimmedHeightPx = trim.heightPx || null;
     const trimmedWidthIn = trimmedWidthPx ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : null;
     const trimmedHeightIn = trimmedHeightPx ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : null;
 
@@ -236,15 +234,6 @@ const MAX_OUTPUT_PX = 8_000; // prevent runaway output sizes
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Resolves any artwork reference to bytes, with bounds enforced at the door.
- *
- * This is the single entry point for image data on the server, so validating
- * here covers every downstream operation — trim, upscale, fade check, AI edit,
- * gangsheet export — rather than each having to guard itself. Previously all
- * three branches were unbounded: a malformed data URL decoded to an empty
- * Buffer, and a remote URL could return arbitrarily many bytes.
- */
 async function fetchImageBuffer(url: string): Promise<Buffer> {
   if (url.startsWith("data:")) {
     return decodeDataUrl(url);
@@ -280,7 +269,7 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
       { statusCode: 400, code: "IMAGE_NOT_UPLOADED" },
     );
   }
-  const r = await fetch(url);
+  const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
   if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
 
   // Trust the advertised length when present, so an oversized remote asset is
@@ -302,40 +291,6 @@ async function fetchImageBuffer(url: string): Promise<Buffer> {
  * the pure-sharp fallback gets a stronger pass because interpolation
  * introduces softness that must be compensated.
  */
-// A remote upscaler would scale purely off the requested factor, with no idea
-// of the MAX_OUTPUT_PX ceiling the sharp tier already respects — a large
-// `scale` against a sizeable source (e.g. the user enlarging the item a lot
-// before requesting DPI enhancement) can return a multi-hundred-megapixel
-// image that blows well past what a bounded resize
-// loop can shrink. Clamp the upscaler's output
-// to the same ceiling so all three tiers produce comparably-sized results.
-async function capOutputPixels(buffer: Buffer, maxPx: number): Promise<Buffer> {
-  const meta = await sharp(buffer, { limitInputPixels: false }).metadata();
-  const w = meta.width ?? 0;
-  const h = meta.height ?? 0;
-  if (Math.max(w, h) <= maxPx) return buffer;
-  const scale = maxPx / Math.max(w, h);
-  return sharp(buffer, { limitInputPixels: false })
-    .resize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), {
-      kernel: sharp.kernel.lanczos3,
-    })
-    .toBuffer();
-}
-
-async function applySharpening(
-  buffer: Buffer,
-  strength: "light" | "strong",
-): Promise<Buffer> {
-  // sigma, m1 (flat areas), m2 (edge areas)
-  const params =
-    strength === "strong"
-      ? { sigma: 1.0, m1: 2.5, m2: 0.8 }
-      : { sigma: 0.7, m1: 1.2, m2: 0.5 };
-  return sharp(buffer, { limitInputPixels: false })
-    .sharpen(params)
-    .toBuffer();
-}
-
 /*
  * Replicate and HuggingFace upscaling tiers removed.
  *
@@ -442,7 +397,6 @@ export const upscaleAsset = async (req: Request, res: Response, next: NextFuncti
  * learns which model answered.
  */
 const AI_EDIT_MODEL = process.env.AI_EDIT_MODEL || "black-forest-labs/flux-kontext-pro";
-const AI_EDIT_TIMEOUT_MS = 120_000;
 
 /**
  * Which optional inputs each model actually declares.
@@ -701,15 +655,6 @@ export const buildEditRequest = (
   return { instruction: parts.join(". ").replace(/\.\.+/g, "."), model, extraInput };
 };
 
-/*
- * Replicate and Cloudflare Workers AI editing removed.
- *
- * Neither has credentials in production — the blueprint declares only
- * GEMINI_API_KEY — so this was a three-provider chain in which two links could
- * never fire. Gemini is the implementation, and when its billing is off it says
- * so plainly rather than appearing to fall back to something.
- */
-
 /**
  * Readiness probe. The client caches this for the session and uses it to decide
  * whether generative chips are live, so a user never fires a request that is
@@ -859,12 +804,6 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     }
     await verifyGeminiKey();
     if (!geminiReady()) {
-      // Distinguished so the operator reading logs — and the customer reading
-      // the panel — can tell a capped free tier from an unfunded paid one from
-      // a server where nothing was ever configured.
-      // The customer-facing half says what still works; the operator-facing half
-      // (`detail`) says what to change. Previously this collapsed into one
-      // generic sentence that told neither of them anything actionable.
       const stillWorks =
         " Background removal, colour removal, upscaling and all board commands still work.";
       const status = geminiStatus();
@@ -942,27 +881,10 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
-
     if (!editedBuffer) {
-      /**
-       * Every tier failed *during* the request — the readiness gate above passed,
-       * so this is a mid-flight failure rather than an unconfigured server.
-       *
-       * The generic sentence this used to return is what made the reported bug
-       * so hard to act on: the actual cause (a Gemini key whose image models have
-       * a free-tier quota of exactly 0) was fully known here and thrown away.
-       * Now the specific reason is
-       * both logged and attached, so an operator can see the fix and a customer
-       * gets a sentence that is true.
-       *
-       * 503 rather than 500: the request was valid and is worth retrying later,
-       * and the client already treats an unreachable model as "board commands
-       * still work" rather than a hard failure.
-       */
       const detail = geminiUnavailableReason() ?? lastTierError;
       console.warn(`[AI-EDIT] all tiers failed for intent "${intent}" — ${detail ?? "no detail"}`);
 
-      // Only Gemini is wired now; the Cloudflare tier this once also named is gone.
       const advice =
         geminiStatus() === "billing_required"
           ? " Generative editing needs billing enabled on the Gemini key."
@@ -1030,174 +952,6 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
   }
 };
 
-export const updateAccount = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { name, defaultShippingAddress, companyName, phone } = req.body;
-    const userId = req.user?.id;
-
-    const user = await User.findById(userId);
-    if (!user) {
-      const error = new Error("User not found") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    if (name) user.name = name;
-    if (companyName) user.companyName = companyName;
-    /*
-     * Shape checked when supplied. Presence was the only test — `if (phone)` —
-     * so a customer could set their contact number to "1" or "abc" with no
-     * error, and that is the number used to reach them about their own order.
-     */
-    if (phone) {
-      if (!isValidPhone(String(phone))) {
-        const error = new Error("Enter a valid phone number") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-      user.phone = phone;
-    }
-
-    if (defaultShippingAddress && typeof defaultShippingAddress === "object") {
-      // Merge onto existing address so partial updates (e.g. just postalCode) don't wipe other fields.
-      const merged: any = { ...(user.defaultShippingAddress as any || {}), ...defaultShippingAddress };
-      user.defaultShippingAddress = merged;
-
-      // Re-derive region whenever the address changes.
-      const stateCode = String(merged.state || "").trim();
-      let newRegion = normalizeRegion(getRegionFromState(stateCode));
-
-      if (!newRegion) {
-        // Geocode in the background and patch the user record once we have a result.
-        // We don't await here so the response is not delayed.
-        (async () => {
-          try {
-            const geo = await geocodeAddress({
-              street: merged.street, city: merged.city, state: merged.state,
-              zip: merged.postalCode, country: merged.country,
-            });
-            if (!geo) return;
-            const geoRegion = normalizeRegion(getRegionFromState(geo.state)) ?? getRegionFromCoords(geo.lat, geo.lng);
-            await User.updateOne(
-              { _id: userId },
-              {
-                $set: {
-                  "defaultShippingAddress.coordinates": { lat: geo.lat, lng: geo.lng },
-                  "defaultShippingAddress.state": geo.state || merged.state,
-                  regions: [geoRegion],
-                  detectedRegion: geoRegion,
-                },
-              }
-            );
-            console.log(`[region-assign] role=CUSTOMER id=${userId} state=${geo.state} region=${geoRegion} geocoded=true (account update)`);
-          } catch (geoErr) {
-            console.error("[region-assign] geocode failed during account update:", (geoErr as any)?.message);
-          }
-        })().catch(() => {});
-      } else {
-        user.regions = [newRegion];
-        (user as any).detectedRegion = newRegion;
-        console.log(`[region-assign] role=CUSTOMER id=${userId} state=${stateCode} region=${newRegion} geocoded=false (account update)`);
-      }
-    }
-
-    await user.save();
-
-    const userResponse: any = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      detectedRegion: (user as any).detectedRegion ?? user.regions?.[0] ?? null,
-    };
-    if (user.companyName) userResponse.companyName = user.companyName;
-    if (user.phone) userResponse.phone = user.phone;
-    if (user.defaultShippingAddress) userResponse.defaultShippingAddress = user.defaultShippingAddress;
-
-    res.json({ user: userResponse });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getOrderTracking = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { orderId } = req.params;
-    const order = await Order.findOne({ _id: orderId, user: req.user?.id });
-
-    if (!order) {
-      const error = new Error("Order not found") as CustomError;
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const isValidTrackingNumber = (tn: any) => typeof tn === "string" && /^[A-Za-z0-9]{10,35}$/.test(tn);
-    let trackingNumber = order.trackingNumber;
-    let carrier = order.carrier || "UPS";
-    let events = (order.trackingEvents || []).map(event => ({
-      time: event.time,
-      location: event.location,
-      description: event.description
-    }));
-
-    if (!isValidTrackingNumber(trackingNumber)) {
-      if (env.nodeEnv !== "production") {
-        trackingNumber = "1Z999AA10123456784";
-        carrier = "UPS";
-
-        if (events.length === 0) {
-          events = [
-            {
-              time: new Date(Date.now() - 3600000),
-              location: (order.shippingAddress?.city || "Los Angeles") + ", " + (order.shippingAddress?.state || "CA"),
-              description: "Arrived at facility"
-            },
-            {
-              time: new Date(Date.now() - 86400000),
-              location: "Los Angeles, CA",
-              description: "Departed facility"
-            }
-          ];
-        }
-      } else {
-        const error = new Error("Tracking not available") as CustomError;
-        error.statusCode = 404;
-        throw error;
-      }
-    }
-
-    const carrierUrls: { [key: string]: string } = {
-      UPS: `https://www.ups.com/track?loc=en_US&tracknum=${trackingNumber}`,
-      FedEx: `https://www.fedex.com/apps/fedextrack/?tracknumbers=${trackingNumber}`,
-      USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${trackingNumber}`,
-      DHL: `https://www.dhl.com/en/express/tracking.html?AWB=${trackingNumber}`
-    };
-
-    const trackingUrl = carrierUrls[carrier] || carrierUrls.UPS;
-    const status = order.status === "SHIPPED" ? "In Transit" : (order.status === "COMPLETED" ? "Delivered" : "Pending");
-
-    events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-
-    res.json({
-      trackingNumber,
-      carrier,
-      trackingUrl,
-      status,
-      events
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const logout = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    res.status(200).json({ message: "Logged out successfully" });
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
   /**
    * Per-stage timing.
@@ -1251,7 +1005,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       error.statusCode = 400;
       throw error;
     }
-
 
     if (!shippingMethod) {
       const error = new Error("shippingMethod is required") as CustomError;
@@ -1333,26 +1086,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         throw error;
       }
 
-      /**
-       * Priced here, from the sheet's dimensions and the configured rate.
-       *
-       * `quantity` and `unitPrice` used to be taken from the request and only
-       * checked for internal consistency, so any self-consistent set was
-       * accepted — a caller could name a $0.01 subtotal for a full sheet and
-       * both this order and the Stripe charge would honour it.
-       */
-      /**
-       * Resolves an artwork reference back to its URL.
-       *
-       * A gang sheet repeats the same few graphics across many placements, so
-       * the client sends each distinct URL once in `assetTable.urls` and refers
-       * to it by integer index. That is what keeps the payload proportional to
-       * distinct artwork rather than to placement count.
-       *
-       * Inline `assetId` / `croppedUrl` are still honoured, so a client that
-       * has not reloaded — or a cart persisted before this shape existed —
-       * keeps working. The reference wins when both are present.
-       */
       const assetUrls: string[] = Array.isArray(assetTable?.urls) ? assetTable.urls : [];
       const deref = (ref: unknown, inline: unknown): string | undefined => {
         if (
@@ -1366,6 +1099,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         return typeof inline === "string" && inline ? inline : undefined;
       };
 
+      const positivePx = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.round(v) : undefined);
       const normalizedArtboardItems = Array.isArray(artboardItems)
         ? artboardItems
             .filter(Boolean)
@@ -1379,10 +1113,18 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
               posX: Number(it.posX),
               posY: Number(it.posY),
               rotation: typeof it.rotation === "number" ? it.rotation : 0,
-              // Dropped here before, so a mirrored design printed unmirrored.
               flipped: Boolean(it.flipped),
               copies: typeof it.copies === "number" ? it.copies : 1,
               linked: Boolean(it.linked),
+              /*
+               * The image's pixel size. Checkout sent these and they were dropped
+               * here, so a reordered sheet couldn't work out its DPI and flagged
+               * sharp artwork as "resolution couldn't be read", and the print
+               * export never got the size of browser-edited images it asks for.
+               */
+              croppedWidthPx: positivePx(it.croppedWidthPx),
+              croppedHeightPx: positivePx(it.croppedHeightPx),
+              nativeWidthPx: positivePx(it.nativeWidthPx),
               // How auto-nest laid the piece out; the export draws it the same way.
               nestRotation: Number(it.nestRotation) === 90 ? 90 : 0,
               flowCols:
@@ -1400,23 +1142,11 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
             )
         : undefined;
 
-      /*
-       * The spacing and margin the print export lays copies out with. Checkout
-       * sent both and they were dropped right here, so every printed sheet fell
-       * back to a 0.06in gap whatever the customer had set.
-       */
       const recordedSpacingIn =
         typeof itemSpacingIn === "number" && itemSpacingIn >= 0 && itemSpacingIn <= 6 ? itemSpacingIn : undefined;
       const recordedMarginIn =
         typeof sheetMarginIn === "number" && sheetMarginIn >= 0 && sheetMarginIn <= 2 ? sheetMarginIn : undefined;
 
-      /*
-       * The roll a sheet was built on must be the roll it is billed and printed
-       * on. The roll width is an admin setting; if it changed after this sheet
-       * was laid out, its positions no longer match the roll. Refused, so the
-       * customer reopens the sheet and it re-fits, rather than paying for one
-       * width and receiving another.
-       */
       const rollWidthIn = globalPricing.sheetWidthIn;
       if (
         String(type).toLowerCase() === "gangsheet" &&
@@ -1537,20 +1267,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       );
     }
 
-    /**
-     * Shipping, tax and total are recomputed here rather than taken from the
-     * request.
-     *
-     * The old check only asserted the client's own numbers were internally
-     * consistent, so any self-consistent set was accepted — which is how orders
-     * came to be recorded with $19.99 shipping and zero tax while Stripe
-     * charged $24.99 plus 8%. Deriving them from the same pricer the charge
-     * uses makes the saved order and the charge agree by construction.
-     *
-     * `subtotal` is no longer taken on trust either: each line is priced above
-     * from its own dimensions and the configured rate, so the whole total is
-     * now derived rather than asserted.
-     */
     const shippingQuote = await quoteShipping({
       totalSqFt: totalBillableSqFt(items, globalPricing),
       method: normalizeShippingMethod(shippingMethod),
@@ -1568,13 +1284,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       origin: await predictShippingOrigin(shippingAddress?.state).catch(() => null),
     });
 
-    /**
-     * Priority is the customer's choice, made at checkout by picking express.
-     *
-     * It used to be set only by an admin at assignment — so the express
-     * option's "priority handling" was charged for and never delivered, and the
-     * partner's rush surcharge was applied to orders nobody had paid a rush on.
-     */
     const orderPriority = priorityForShippingMethod(shippingMethod);
 
     const authoritativeTotals = computeOrderTotals({
@@ -1604,9 +1313,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 
     mark("validate");
 
-    const currentUser = req.user?.id
-      ? await User.findById(req.user.id).select("regions").lean()
-      : null;
     mark("loadUser");
 
     // Derive region strictly from the shipping address state — same function used during
@@ -1614,15 +1320,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     const stateBasedRegion = getRegionFromState(shippingAddress?.state);
     const stateCoord = getLatLngFromState(shippingAddress?.state);
 
-    /*
-     * Shape checked here, on the field that actually lands: `customer.phone`
-     * is what the store submits and what the schema stores — the shipping
-     * address has no phone field at all, so a check placed there would
-     * validate a value the database silently discards. Nothing validated this
-     * before, so "1" or "abc" would have been stored as the number used to
-     * reach a customer about their own order. Optional, as it always was —
-     * only checked when supplied.
-     */
     if (customer?.phone && !isValidPhone(String(customer.phone))) {
       const error = new Error("Enter a valid phone number") as CustomError;
       error.statusCode = 400;
@@ -1655,14 +1352,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       geocoded: false
     };
 
-    /*
-     * The payment is confirmed with Stripe before an order exists.
-     *
-     * `payment` used to be stored exactly as the request sent it, so a
-     * fabricated `paymentIntentId` produced a real, unpaid order queued for a
-     * partner to print. Checked against `recordedPricing.total` — the server's
-     * own figure — rather than anything the caller supplied.
-     */
     const verifiedPayment = await verifyCardPayment({
       paymentIntentId: payment.paymentIntentId,
       expectedTotal: recordedPricing.total,
@@ -1679,6 +1368,9 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       paymentIntentId: verifiedPayment.paymentIntentId,
       cardBrand: verifiedPayment.cardBrand ?? undefined,
       cardLast4: verifiedPayment.cardLast4 ?? undefined,
+      // Stripe's fee, so profit is counted after it. Filled in later if Stripe
+      // hadn't settled the charge yet (see `recordMissingProcessingFee`).
+      processingFee: verifiedPayment.processingFee ?? undefined,
     };
 
     const order = new Order({
@@ -1728,47 +1420,11 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     // DB assets so the job list shows the same quality as the OrderDetails preview.
     // Runs after save so it never blocks the checkout response.
     const orderId = order.id;
-    const gangsheetOrderItem = orderItems.find((it: any) => it.type === "gangsheet");
-    if (gangsheetOrderItem && Array.isArray(gangsheetOrderItem.artboardItems) && gangsheetOrderItem.artboardItems.length > 0) {
-      (async () => {
-        try {
-          const thumbItems = (gangsheetOrderItem.artboardItems as any[]).map((it: any) => ({
-            assetId: String(it.assetId || ""),
-            widthIn: Number(it.widthIn),
-            heightIn: Number(it.heightIn),
-            posX: Number(it.posX),
-            posY: Number(it.posY),
-            rotation: typeof it.rotation === "number" ? it.rotation : 0,
-            flipped: Boolean(it.flipped),
-            copies: typeof it.copies === "number" ? it.copies : 1,
-            nestRotation: it.nestRotation,
-            flowCols: it.flowCols,
-          }));
-          const rendered = await exportGangsheetPng24({
-            // The sheet's own spacing and margin — without them the thumbnail
-            // laid copies out on the export's fallback gap.
-            itemSpacingIn: gangsheetOrderItem.itemSpacingIn,
-            sheetMarginIn: gangsheetOrderItem.sheetMarginIn,
-            jobId: String(orderId),
-            printerId: "order-preview",
-            // The roll this order was built on — see `orderSheetWidthIn`.
-            sheetWidthIn: orderSheetWidthIn(gangsheetOrderItem),
-            sheetHeightIn: typeof gangsheetOrderItem.sheetHeightIn === "number" ? gangsheetOrderItem.sheetHeightIn : undefined,
-            artboardItems: thumbItems,
-            dpi: 600,
-            cropToContent: true,
-            format: "webp",
-          });
-          const previewUrl = `${env.appUrl}${rendered.relativePath}`;
-          await Order.updateOne(
-            { _id: orderId, "items.type": "gangsheet" },
-            { $set: { "items.$.previewImage": previewUrl } }
-          );
-        } catch (err: any) {
-          console.warn(`[ORDER_THUMB] orderId=${orderId} thumbnail generation failed (non-fatal): ${err?.message}`);
-        }
-      })();
-    }
+    void renderOrderSheetPreviews(order.id, orderItems);
+
+    // The customer's receipt. Sent in the background: a mail failure must not
+    // fail an order that is already paid and saved.
+    void sendOrderConfirmationEmail(order.toObject());
 
     // Fire-and-forget: geocode to verify/correct state code and get precise coordinates.
     // The assignment service uses detectedRegion from the order — this updates it in the background.
@@ -1867,12 +1523,25 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 
 export const createDesign = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { title, thumbnail, size, pricing, artboardData } = req.body;
+    const { title: rawTitle, thumbnail, size, pricing, artboardData, autoName } = req.body;
+
+    /*
+     * Names are unique per customer. One the app chose (autosave, "Untitled gang
+     * sheet") simply takes the next free number; one the customer typed is
+     * refused if taken, so they're never silently given a different name.
+     */
+    const wanted = normalizeTitle(rawTitle) || UNTITLED_SHEET;
+    let title = wanted;
+    if (await isTitleTaken(req.user?.id, wanted)) {
+      if (!autoName) throw titleTakenError(wanted);
+      title = await uniqueTitle(req.user?.id, wanted);
+    }
 
     const design = new Design({
       user: req.user?.id,
       title,
-      thumbnail,
+      // Kept as a file, not as base64 in this document — see designThumbnail.ts.
+      thumbnail: await storeDesignThumbnail(thumbnail),
       size,
       pricing,
       artboardData
@@ -1947,9 +1616,16 @@ export const searchDesigns = async (req: Request, res: Response, next: NextFunct
       return res.json({ designs: [] });
     }
 
+    /*
+     * The typed text, matched literally.
+     *
+     * It went into the regex as written, so a name with brackets in it — which
+     * copies now have ("Shirts (2)") — searched as a pattern: typing the "(" on
+     * its own is an invalid regex and the search failed outright.
+     */
     const designs = await Design.find({
       user: req.user?.id,
-      title: { $regex: q, $options: "i" }
+      title: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" }
     })
       .select("title size thumbnail createdAt updatedAt")
       .sort({ updatedAt: -1 });
@@ -2038,8 +1714,17 @@ export const updateDesign = async (req: Request, res: Response, next: NextFuncti
     const { title, thumbnail, artboardData } = req.body;
 
     const updateData: any = {};
-    if (title !== undefined) updateData.title = title;
-    if (thumbnail !== undefined) updateData.thumbnail = thumbnail;
+    if (title !== undefined) {
+      const next = normalizeTitle(title);
+      if (!next) {
+        const error = new Error("A sheet needs a name.") as CustomError;
+        error.statusCode = 400;
+        throw error;
+      }
+      if (await isTitleTaken(req.user?.id, next, designId)) throw titleTakenError(next);
+      updateData.title = next;
+    }
+    if (thumbnail !== undefined) updateData.thumbnail = await storeDesignThumbnail(thumbnail);
     if (artboardData !== undefined) updateData.artboardData = artboardData;
 
     if (Object.keys(updateData).length === 0) {
@@ -2090,7 +1775,8 @@ export const duplicateDesign = async (req: Request, res: Response, next: NextFun
 
     const copy = new Design({
       user: req.user?.id,
-      title: newTitle.trim(),
+      // A copy is named for the customer, so it always gets a free name.
+      title: await uniqueTitle(req.user?.id, newTitle),
       thumbnail: source.thumbnail,
       size: source.size,
       pricing: source.pricing,
@@ -2119,15 +1805,6 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
 
     if (status) {
       const normalized = status.toString().trim().toLowerCase();
-      /**
-       * Deliberately coarser than the internal states: a customer does not need
-       * to know whether their sheet is queued at a partner, on the press, or
-       * waiting for a label — only that it is being made.
-       *
-       * PRINTING and QUALITY_CHECK previously matched no filter at all, so an
-       * order in production was invisible under every option. PAID/"paid" were
-       * removed from the schema and are dropped here with them.
-       */
       const statusMap: { [key: string]: string[] } = {
         pending: ["PENDING"],
         processing: ["PROCESSING", "PRINTING", "QUALITY_CHECK"],
@@ -2169,34 +1846,23 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
     const hasMore = results.length > parsedLimit;
     const orders = hasMore ? results.slice(0, parsedLimit) : results;
 
-    const apiStatusMap: { [key: string]: string } = {
-      PENDING: "Pending",
-      PROCESSING: "Processing",
-      SHIPPED: "Shipped",
-      COMPLETED: "Completed",
-      CANCELLED: "Cancelled"
-    };
-
-    const formatSheetSize = (order: any) => {
-      if (!order.items || order.items.length === 0) return null;
-      const firstItem = order.items[0];
-      if (
-        typeof firstItem.widthIn === "number" &&
-        typeof firstItem.heightIn === "number"
-      ) {
-        return `${firstItem.widthIn}" x ${firstItem.heightIn}"`;
-      }
-      return null;
+    // Only the first sheet was described, so a three-sheet order read as one.
+    const describeSheets = (order: any) => {
+      const items = Array.isArray(order.items) ? order.items : [];
+      if (items.length === 0) return null;
+      if (items.length > 1) return `${items.length} sheets`;
+      const it = items[0];
+      return formatSheetSize(it.sheetWidthIn ?? it.widthIn, it.sheetHeightIn ?? it.heightIn);
     };
 
     const responseOrders = orders.map((order) => ({
       orderId: order.id,
       // Same order number the customer sees on their invoice and in emails.
       displayId: (order as any).displayId || null,
-      status: apiStatusMap[order.status] || order.status,
+      status: customerOrderStatus(order.status),
       date: order.createdAt,
       total: order.pricing?.total ?? null,
-      sheetSize: formatSheetSize(order),
+      sheetSize: describeSheets(order),
       trackingNumber: order.trackingNumber || null
     }));
 
@@ -2222,19 +1888,9 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
-    const apiStatusMap: { [key: string]: string } = {
-      PENDING: "Pending",
-      PROCESSING: "Processing",
-      SHIPPED: "Shipped",
-      COMPLETED: "Completed",
-      CANCELLED: "Cancelled"
-    };
-
     const formattedItems = (order.items || []).map((item) => {
-      let description = "";
-      if (item.widthIn && item.heightIn) {
-        description = `${item.widthIn}" x ${item.heightIn}"`;
-      }
+      const description =
+        formatSheetSize((item as any).sheetWidthIn ?? item.widthIn, (item as any).sheetHeightIn ?? item.heightIn) || "";
 
       return {
         name: item.name || "Unknown Item",
@@ -2242,14 +1898,6 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         quantity: item.quantity || 0,
         unitPrice: item.unitPrice || 0,
         subtotal: item.subtotal || 0,
-        /*
-         * The sheet's actual shape, not only a description string built from it.
-         *
-         * These were read to compose `description` and then dropped, so the only
-         * consumer that needs them — reorder, which refills the cart from this
-         * response — had nothing to work with and fell back to a constant. A
-         * 60in sheet came back as a default-length one, quietly.
-         */
         type: item.type || "gangsheet",
         widthIn: item.widthIn ?? null,
         heightIn: item.heightIn ?? null,
@@ -2257,7 +1905,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         sheetHeightIn: (item as any).sheetHeightIn ?? item.heightIn ?? null,
         // So the reordered line can point at the same artwork.
         designId: (item as any).designId ?? null,
-        previewImage: (item as any).previewImage ?? null,
+        previewImage: resolveApiFile(req, (item as any).previewImage),
         /*
          * What reorder needs to rebuild the same sheet: where every graphic sat,
          * and the roll and spacing it was laid out with. Without the placements a
@@ -2274,16 +1922,16 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     });
 
     const pricing = order.pricing || {};
-    const lineItems = [
-      { label: "Subtotal", amount: pricing.subtotal || 0 },
-      { label: `Tax`, amount: pricing.tax || 0 },
-      { label: "Shipping", amount: pricing.shippingCost || 0 }
-    ];
 
     res.json({
       orderId: order.id,
       displayId: (order as any).displayId || null,
-      status: apiStatusMap[order.status] || order.status,
+      status: customerOrderStatus(order.status),
+      // Missing, so the details view fell back to today's date for every order.
+      date: order.createdAt,
+      shippingMethod: (order as any).shippingMethod === "express" ? "express" : "standard",
+      trackingNumber: order.trackingNumber || null,
+      carrier: (order as any).carrier || null,
       items: formattedItems,
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -2299,7 +1947,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         cardLast4: order.payment?.cardLast4 || null
       },
       pricing: {
-        lineItems,
+        lineItems: orderChargeLines(order),
         total: pricing.total || 0,
         currency: pricing.currency || "USD"
       }
@@ -2317,16 +1965,15 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    const fileBuffer = req.file.buffer;
+    const rawBuffer = req.file.buffer;
 
     // Deduplication: if this user already uploaded the exact same file, reuse it.
-    const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+    const contentHash = crypto.createHash("sha256").update(rawBuffer).digest("hex");
     const foundAsset = req.user?.id ? await Asset.findOne({
       user: new mongoose.Types.ObjectId(String(req.user.id)),
       contentHash,
     }).lean() as any : null;
 
-    // Returns false if a URL is a local /uploads/ path that no longer exists on disk.
     const localUrlAccessible = (url: string | null | undefined): boolean => {
       if (!url || !url.includes("/uploads/")) return true;
       const marker = "/uploads/";
@@ -2352,7 +1999,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
          * silently keep missing what the new rule catches.
          */
         const fadeIsCurrent = foundAsset.fade?.version === TRANSPARENCY_CHECK_VERSION;
-        const cachedFade = fadeIsCurrent ? foundAsset.fade : await detectFade(fileBuffer);
+        const cachedFade = fadeIsCurrent ? foundAsset.fade : await detectFade(rawBuffer);
         if (!fadeIsCurrent) {
           await Asset.findByIdAndUpdate(foundAsset._id, { fade: cachedFade }).catch(() => {
             // A failed backfill is not worth failing the upload over; the
@@ -2414,7 +2061,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
      * SVG likewise: the editor renders it to a PNG at its real size before
      * uploading, so the print pipeline only ever composites raster artwork.
      */
-    const head = fileBuffer.subarray(0, 256).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
+    const head = rawBuffer.subarray(0, 256).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
     if (req.file.mimetype === "image/svg+xml" || head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) {
       const error = new Error(
         `“${req.file.originalname}” is an SVG. Add it from the editor, which converts it to an image at its real size, or upload a PNG or JPG.`,
@@ -2425,7 +2072,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
 
     if (
       req.file.mimetype === "application/pdf" ||
-      fileBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
+      rawBuffer.subarray(0, 5).toString("latin1") === "%PDF-"
     ) {
       const error = new Error(
         `“${req.file.originalname}” is a PDF. Add it from the editor, which converts each page to an image, or upload a PNG or JPG.`,
@@ -2434,7 +2081,10 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
+    // Upright before anything reads its size; see `uprightImage`.
+    let fileBuffer = rawBuffer;
     try {
+      fileBuffer = await uprightImage(rawBuffer);
       const metadata = await sharp(fileBuffer, { limitInputPixels: false }).metadata();
       widthPx = metadata.width;
       heightPx = metadata.height;
@@ -2472,8 +2122,20 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       throw error;
     }
 
-    // Store the original, exactly as it arrived.
-    const { url: fileUrl } = await storeArtwork(fileBuffer, "space-transfers/assets");
+    /*
+     * Store the original, find the trim and run the fade check at the same time
+     * — they only read the same bytes. They ran one after another, and with the
+     * old trim re-encoding the whole image as PNG twice, a phone photo spent
+     * seconds of CPU before the customer saw anything.
+     */
+    const [{ url: fileUrl }, trim, fade] = await Promise.all([
+      storeArtwork(fileBuffer, "space-transfers/assets"),
+      trimImage(fileBuffer).catch((e: any) => {
+        console.warn(`[UPLOAD] trim failed for ${req.file!.originalname}: ${e?.message}`);
+        return null;
+      }),
+      detectFade(fileBuffer),
+    ]);
 
     const normalizedDpi = (!dpi || dpi < 150) ? 300 : dpi;
     const widthIn = widthPx && normalizedDpi ? +(widthPx / normalizedDpi).toFixed(4) : undefined;
@@ -2486,14 +2148,14 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     let trimmedWidthIn: number | undefined;
     let trimmedHeightIn: number | undefined;
     try {
-      const trimmedBuffer = await trimBuffer(fileBuffer);
-      const { url: tUrl } = await storeArtwork(trimmedBuffer, "space-transfers/trimmed");
-      trimmedUrl = tUrl;
-      const trimmedMeta = await sharp(trimmedBuffer, { limitInputPixels: false }).metadata();
-      trimmedWidthPx = trimmedMeta.width;
-      trimmedHeightPx = trimmedMeta.height;
-      trimmedWidthIn = trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
-      trimmedHeightIn = trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
+      if (trim) {
+        // Nothing to trim (most photos): the original is the trimmed copy.
+        trimmedUrl = trim.unchanged ? fileUrl : (await storeArtwork(trim.buffer, "space-transfers/trimmed")).url;
+        trimmedWidthPx = trim.widthPx;
+        trimmedHeightPx = trim.heightPx;
+        trimmedWidthIn = trimmedWidthPx && normalizedDpi ? +(trimmedWidthPx / normalizedDpi).toFixed(4) : undefined;
+        trimmedHeightIn = trimmedHeightPx && normalizedDpi ? +(trimmedHeightPx / normalizedDpi).toFixed(4) : undefined;
+      }
     } catch {
       trimmedUrl = undefined;
     }
@@ -2502,16 +2164,10 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     // path computeThumbUrl derives — nothing to generate here.
     const thumbnailUrl = computeThumbUrl(trimmedUrl || fileUrl);
 
-    /**
-     * Fade check, on the buffer that is already in memory.
-     *
-     * Done here rather than as a follow-up request because the bytes are right
-     * here: the client would otherwise re-download its own upload just to
-     * inspect the alpha channel. The check short-circuits on images with no
-     * meaningful partial alpha, so the common upload pays only a few
-     * milliseconds of geometry and never reaches the model.
-     */
-    const fade = await detectFade(fileBuffer);
+    // The fade check ran alongside the upload above, on the buffer already in
+    // memory — the client would otherwise re-download its own upload to inspect
+    // the alpha channel. It short-circuits on images with no meaningful partial
+    // alpha, so the common upload pays a few milliseconds and never reaches the model.
     if (fade.hasFade) {
       console.log(
         `[FADE] ${req.file.originalname}: ${fade.kind} ` +
@@ -2642,22 +2298,6 @@ const roundToTwo = (value: number) => {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 };
 
-/**
- * The rates the storefront needs to display a total that matches what will be
- * charged: the per-square-foot sheet rate, shipping per method, and the tax
- * percentage.
- *
- * Read-only and free of customer data, so it is available to guests — the cart
- * is usable before sign-in and would otherwise show a total the checkout then
- * contradicts. `getCartQuote` cannot serve this: it prices saved designs by id,
- * and cart items are unsaved gang sheets with no `designId`.
- *
- * `baseRatePerSqFt` is served here because the editor prices a sheet as the
- * user draws it, long before anything is saved. It used to price from a
- * constant compiled into the client bundle, which meant the admin's Retail
- * Pricing field was authoritative over nothing — the number that actually set
- * every price could only be changed by a redeploy.
- */
 export const getPricingConfig = async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const pricing = await getGlobalPricing();
@@ -2713,132 +2353,47 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
 
     // Read once, above the loop: the same rates must price every line item,
     // the shipping and the tax on this quote.
-    const pricing = await getGlobalPricing();
-
-    const quoteItems: any[] = [];
-    let subtotal = 0;
-
-    for (const item of items) {
-      const {
-        name,
-        type,
-        designId,
-        widthIn,
-        heightIn,
-        copies
-      } = item || {};
-
-      if (!name) {
-        const error = new Error("Each item must have a name") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      if (!type) {
-        const error = new Error("Each item must have a type") as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      let unitPrice = 0;
-
-      if (type === "gangsheet") {
-        if (!designId) {
-          const error = new Error("designId is required for gangsheet items") as CustomError;
-          error.statusCode = 400;
-          throw error;
-        }
-
-        const design = await Design.findOne({ _id: designId, user: req.user?.id });
-
-        if (!design) {
-          const error = new Error("Design not found for cart item") as CustomError;
-          error.statusCode = 404;
-          throw error;
-        }
-
-        /**
-         * Priced from area x the current global rate, not from the price
-         * stored on the design.
-         *
-         * The stored price is a snapshot of whatever rate was in force when
-         * the sheet was saved, so preferring it meant a rate change never
-         * reached carts holding older designs. Two hard-coded `3.5` fallbacks
-         * sat behind it, which is what actually priced anything that reached
-         * them — a third retail rate, invisible to the admin and disagreeing
-         * with `global_pricing` by a factor of seven.
-         */
-        const areaSqFt =
-          typeof design.pricing?.areaSqFt === "number" && Number.isFinite(design.pricing.areaSqFt)
-            ? design.pricing.areaSqFt
-            : null;
-
-        if (areaSqFt == null || areaSqFt <= 0) {
-          const error = new Error("Unable to determine price for gangsheet item") as CustomError;
-          error.statusCode = 400;
-          throw error;
-        }
-
-        // Same helper the payment intent and the saved order use, so a quote
-        // cannot promise a number the checkout then contradicts.
-        unitPrice = sheetUnitPrice(areaSqFt, pricing);
-      } else {
-        const error = new Error(`Unsupported cart item type: ${type}`) as CustomError;
-        error.statusCode = 400;
-        throw error;
-      }
-
-      const quantity = typeof copies === "number" && copies > 0 ? copies : 1;
-      const lineSubtotal = unitPrice * quantity;
-
-      subtotal += lineSubtotal;
-
-      quoteItems.push({
-        name,
-        unitPrice: roundToTwo(unitPrice),
-        quantity,
-        subtotal: roundToTwo(lineSubtotal)
-      });
+    // A quote may only be asked for sheets the customer owns.
+    const designIds = items
+      .filter((it: any) => String(it?.type || "gangsheet").toLowerCase() === "gangsheet")
+      .map((it: any) => it?.designId);
+    if (designIds.some((id: unknown) => !id)) {
+      const error = new Error("designId is required for gangsheet items") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    const owned = await Design.countDocuments({ _id: { $in: [...new Set(designIds)] }, user: req.user?.id });
+    if (owned !== new Set(designIds.map(String)).size) {
+      const error = new Error("Design not found for cart item") as CustomError;
+      error.statusCode = 404;
+      throw error;
     }
 
-    // Shipping and tax come from the shared pricer so this quote, the Stripe
-    // charge and the saved order cannot disagree. This path previously used its
-    // own rates (express $19.99, 9.4% tax gated on the country string being
-    // exactly "United States") while the charge path used $24.99 and a flat 8%.
-    const shippingQuote = await quoteShipping({
-      totalSqFt: totalBillableSqFt(items, pricing),
-      method: normalizeShippingMethod(shippingMethod),
-      destination: {
-        state: String(req.body?.shippingState || ""),
-        postalCode: String(shippingPostalCode || ""),
-        country: String(shippingCountry || "US"),
-        city: req.body?.shippingCity ? String(req.body.shippingCity) : undefined,
-      },
-      packaging: pricing.packaging,
-      markupPct: pricing.shippingMarkupPct,
-      fallbackRates: pricing.shipping,
-      origin: await predictShippingOrigin(req.body?.shippingState).catch(() => null),
+    const totals = await priceItems(items, shippingMethod, {
+      state: String(req.body?.shippingState || ""),
+      postalCode: String(shippingPostalCode || ""),
+      country: String(shippingCountry || "US"),
+      city: req.body?.shippingCity ? String(req.body.shippingCity) : undefined,
     });
-
-    const totals = computeOrderTotals({
-      subtotal: roundToTwo(subtotal),
-      shippingMethod,
-      pricing,
-      shippingCost: shippingQuote.cost,
-      // Quoted the same way the order will be priced, so the cart cannot show a
-      // total the checkout then contradicts.
-      priority: priorityForShippingMethod(shippingMethod),
-    });
+    const pricing = await getGlobalPricing();
 
     res.status(200).json({
-      items: quoteItems,
+      items: items.map((it: any) => {
+        const unitPrice = deriveItemUnitPrice(it, pricing);
+        return {
+          name: it?.name,
+          unitPrice,
+          quantity: itemQuantity(it),
+          subtotal: roundToTwo(unitPrice * itemQuantity(it)),
+        };
+      }),
       subtotal: totals.subtotal,
       rushSurcharge: totals.rushSurcharge,
       shippingCost: totals.shippingCost,
       // Named so the storefront can say "USPS Ground Advantage" instead of just
       // a number, and so a fallback is visible rather than silent.
-      shippingService: shippingQuote.serviceName,
-      shippingSource: shippingQuote.source,
+      shippingService: totals.shipping.serviceName,
+      shippingSource: totals.shipping.source,
       tax: totals.tax,
       total: totals.total,
       currency: totals.currency
@@ -2863,11 +2418,6 @@ export const sendGangsheetUtilizationWarning = async (req: Request, res: Respons
       throw error;
     }
 
-    /*
-     * About the minimum billable length, which is the rule. This used to say the
-     * customer would be charged for a "full" 23.5 x 23.5in sheet — a figure no
-     * setting held and nothing else charged.
-     */
     const subject = "Unused gang sheet space notice";
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827;">
@@ -2903,12 +2453,9 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
       throw error;
     }
 
-
     const formattedItems = (order.items || []).map((item) => {
-      let description = "";
-      if (item.widthIn && item.heightIn) {
-        description = `${item.widthIn}" x ${item.heightIn}"`;
-      }
+      const description =
+        formatSheetSize((item as any).sheetWidthIn ?? item.widthIn, (item as any).sheetHeightIn ?? item.heightIn) || "";
       return {
         name: item.name || "Unknown Item",
         description: description,
@@ -2919,11 +2466,8 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
     });
 
     const pricing = order.pricing || {};
-    const lineItems = [
-      { label: "Subtotal", amount: (pricing.subtotal || 0).toFixed(2) },
-      { label: "Shipping", amount: (pricing.shippingCost || 0).toFixed(2) },
-      { label: "Tax", amount: (pricing.tax || 0).toFixed(2) }
-    ];
+    // The same lines as the order details and the admin's copy of this invoice.
+    const lineItems = orderChargeLines(order);
 
     const data = {
       // The invoice is the most customer-visible document there is, so it
@@ -2957,18 +2501,3 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
     next(error);
   }
 };
-
-/*
- * `reorder` was removed.
- *
- * It created a live order the moment it was called — no cart, no address
- * confirmation, no payment step — and the store's Order Details modal called it
- * behind a button that toasted "Order placed successfully!". The order it wrote
- * carried no `paymentIntentId`, so it was unpaid, and it was priced by copying
- * the ORIGINAL order's stored `unitPrice` and tax ratio rather than going
- * through `deriveItemUnitPrice`. After any rate or minimum-length change it
- * would have charged the old amount.
- *
- * Reordering now fills the cart from `GET /customer/orders/:id` and goes through
- * checkout like any other order, which is what Order History already did.
- */

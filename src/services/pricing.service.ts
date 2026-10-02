@@ -12,20 +12,6 @@ import {
   type ShippingQuote,
 } from "./shipping.service.js";
 
-/**
- * Single source of truth for what a customer is charged.
- *
- * Before this existed, five places computed an order's money and none of them
- * agreed. On a $100 express order the cart showed $119.99, Stripe charged
- * $132.99, and the saved order recorded $119.99 — so the customer saw one
- * number, paid another, and the record matched neither.
- *
- * Rates live in the `global_pricing` settings document, which the admin console
- * edits under Settings → General. Everything that touches money reads them from
- * here: the cart quote, the Stripe PaymentIntent, and the order that gets
- * saved. Changing a rate is an admin action, not a deploy.
- */
-
 export interface GlobalPricing {
   baseRatePerSqFt: number;
   /**
@@ -41,10 +27,6 @@ export interface GlobalPricing {
    */
   sheetWidthIn: number;
   minSheetLengthIn: number;
-  /**
-   * The flat rates are no longer what a customer pays. They are the fallback
-   * used when the carrier cannot be reached — see `shipping.service`.
-   */
   shipping: { standard: number; express: number };
   shippingMarkupPct: ShippingMarkupPct;
   /**
@@ -101,8 +83,6 @@ export const DEFAULT_GLOBAL_PRICING: GlobalPricing = {
   // partner cost runs well under the subtotal, so 10% of subtotal covers it
   // with room. Tune once real rush jobs have been costed.
   rushSurchargePct: 10,
-  // The values that were previously hard-coded, so nothing moves by adopting
-  // this — it only becomes visible and editable.
   partnerDefaults: { baseRatePerSqFt: 2.5, rushPct: 10, specialInkFlat: 5 },
   packaging: DEFAULT_PACKAGING_PROFILE,
   taxRatePct: 8.0,
@@ -185,18 +165,6 @@ export const normalizeGlobalPricing = (value: unknown): GlobalPricing => {
   };
 };
 
-/**
- * The rate every partner is paid at.
- *
- * There is one rate for the whole network, set by the admin. Partners used to
- * carry their own `settings.pricing`, so the same sheet cost a different amount
- * depending on who printed it and the console had no single number to show —
- * and nothing stopped a partner-level rate drifting above the retail rate.
- *
- * Returns the same shape the per-partner object had, so the cost breakdown is
- * unchanged: it still receives a pricing object, it just always receives this
- * one.
- */
 export const getPartnerPayRate = async (): Promise<{
   baseRatePerSqFt: number;
   tiered: never[];
@@ -343,16 +311,6 @@ const badRequest = (message: string) => {
   return error;
 };
 
-/**
- * The price of one line, derived from what will physically be produced.
- *
- * The client's `unitPrice` is not consulted. It used to be the only input, and
- * it is a free-floating number attached to nothing — a request could name its
- * own subtotal and both the Stripe charge and the saved order would honour it.
- * Area cannot be lied about profitably in the same way: the dimensions that set
- * the price are the dimensions the partner prints to, so understating them
- * buys a smaller sheet rather than a cheaper one.
- */
 export const deriveItemUnitPrice = (item: unknown, pricing: GlobalPricing): number => {
   const it = (item as any) || {};
   const type = String(it.type || "gangsheet").toLowerCase();
