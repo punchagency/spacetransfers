@@ -28,3 +28,29 @@ export function useIsMobile(): boolean {
 
   return isMobile;
 }
+
+/**
+ * True on a device with a real hovering pointer (a mouse or trackpad).
+ *
+ * A phone has none: it answers a hover query by firing the hover and the click
+ * together. The menu button opens on hover as a convenience for mouse users,
+ * which on a phone meant one tap opened it and closed it again — the menu
+ * simply did not work.
+ */
+export function useCanHover(): boolean {
+  const [canHover, setCanHover] = useState<boolean>(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return true;
+    return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(hover: hover) and (pointer: fine)");
+    const onChange = () => setCanHover(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  return canHover;
+}

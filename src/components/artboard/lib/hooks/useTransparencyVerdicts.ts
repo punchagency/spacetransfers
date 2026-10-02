@@ -1,20 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { checkFade, type FadeVerdict } from "../utils/fadeCheck";
 
-/**
- * Transparency verdicts for every image on the board, keyed by image URL.
- *
- * The flag used to be written onto an item once, when it was dropped, and a
- * banner timer cleared it after seven seconds. So it was never re-checked after
- * an edit that changed the image, it was gone when a saved design was reopened
- * (the fields were never saved), and the banner vanished while the artwork was
- * still on the sheet.
- *
- * Deriving it from the URL fixes all three at once: every edit gives an image a
- * new URL, which is checked; a reopened design's URLs are checked on load; and
- * the flag lasts exactly as long as the image does. Verdicts are remembered per
- * URL (`checkFade`), so undo, redo and repeated copies cost nothing.
- */
 export function useTransparencyVerdicts(items: ReadonlyArray<{ url: string }>) {
   const [verdicts, setVerdicts] = useState<ReadonlyMap<string, FadeVerdict>>(() => new Map());
   const requested = useRef(new Set<string>());
@@ -28,8 +14,6 @@ export function useTransparencyVerdicts(items: ReadonlyArray<{ url: string }>) {
   }, []);
 
   useEffect(() => {
-    // Forget images no longer on the board, so edited-away data URLs are not
-    // held for the session. Undo brings a URL back; its check is remembered.
     const present = new Set(items.map((it) => it.url));
     for (const url of requested.current) {
       if (!present.has(url)) requested.current.delete(url);

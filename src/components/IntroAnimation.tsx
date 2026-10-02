@@ -6,6 +6,8 @@ interface IntroAnimationProps {
 
 export default function IntroAnimation({ onComplete }: IntroAnimationProps) {
   const [currentFrame, setCurrentFrame] = useState(0);
+  /** The video has enough data to show something; until then the still stands alone. */
+  const [videoReady, setVideoReady] = useState(false);
 
   useEffect(() => {
     // Frame 0: Logo (2s)
@@ -23,21 +25,29 @@ export default function IntroAnimation({ onComplete }: IntroAnimationProps) {
   }, [onComplete]);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-black">
-      <div
-        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: "url('/space-bg.png')" }}
-      />
+    <div className="relative w-full h-screen supports-[height:100dvh]:h-dvh overflow-hidden bg-black">
+      <picture>
+        <source srcSet="/space-bg.webp" type="image/webp" />
+        <img
+          src="/space-bg.jpg"
+          alt=""
+          aria-hidden
+          decoding="async"
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      </picture>
       <video
-        className="absolute inset-0 w-full h-full object-cover opacity-60"
+        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-700"
+        style={{ opacity: videoReady ? 0.6 : 0 }}
         autoPlay
         muted
         loop
         playsInline
         preload="auto"
-        poster="/space-bg.png"
+        poster="/space-bg.webp"
+        onCanPlay={() => setVideoReady(true)}
       >
-        <source src="/space-video.mov" />
+        <source src="/space-video.mp4" type="video/mp4" />
       </video>
 
       {/* Content */}
@@ -57,8 +67,8 @@ export default function IntroAnimation({ onComplete }: IntroAnimationProps) {
 
         {currentFrame === 2 && (
           <div className="px-10 text-center">
-            <h1 className="text-3xl md:text-[63px] font-extrabold text-white drop-shadow-lg leading-tight shimmer-text fade-in-out-3s-effects whitespace-nowrap">
-              DTF Transfer that are out of this world
+            <h1 className="text-3xl md:text-[63px] font-extrabold text-white drop-shadow-lg leading-tight shimmer-text fade-in-out-3s-effects md:whitespace-nowrap">
+              DTF Transfers that are out of this world
             </h1>
           </div>
         )}

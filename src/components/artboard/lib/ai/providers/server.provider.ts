@@ -15,22 +15,6 @@ interface AiEditCapabilities {
   intents?: string[];
 }
 
-/**
- * Availability cache.
- *
- * The probe is cached so it costs one request rather than one per edit, but a
- * *failed* probe must never be cached the way a real answer is. It previously
- * was, and the consequence was severe: if the very first probe failed — the
- * frontend loading a moment before the API is reachable is enough — the
- * provider stayed permanently unavailable and every generative prompt reported
- * "no AI provider is configured" for the rest of the session, with no recovery
- * short of a full page reload.
- *
- * So the two cases are separated. A definitive answer from the server is
- * trusted for a while; a transport failure is retried on the next attempt after
- * a short backoff, which is enough to stop a hammering loop without freezing a
- * transient outage into a permanent one.
- */
 const DEFINITIVE_TTL_MS = 5 * 60_000;
 const FAILURE_BACKOFF_MS = 10_000;
 
@@ -115,7 +99,8 @@ export const serverProvider: AiEditProvider = {
       const result = await postAssetRef(
         "/customer/assets/ai-edit",
         { url: imageUrl, prompt, intent, seed },
-        { signal },
+        // The server allows the model two minutes; the request waits a little longer.
+        { signal, timeoutMs: 150_000 },
       );
 
       if (signal?.aborted) throw new AiEditAbortedError();

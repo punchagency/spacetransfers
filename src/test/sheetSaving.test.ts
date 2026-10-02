@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { artworkNotUploaded, nextUntitledName, UNTITLED_SHEET } from "../lib/utils/sheetSaving";
+import { artworkNotUploaded, titleTaken, nextUntitledName, UNTITLED_SHEET } from "../lib/utils/sheetSaving";
 
 describe("artworkNotUploaded", () => {
   it("is true when any image exists only in this browser", () => {
@@ -34,5 +34,12 @@ describe("nextUntitledName", () => {
 
   it("ignores case and stray spacing when deciding what is taken", () => {
     expect(nextUntitledName(["  untitled GANG sheet "])).toBe("Untitled gang sheet 2");
+  });
+});
+
+describe("titleTaken", () => {
+  it("compares names the way the server does: ignoring case and spacing", () => {
+    expect(titleTaken("Sheet  ONE", ["sheet one"])).toBe(true);
+    expect(titleTaken("sheet one (2)", ["sheet one"])).toBe(false);
   });
 });

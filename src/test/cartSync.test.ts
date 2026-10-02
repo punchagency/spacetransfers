@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cartLineKey,
+  dedupeCartByDesign,
   cartSignInMessage,
   mergeCarts,
   readCartOwner,
@@ -40,6 +41,35 @@ describe("mergeCarts", () => {
   it("tells reorder lines apart by id", () => {
     const reorder = (id: number) => ({ id, type: "gangsheet", widthIn: getSheetWidthIn(), heightIn: 12 });
     expect(mergeCarts([reorder(1)], [reorder(1), reorder(2)])).toHaveLength(2);
+  });
+});
+
+describe("one line per saved sheet", () => {
+  it("identifies a gang sheet by its saved sheet, before its contents", () => {
+    expect(cartLineKey({ id: 1, designId: "d1", designSignature: "x" })).toBe("design:d1");
+    expect(cartLineKey({ id: 1, designSignature: "x" })).toBe("sig:x");
+    expect(cartLineKey({ id: 7 })).toBe("id:7");
+  });
+
+  it("merges lines for the same saved sheet, keeping the newest where it stands", () => {
+    // The cart that prompted this: three lines, two of them the same sheet.
+    const cart = [
+      { id: 100, type: "gangsheet", designId: "a", name: "sheet one", pieces: 4 },
+      { id: 200, type: "gangsheet", designId: "b", name: "sheet one (2)" },
+      { id: 300, type: "gangsheet", designId: "a", name: "sheet one", pieces: 5 },
+    ];
+    expect(dedupeCartByDesign(cart).map((l) => l.id)).toEqual([200, 300]);
+  });
+
+  it("leaves lines without a saved sheet, and other line types, alone", () => {
+    const cart = [{ id: 1, type: "gangsheet" }, { id: 2, type: "gangsheet" }, { id: 3, type: "other", designId: "a" }];
+    expect(dedupeCartByDesign(cart)).toBe(cart);
+  });
+
+  it("merges a signed-out copy of a sheet into the account's line for it", () => {
+    const account = [{ id: 1, type: "gangsheet", designId: "a", designSignature: "old" }];
+    const browser = [{ id: 2, type: "gangsheet", designId: "a", designSignature: "new" }];
+    expect(mergeCarts(account, browser)).toEqual(account);
   });
 });
 

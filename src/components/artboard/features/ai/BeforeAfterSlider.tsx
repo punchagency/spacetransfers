@@ -104,6 +104,8 @@ export default function BeforeAfterSlider({
       {/* After: the full-width base layer. The *before* is the one clipped, so
           the default view leads with the result the customer is judging. */}
       <img
+        // Same CORS mode as the board, so neither leaves a cached copy the other can't read.
+        crossOrigin="anonymous"
         src={afterUrl}
         alt="After the AI edit"
         draggable={false}
@@ -120,6 +122,8 @@ export default function BeforeAfterSlider({
         style={{ clipPath: `inset(0 ${100 - position}% 0 0)`, ...gridStyle }}
       >
         <img
+          // Same CORS mode as the board, so neither leaves a cached copy the other can't read.
+          crossOrigin="anonymous"
           src={beforeUrl}
           alt="Before the AI edit"
           draggable={false}

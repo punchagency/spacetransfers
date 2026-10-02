@@ -1,35 +1,3 @@
-/**
- * Non-blocking progress for a bulk drop.
- *
- * Replaces the full-canvas modal that used to cover the artboard for the whole
- * upload. That modal was not just cosmetic: it sat at `inset-0 z-30` over the
- * canvas, and because items were only committed to state after every file had
- * finished, there was nothing behind it to see anyway. On a 120-file drop the
- * customer watched an opaque card for the entire batch.
- *
- * This sits in a corner, is pointer-transparent, and reports real counts —
- * "Processing 82 of 120 images" answers the question the customer actually has
- * while artwork is appearing behind it.
- *
- * The line under the count used to read "No need to wait — keep designing while
- * we finish up", which was true of *editing* the board and false of the one
- * thing customers actually did next: drop another folder. A second batch landing
- * mid-flight competed with the first for upload slots and packer time and could
- * stall the board, so the copy was inviting the exact action that broke it. It
- * now says to wait, and the handler backs that up by queueing a mid-batch drop
- * rather than starting it (see `submitDrop`). Editing artwork already on the
- * sheet is still perfectly fine — the overlay is pointer-transparent for that
- * reason — but that is not what the line needed to be spent on.
- *
- * The glow badge and bar reuse `.animate-pulse-glow` and `.processing-bar-sheen`
- * from `index.css` — both written for exactly this ("progress bar glow while a
- * background batch is still processing") but never wired to a component. A
- * third, `.upload-sheen` / `.upload-pulse`, exists there too and is likewise
- * unused; picking one pair here rather than writing new keyframes avoids
- * adding a fourth implementation of the same idea. Both animate only
- * `box-shadow`/`opacity`/`transform` — compositor-only, so they cost nothing
- * on the frames where a hundred images are actually decoding.
- */
 interface BulkLoadOverlayProps {
   /** Images fully processed and placed on the board. */
   loaded: number;

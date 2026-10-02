@@ -14,6 +14,7 @@ import {
 } from "./artboard/lib/hooks";
 import { snapToGridPoint, isDpiFlagged, shouldWarn, type FadeVerdict } from "./artboard/lib/utils";
 import { isTypingTarget } from "../lib/utils/keyboard";
+import { useCanHover } from "../lib/useIsMobile";
 import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
@@ -23,7 +24,7 @@ import { executeBoardCommands } from "./artboard/lib/ai";
 import type { ArtboardProps } from "./artboard/types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
 import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
-import { isSheetFull } from "./artboard/lib/utils";
+import { autoNestWouldUndoRotation, isSheetFull } from "./artboard/lib/utils";
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -48,6 +49,8 @@ export default function Artboard({
   initialData,
   onHistoryChange,
 }: ArtboardProps) {
+  /** No hovering pointer: a phone or tablet, where there is no keyboard to press. */
+  const isTouch = !useCanHover();
   const [zoom, setZoom] = useState(1);
   const [items, setItems] = useState<any[]>([]);
   const [counter, setCounter] = useState(0);
@@ -128,7 +131,7 @@ export default function Artboard({
         setZoom(zoomOverride);
         return;
       }
-      const availablePx = Math.max(0, el.clientWidth - CANVAS.RULER_OFFSET_PX);
+      const availablePx = Math.max(0, el.clientWidth - (showRulers ? CANVAS.RULER_OFFSET_PX : 0));
       const fit = availablePx / neededPx;
       setZoom(Math.min(1, Math.max(0.1, fit || 1)));
     };
@@ -137,7 +140,7 @@ export default function Artboard({
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [zoomOverride, canvasWidth]);
+  }, [zoomOverride, canvasWidth, showRulers]);
 
   /**
    * Applies an explicit zoom, or `null` to resume auto-fit. Returns the value
@@ -148,13 +151,13 @@ export default function Artboard({
       setZoomOverride(null);
       const el = document.querySelector("#artboard-main-container") as HTMLElement | null;
       const neededPx = canvasWidth * CANVAS.PIXELS_PER_INCH;
-      const availablePx = Math.max(0, (el?.clientWidth ?? 0) - CANVAS.RULER_OFFSET_PX);
+      const availablePx = Math.max(0, (el?.clientWidth ?? 0) - (showRulers ? CANVAS.RULER_OFFSET_PX : 0));
       return Math.min(1, Math.max(0.1, availablePx / neededPx || 1));
     }
     const clamped = Math.min(ZOOM.MAX, Math.max(ZOOM.MIN, factor));
     setZoomOverride(clamped);
     return clamped;
-  }, [canvasWidth]);
+  }, [canvasWidth, showRulers]);
   /**
    * Uploads canvas-produced artwork in the background, as soon as it appears.
    *
@@ -343,7 +346,6 @@ export default function Artboard({
       const target = Math.max(maxId, initCounter);
       setCounter((prev) => (prev < target ? target : prev));
     }
-    // Loading a different design discards prior history — those steps no longer make sense
     history.reset();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
@@ -481,12 +483,66 @@ export default function Artboard({
   };
 
   /**
-   * Duplicates everything selected, and selects the copies.
+   * Rotate, unless auto-nest would turn the piece straight back.
    *
-   * It used to duplicate only the piece last clicked, however many were
-   * selected. A locked piece may be duplicated — the copy starts unlocked, since
-   * it is a new piece the customer has not locked.
+   * Auto-nest lays each piece whichever way uses the least film, so a quarter
+   * turn it disagrees with was undone on the next layout pass — the footprint
+   * stayed put and the artwork flipped upside down. The turn is tried on a copy
+   * of the board first; if auto-nest would undo it, nothing changes and the
+   * customer is told to switch auto-nest off to rotate. Everything else about
+   * auto-nest is exactly as before.
    */
+  const rotateSelected = () => {
+    if (autoNestStickers) {
+      const state = boardStateRef.current;
+      const selected = new Set<number>(state.selectedIds);
+      if (state.selectedId != null) selected.add(state.selectedId);
+      // Locked pieces are refused by the action itself; groups are never
+      // turned by auto-nest, so neither can conflict.
+      const loose = new Set(
+        state.items.filter((it) => selected.has(it.id) && !it.locked && !it.groupId).map((it) => it.id),
+      );
+      if (autoNestWouldUndoRotation(state.items, loose, state.canvasWidth, state.spacing, state.marginSize)) {
+        /*
+         * Short, and it goes away when tapped.
+         *
+         * It ran for six seconds with no way to dismiss it, sitting over the
+         * toolbar on a phone — long enough to feel stuck. It also said "press
+         * N", which a phone has no way to do.
+         */
+        toast(
+          (t) => (
+            <span onClick={() => toast.dismiss(t.id)} className="cursor-pointer">
+              Auto-nest is keeping this piece turned to save film. Turn auto-nest off
+              {isTouch ? " in the menu" : " (press N)"} to rotate it.
+            </span>
+          ),
+          {
+            id: "rotate-auto-nest",
+            icon: "↻",
+            duration: 3500,
+            // Clear of the image toolbar, which sits at the top of the sheet.
+            position: "bottom-center",
+          },
+        );
+        return;
+      }
+    }
+    itemActions.rotateSelected();
+  };
+
+  /**
+   * Stores a piece's measured pixel width when it has none. Not an edit: no
+   * undo step, and the sheet's saved/cart comparison ignores this field.
+   */
+  const recordMeasuredWidth = useCallback((id: number, widthPx: number) => {
+    setItems((prev) =>
+      prev.some((it) => it.id === id && !it.nativeWidthPx && !it.croppedWidthPx)
+        ? prev.map((it) => (it.id === id && !it.nativeWidthPx && !it.croppedWidthPx ? { ...it, nativeWidthPx: widthPx } : it))
+        : prev,
+    );
+  }, [setItems]);
+
   const duplicateSelected = () => {
     const sourceIds = [
       ...(selectedId == null ? [] : [selectedId]),
@@ -584,9 +640,6 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
-      {/* Resolution is no longer routed through here — it is raised as a toast
-          when a drop lands (`showLowDpiWarning`) and reported continuously by
-          the top-bar chip, so this banner is now purely about fades. */}
       <ArtboardWarning flagged={flaggedTransparency} />
       <input
         ref={fileInputRef}
@@ -660,8 +713,6 @@ export default function Artboard({
                 else next.add(u);
               }
               setSelectedIds(next);
-              // Deselecting used to leave the deselected piece as the one the
-              // toolbar acted on.
               setSelectedId(removing ? ([...next][0] ?? null) : id);
             } else {
               setSelectedId(id);
@@ -672,13 +723,14 @@ export default function Artboard({
           onToggleProperties={(id) =>
             setShowProperties((prev) => ({ ...prev, [id]: true }))
           }
-          itemActions={itemActions}
+          itemActions={{ ...itemActions, rotateSelected }}
           groupAction={groupAction}
           onGroup={groupAction === "ungroup" ? ungroupSelection : groupSelection}
           onDuplicate={duplicateSelected}
           onDelete={deleteSelection}
           onCloseProperties={() => setShowProperties({})}
           onRemoveBg={itemActions.removeBg}
+          onMeasured={recordMeasuredWidth}
           onDragStart={handleDragStart}
           onResizeStart={handleResizeStart}
           isDraggingItem={isDraggingItem}
@@ -690,6 +742,9 @@ export default function Artboard({
         {/* Mounted so an AI-driven zoom is visible and reversible in the UI —
             the requirement is that every control reflects the current state,
             and until now the zoom readout existed but was never rendered. */}
+        {/* Nothing to zoom on an empty board, and on a phone the card sat on
+            top of the upload panel. */}
+        {!(isTouch && items.length === 0) && (
         <ZoomControls
           zoom={zoom}
           onZoomIn={() => applyZoom(zoom + ZOOM.STEP * 2)}
@@ -697,6 +752,7 @@ export default function Artboard({
           onZoomFit={() => applyZoom(null)}
           isFit={zoomOverride === null}
         />
+        )}
       </div>
 
       {/* Review gate for a finished edit. Portalled from the component itself,

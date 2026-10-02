@@ -2,17 +2,6 @@ import { computeEffectiveDpi } from "../../components/artboard/lib/utils/layoutH
 import { shouldWarn, type FadeVerdict } from "../../components/artboard/lib/utils/fadeCheck";
 import { DPI } from "../../config/artboard.config";
 
-/**
- * What checkout says about the artwork in the cart.
- *
- * The "Design Validation" card used to show a fixed "Review Warnings" badge
- * whatever the cart held. These are the same two checks the artboard already
- * flags a piece for — resolution below the print threshold, and fades or
- * see-through areas DTF cannot print — summarised per sheet, so the customer
- * sees at the last step what they may have scrolled past while designing.
- * Warnings inform; they never block payment.
- */
-
 export interface SheetWarning {
   /** 1-based position of the sheet in the cart, for "Sheet 2". */
   sheet: number;

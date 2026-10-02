@@ -1,25 +1,6 @@
 import toast from "react-hot-toast";
 import { NoticeCard } from "./UnsupportedFilesWarning";
 
-/**
- * Notice for files dropped while a batch is still processing.
- *
- * The artboard used to start the new batch immediately, alongside the running
- * one. Both then competed for the same six upload slots, the same decode
- * budget and the same packer, which is what made a second large drop stall the
- * board — and the progress overlay, which reports one batch's counts, became
- * unreadable while two were in flight.
- *
- * The files are now held until the active batch finishes. That is a *deferral*,
- * not a rejection, and the wording has to say so precisely: a customer who
- * thinks their drop was ignored will drop it again, which is the exact input
- * this is meant to damp. So the notice names the count, says it is queued, and
- * says what it is waiting for.
- *
- * Renders through `NoticeCard`, so it stacks with the low-DPI and large-image
- * notices rather than introducing another surface.
- */
-
 /** Matches the other drop notices, so everything from one drop ages out together. */
 const NOTICE_DURATION_MS = 7000;
 

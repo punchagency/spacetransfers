@@ -25,12 +25,18 @@ import type { SerialQueue } from "../utils/serialQueue";
 import type { CommitHistory } from "./useHistory";
 
 /**
- * Hard ceiling on a single file's upload.
+ * An upload is given up on when it stops moving, not when it takes long.
  *
- * Generous because it has to cover a genuinely large print file on a slow
- * connection — it exists to bound a hang, not to police slow uploads.
+ * It had a 90-second ceiling on the whole request, which is backwards for print
+ * files: a large one on a slow connection legitimately takes minutes (a 4 MB
+ * photo from far away took over a minute), while a connection that has died
+ * was waited on for the full 90 seconds. So:
+ *  - while sending, 30 seconds with no progress at all means it has stalled;
+ *  - once every byte is sent, the server has 2 minutes to answer (it stores
+ *    the file, trims it and checks it before replying).
  */
-const UPLOAD_TIMEOUT_MS = 90_000;
+const UPLOAD_STALL_MS = 30_000;
+const UPLOAD_RESPONSE_MS = 120_000;
 
 /**
  * How many files are processed at once.
@@ -50,17 +56,6 @@ const UPLOAD_TIMEOUT_MS = 90_000;
  */
 const UPLOAD_CONCURRENCY = 6;
 
-/**
- * How many finished items are committed to the board at once.
- *
- * Items used to be held back until every file in the drop had finished, so a
- * 120-file batch showed nothing at all for its entire duration. They are now
- * flushed in chunks as they complete.
- *
- * Chunked rather than one-at-a-time because each flush runs the packer and a
- * React commit over the whole board: at 120 items that is 120 packing passes
- * versus 15, for no visible difference at the speed uploads actually land.
- */
 const COMMIT_CHUNK_SIZE = 8;
 
 /** Longest a finished item waits for chunk-mates before being committed alone. */
@@ -134,43 +129,10 @@ export const useDropHandler = (
   const itemsRef = useRef(items);
   itemsRef.current = items;
 
-  /**
-   * Per-batch state, keyed by a token minted on each drop.
-   *
-   * Previously a single `canceledRef` boolean and one flat `activeUploadsRef`
-   * array were shared by every drop. A second drop starting while the first was
-   * still running reset `canceledRef` to false under the first batch's workers
-   * and both wrote to the same progress state; cancelling either aborted both.
-   * That shared mutable state is why a repeat upload could wedge the board —
-   * the second batch inherited the first's bookkeeping.
-   *
-   * A token per batch makes the batches genuinely independent: a worker only
-   * ever consults its own cancel flag, and only its own requests are aborted.
-   */
   const batchTokenRef = useRef(0);
   const canceledBatchesRef = useRef(new Set<number>());
   const activeUploadsRef = useRef(new Map<number, Set<XMLHttpRequest>>());
 
-  /**
-   * One batch at a time, with the rest held in order behind it.
-   *
-   * Batches were made independent (see the token scheme above) so that a second
-   * drop could no longer corrupt the first's bookkeeping — but independent is
-   * not the same as free. Two live batches still competed for the same six
-   * upload slots, the same decode budget, and the same packer running over an
-   * ever-growing board, and the progress overlay reports one batch's counts, so
-   * with two in flight it showed neither. On a pair of 100-file drops that is
-   * the board going unresponsive for the length of both.
-   *
-   * A drop arriving mid-batch is therefore queued rather than started. The
-   * ordering and no-overlap rules live in `createSerialQueue`, where they are
-   * testable without a network or a React tree.
-   *
-   * `runDrop` is reached through a ref because the queue is created once while
-   * `runDrop` is rebuilt every render: a queued batch must run against the
-   * board and settings as they are when it *starts*, not as they were when it
-   * was dropped.
-   */
   const runDropRef = useRef<(job: PendingDrop) => Promise<void>>(async () => {});
 
   const dropQueueRef = useRef<SerialQueue<PendingDrop> | null>(null);
@@ -280,36 +242,38 @@ export const useDropHandler = (
       }
 
       /**
-       * Without this an upload could wait forever.
-       *
-       * `xhr.onerror` only fires on a transport failure — a server that accepts
-       * the body and then never answers (which is what a file it cannot decode
-       * can produce) fires nothing at all, and the dialog sits at whatever
-       * percentage it reached with no error, no timeout and no way out but
-       * Cancel. That was the reported bug.
-       *
-       * The window is generous because it has to cover a genuinely large
-       * artwork on a slow connection; it exists to bound a hang, not to police
-       * slow uploads. `xhr.timeout` measures the whole request, and is reset by
-       * neither upload progress nor a partial response.
+       * Without this an upload could wait forever: `xhr.onerror` only fires on
+       * a transport failure, and a server that accepts the body and never
+       * answers fires nothing at all — the dialog sat at its last percentage.
        */
-      xhr.timeout = UPLOAD_TIMEOUT_MS;
-      xhr.ontimeout = () => {
-        release();
-        reject(
-          new Error(
-            `“${file.name}” timed out after ${Math.round(UPLOAD_TIMEOUT_MS / 1000)}s. Check your connection and try again.`,
-          ),
-        );
+      let giveUpReason: string | null = null;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+      const watch = (ms: number, reason: string) => {
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          giveUpReason = reason;
+          xhr.abort();
+        }, ms);
       };
+      const stopWatching = () => {
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = null;
+      };
+      const stalled = `“${file.name}” stopped uploading. Check your connection and try again.`;
+      const slowServer = `“${file.name}” uploaded, but we didn't hear back in time. Please try again in a moment.`;
+      watch(UPLOAD_STALL_MS, stalled);
 
       xhr.upload.onprogress = (evt) => {
+        watch(UPLOAD_STALL_MS, stalled);
         if (evt.lengthComputable) {
           onProgress(Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100)));
         }
       };
+      // Every byte sent: from here the wait is on the server, not the connection.
+      xhr.upload.onload = () => watch(UPLOAD_RESPONSE_MS, slowServer);
 
       xhr.onload = () => {
+        stopWatching();
         release();
         let json: any = {};
         try {
@@ -325,13 +289,15 @@ export const useDropHandler = (
       };
 
       xhr.onerror = () => {
+        stopWatching();
         release();
         reject(new Error(`“${file.name}” couldn't be uploaded. Check your connection and try again.`));
       };
 
       xhr.onabort = () => {
+        stopWatching();
         release();
-        reject(new Error("Upload canceled"));
+        reject(new Error(giveUpReason ?? "Upload canceled"));
       };
 
       const formData = new FormData();
@@ -361,8 +327,7 @@ export const useDropHandler = (
             if (total > 1 && toastId) {
               toast.loading(`Converting “${file.name}” — page ${done} of ${total}`, { id: toastId });
             }
-          },
-        });
+          } });
         if (toastId) toast.dismiss(toastId);
         out.push(...result.files);
         for (const notice of result.notices) toast(notice, { duration: 8000, icon: "ℹ️" });
@@ -379,21 +344,6 @@ export const useDropHandler = (
     return out;
   };
 
-  /**
-   * The only way `processDrop` is ever called.
-   *
-   * `processDrop` is long and touches decoding, the network, canvas work and
-   * layout — any of which can throw. It was previously awaited directly from
-   * the drop handlers with nothing catching it, so a single rejection (a
-   * corrupt file made `loadImageSize` reject) escaped as an unhandled promise
-   * rejection and the function simply stopped. `setIsUploading(false)` never
-   * ran, so the dialog stayed on screen at whatever percentage it had reached,
-   * forever, with no error — the reported bug.
-   *
-   * This wrapper makes that structurally impossible: the dialog is torn down in
-   * a `finally`, so no future edit to `processDrop` can reintroduce a path that
-   * leaves it stuck.
-   */
   const runDrop = async (args: {
     droppedFiles: File[];
     droppedUrl: string;
@@ -429,8 +379,7 @@ export const useDropHandler = (
     droppedFiles,
     droppedUrl,
     dropX,
-    dropY,
-  }: {
+    dropY }: {
     droppedFiles: File[];
     droppedUrl: string;
     dropX: number;
@@ -457,7 +406,6 @@ export const useDropHandler = (
       dropped = await convertUploads(dropped);
       if (dropped.length === 0 && !droppedUrl) return;
     }
-
 
     /**
      * Seeded from the render's `counter`, but never allowed to move backwards.
@@ -516,8 +464,7 @@ export const useDropHandler = (
         originalHeightIn: heightIn,
         uncroppedUrl: url,
         uncroppedWidthPx: loaded.widthPx,
-        uncroppedHeightPx: loaded.heightPx,
-      };
+        uncroppedHeightPx: loaded.heightPx };
 
       const cropped = autoCropUploads ? await autoCropImage(url, dpi) : null;
       if (cropped) {
@@ -536,8 +483,6 @@ export const useDropHandler = (
 
       return baseItem;
     };
-
-    let created: ArtboardItem[] = [];
 
     if (dropped.length > 0) {
       const token = (batchTokenRef.current += 1);
@@ -573,34 +518,12 @@ export const useDropHandler = (
       setBatchTotal(dropped.length);
       setBatchLoaded(0);
 
-      /**
-       * Per-file progress, summed for the dialog.
-       *
-       * Files no longer finish in order, so progress cannot be derived from an
-       * index. Each file owns a 0–1 slot and the bar shows their mean, which
-       * stays monotonic and truthful however the individual uploads interleave.
-       */
       const fileProgress = new Array(dropped.length).fill(0);
       const publishProgress = () => {
         const total = fileProgress.reduce((sum, p) => sum + p, 0);
         setUploadProgress(Math.max(0, Math.min(100, (total / dropped.length) * 100)));
       };
 
-      /**
-       * Progressive commit.
-       *
-       * Finished items are buffered here and flushed to the board in chunks
-       * while the rest of the batch is still uploading, so artwork appears as
-       * it lands instead of all at once at the end.
-       *
-       * The packing runs *inside* the `setItems` updater, against `prev`. That
-       * matters more than it looks: the previous implementation packed against
-       * the `items` array captured in the render closure, which on a 120-file
-       * drop was a snapshot from before the upload started — tens of seconds
-       * stale by the time it was used. New items were therefore packed against
-       * a board that no longer existed, and landed on top of whatever had been
-       * added since. Reading `prev` is the only way to see the real board.
-       */
       const pending: ArtboardItem[] = [];
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
       let committedCount = 0;
@@ -651,21 +574,8 @@ export const useDropHandler = (
         setItems((prev) => {
           const all = [...prev, ...chunk];
 
-          /**
-           * Ids the packer could not fit inside the sheet's length.
-           *
-           * These are dropped from the commit rather than clamped. Clamping
-           * was the old behaviour and it is worse than refusing: it stacked
-           * everything that would not fit against the bottom edge, on top of
-           * each other, and told the customer nothing about which artwork was
-           * now unusable.
-           */
           const overflowed = new Set<number>();
 
-          // Shelf-pack only when this chunk is landing on a genuinely empty
-          // board; every later chunk flows into the gaps of what is already
-          // there, which is what keeps a progressive batch packing as tightly
-          // as the old all-at-once pass did.
           const packed =
             prev.length === 0 && chunk.length > 1
               ? arrangeInitialLayout(chunk, currentCanvasWidth, spacing, marginSize)
@@ -725,8 +635,7 @@ export const useDropHandler = (
               // Committed already positioned. The entrance tween below is a
               // `from`, so it decorates a correct layout instead of being
               // responsible for producing one.
-              isDropping: false,
-            };
+              isDropping: false };
           });
 
           if (didClamp && !warnedMaxHeightRef.current) {
@@ -788,8 +697,7 @@ export const useDropHandler = (
                   duration: 0.35,
                   delay: index * stagger,
                   ease: "power2.out",
-                  clearProps: "opacity,scale,transform",
-                },
+                  clearProps: "opacity,scale,transform" },
               );
             });
           });
@@ -808,15 +716,6 @@ export const useDropHandler = (
         }
       };
 
-      /**
-       * Builds one artboard item, or returns null if the file can't be used.
-       *
-       * Every failure path inside here reports and returns null rather than
-       * throwing. A single unreadable file must not take down the whole drop —
-       * previously one rejection escaped `processDrop` entirely, leaving
-       * `isUploading` true forever with no message, which is exactly the hang
-       * being fixed.
-       */
       const buildItem = async (file: File, idx: number): Promise<ArtboardItem | null> => {
         // Content check first: it reads 16 bytes, needs no network, and catches
         // the "text file named .png" case before a byte is uploaded.
@@ -897,8 +796,7 @@ export const useDropHandler = (
           originalHeightIn,
           uncroppedUrl: serverUrl,
           uncroppedWidthPx: widthPx,
-          uncroppedHeightPx: heightPx,
-        };
+          uncroppedHeightPx: heightPx };
 
         if (autoCropUploads && !trimmedUrl) {
           const cropped = await autoCropImage(serverUrl, dpi);
@@ -1081,12 +979,10 @@ export const useDropHandler = (
                       flowCols: u.flowCols,
                       flowStartCol: u.flowStartCol,
                       flowEndCol: u.flowEndCol,
-                      nestRotation: (u.nestRotation ?? 0) as 0 | 90,
-                    }
+                      nestRotation: (u.nestRotation ?? 0) as 0 | 90 }
                   : {}),
                 gravityActive: false,
-                isDropping: false,
-              }
+                isDropping: false }
             : it,
         );
       });
@@ -1098,7 +994,6 @@ export const useDropHandler = (
     if (lowDpiImages > 0) {
       showLowDpiWarning(lowDpiImages);
     }
-
 
     // Published from the allocator, not recomputed from a stale `counter` plus
     // a file count — the allocator is the only thing that knows what was
@@ -1149,10 +1044,6 @@ export const useDropHandler = (
       e.dataTransfer.getData("text/plain");
     const droppedUrl = droppedFiles.length === 0 ? jsonData : "";
     if (droppedFiles.length === 0 && !droppedUrl) return;
-    // Multi-file drops no longer force the Auto-Nest toggle on: enabling it
-    // now triggers a deliberate full-sheet optimization (see
-    // useArtboardEffects), which must stay an explicit user choice — new
-    // files already pack into existing gaps on their own via placeNewItems.
 
     const rect = e.currentTarget.getBoundingClientRect();
     const zoomVal = zoom || 1;
@@ -1188,6 +1079,5 @@ export const useDropHandler = (
     dropFilesAtCenter,
     onDragOver,
     onDragLeave,
-    onDropEvent,
-  };
+    onDropEvent };
 };

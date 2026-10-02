@@ -1,28 +1,5 @@
 import { billableSheetDimensions, getPricePerSqFt, getSheetWidthIn } from "./pricingRates";
 
-/**
- * The cart across devices and sessions.
- *
- * A signed-in customer's cart is kept on their account (`/customer/cart`). It
- * used to be sent on every change, silently dropped by the server (the field was
- * missing from the user schema) and never read back, so it followed nobody
- * anywhere. Because the browser's own copy drops embedded artwork to fit in
- * storage, the account copy is also the only complete one.
- *
- * Nothing ties a signed-out cart to a person: it joins whichever account signs
- * in on this browser, and the sign-in message says so (`cartSignInMessage`).
- *
- * The rules, in one place:
- *  - signing in loads the account's cart and merges in anything added while
- *    signed out; a cart left in the browser by a different account is replaced,
- *    never merged;
- *  - nothing is written to the account until its cart has been read, so opening
- *    the store on a new device cannot overwrite the saved cart with an empty one;
- *  - signing out clears the browser's copy (the account keeps it); a session that
- *    merely expired keeps it, since the same person is still at the keyboard;
- *  - placing an order clears both (the server clears the account's copy itself).
- */
-
 /** Which account the cart in this browser belongs to, or null for a guest cart. */
 const OWNER_KEY = "cartOwner";
 
@@ -44,12 +21,31 @@ export const writeCartOwner = (userId: string | null) => {
 };
 
 /**
- * Identity of a cart line. A sheet added from the editor carries a signature of
- * its contents, which is what "the same sheet" means; other lines (reorders)
- * have only their id.
+ * Identity of a cart line. A gang sheet is its saved sheet (`designId`): one
+ * saved sheet, one line. Lines from before lines recorded their sheet fall back
+ * to a signature of their contents; other lines (reorders) have only their id.
  */
 export const cartLineKey = (line: any): string =>
-  line?.designSignature ? `sig:${line.designSignature}` : `id:${line?.id}`;
+  line?.designId
+    ? `design:${line.designId}`
+    : line?.designSignature
+    ? `sig:${line.designSignature}`
+    : `id:${line?.id}`;
+
+export const dedupeCartByDesign = <T extends Record<string, any>>(lines: T[]): T[] => {
+  const newest = new Map<string, T>();
+  for (const line of lines) {
+    if ((line?.type || "gangsheet") !== "gangsheet" || !line?.designId) continue;
+    const key = String(line.designId);
+    const current = newest.get(key);
+    if (!current || Number(line.id) > Number(current.id)) newest.set(key, line);
+  }
+  const kept = lines.filter(
+    (line) =>
+      (line?.type || "gangsheet") !== "gangsheet" || !line?.designId || newest.get(String(line.designId)) === line,
+  );
+  return kept.length === lines.length ? lines : kept;
+};
 
 /**
  * The account's cart with the browser's lines added after it, minus duplicates.

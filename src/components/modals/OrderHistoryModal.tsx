@@ -6,9 +6,8 @@ import {
   MdVisibility,
   MdDownload,
 } from "react-icons/md";
-import { getApiBaseUrl } from "../../lib/utils/api";
-import { clearAuth, getToken } from "../../lib/utils/auth";
 import { apiFetch } from "../../lib/utils/api";
+import { downloadInvoice } from "../../lib/utils/invoice";
 import toast from "react-hot-toast";
 import { formatOrderNumber } from "../../lib/utils/orderNumber";
 
@@ -27,7 +26,8 @@ interface OrderHistoryModalProps {
   isOpen: boolean;
   onClose: () => void;
   onViewDetails: (orderId: string) => void;
-  onReorderToCart?: (orderId: string) => Promise<void> | void;
+  /** Adds the order's sheets to the cart; reports its own outcome. */
+  onReorderToCart?: (orderId: string) => Promise<unknown> | unknown;
 }
 
 export default function OrderHistoryModal({
@@ -39,6 +39,11 @@ export default function OrderHistoryModal({
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The list comes 20 at a time; past that, orders were simply not shown.
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Which order's invoice or reorder is in flight, so a second tap waits.
+  const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -52,6 +57,7 @@ export default function OrderHistoryModal({
     try {
       const data = await apiFetch("/customer/orders");
       setOrders(data.orders || []);
+      setNextCursor(data.nextCursor || null);
     } catch (err: any) {
       console.error("Failed to fetch orders:", err);
       setError(err.message || "Failed to load order history");
@@ -61,51 +67,41 @@ export default function OrderHistoryModal({
     }
   };
 
-  const handleDownloadInvoice = async (orderId: string) => {
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
     try {
-      // Not a hard-coded localhost. This only ever worked in development.
-      const token = getToken();
-      const response = await fetch(
-        `${getApiBaseUrl()}/customer/orders/${orderId}/invoice`,
-        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
-      );
-
-      if (!response.ok) {
-        // A blob download bypasses `apiFetch`, so the session check has to be
-        // made here too — otherwise an expired token reads as a broken invoice.
-        if (response.status === 401) {
-          clearAuth();
-          throw new Error("Your session has expired. Please sign in again.");
-        }
-        let message = "Failed to download invoice";
-        try { message = (await response.json())?.message || message; } catch { /* not JSON */ }
-        throw new Error(message);
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `invoice-${orderId}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      const data = await apiFetch(`/customer/orders?cursor=${encodeURIComponent(nextCursor)}`);
+      setOrders((prev) => [...prev, ...(data.orders || [])]);
+      setNextCursor(data.nextCursor || null);
     } catch (err: any) {
-      toast.error(err.message || "Failed to download invoice");
+      toast.error(err.message || "Couldn't load more orders. Please try again.");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const handleDownloadInvoice = async (order: Order) => {
+    if (busy) return;
+    setBusy(`invoice-${order.orderId}`);
+    try {
+      await downloadInvoice(order.orderId, order.displayId);
+    } catch (err: any) {
+      toast.error(err.message || "The invoice couldn't be downloaded. Please try again.");
+    } finally {
+      setBusy(null);
     }
   };
 
   const handleReorder = async (orderId: string) => {
+    if (busy || !onReorderToCart) return;
+    setBusy(`reorder-${orderId}`);
     try {
-      if (onReorderToCart) {
-        await onReorderToCart(orderId);
-        toast.success("Order added to cart");
-        return;
-      }
-      toast.error("Reorder is unavailable right now.");
+      await onReorderToCart(orderId);
     } catch (err: any) {
-      toast.error(err.message || "Failed to reorder");
+      toast.error(err.message || "This order couldn't be reordered. Please try again.");
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -132,16 +128,16 @@ export default function OrderHistoryModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs  "
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs px-3 py-4 sm:p-0"
     >
       <div
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl max-h-[90vh] flex flex-col"
       >
         {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
+        <div className="flex items-start justify-between px-4 sm:px-6 py-4 border-b border-gray-100">
           <div className="flex items-start gap-3">
-            <button onClick={onClose} className="mt-1 text-gray-500 hover:text-gray-700 transition-colors">
+            <button onClick={onClose} aria-label="Back" className="mt-1 text-gray-500 hover:text-gray-700 transition-colors">
               <MdArrowBack className="h-5 w-5" />
             </button>
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50">
@@ -158,6 +154,7 @@ export default function OrderHistoryModal({
           </div>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="text-gray-400 hover:text-gray-600 transition-colors"
           >
             <MdClose className="h-5 w-5" />
@@ -165,7 +162,7 @@ export default function OrderHistoryModal({
         </div>
 
         {/* Orders */}
-        <div className="px-6 py-4 overflow-y-auto flex-1">
+        <div className="px-4 sm:px-6 py-4 overflow-y-auto flex-1">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center py-12">
               <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"></div>
@@ -191,8 +188,8 @@ export default function OrderHistoryModal({
                 const styles = getStatusStyles(order.status);
                 return (
                   <div key={order.orderId} className="rounded-xl bg-gray-50 p-4 border border-gray-100 hover:border-gray-200 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
                         <p className="text-sm font-semibold text-gray-900">
                           {formatOrderNumber(order.displayId, order.orderId)}
                         </p>
@@ -202,7 +199,7 @@ export default function OrderHistoryModal({
                           {order.status}
                         </span>
                       </div>
-                      <span className="text-xs text-gray-500">
+                      <span className="text-xs text-gray-500 shrink-0">
                         {new Date(order.date).toLocaleDateString(undefined, {
                           year: 'numeric',
                           month: 'short',
@@ -229,7 +226,7 @@ export default function OrderHistoryModal({
                     {order.trackingNumber && (
                       <div className="mt-3 text-sm">
                         <p className="text-gray-500 text-xs">Tracking Number</p>
-                        <p className="text-blue-600 font-medium">{order.trackingNumber}</p>
+                        <p className="font-medium text-gray-900 break-all select-all">{order.trackingNumber}</p>
                       </div>
                     )}
 
@@ -240,28 +237,40 @@ export default function OrderHistoryModal({
                       >
                         <MdVisibility className="h-4 w-4" /> View Details
                       </button>
-                      <button 
-                        onClick={() => handleDownloadInvoice(order.orderId)}
-                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                      <button
+                        onClick={() => handleDownloadInvoice(order)}
+                        disabled={busy !== null}
+                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-60"
                       >
-                        <MdDownload className="h-4 w-4" /> Invoice
+                        <MdDownload className="h-4 w-4" />
+                        {busy === `invoice-${order.orderId}` ? "Downloading…" : "Invoice"}
                       </button>
-                      <button 
+                      <button
                         onClick={() => handleReorder(order.orderId)}
-                        className="rounded-lg bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-600 hover:bg-blue-100 transition-colors"
+                        disabled={busy !== null}
+                        className="rounded-lg bg-blue-50 px-3 py-1.5 text-sm font-semibold text-blue-600 hover:bg-blue-100 transition-colors disabled:opacity-60"
                       >
-                        Reorder
+                        {busy === `reorder-${order.orderId}` ? "Adding…" : "Reorder"}
                       </button>
                     </div>
                   </div>
                 );
               })}
+              {nextCursor && (
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="w-full rounded-lg border border-gray-200 bg-white py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                >
+                  {loadingMore ? "Loading…" : "Load older orders"}
+                </button>
+              )}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end border-t border-gray-100 px-6 py-4">
+        <div className="flex justify-end border-t border-gray-100 px-4 sm:px-6 py-4">
           <button
             onClick={onClose}
             className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"

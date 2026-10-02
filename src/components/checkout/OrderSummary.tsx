@@ -20,7 +20,18 @@ interface OrderSummaryProps {
   step: number;
   subtotal: number;
   shippingCost: number;
+  /** Express's rush production fee; the line only shows when there is one. */
+  rushSurcharge?: number;
+  tax: number;
   total: number;
+  shippingMethod?: "standard" | "express";
+  /**
+   * True while shipping is the flat rate rather than the server's quote for
+   * the address — before the address is in, or if the quote failed.
+   */
+  estimated?: boolean;
+  /** A fresh quote is on its way; the figures may be about to change. */
+  updating?: boolean;
   onNext: () => void;
   isSubmitting?: boolean;
   disableNext?: boolean;
@@ -34,7 +45,12 @@ export default function OrderSummary({
   step,
   subtotal,
   shippingCost,
+  rushSurcharge = 0,
+  tax,
   total,
+  shippingMethod = "standard",
+  estimated = false,
+  updating = false,
   onNext,
   isSubmitting = false,
   disableNext = false,
@@ -112,17 +128,41 @@ export default function OrderSummary({
 
       <div className="border-t border-gray-200 pt-4 space-y-2">
         <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Subtotal ({cartItems.length} items)</span>
+          <span className="text-gray-600">Subtotal ({cartItems.length} {cartItems.length === 1 ? "item" : "items"})</span>
           <span className="font-medium">${subtotal.toFixed(2)}</span>
         </div>
+        {/*
+          Tax (and Express's rush fee) were charged but never listed here, so
+          Subtotal plus Shipping did not add up to the Total on screen.
+        */}
+        {rushSurcharge > 0 && (
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-600">Rush production</span>
+            <span className="font-medium">${rushSurcharge.toFixed(2)}</span>
+          </div>
+        )}
         <div className="flex justify-between text-sm">
-          <span className="text-gray-600">Shipping</span>
+          <span className="text-gray-600">
+            {shippingMethod === "express" ? "Express shipping" : "Standard shipping"}
+            {estimated ? <span className="text-gray-400"> (estimate)</span> : null}
+          </span>
           <span className="font-medium">${shippingCost.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-gray-600">Tax</span>
+          <span className="font-medium">${tax.toFixed(2)}</span>
         </div>
         <div className="flex justify-between text-lg font-semibold pt-2 border-t border-gray-200">
           <span>Total</span>
-          <span>${total.toFixed(2)}</span>
+          <span className={updating ? "text-gray-400" : undefined} aria-busy={updating || undefined}>
+            ${total.toFixed(2)}
+          </span>
         </div>
+        {estimated && step > 0 && (
+          <p className="text-[11px] text-gray-500">
+            Shipping is a flat estimate until your address is complete, then priced for where it's going.
+          </p>
+        )}
       </div>
 
       {step < 4 && (

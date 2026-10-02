@@ -1,15 +1,3 @@
-/**
- * Longest edge of a captured thumbnail, in physical pixels.
- *
- * This is a *preview* — roughly 80×120 in the cart, a few hundred pixels in the
- * order summary. 1024 keeps it crisp at those sizes on a 2× display with room
- * to spare.
- *
- * Previously the artboard element was captured at its on-screen size ×
- * devicePixelRatio (commonly 2800×4400) and encoded as lossless PNG: 30–50 MB
- * as a data URL, stored on every cart row and re-sent on every cart mutation
- * and in the order. It was the single largest field in either payload.
- */
 const THUMBNAIL_MAX_PX = 1024;
 
 /**

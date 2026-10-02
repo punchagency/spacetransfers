@@ -36,6 +36,7 @@ interface ArtboardItemProps {
     flowEndCol?: number;
     dpi?: number;
     nativeWidthPx?: number;
+    croppedWidthPx?: number;
     nestRotation?: 0 | 90;
   };
   isSelected: boolean;
@@ -73,6 +74,8 @@ interface ArtboardItemProps {
   onCloseProperties: () => void;
   /** Removes the background from every selected image that has one. */
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
+  /** Reports the image's measured pixel width, for pieces that arrived without one. */
+  onMeasured?: (id: number, widthPx: number) => void;
   /** The whole selection, for the toolbar this piece shows when it is the primary. */
   selection?: SelectionSummary;
   onDragStart: (e: React.MouseEvent) => void;
@@ -125,6 +128,7 @@ function ArtboardItem({
   onSetPosY,
   onCloseProperties,
   onRemoveBg,
+  onMeasured,
   onDragStart,
   onResizeStart,
   isDragging,
@@ -145,7 +149,6 @@ function ArtboardItem({
   const [isRemovingBg, setIsRemovingBg] = useState(false);
   const [bgProgress, setBgProgress] = useState<{ phase: string; pct: number } | null>(null);
   const [naturalWidthPx, setNaturalWidthPx] = useState<number | null>(null);
-  const [naturalHeightPx, setNaturalHeightPx] = useState<number | null>(null);
   const [isDpiEnhancing, setIsDpiEnhancing] = useState(false);
   const [dpiProgress, setDpiProgress] = useState<string | null>(null);
   const [dpiEnhanced, setDpiEnhanced] = useState(false);
@@ -178,7 +181,6 @@ function ArtboardItem({
   useEffect(() => {
     setBgStatus('detecting');
     setNaturalWidthPx(null);
-    setNaturalHeightPx(null);
     setDpiEnhanced(false);
     setBgJustRemoved(false);
     let cancelled = false;
@@ -186,8 +188,11 @@ function ArtboardItem({
       if (cancelled) return;
       if (!info) { setBgStatus('has-bg'); return; }
       setNaturalWidthPx(info.widthPx);
-      setNaturalHeightPx(info.heightPx);
       setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
+      // A piece reopened from a saved sheet, a restored cart or a reorder has
+      // no pixel count (it isn't saved), so the DPI check counted it as
+      // "unknown" and flagged the whole sheet. Recorded once measured.
+      if (!item.nativeWidthPx && !item.croppedWidthPx) onMeasured?.(item.id, info.widthPx);
     });
     return () => { cancelled = true; };
   }, [item.url]);
@@ -637,8 +642,15 @@ function ArtboardItem({
             const renderElement = (
               <img
                 key={index}
-                src={item.url}
+                /* crossOrigin before src: React sets attributes in order, and a
+                   src set first starts a plain (non-CORS) download that the
+                   browser caches. Every later CORS read of the same image — the
+                   pixel measure behind the DPI check, the transparency check —
+                   was then served that cached copy with no CORS header and
+                   failed: a reloaded sheet showed broken images, "unknown DPI"
+                   on every piece, and asked for re-uploads. */
                 crossOrigin="anonymous"
+                src={item.url}
                 draggable={false}
                 alt={`copy-${index}`}
                 /* Decode off the main thread. A print-resolution PNG blocks
@@ -652,7 +664,7 @@ function ArtboardItem({
                    for the visible ones, which the browser fetches eagerly
                    regardless, and identical URLs are served from cache. */
                 loading="lazy"
-                className={`object-contain ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
+                className={`object-contain touch-none ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
                   isSelected && renderCopies > 1
                     ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
                     : ""
@@ -689,7 +701,13 @@ function ArtboardItem({
                   maxHeight: "none",
                   transform: `scaleX(${item.flipped ? -1 : 1}) rotate(${totalCssRotation}deg)`,
                 }}
-                onMouseDown={(e) => {
+                /*
+                 * Pointer events, not mouse events: the same handler then works
+                 * for a finger, a stylus and a mouse. With `onMouseDown` a phone
+                 * could select a piece but never move one — a touch drag scrolls
+                 * the page and emits no mouse move at all.
+                 */
+                onPointerDown={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
                   dragActivatedRef.current = false;
@@ -698,7 +716,7 @@ function ArtboardItem({
                   const startY = e.clientY;
                   const THRESHOLD_SQ = 4 * 4;
 
-                  const onMove = (moveEvt: MouseEvent) => {
+                  const onMove = (moveEvt: PointerEvent) => {
                     const dx = moveEvt.clientX - startX;
                     const dy = moveEvt.clientY - startY;
                     if (dx * dx + dy * dy >= THRESHOLD_SQ) {
@@ -709,12 +727,14 @@ function ArtboardItem({
                   };
                   const onUp = () => cleanup();
                   const cleanup = () => {
-                    document.removeEventListener("mousemove", onMove);
-                    document.removeEventListener("mouseup", onUp);
+                    document.removeEventListener("pointermove", onMove);
+                    document.removeEventListener("pointerup", onUp);
+                    document.removeEventListener("pointercancel", onUp);
                     pendingDragRef.current = null;
                   };
-                  document.addEventListener("mousemove", onMove);
-                  document.addEventListener("mouseup", onUp, { once: true });
+                  document.addEventListener("pointermove", onMove);
+                  document.addEventListener("pointerup", onUp, { once: true });
+                  document.addEventListener("pointercancel", onUp, { once: true });
                   pendingDragRef.current = cleanup;
                 }}
               />
@@ -863,20 +883,20 @@ function ArtboardItem({
       {isSelected && (
         <>
           <span
-            className={`absolute -top-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nwse-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -top-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nwse-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
           <span
-            className={`absolute -top-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nesw-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -top-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nesw-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
           <span
-            className={`absolute -bottom-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nesw-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -bottom-2 -left-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nesw-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
           <span
-            className={`absolute -bottom-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white cursor-nwse-resize pointer-events-auto`}
-            onMouseDown={onResizeStart}
+            className={`absolute -bottom-2 -right-2 w-3.5 h-3.5 rounded-full ${handleColor} border-2 border-white touch-none cursor-nwse-resize pointer-events-auto`}
+            onPointerDown={onResizeStart}
           />
         </>
       )}

@@ -5,16 +5,6 @@ import { AiEditAbortedError, INTENT_VERBS, classifyPrompt, runAiEdit } from "../
 import type { CommitHistory } from "./useHistory";
 import { afterPixelEdit, captureImageSnapshot, restoreImageSnapshot } from "../utils/imageState";
 
-/**
- * Ceiling on steps in one run.
- *
- * Each step is a full model round trip, so an eight-part instruction is a
- * multi-minute wait during which the customer sees no result at all — and every
- * step compounds the previous one's artefacts, so quality falls off well before
- * the time cost does. Four keeps the realistic chained requests working
- * ("make it pink, then add a hat") while refusing to start something that will
- * end badly; the excess is reported rather than silently dropped.
- */
 const MAX_STEPS = 4;
 
 export interface AiEditStatus {
@@ -439,10 +429,6 @@ export const useAiEdit = (
                       uncroppedWidthPx: undefined,
                       uncroppedHeightPx: undefined,
                     }),
-                // Everything from this point on is discarded. Keeping the later
-                // entries would present a history that no longer describes the
-                // image, and re-reverting into them would restore edits that
-                // were built on top of a state that has been thrown away.
                 aiHistory: (it.aiHistory ?? []).slice(0, entryIndex),
               }
             : it,

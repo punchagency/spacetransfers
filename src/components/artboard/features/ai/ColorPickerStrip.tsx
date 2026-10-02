@@ -49,7 +49,6 @@ export default function ColorPickerStrip({ imageUrl, onRemove, disabled }: Color
     import("../../lib/utils/colorRemover")
       .then(({ extractDominantColors }) => extractDominantColors(imageUrl, 6))
       .then((result) => {
-        // The image may have changed (or the panel closed) while this ran.
         if (!alive) return;
         setColors(result);
         setLoading(false);

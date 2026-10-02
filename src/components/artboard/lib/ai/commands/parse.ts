@@ -43,7 +43,6 @@ const toInches = (raw: string, unit?: string): number => {
   return value;
 };
 
-const LEN = new RegExp(String.raw`(${NUMBER})\s*(${UNIT})?`, "i");
 const lengthAt = (match: RegExpMatchArray, numIdx: number): number =>
   toInches(match[numIdx], match[numIdx + 1]);
 

@@ -63,6 +63,8 @@ export default function AiEditHistory({
             className="group relative flex-shrink-0 rounded-lg border border-gray-200 bg-white p-0.5 transition-all duration-150 hover:border-slate-400 hover:shadow-md active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <img
+              // Same CORS mode as the board, so neither leaves a cached copy the other can't read.
+              crossOrigin="anonymous"
               src={entry.url}
               alt={`Before “${entry.prompt}”`}
               className="h-9 w-9 rounded object-contain"
@@ -77,6 +79,8 @@ export default function AiEditHistory({
         {/* The current state, marked as where you are and not clickable. */}
         <div className="relative flex-shrink-0 rounded-lg border-2 border-slate-900 bg-white p-0.5" title="Current">
           <img
+            // Same CORS mode as the board, so neither leaves a cached copy the other can't read.
+            crossOrigin="anonymous"
             src={currentUrl}
             alt="Current"
             className="h-9 w-9 rounded object-contain"

@@ -470,7 +470,8 @@ const runCheck = (url: string): Promise<FadeVerdict> =>
        * `413 Payload Too Large`. `postAssetRef` uploads such an image once, as
        * raw bytes, and sends the hosted URL instead.
        */
-      const response = await postAssetRef("/customer/assets/fade-check", { url });
+      // May consult the vision model, which the server allows 45 s.
+      const response = await postAssetRef("/customer/assets/fade-check", { url }, { timeoutMs: 60_000 });
       const parsed = parseFadeVerdict(response);
       if (parsed) return parsed;
     } catch {

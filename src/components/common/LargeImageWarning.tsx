@@ -1,18 +1,6 @@
 import toast from "react-hot-toast";
 import { NoticeCard } from "./UnsupportedFilesWarning";
 
-/**
- * Notice that artwork was scaled down to fit the sheet's printable width.
- *
- * Oversized artwork used to be left at its size with a suggestion to resize it,
- * so a piece could run off the side of the sheet, be priced that way, and be cut
- * off in print. Pieces are now always kept inside the printable width (see
- * `fitItemToPrintableArea`), and this says when that meant shrinking one — so
- * the customer can check it still prints at a size they want.
- *
- * Amber rather than red: nothing failed, the artwork is on the sheet.
- */
-
 const WARNING_DURATION_MS = 7000;
 
 // Rounded down, never up past what fits — with a hair of tolerance, because

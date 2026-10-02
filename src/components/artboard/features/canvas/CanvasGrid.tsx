@@ -1,20 +1,5 @@
 import { CANVAS, GRID } from "../../../../config/artboard.config";
 
-/**
- * The grid "Snap to Grid" snaps to.
- *
- * Quarter-inch lines with a stronger line every inch, starting at the sheet's
- * top-left corner — so every strong line lands on a ruler mark, and the step is
- * exactly what `snapToGridPoint` rounds to (`GRID.MINOR_IN`).
- *
- * It used to step every 20 canvas pixels (0.208in, stronger every 0.833in): no
- * line met an inch mark, so the grid could not be used to measure anything.
- *
- * Drawn in unscaled pixels: the canvas element carries `transform: scale(zoom)`,
- * so multiplying by zoom here would apply it twice — the same convention
- * `CanvasMargins` follows.
- */
-
 interface CanvasGridProps {
   showGrid: boolean;
   /** The roll width, so the grid stops at the sheet's edge. */

@@ -1,4 +1,4 @@
-import { apiFetch } from "./api";
+import { apiFetch, type ApiFetchOptions } from "./api";
 
 /**
  * Uploads canvas-produced artwork so requests carry references, not pixels.
@@ -102,6 +102,10 @@ export const isRetryable = (error: unknown): boolean => {
   if (error instanceof DOMException && error.name === "AbortError") return true;
   const status = (error as { status?: number } | undefined)?.status;
   if (typeof status === "number") return status >= 500;
+  // `apiFetch` reports a lost connection as `network`, not the raw TypeError,
+  // so both shapes count as transient.
+  if ((error as { network?: boolean } | undefined)?.network) return true;
+  if ((error as { timeout?: boolean } | undefined)?.timeout) return true;
   return error instanceof TypeError;
 };
 
@@ -236,7 +240,7 @@ export const knownHostedUrl = (url: string): string | null => hosted.get(url) ??
 export const postAssetRef = async <T = any>(
   endpoint: string,
   body: { url: string } & Record<string, unknown>,
-  init?: RequestInit,
+  init?: ApiFetchOptions,
 ): Promise<T> => {
   const { url, ...rest } = body;
   const referenceUrl = await toHostedUrl(url);

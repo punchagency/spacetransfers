@@ -46,21 +46,6 @@ export const useMaterializeImages = (
 
   useEffect(() => {
     const pending: string[] = [];
-    /**
-     * Images this session has already uploaded, still sitting on a *new* item.
-     *
-     * Re-dropping the same files produces byte-identical crops, so the second
-     * batch's data URLs are the same strings the first batch uploaded. Those
-     * strings are in `attempted`, so the old code skipped them — but the swap
-     * that retired them ran before these items existed, so nothing ever
-     * replaced them and the second batch kept multi-megabyte base64 in React
-     * state indefinitely. Every `setItems` then re-rendered a board carrying
-     * hundreds of megabytes of strings, which is a large part of why the
-     * *second* bulk upload was the one that ground to a halt.
-     *
-     * `toHostedUrl` already caches by data URL, so the answer is known
-     * immediately and costs no request — it just has to be applied.
-     */
     const alreadyHosted = new Map<string, string>();
 
     for (const item of items) {

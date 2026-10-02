@@ -1,28 +1,3 @@
-/**
- * Turns an uploaded PDF into images before anything else sees it.
- *
- * A PDF used to be stored and placed as-is, which failed at three different
- * points, each assuming another would deal with it:
- *
- *   - the client returned a hard-coded 2550x3300 for every PDF ("let the server
- *     handle conversion"), so an item's size — and therefore its price — was a
- *     US-Letter guess rather than the real page;
- *   - the server only checked the `%PDF-` signature and stored the file;
- *   - the export pipeline runs every item through sharp, and this build has no
- *     PDF support at all (`sharp.format.pdf.input.buffer === false`). It threw,
- *     the catch returned null, and the item was **dropped from the printed
- *     sheet** without a word.
- *
- * On the artboard it rendered as `<embed type="application/pdf">` — the
- * browser's PDF viewer, toolbar and all — which is nothing like what would
- * print.
- *
- * Rasterising here means everything downstream receives an ordinary PNG: real
- * dimensions, correct price, correct preview, correct export. `pdfjs-dist` was
- * already a dependency and imported by nothing, which is presumably what
- * somebody had in mind.
- */
-
 import {
   PDF_MAX_PAGES,
   PDF_MAX_RASTER_PIXELS,

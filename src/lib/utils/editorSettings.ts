@@ -1,25 +1,5 @@
 import { CANVAS, CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from "../../config/artboard.config";
 
-/**
- * The editor's settings, and which of them outlast a sheet.
- *
- * Two kinds, handled differently on purpose:
- *
- *   - View settings (grid, rulers, margin guide, snap, background) are how a
- *     customer likes to work. They are remembered between visits.
- *   - Sheet settings (spacing, margin, auto-nest) decide what prints and what
- *     it costs. Every new sheet starts from `DEFAULT_SHEET_SETTINGS`, and a
- *     saved design carries its own, so reopening one lays it out as it was.
- *
- * All eight used to be remembered in the browser. A new sheet quietly inherited
- * whatever spacing the last one had, and a saved design reopened with the
- * current spacing instead of its own, so auto-nest re-laid it out.
- *
- * Everything is validated on read. These feed layout and, through `marginSize`,
- * the usable width a sheet is priced on — so a corrupted or hand-edited value
- * must fall back to the default rather than reach the canvas.
- */
-
 export interface EditorSettings {
   showGrid: boolean;
   showRulers: boolean;
@@ -36,15 +16,6 @@ export interface EditorSettings {
 export type SheetSettings = Pick<EditorSettings, "spacing" | "marginSize" | "autoNestStickers">;
 type ViewSettings = Omit<EditorSettings, keyof SheetSettings>;
 
-/*
- * Stored per browser, not per account: a customer on a new device starts from
- * the defaults.
- *
- * A new key rather than `editorSettings`. The old code wrote all eight settings
- * whenever any one changed, so a stored value cannot tell a deliberate choice
- * from the default of the day — reading it would keep the grid on for everyone
- * who ever touched a setting. Old keys are discarded once, below.
- */
 const STORAGE_KEY = "editorViewSettings";
 const RETIRED_KEYS = ["editorSettings", "canvasBg"];
 
@@ -142,10 +113,6 @@ export const saveEditorSettings = (settings: EditorSettings): void => {
   }
 };
 
-/**
- * A saved design's sheet settings, validated. A design saved before these were
- * recorded, or holding a value the editor cannot show, gets the defaults.
- */
 export const sheetSettingsFromSaved = (artboardData: unknown): SheetSettings => {
   const d = (artboardData && typeof artboardData === "object" ? artboardData : {}) as Record<string, unknown>;
   const fallback = DEFAULT_SHEET_SETTINGS;

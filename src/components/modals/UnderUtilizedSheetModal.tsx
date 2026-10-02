@@ -1,13 +1,5 @@
 import { MdClose } from "react-icons/md";
 
-/**
- * Shown when the artwork is shorter than the minimum billable length.
- *
- * It used to compare against a hard-coded 23.5in and warn that the customer
- * would be charged for a "full" 23.5 x 23.5in sheet — and then charge exactly
- * that, overriding the minimum set in admin. It now explains the real rule: the
- * sheet is billed at the minimum, which is the price the header already shows.
- */
 export default function UnderUtilizedSheetModal({
   isOpen,
   amount,

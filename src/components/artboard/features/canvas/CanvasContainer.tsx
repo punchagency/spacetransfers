@@ -8,6 +8,7 @@ import EmptyState from "./EmptyState";
 import BulkLoadOverlay from "./BulkLoadOverlay";
 import QueueBadge from "./QueueBadge";
 import ArtboardItem from "../items/ArtboardItem";
+import { useIsMobile } from "../../../../lib/useIsMobile";
 import { ArtboardItem as ArtboardItemType, type SelectionSummary } from "../../types";
 import { CANVAS, UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
 import { footprintBounds, getItemVerticalExtent, isDpiFlagged } from "../../lib/utils/layoutHelpers";
@@ -47,6 +48,7 @@ interface CanvasContainerProps {
   onDelete: () => void;
   onCloseProperties: () => void;
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
+  onMeasured?: (id: number, widthPx: number) => void;
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;
@@ -119,6 +121,7 @@ export default function CanvasContainer({
   onDelete,
   onCloseProperties,
   onRemoveBg,
+  onMeasured,
   onDragStart,
   onResizeStart,
   isDraggingItem,
@@ -140,6 +143,7 @@ export default function CanvasContainer({
   aiPanel,
 }: CanvasContainerProps) {
   const [menu, setMenu] = useState<null | { x: number; y: number }>(null);
+  const isMobile = useIsMobile();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -148,21 +152,6 @@ export default function CanvasContainer({
   const scrollStopTimerRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
 
-  /**
-   * Whether a pointer event landed on empty sheet rather than on artwork.
-   *
-   * This used to be `e.target === e.currentTarget` — true only when the browser
-   * reported the scroll container itself. The sheet inside it is sized in zoomed
-   * pixels and then scaled by zoom again, so its hit box is zoom² of the sheet:
-   * at 62% it covered the left 62%, where a click reported that inner div and
-   * was ignored. Clicking away did not deselect and double-click did not add
-   * files there, yet both worked on the strip to its right.
-   *
-   * So this asks what matters instead: was it outside every item? `contains`
-   * keeps out events React bubbles up from portals — the item toolbar and the
-   * properties panel live elsewhere in the DOM but still bubble through this
-   * component, and pressing one of their buttons must not deselect the item.
-   */
   const isEmptySheetTarget = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as Element | null;
     return Boolean(target && e.currentTarget.contains(target) && !target.closest("[data-item-id]"));
@@ -286,7 +275,14 @@ export default function CanvasContainer({
   }, [menu]);
 
   const pct = Math.max(0, Math.min(100, uploadProgress));
-  const offset = CANVAS.RULER_OFFSET_PX;
+  /*
+   * The gutter the rulers live in — and only when they do.
+   *
+   * It was reserved unconditionally, so with rulers off (always, on a phone)
+   * the sheet sat 32px in from the top and left behind an empty grey band that
+   * reads as a ruler that failed to draw.
+   */
+  const offset = showRulers ? CANVAS.RULER_OFFSET_PX : 0;
   const ppi = CANVAS.PIXELS_PER_INCH;
   const maxSheetHeightIn = 1200; // 100 feet
 
@@ -422,12 +418,6 @@ export default function CanvasContainer({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      {/*
-        Behind everything. With artwork on the board this is the space *around*
-        the sheet, in a flat neutral; the sheet draws its own surface below. The
-        preview background used to fill this whole area, so zoomed out it ran
-        past the sheet's edge and nothing showed where the roll ended.
-      */}
       <div
         className="absolute inset-0 z-0 opacity-100 transition-[background-color,background-image] duration-200"
         style={
@@ -451,9 +441,21 @@ export default function CanvasContainer({
       <div
         id="artboard-toolbar-portal"
         className={`absolute z-50 pointer-events-none transition-all duration-200 ease-out ${
-          toolbarHidden ? "-translate-y-3 opacity-0" : "translate-y-0 opacity-100"
+          toolbarHidden
+            ? `${isMobile ? "translate-y-3" : "-translate-y-3"} opacity-0`
+            : "translate-y-0 opacity-100"
         }`}
-        style={{ top: offset, left: offset, right: 0 }}
+        /*
+         * Above the artwork on a laptop; along the bottom of the screen on a
+         * phone. A phone's sheet fills the screen, so a toolbar at the top
+         * landed on top of the piece that had just been tapped — you could not
+         * see what you were editing.
+         */
+        style={
+          isMobile
+            ? { bottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)", left: 0, right: 0 }
+            : { top: offset, left: offset, right: 0 }
+        }
       />
 
       {items.length === 0 ? (
@@ -633,6 +635,7 @@ export default function CanvasContainer({
                   onSetPosY={itemActions.setPosY}
                   onCloseProperties={onCloseProperties}
                   onRemoveBg={onRemoveBg}
+                  onMeasured={onMeasured}
                   onDragStart={(e) => onDragStart(e, it.id)}
                   onResizeStart={(e) => onResizeStart(e, it.id)}
                   isDragging={isDraggingItem}
@@ -656,16 +659,20 @@ export default function CanvasContainer({
         </>
       )}
       {/* Persistent drop hint — shown when items exist and not currently dragging */}
-      {items.length > 0 && items.length < CANVAS.MAX_ITEMS && !isSheetFull && !isDragging && !isUploading && (
+      {items.length > 0 && items.length < CANVAS.MAX_ITEMS && !isSheetFull && !isDragging && !isUploading && !(isMobile && selectedId != null) && (
         <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-auto flex justify-center pb-5">
           <button
             onClick={onBrowseFiles}
-            className="group flex items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 backdrop-blur-sm px-7 py-3.5 shadow-md hover:border-slate-500 hover:bg-white hover:shadow-lg transition-all duration-200 cursor-pointer"
+            className="group flex items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 backdrop-blur-sm px-4 py-2.5 sm:px-7 sm:py-3.5 shadow-md hover:border-slate-500 hover:bg-white hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-500 group-hover:bg-slate-900 group-hover:text-white transition-colors duration-200 flex-shrink-0">
               <MdOutlineFileUpload size={20} />
             </span>
-            <span className="flex flex-col items-start">
+            {/* A phone has no double-click and no keyboard, so it gets the
+                action rather than the instructions — and a pill small enough to
+                leave the sheet visible behind it. */}
+            <span className="text-[13px] font-semibold text-slate-700 sm:hidden">Add artwork</span>
+            <span className="hidden sm:flex flex-col items-start">
               <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
               <span className="text-[11px] text-slate-400 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
                 {UPLOAD_FORMAT_LABELS.slice(0, 7).join(" · ")} & more

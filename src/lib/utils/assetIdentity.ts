@@ -121,12 +121,6 @@ export const itemsEquivalent = (a: any, b: any): boolean => {
   return true;
 };
 
-/**
- * Compares two lists of artwork-bearing items.
- *
- * Replaces `JSON.stringify(a) !== JSON.stringify(b)` wherever that was used to
- * decide whether state needs updating.
- */
 export const itemListsEquivalent = (a: unknown, b: unknown): boolean => {
   if (a === b) return true;
   if (!Array.isArray(a) || !Array.isArray(b)) return false;

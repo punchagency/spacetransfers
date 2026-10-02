@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { MdOutlineShoppingCart, MdMenu, MdOutlineSaveAlt, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
+import { useCanHover } from "../lib/useIsMobile";
+import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
-import { CANVAS } from "../config/artboard.config";
 import { usePricingSettings } from "../lib/utils/pricingRates";
 import { DpiStatusChip } from "./common/DpiStatus";
 type HeaderInfo = {
@@ -80,8 +80,10 @@ function SaveStateChip({
         className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 hover:underline"
         title="Sign in and your gang sheets are saved as you work"
       >
-        <MdCloudOff className="h-3.5 w-3.5" aria-hidden />
-        Not saved — sign in
+        <MdCloudOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        {/* The long form needs room the phone's strip does not have — it was
+            squeezing the sheet's name down to one letter. */}
+        <span className="whitespace-nowrap">Not saved<span className="hidden sm:inline"> — sign in</span></span>
       </button>
     );
   }
@@ -131,8 +133,6 @@ export default function Header({
   canRedo,
   onSignInClick,
   isLoggedIn,
-  onSaveLoaded,
-  canSaveLoaded,
   canRenameDesign,
   onRenameDesign,
   saveState = "idle",
@@ -169,8 +169,6 @@ export default function Header({
   canRedo?: boolean;
   onSignInClick?: () => void;
   isLoggedIn?: boolean;
-  onSaveLoaded?: () => void;
-  canSaveLoaded?: boolean;
   canRenameDesign?: boolean;
   onRenameDesign?: (newTitle: string) => void;
   /** Whether the sheet is saved, saving, could not be saved, or cannot be (signed out). */
@@ -189,6 +187,7 @@ export default function Header({
   isSidebarOpen?: boolean;
 }) {
   const { pricePerSqFt } = usePricingSettings();
+  const canHover = useCanHover();
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
 
@@ -209,18 +208,62 @@ export default function Header({
     setIsRenaming(false);
   };
 
+  /**
+   * The sheet's name, and renaming it.
+   *
+   * Written once and used twice: the desktop strip and the phone strip below it
+   * show the same control, and a name you can see but not rename on a phone
+   * would be a worse answer than not showing it at all.
+   */
+  const nameControl = (widthClass: string) =>
+    isRenaming ? (
+      <input
+        value={renameValue}
+        onChange={(e) => setRenameValue(e.target.value)}
+        onBlur={submitRename}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submitRename();
+          if (e.key === "Escape") setIsRenaming(false);
+        }}
+        autoFocus
+        /* Selected on focus so typing replaces the placeholder rather
+           than being appended to "Untitled gang sheet". */
+        onFocus={(e) => e.currentTarget.select()}
+        aria-label="Gang sheet name"
+        maxLength={80}
+        className={`${widthClass} min-w-0 truncate rounded border border-blue-500 px-2 py-0.5 text-xs text-gray-900 outline-none`}
+      />
+    ) : (
+      <span
+        className={`inline-flex ${widthClass} min-w-0 items-center gap-1 truncate ${canRenameDesign ? "cursor-text hover:text-gray-900" : ""}`}
+        title={canRenameDesign ? "Click to rename this gang sheet" : info?.name}
+        /* Click, not only double-click: renaming was there but unfindable. */
+        onClick={() => {
+          if (canRenameDesign) setIsRenaming(true);
+        }}
+      >
+        <span className="truncate">{info?.name || "Gang Sheet"}</span>
+        {canRenameDesign && <MdEdit className="h-3 w-3 shrink-0 text-gray-400" aria-hidden />}
+      </span>
+    );
+
   return (
-    <header className="flex items-center justify-between px-3 md:px-6 h-10 bg-white border-b border-gray-200">
+    <header className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-6 md:h-10 bg-white border-b border-gray-200">
+      {/* One row on a laptop, two on a phone: `contents` dissolves this wrapper
+          at md and up, so the desktop header is laid out exactly as before. */}
+      <div className="flex h-10 items-center justify-between gap-2 md:contents">
+      {/* The name fits on a 375px phone: it was truncating to "spacetrans…"
+          beside a rocket wide enough to push it out. */}
       <div className="flex items-center min-w-0">
-        <span className="text-base md:text-xl font-bold tracking-tight text-slate-900 truncate">
+        <span className="text-[15px] md:text-xl font-bold tracking-tight text-slate-900 truncate">
           spacetransfers
         </span>
-        <img src="/space.svg" alt="space" className="w-9 h-9 md:w-12 md:h-12 -scale-x-100 flex-shrink-0" />
+        <img src="/space.svg" alt="space" className="w-7 h-7 md:w-12 md:h-12 -scale-x-100 flex-shrink-0" />
       </div>
 
       <div className="flex items-center gap-2 md:gap-4 flex-shrink-0">
         <div className="hidden md:flex items-center gap-3 text-xs text-gray-800">
-          {(info?.hasItem || onSaveLoaded) && (
+          {info?.hasItem && (
             <>
               {info?.hasItem && (
                 <>
@@ -250,20 +293,6 @@ export default function Header({
                   </button>
                 </>
               )}
-              {onSaveLoaded && (
-                <button
-                  onClick={onSaveLoaded}
-                  disabled={!canSaveLoaded}
-                  className={`inline-flex items-center justify-center rounded px-1 ml-1 ${canSaveLoaded
-                    ? "text-black hover:bg-gray-100 cursor-pointer"
-                    : "text-black opacity-40 pointer-events-none"
-                    }`}
-                  aria-label="Save changes"
-                  title="Save gangsheet changes"
-                >
-                  <MdOutlineSaveAlt className="inline-block w-4 h-4" />
-                </button>
-              )}
               <span className="text-gray-300">|</span>
             </>
           )}
@@ -279,19 +308,6 @@ export default function Header({
             {(info?.isEmpty ? (info?.minimumAreaSf ?? 0) : (info?.areaSf ?? 0)).toFixed(2)}sf
           </span>
           <span className="text-gray-300">|</span>
-          {/*
-            The width that is actually priced, not a literal.
-
-            This read "23.50in wide" — the roll width — while the `sf` figure
-            beside it, and the price, are computed from the artwork's own
-            bounding box. Place one 6x10in graphic and the strip said
-            "0.42sf | 23.50in wide x 10.00in long": 23.5 x 10 is 1.63sf, four
-            times the area shown next to it. The two numbers described
-            different rectangles.
-
-            `info.widthIn` was already being computed and passed in, and simply
-            thrown away here.
-          */}
           <span
             title={
               info?.atMinimumLength
@@ -310,43 +326,7 @@ export default function Header({
           </span>
      
           <span className="text-gray-300">|</span>
-          {isRenaming ? (
-            <input
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              onBlur={submitRename}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submitRename();
-                if (e.key === "Escape") setIsRenaming(false);
-              }}
-              autoFocus
-              /* Selected on focus so typing replaces the placeholder rather
-                 than being appended to "Untitled gang sheet". */
-              onFocus={(e) => e.currentTarget.select()}
-              aria-label="Gang sheet name"
-              maxLength={80}
-              className="max-w-xs truncate rounded border border-blue-500 px-2 py-0.5 text-xs text-gray-900 outline-none"
-            />
-          ) : (
-            <span
-              className={`inline-flex max-w-xs items-center gap-1 truncate ${canRenameDesign ? "cursor-text hover:text-gray-900" : ""}`}
-              title={canRenameDesign ? "Click to rename this gang sheet" : info?.name}
-              /* Click, not only double-click: renaming was there but unfindable. */
-              onClick={() => {
-                if (canRenameDesign) setIsRenaming(true);
-              }}
-            >
-              <span className="truncate">{info?.name || "Gang Sheet"}</span>
-              {canRenameDesign && <MdEdit className="h-3 w-3 shrink-0 text-gray-400" aria-hidden />}
-            </span>
-          )}
-          {/*
-            Whether the work is safe, in the place the sheet is named.
-
-            Saving used to be a sidebar button, so "is my sheet saved?" had no
-            answer on screen at all. Autosave answers it continuously; this is
-            where it says so.
-          */}
+          {nameControl("max-w-xs")}
           <SaveStateChip
             state={saveState}
             isSheetSaved={isSheetSaved}
@@ -416,7 +396,7 @@ export default function Header({
         {!isLoggedIn ? (
           <button
             onClick={onSignInClick}
-            className="px-3 text-xs font-medium rounded-2xl text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+            className="px-3 py-2.5 md:py-0 text-xs font-medium rounded-2xl text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
           >
             Sign In
           </button>
@@ -431,7 +411,7 @@ export default function Header({
               ? "This sheet is in your cart and updates with it — open the cart (C)"
               : "Add current gangsheet to cart (C)"
           }
-          className={`inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
+          className={`inline-flex items-center justify-center gap-1.5 min-w-10 min-h-10 sm:min-w-0 sm:min-h-0 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
             canAddGangSheetToCart === false
               ? "text-gray-400 bg-gray-50 border-gray-200 cursor-not-allowed"
               : "text-black bg-white border-gray-300 hover:bg-gray-50 cursor-pointer"
@@ -497,12 +477,60 @@ export default function Header({
         ) : null}
         <button
           onClick={onMenuClick}
-          onMouseEnter={onMenuClick}
+          onMouseEnter={canHover ? onMenuClick : undefined}
           className="p-2 text-gray-600 hover:text-gray-900 transition-colors cursor-pointer w-10 h-10 flex items-center justify-center"
           aria-label="Open menu"
         >
           <MdMenu size={24} />
         </button>
+      </div>
+      </div>
+
+      <div className="flex md:hidden h-11 items-center gap-2 border-t border-gray-100 text-[11px] text-gray-800">
+        {info?.hasItem && (
+          <>
+            <button
+              onClick={onUndo}
+              disabled={!canUndo}
+              className={`inline-flex h-10 w-10 items-center justify-center rounded ${canUndo ? "active:bg-gray-100" : "opacity-40 pointer-events-none"}`}
+              aria-label="Undo"
+            >
+              <MdUndo className="h-5 w-5" />
+            </button>
+            <button
+              onClick={onRedo}
+              disabled={!canRedo}
+              className={`inline-flex h-10 w-10 items-center justify-center rounded ${canRedo ? "active:bg-gray-100" : "opacity-40 pointer-events-none"}`}
+              aria-label="Redo"
+            >
+              <MdRedo className="h-5 w-5" />
+            </button>
+          </>
+        )}
+        {nameControl("flex-1")}
+        <DpiStatusChip
+          lowDpiCount={info?.lowDpiCount ?? 0}
+          unknownDpiCount={info?.unknownDpiCount ?? 0}
+          onToggleHighlight={onToggleDpiHighlight}
+          isHighlighting={isDpiHighlighting}
+        />
+        <SaveStateChip
+          state={saveState}
+          isSheetSaved={isSheetSaved}
+          onRetry={onRetrySave}
+          onSignIn={onSignInClick}
+          errorMessage={saveErrorMessage}
+        />
+        <span
+          className="shrink-0 font-semibold tabular-nums"
+          title={`${(info?.widthIn ?? 0).toFixed(2)}in wide x ${(info?.heightIn ?? 0).toFixed(2)}in long`}
+        >
+          ${(info?.price ?? 0).toFixed(2)}
+        </span>
+        <span className="shrink-0 text-gray-500 tabular-nums">
+          {(info?.heightIn ?? 0).toFixed(0)}in
+          {info?.atMinimumLength && <span className="ml-0.5 text-[9px] text-gray-400">min</span>}
+        </span>
       </div>
     </header>
   );

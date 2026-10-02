@@ -47,16 +47,6 @@ export interface PlannerTurn {
   text: string;
 }
 
-/**
- * Explicit sequence markers, for the local split.
- *
- * Deliberately narrow. "then" and "after that" are unambiguous instructions to
- * do one thing after another; a bare "and" is not — "a dog and cat wearing
- * hats" is one scene, and splitting it would turn a single coherent edit into
- * two contradictory ones. Under-splitting degrades to the old single-pass
- * behaviour, which is merely imperfect; over-splitting actively destroys the
- * request, so the bias is toward leaving text alone.
- */
 const SEQUENCE_SPLIT = /\s*(?:,\s*)?\b(?:then|and then|after that|next|followed by|finally)\b\s*/i;
 
 /** Rough ceiling on a locally-derived plan, mirroring the runtime step cap. */
@@ -125,11 +115,6 @@ const plannerIsFresh = (): boolean => {
   if (!plannerAvailable) return false;
   const ttl = plannerAvailable.definitive ? DEFINITIVE_TTL_MS : FAILURE_BACKOFF_MS;
   return Date.now() - plannerAvailable.at < ttl;
-};
-
-/** Lets the app re-probe immediately, e.g. after an admin connects a key. */
-export const resetPlannerAvailability = () => {
-  plannerAvailable = null;
 };
 
 /**

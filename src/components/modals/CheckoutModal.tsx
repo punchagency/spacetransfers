@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { gsap } from "gsap";
-import { MdClose, MdCheckCircle, MdArrowBack } from "react-icons/md";
-import { isValidPhone } from "../../lib/utils/validators";
+import { MdClose, MdCheckCircle, MdArrowBack, MdWarningAmber } from "react-icons/md";
+import { CHECKOUT_FIELD_ORDER, checkoutFormErrors } from "../../lib/utils/checkoutValidation";
+import { useCheckoutQuote } from "../../lib/utils/checkoutQuote";
+import { describeWarning, type SheetWarning } from "../../lib/utils/checkoutWarnings";
+import ShippingMethodPicker from "../checkout/ShippingMethodPicker";
 import CartStep from "../checkout/CartStep";
 import CheckoutStep from "../checkout/CheckoutStep";
 import PaymentStep from "../checkout/PaymentStep";
@@ -68,6 +71,12 @@ export default function CheckoutModal({
 }: CheckoutModalProps) {
   const [step, setStep] = useState(0);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmWarnings, setConfirmWarnings] = useState(false);
+  const [artworkCheck, setArtworkCheck] = useState<{
+    warnings: SheetWarning[];
+    checking: boolean;
+    sheetCount: number;
+  }>({ warnings: [], checking: false, sheetCount: 0 });
   const [isSubmitting, setIsSubmitting] = useState(false);
   // True only while `placeOrder`'s `stripEmbeddedImages` safety net is doing
   // real (uncached) upload work — the pre-warm effect below normally means
@@ -80,7 +89,8 @@ export default function CheckoutModal({
   const [payment, setPayment] = useState<"card">("card");
   const [shipping, setShipping] = useState<"standard" | "express">("standard");
   const [cartItems, setCartItems] = useState(initialCartItems || []);
-  const [checkoutErrors, setCheckoutErrors] = useState<Record<string, string>>({});
+  // Counts Continue presses on an incomplete form; each one shows every problem.
+  const [checkoutRevealAttempt, setCheckoutRevealAttempt] = useState(0);
   const [isCardComplete, setIsCardComplete] = useState(false);
   const [formData, setFormData] = useState({
     firstName: "",
@@ -91,31 +101,14 @@ export default function CheckoutModal({
     city: "",
     state: "",
     postalCode: "",
-    country: "",
+    // Orders only ship within the US, so the one valid answer starts filled in.
+    country: "US",
   });
   const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
   // The canonical DTF-#### number the customer will see everywhere else.
   const [orderDisplayId, setOrderDisplayId] = useState<string | null>(null);
 
-  /**
-   * Resolves any leftover embedded artwork as soon as checkout opens, rather
-   * than waiting for the "Place Order" click to discover it.
-   *
-   * `placeOrder` already calls `stripEmbeddedImages` as a safety net — the
-   * artboard uploads as it edits, so this is normally a no-op — but on the
-   * rare path where it isn't (mid-upload checkout, an earlier failed upload),
-   * that safety net used to run for the first time on submit, so the customer
-   * discovered a slow or failing upload only after clicking the button that
-   * was supposed to place their order in under 5 seconds.
-   *
-   * `toHostedUrl`'s cache is keyed by URL and process-lifetime, so calling it
-   * here costs nothing extra later: by the time `placeOrder` runs its own
-   * `stripEmbeddedImages`, every image resolved here is a cache hit. A
-   * failure here is swallowed deliberately — this is a warm-up, not a gate,
-   * and `placeOrder`'s own call is what actually decides whether checkout can
-   * proceed; surfacing an error twice for the same cause would be confusing.
-   */
   useEffect(() => {
     if (!isOpen) return;
     stripEmbeddedImages({ items: cartItems }).catch(() => {});
@@ -133,23 +126,20 @@ export default function CheckoutModal({
       )
       .toFixed(2),
   );
-  /**
-   * Shipping and tax rates come from the server so the total shown here is the
-   * total that gets charged.
-   *
-   * These were hardcoded — express $19.99 and tax always 0 — while the server
-   * charged $24.99 plus 8%. On a $100 express order the customer saw $119.99
-   * and was charged $132.99.
-   *
-   * The fallback matches the server's own default, so a failed fetch shows a
-   * plausible figure rather than $0 shipping; the server recomputes on submit
-   * either way, so it can never be the figure actually charged.
-   */
   const [rates, setRates] = useState<{
     shipping: { standard: number; express: number };
     taxRatePct: number;
     rushSurchargePct: number;
   }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8, rushSurchargePct: 10 });
+
+  useEffect(() => {
+    if (isOpen && step === 4) {
+      setStep(0);
+      setCheckoutRevealAttempt(0);
+    }
+    // Only on opening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -175,68 +165,45 @@ export default function CheckoutModal({
     };
   }, [isOpen]);
 
-  const shippingCost = Number(
-    (shipping === "standard" ? rates.shipping.standard : rates.shipping.express).toFixed(2),
-  );
   /**
    * Express means the job is rushed through production, not just posted faster —
    * so it carries a surcharge that pays the partner for jumping the queue. The
    * express price itself only pays the courier.
+   *
+   * These local figures are the estimate shown until the server has quoted the
+   * address; after that the quote is shown, because it is what gets charged.
    */
-  const rushSurcharge = Number(
-    (shipping === "express" ? subtotal * (rates.rushSurchargePct / 100) : 0).toFixed(2),
-  );
-  const tax = Number(((subtotal + rushSurcharge) * (rates.taxRatePct / 100)).toFixed(2));
-  const total = Number((subtotal + rushSurcharge + shippingCost + tax).toFixed(2));
-
-  const validateCheckout = () => {
-    const errors: Record<string, string> = {};
-    const req = (key: keyof typeof formData, label: string) => {
-      if (!String(formData[key] || "").trim()) errors[key] = `${label} is required`;
-    };
-    req("firstName", "First name");
-    req("lastName", "Last name");
-    req("email", "Email");
-    req("phone", "Phone number");
-    req("street", "Street address");
-    req("city", "City");
-    req("state", "State / Province");
-    req("postalCode", "Postal code");
-    req("country", "Country");
-
-    const email = String(formData.email || "").trim();
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      errors.email = "Enter a valid email address";
-    }
-
-    /*
-     * Shape checked, not just presence — the same gap email had until the line
-     * above was written. `req("phone", ...)` only ever tested truthiness, so
-     * "1" or "abc" passed straight through and became the number on a real
-     * order, which is what a partner or the store calls when a shipment needs
-     * attention.
-     */
-    const phone = String(formData.phone || "").trim();
-    if (phone && !isValidPhone(phone)) {
-      errors.phone = "Enter a valid phone number";
-    }
-
-    setCheckoutErrors(errors);
-    return Object.keys(errors).length === 0;
+  const estimateFor = (method: "standard" | "express") => {
+    const shippingCost = Number(
+      (method === "standard" ? rates.shipping.standard : rates.shipping.express).toFixed(2),
+    );
+    const rushSurcharge = Number(
+      (method === "express" ? subtotal * (rates.rushSurchargePct / 100) : 0).toFixed(2),
+    );
+    const tax = Number(((subtotal + rushSurcharge) * (rates.taxRatePct / 100)).toFixed(2));
+    const total = Number((subtotal + rushSurcharge + shippingCost + tax).toFixed(2));
+    return { subtotal, shippingCost, rushSurcharge, tax, total, shippingService: null as string | null };
   };
 
   const isCartValid = cartItems.length > 0;
-  const isCheckoutValid = Object.keys(checkoutErrors).length === 0 && Boolean(
-    formData.firstName.trim() &&
-      formData.lastName.trim() &&
-      formData.email.trim() &&
-      formData.phone.trim() &&
-      formData.street.trim() &&
-      formData.city.trim() &&
-      formData.state.trim() &&
-      formData.postalCode.trim() &&
-      (formData.country || "US").trim(),
+  const checkoutErrors = useMemo(() => checkoutFormErrors(formData), [formData]);
+
+  // Quoted once the destination is usable; before that a quote is only the flat rate.
+  const addressQuotable =
+    step >= 1 &&
+    step < 4 &&
+    cartItems.length > 0 &&
+    !checkoutErrors.state &&
+    !checkoutErrors.postalCode &&
+    !checkoutErrors.country;
+  const { quotes, loading: quoteLoading } = useCheckoutQuote(
+    cartItems,
+    { city: formData.city, state: formData.state, postalCode: formData.postalCode, country: formData.country },
+    addressQuotable,
   );
+  const priced = (method: "standard" | "express") => quotes[method] ?? estimateFor(method);
+  const isEstimate = !quotes[shipping];
+  const { shippingCost, rushSurcharge, tax, total } = priced(shipping);
 
   // Card requires a configured provider AND a complete card. The previous form
   // of this check reduced to `isCardComplete` on both branches, so an
@@ -246,16 +213,6 @@ export default function CheckoutModal({
   const mapItems = () =>
     cartItems.map((item) => {
       const isGangsheet = (item.type || "gangsheet") === "gangsheet";
-      /**
-       * One table of distinct URLs per sheet; placements reference it by index.
-       *
-       * A gang sheet repeats the same few graphics many times, and each
-       * placement previously carried its own full copy of the artwork URL —
-       * twice, as `assetId` and `croppedUrl`. At ~121 chars each that is ~242
-       * bytes of pure repetition per placement, which put a large sheet over
-       * the body limit on its own. Interning makes the payload scale with
-       * distinct artwork (typically 5–50 URLs) instead of placement count.
-       */
       const assets = new AssetIndex();
 
       const artboardItems = isGangsheet && Array.isArray((item as any).items)
@@ -276,6 +233,8 @@ export default function CheckoutModal({
             // pre-crop original, not the canvas-cropped dimensions).
             croppedWidthPx: typeof it.croppedWidthPx === "number" && it.croppedWidthPx > 0 ? it.croppedWidthPx : undefined,
             croppedHeightPx: typeof it.croppedHeightPx === "number" && it.croppedHeightPx > 0 ? it.croppedHeightPx : undefined,
+            // The upload's own width — what DPI falls back to without a cropped size.
+            nativeWidthPx: typeof it.nativeWidthPx === "number" && it.nativeWidthPx > 0 ? it.nativeWidthPx : undefined,
             autoCrop: typeof it.autoCrop === "boolean" ? it.autoCrop : undefined,
             widthIn: Number(it.widthIn),
             heightIn: Number(it.heightIn),
@@ -337,7 +296,7 @@ export default function CheckoutModal({
       shippingMethod: shipping,
       payment: paymentPayload,
       pricing: {
-        subtotal,
+        subtotal: priced(shipping).subtotal,
         shippingCost,
         tax,
         total,
@@ -372,6 +331,8 @@ export default function CheckoutModal({
     const result = await apiFetch("/customer/orders", {
       method: "POST",
       body: JSON.stringify(safePayload),
+      // Verifies the payment and prepares print files; never retried on its own.
+      timeoutMs: 60_000,
     });
 
     if (result?.id) {
@@ -407,9 +368,32 @@ export default function CheckoutModal({
     }
 
     if (step === 1) {
-      const ok = validateCheckout();
-      if (!ok) {
-        toast.error("Please complete all required checkout fields.");
+      const problems = CHECKOUT_FIELD_ORDER.filter((key) => checkoutErrors[key]);
+      if (problems.length > 0) {
+        setCheckoutRevealAttempt((n) => n + 1);
+        toast.error(
+          problems.length === 1
+            ? "One field needs attention before you continue."
+            : `${problems.length} fields need attention before you continue.`,
+        );
+        // Take the shopper to the first problem rather than leaving them to hunt.
+        requestAnimationFrame(() => {
+          const first = document.getElementById(`checkout-${problems[0]}`);
+          first?.scrollIntoView({ block: "center", behavior: "smooth" });
+          first?.focus({ preventScroll: true });
+        });
+        return;
+      }
+      /*
+       * Artwork warnings never block an order, but going past them should be a
+       * decision, not something scrolled by: ask once before payment.
+       */
+      if (artworkCheck.checking) {
+        toast("Still checking your artwork — one moment.");
+        return;
+      }
+      if (artworkCheck.warnings.length > 0) {
+        setConfirmWarnings(true);
         return;
       }
       setStep(step + 1);
@@ -454,24 +438,6 @@ export default function CheckoutModal({
       setCartItems(initialCartItems);
     }
   }, [initialCartItems]);
-
-  useEffect(() => {
-    if (Object.keys(checkoutErrors).length === 0) return;
-    const next: Record<string, string> = { ...checkoutErrors };
-    const trim = (v: any) => String(v || "").trim();
-    if (trim(formData.firstName)) delete next.firstName;
-    if (trim(formData.lastName)) delete next.lastName;
-    if (trim(formData.email) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trim(formData.email))) delete next.email;
-    if (trim(formData.phone)) delete next.phone;
-    if (trim(formData.street)) delete next.street;
-    if (trim(formData.city)) delete next.city;
-    if (trim(formData.state)) delete next.state;
-    if (trim(formData.postalCode)) delete next.postalCode;
-    if (trim(formData.country || "US")) delete next.country;
-    if (Object.keys(next).length !== Object.keys(checkoutErrors).length) {
-      setCheckoutErrors(next);
-    }
-  }, [checkoutErrors, formData]);
 
   const updateQuantity = (id: number, change: number) => {
     setCartItems((items) =>
@@ -580,7 +546,7 @@ export default function CheckoutModal({
             {step > 0 && step < 4 && (
               <button
                 onClick={() => setStep((s) => s - 1)}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                className="flex h-10 w-10 md:h-8 md:w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                 aria-label="Go back"
               >
                 <MdArrowBack className="h-5 w-5" />
@@ -589,7 +555,7 @@ export default function CheckoutModal({
             {step < 4 ? (
               <button
                 onClick={onClose}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                className="flex h-10 w-10 md:h-8 md:w-8 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
               >
                 <MdClose className="h-5 w-5" />
               </button>
@@ -602,12 +568,23 @@ export default function CheckoutModal({
           <div className="flex items-center justify-center border-b border-gray-100 bg-gray-50/50 py-4 md:py-6">
             {steps.map((s, i) => (
               <Fragment key={s}>
-                <div className="flex flex-col items-center">
+                {/*
+                  A finished step is a way back to it — the header's back arrow
+                  only went one step at a time.
+                */}
+                <button
+                  type="button"
+                  disabled={i >= step}
+                  onClick={() => setStep(i)}
+                  aria-label={i < step ? `Back to ${s}` : undefined}
+                  aria-current={i === step ? "step" : undefined}
+                  className="group flex flex-col items-center rounded-lg disabled:cursor-default enabled:cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600"
+                >
                   <div
                     ref={(el) => (stepperRefs.current[i] = el)}
                     className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-sm font-bold transition-all duration-300 ${
                       i < step
-                        ? "border-green-500 bg-green-500 text-white"
+                        ? "border-green-500 bg-green-500 text-white group-hover:border-green-600 group-hover:bg-green-600"
                         : i === step
                           ? "border-blue-600 bg-black text-white"
                           : "border-gray-300 bg-white text-gray-400"
@@ -621,12 +598,16 @@ export default function CheckoutModal({
                   </div>
                   <span
                     className={`mt-2 text-xs font-medium ${
-                      i <= step ? "text-gray-900" : "text-gray-400"
+                      i < step
+                        ? "text-gray-900 group-hover:underline"
+                        : i === step
+                          ? "text-gray-900"
+                          : "text-gray-400"
                     }`}
                   >
                     {s}
                   </span>
-                </div>
+                </button>
                 {i < steps.length - 1 && (
                   <div className="relative h-0.5 w-8 sm:w-16 mb-6">
                     <div className="absolute inset-0 bg-gray-200" />
@@ -663,19 +644,41 @@ export default function CheckoutModal({
                     <CheckoutStep
                       formData={formData}
                       setFormData={setFormData}
-                      errors={checkoutErrors as any}
+                      revealAttempt={checkoutRevealAttempt}
+                      onArtworkCheck={setArtworkCheck}
+                      shippingPicker={
+                        <ShippingMethodPicker
+                          shipping={shipping}
+                          setShipping={setShipping}
+                          standard={{ price: priced("standard").shippingCost, service: priced("standard").shippingService }}
+                          express={{ price: priced("express").shippingCost, service: priced("express").shippingService }}
+                          rushSurchargePct={rates.rushSurchargePct}
+                          rushSurcharge={priced("express").rushSurcharge}
+                          estimated={isEstimate}
+                        />
+                      }
                       cartItems={cartItems}
                     />
                   )}
 
-                  {step === 2 && (
+                  {/*
+                    Kept mounted through the review step, not unmounted with it.
+
+                    Stripe's card field has to be on the page when the payment is
+                    confirmed: the handler captured here calls
+                    `elements.getElement(CardElement)` at Place Order time. While
+                    this was only rendered on step 2, moving to Review tore the
+                    field down and every Place Order failed with "Card input is
+                    missing" — checkout could not complete at all.
+                  */}
+                  <div hidden={step !== 2}>
+                    {(step === 2 || step === 3) && (
                     (stripePromise ? (
                       <Elements stripe={stripePromise}>
                         <PaymentStep
                           payment={payment}
                           setPayment={setPayment}
                           shipping={shipping}
-                          setShipping={setShipping}
                           cartItems={cartItems}
                           customer={{
                             firstName: formData.firstName,
@@ -702,7 +705,6 @@ export default function CheckoutModal({
                         payment={payment}
                         setPayment={setPayment}
                         shipping={shipping}
-                        setShipping={setShipping}
                         cartItems={cartItems}
                         customer={{
                           firstName: formData.firstName,
@@ -724,7 +726,8 @@ export default function CheckoutModal({
                         }}
                       />
                     ))
-                  )}
+                    )}
+                  </div>
 
                   {step === 3 && (
                     <ReviewStep
@@ -749,7 +752,7 @@ export default function CheckoutModal({
                       )}
                       <p className="mb-8 max-w-md text-gray-600">
                         Thank you for your purchase! We've received your order and will begin processing it right
-                        away. A confirmation email has been sent to <strong>{formData.email}</strong>.
+                        away. You can follow it any time in Order history.
                       </p>
                       <div className="flex flex-col sm:flex-row gap-4">
                         <button
@@ -786,7 +789,9 @@ export default function CheckoutModal({
                           </div>
                         )}
                         <div className="flex justify-between text-sm">
-                          <span className="text-gray-600">Shipping</span>
+                          <span className="text-gray-600">
+                            Shipping <span className="text-gray-400">(estimate)</span>
+                          </span>
                           <span className="font-medium">
                             ${shippingCost.toFixed(2)}
                           </span>
@@ -826,19 +831,25 @@ export default function CheckoutModal({
                     <OrderSummary
                       cartItems={cartItems}
                       step={step}
-                      subtotal={subtotal}
+                      subtotal={priced(shipping).subtotal}
                       shippingCost={shippingCost}
+                      rushSurcharge={rushSurcharge}
+                      tax={tax}
                       total={total}
+                      shippingMethod={shipping}
+                      estimated={isEstimate}
+                      updating={quoteLoading}
                       onNext={handleNextStep}
                       isSubmitting={isSubmitting}
                       submittingLabel={finalizingArtwork ? "Finalizing artwork…" : undefined}
                       disableNext={
                         (step === 0 && !isCartValid) ||
-                        (step === 1 && !isCheckoutValid) ||
                         (step === 2 && !isPaymentValid)
                       }
                       nextLabel={
-                        step === 2 && !isPaymentValid
+                        step === 2 && !stripePromise
+                          ? "Payment not available yet"
+                          : step === 2 && !isPaymentValid
                           ? "Enter card details"
                           : step === 3
                             ? "Place Order"
@@ -852,9 +863,31 @@ export default function CheckoutModal({
           </ErrorBoundary>
         </div>
       </div>
-      {/* Its own layer: a click inside it used to bubble to the backdrop above,
-          closing checkout before the emptied cart reached its owner. */}
       <div onClick={(e) => e.stopPropagation()}>
+        <ConfirmModal
+          isOpen={confirmWarnings}
+          title="Your artwork has warnings"
+          message="They won't stop your order, but they may change how it prints."
+          confirmLabel="Continue to payment"
+          cancelLabel="Go back"
+          onConfirm={() => {
+            setConfirmWarnings(false);
+            setStep(2);
+          }}
+          onCancel={() => setConfirmWarnings(false)}
+        >
+          <ul className="space-y-1.5 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2.5">
+            {artworkCheck.warnings.map((w) => (
+              <li key={`${w.sheet}-${w.kind}`} className="flex items-start gap-2 text-[12px] text-yellow-900">
+                <MdWarningAmber className="mt-px h-4 w-4 shrink-0 text-yellow-600" />
+                <span>{describeWarning(w, artworkCheck.sheetCount)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-gray-500">
+            To fix them, go back to your cart and choose Edit sheet.
+          </p>
+        </ConfirmModal>
         <ConfirmModal
           isOpen={confirmClear}
           title="Clear your cart?"

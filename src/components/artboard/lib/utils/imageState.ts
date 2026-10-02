@@ -1,22 +1,5 @@
 import type { ArtboardItem } from "../../types";
 
-/**
- * Which image a piece is, and how its crop relates to it.
- *
- * A piece carries three image references with different jobs:
- *
- *  - `url` / `croppedUrl`: the image shown, and the identical image the print
- *    is made from;
- *  - `uncroppedUrl`: the piece's current image before auto-crop trims it — the
- *    source the auto-crop switch works from;
- *  - `originalUrl` / `assetId`: the upload the piece came from, which is its
- *    identity for saving and checkout and never changes.
- *
- * Every edit that changes pixels (background removal, the DPI boost, an AI
- * edit) produces a new uncropped image. Before this was tracked, the auto-crop
- * switch rebuilt the piece from `originalUrl` — the upload — so turning it off
- * or on silently threw away every edit made since.
- */
 export const uncroppedSourceOf = (item: Pick<ArtboardItem, "uncroppedUrl" | "originalUrl" | "url">) =>
   item.uncroppedUrl || item.originalUrl || item.url;
 
@@ -70,12 +53,6 @@ export const captureImageSnapshot = (item: ArtboardItem): ImageSnapshot => ({
   heightIn: item.heightIn,
 });
 
-/**
- * Puts a snapshot's image and size back on a piece, centred where the piece is
- * now. Restoring only the URL left the size and pixel counts of the later edit
- * in place, so a reverted cutout was stretched to the cutout's box and its DPI
- * was computed from pixels it no longer had.
- */
 export const restoreImageSnapshot = <T extends ArtboardItem>(item: T, snapshot: ImageSnapshot): T => ({
   ...item,
   ...snapshot,

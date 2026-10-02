@@ -6,15 +6,6 @@
  * sheets all called the same thing.
  */
 
-/**
- * True when any artwork on the board exists only in this browser.
- *
- * A failed upload leaves its image as a `blob:` URL, which no other device and
- * no printer can read. Saving those produced a design that looked right until it
- * was reopened, when every image was gone — which is what the unexplained DPI
- * warnings on a reopened sheet actually were: the board measuring images that
- * could no longer load.
- */
 export const artworkNotUploaded = (items: ReadonlyArray<Record<string, any>>): boolean =>
   items.some((it) =>
     [it?.url, it?.croppedUrl, it?.uncroppedUrl, it?.originalUrl, it?.assetId].some(
@@ -38,4 +29,14 @@ export const nextUntitledName = (existingTitles: ReadonlyArray<string | null | u
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
   return `${UNTITLED_SHEET} ${Date.now()}`;
+};
+
+/**
+ * Whether a customer already has a sheet by this name. Names are unique per
+ * customer (the server enforces it); comparing the same way here lets a clash
+ * be caught while naming a sheet that is not saved yet.
+ */
+export const titleTaken = (title: string, existingTitles: ReadonlyArray<string | null | undefined>): boolean => {
+  const key = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  return existingTitles.some((t) => key(t) === key(title));
 };

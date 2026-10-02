@@ -1,16 +1,72 @@
-# Space Transfers
+# Space Transfers Store
 
-## Running React on Replit
+The customer-facing app for Space Transfers, a marketplace for DTF (direct-to-film) gang sheets. A customer uploads artwork, arranges it on a sheet the width of the print roll, pays, and follows the order.
 
-[React](https://reactjs.org/) is a popular JavaScript library for building user interfaces.
+It talks to the API in `space-transfer-server`. The business side lives in `space-transfers-admin`, and print partners use `space-transfer-printer`.
 
-[Vite](https://vitejs.dev/) is a blazing fast frontend build tool that includes features like Hot Module Reloading (HMR), optimized builds, and TypeScript support out of the box.
+## What customers can do
 
-Using the two in conjunction is one of the fastest ways to build a web app.
+- **Build a sheet.** Upload PNG, JPG, PDF, SVG, AI, PSD, TIFF, WebP, AVIF, HEIC, GIF or BMP. Everything is converted in the browser and trimmed to its artwork.
+- **Arrange it.** Drag, resize, rotate, flip, lock, duplicate and group. Auto-nest packs the sheet as short as possible.
+- **Get warned.** Images under 300 DPI and artwork with fades or see-through areas are flagged, because DTF cannot print them as shown.
+- **Edit with AI.** Board commands such as "12 copies" or "make it 4 inches wide" run in the browser. Image edits go to the API.
+- **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery.
+- **Check out.** The cart holds one line per saved sheet. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
+- **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
+- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order.
 
-### Getting Started
-- Hit run
-- Edit [App.tsx](#src/App.tsx) and watch it live update!
+## Stack
 
-By default, Replit runs the `dev` script, but you can configure it by changing the `run` field in the [configuration file](#.replit). Here are the vite docs for [serving production websites](https://vitejs.dev/guide/build.html).
-# space-transfer-server
+React 18, TypeScript, Vite, Tailwind CSS, Stripe Elements. Tests run on Vitest.
+
+## Getting started
+
+```bash
+npm install
+cp .env.example .env    # then fill it in
+npm run dev             # http://localhost:5000
+```
+
+The API must be running; see `space-transfer-server`.
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Dev server with hot reload |
+| `npm test` | Runs the tests in watch mode (`npx vitest run` for a single pass) |
+| `npm run build` | Type-checks and builds to `dist/` |
+| `npm run preview` | Serves the built app |
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `VITE_API_URL` | The API, including `/api` |
+| `VITE_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key; card fields do not render without it |
+| `VITE_GOOGLE_CLIENT_ID` | Google sign-in; the option is hidden when empty |
+
+Every `VITE_*` value is compiled into the public bundle. Never put a secret in one. `.env` is gitignored; `.env.production` holds only the production API URL.
+
+## Layout
+
+```ts
+src/
+  components/
+    Editor.tsx       The page: board, cart, saving, sign-in, order history
+    Artboard.tsx     The sheet and everything on it
+    Header.tsx       Sheet name, save state, price, cart
+    Sidebar.tsx      Sheet settings and the gallery
+    artboard/        Board features (items, AI, canvas) and their logic
+    checkout/        Cart, address, shipping method, payment and review steps
+    modals/          Checkout, sign-in, account, order history and details
+  lib/utils/         API client, auth, pricing, cart sync, checkout rules
+  config/            Board constants (DPI threshold, upload formats)
+  test/              Unit tests
+```
+
+## Things worth knowing
+
+- **Prices come from the API.** The store shows an estimate until the address is entered, then the server's quote, which is what the card is charged.
+- **One sheet, one cart line.** A cart line is a saved sheet. Editing the sheet updates the line; a different sheet comes only from Start a new sheet or Duplicate.
+- **Artwork is uploaded, never embedded.** Sheets and orders hold links to stored images. A sheet whose artwork has not finished uploading cannot be saved or ordered.
+- **Images must load with CORS.** The editor reads pixels for cropping, DPI and transparency checks, so the storage bucket needs a CORS policy for this origin (see the API's `.env.example`).
+- **The store is for customers only.** Partner and admin accounts are signed out here.

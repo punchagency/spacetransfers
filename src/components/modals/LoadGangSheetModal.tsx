@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { FiFileText } from "react-icons/fi";
 import { FaRegFolderOpen } from "react-icons/fa";
-import { FiSearch } from "react-icons/fi";
+import { FiSearch, FiAlertCircle } from "react-icons/fi";
 import { RiDeleteBin5Line } from "react-icons/ri";
 import { MdEdit, MdContentCopy } from "react-icons/md";
 interface LoadGangSheetModalProps {
@@ -14,6 +14,11 @@ interface LoadGangSheetModalProps {
     size: string;
     thumbnail: string;
   }>;
+  /** True while the saved list is being read. */
+  isLoading?: boolean;
+  /** Why the list could not be read — shown instead of the empty state. */
+  error?: string | null;
+  onRetry?: () => void;
   onRename?: (id: string, newTitle: string) => void;
   onDuplicate?: (id: string) => void;
   onDelete?: (id: string) => void;
@@ -21,7 +26,7 @@ interface LoadGangSheetModalProps {
   onSearch?: (term: string) => void;
 }
 
-const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose, designs, onRename, onDuplicate, onDelete, onLoad, onSearch }) => {
+const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose, designs, isLoading, error, onRetry, onRename, onDuplicate, onDelete, onLoad, onSearch }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -91,7 +96,31 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
 
         {/* Gang Sheet Cards */}
         <div className="p-4 sm:p-6 pb-8 flex gap-4 overflow-x-auto min-h-[280px] sm:min-h-[320px]">
-          {designs.length === 0 ? (
+          {error && designs.length === 0 ? (
+            <div className="w-full flex flex-col items-center justify-center px-6 text-center text-gray-500">
+              <div className="w-24 h-24 bg-red-50 rounded-full flex items-center justify-center mb-4">
+                <FiAlertCircle className="w-12 h-12 text-red-400" />
+              </div>
+              <p className="text-lg text-gray-700">Your sheets couldn't be loaded</p>
+              <p className="text-sm text-gray-500 mt-1 max-w-sm">{error}</p>
+              <p className="text-sm text-gray-500 mt-1">Your saved sheets are safe — this is only a problem reading the list.</p>
+              {onRetry && (
+                <button
+                  onClick={onRetry}
+                  className="mt-4 rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"
+                >
+                  Try again
+                </button>
+              )}
+            </div>
+          ) : isLoading && designs.length === 0 ? (
+            <div className="w-full flex flex-col items-center justify-center text-gray-500">
+              <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4 animate-pulse">
+                <FiFileText className="w-12 h-12 text-gray-400" />
+              </div>
+              <p className="text-lg text-gray-700">Loading your sheets…</p>
+            </div>
+          ) : designs.length === 0 ? (
             <div className="w-full flex flex-col items-center justify-center text-gray-500">
               <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4">
                 <FiFileText className="w-12 h-12 text-gray-400" />
@@ -163,6 +192,8 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
                   </button>
                   <button
                     className="hover:text-gray-700"
+                    aria-label={`Delete ${design.title}`}
+                    title="Delete"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDelete(design.id);

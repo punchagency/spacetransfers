@@ -1,11 +1,17 @@
 import { BsPerson } from "react-icons/bs";
 import { IoLocationOutline } from "react-icons/io5";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { IoMdCheckmarkCircleOutline } from "react-icons/io";
 import { MdWarningAmber } from "react-icons/md";
 import { DPI, UPLOAD_FORMAT_LABELS } from "../../config/artboard.config";
 import { usePricingSettings } from "../../lib/utils/pricingRates";
-import { cartLinePieces, describeWarning, summarizeCartWarnings } from "../../lib/utils/checkoutWarnings";
+import {
+  cartLinePieces,
+  describeWarning,
+  summarizeCartWarnings,
+  type SheetWarning,
+} from "../../lib/utils/checkoutWarnings";
+import { checkoutFieldError, checkoutFormErrors, type CheckoutField } from "../../lib/utils/checkoutValidation";
 import { useTransparencyVerdicts } from "../artboard/lib/hooks/useTransparencyVerdicts";
 
 const REGION_BY_STATE: Record<string, string> = {
@@ -43,17 +49,87 @@ interface FormData {
 interface CheckoutStepProps {
   formData: FormData;
   setFormData: (data: FormData) => void;
-  errors?: Partial<Record<keyof FormData, string>>;
+  /**
+   * Bumped each time Continue is pressed on an incomplete form, so every
+   * field's problem shows at once — including fields never visited.
+   */
+  revealAttempt?: number;
   /** The cart, so the Design Validation card can report on its artwork. */
   cartItems?: any[];
+  /** Standard or Express, shown under the address it is priced for. */
+  shippingPicker?: ReactNode;
+  /** Told what the artwork check found, so Continue can ask before going on. */
+  onArtworkCheck?: (check: { warnings: SheetWarning[]; checking: boolean; sheetCount: number }) => void;
 }
 
 export default function CheckoutStep({
   formData,
   setFormData,
-  errors,
+  revealAttempt = 0,
   cartItems = [],
+  shippingPicker,
+  onArtworkCheck,
 }: CheckoutStepProps) {
+  const [shown, setShown] = useState<Partial<Record<CheckoutField, string>>>({});
+
+  useEffect(() => {
+    if (revealAttempt > 0) setShown(checkoutFormErrors(formData));
+    // Only a new attempt reveals everything; edits are handled per field.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealAttempt]);
+
+  const judge = (key: CheckoutField, value: string) =>
+    setShown((prev) => ({ ...prev, [key]: checkoutFieldError(key, value) ?? undefined }));
+
+  const field = (
+    key: CheckoutField,
+    label: string,
+    opts: {
+      type?: string;
+      autoComplete?: string;
+      inputMode?: "numeric" | "text";
+      placeholder?: string;
+      maxLength?: number;
+      uppercase?: boolean;
+      wrap?: string;
+      transform?: (value: string) => string;
+    } = {},
+  ) => {
+    const id = `checkout-${key}`;
+    const error = shown[key];
+    return (
+      <div className={opts.wrap}>
+        <label htmlFor={id} className="block text-sm font-medium mb-1">
+          {label} <span className="text-red-500">*</span>
+        </label>
+        <input
+          id={id}
+          name={key}
+          type={opts.type ?? "text"}
+          autoComplete={opts.autoComplete}
+          inputMode={opts.inputMode}
+          placeholder={opts.placeholder}
+          maxLength={opts.maxLength}
+          value={formData[key]}
+          onChange={(e) => {
+            const value = opts.transform ? opts.transform(e.target.value) : e.target.value;
+            setFormData({ ...formData, [key]: value });
+            if (shown[key]) judge(key, value);
+          }}
+          onBlur={(e) => judge(key, e.target.value)}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+          className={`w-full px-3 py-2 border rounded-lg ${opts.uppercase ? "uppercase " : ""}${
+            error ? "border-red-500" : "border-gray-300"
+          } ${formData[key] ? "bg-[#F3F3F5]" : "bg-white"}`}
+        />
+        {error ? (
+          <div id={`${id}-error`} className="mt-1 text-xs text-red-600">{error}</div>
+        ) : null}
+      </div>
+    );
+  };
+
   // Every piece on every sheet, for the same transparency check the artboard
   // runs (remembered per image, so pieces already checked there cost nothing).
   const pieces = useMemo(() => cartItems.flatMap(cartLinePieces), [cartItems]);
@@ -66,6 +142,11 @@ export default function CheckoutStep({
     () => cartItems.filter((line) => cartLinePieces(line).length > 0).length,
     [cartItems],
   );
+  useEffect(() => {
+    onArtworkCheck?.({ warnings, checking, sheetCount });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warnings, checking, sheetCount]);
+
   // The roll and the minimum are admin settings; the copy reads them rather than
   // stating numbers that go stale the moment either changes.
   const { sheetWidthIn, minSheetLengthIn } = usePricingSettings();
@@ -82,78 +163,10 @@ export default function CheckoutStep({
           <h3 className="text-base font-semibold">Customer Information</h3>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              First Name <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={formData.firstName}
-              onChange={(e) =>
-                setFormData({ ...formData, firstName: e.target.value })
-              }
-              className={`w-full px-3 py-2 border rounded-lg ${
-                errors?.firstName ? "border-red-500" : "border-gray-300"
-              } ${formData.firstName ? "bg-[#F3F3F5]" : "bg-white"}`}
-            />
-            {errors?.firstName ? (
-              <div className="mt-1 text-xs text-red-600">{errors.firstName}</div>
-            ) : null}
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Last Name <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={formData.lastName}
-              onChange={(e) =>
-                setFormData({ ...formData, lastName: e.target.value })
-              }
-              className={`w-full px-3 py-2 border rounded-lg ${
-                errors?.lastName ? "border-red-500" : "border-gray-300"
-              } ${formData.lastName ? "bg-[#F3F3F5]" : "bg-white"}`}
-            />
-            {errors?.lastName ? (
-              <div className="mt-1 text-xs text-red-600">{errors.lastName}</div>
-            ) : null}
-          </div>
-          <div className="sm:col-span-2">
-            <label className="block text-sm font-medium mb-1">
-              Email Address <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="email"
-              value={formData.email}
-              onChange={(e) =>
-                setFormData({ ...formData, email: e.target.value })
-              }
-              className={`w-full px-3 py-2 border rounded-lg ${
-                errors?.email ? "border-red-500" : "border-gray-300"
-              } ${formData.email ? "bg-[#F3F3F5]" : "bg-white"}`}
-            />
-            {errors?.email ? (
-              <div className="mt-1 text-xs text-red-600">{errors.email}</div>
-            ) : null}
-          </div>
-          <div className="sm:col-span-2">
-            <label className="block text-sm font-medium mb-1">
-              Phone Number <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="tel"
-              value={formData.phone}
-              onChange={(e) =>
-                setFormData({ ...formData, phone: e.target.value })
-              }
-              className={`w-full px-3 py-2 border rounded-lg ${
-                errors?.phone ? "border-red-500" : "border-gray-300"
-              } ${formData.phone ? "bg-[#F3F3F5]" : "bg-white"}`}
-            />
-            {errors?.phone ? (
-              <div className="mt-1 text-xs text-red-600">{errors.phone}</div>
-            ) : null}
-          </div>
+          {field("firstName", "First Name", { autoComplete: "given-name" })}
+          {field("lastName", "Last Name", { autoComplete: "family-name" })}
+          {field("email", "Email Address", { type: "email", autoComplete: "email", wrap: "sm:col-span-2" })}
+          {field("phone", "Phone Number", { type: "tel", autoComplete: "tel", wrap: "sm:col-span-2" })}
         </div>
       </div>
 
@@ -163,108 +176,26 @@ export default function CheckoutStep({
           <h3 className="text-base font-semibold">Shipping Address</h3>
         </div>
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Street Address <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={formData.street}
-              onChange={(e) =>
-                setFormData({ ...formData, street: e.target.value })
-              }
-              className={`w-full px-3 py-2 border rounded-lg ${
-                errors?.street ? "border-red-500" : "border-gray-300"
-              } ${formData.street ? "bg-[#F3F3F5]" : "bg-white"}`}
-            />
-            {errors?.street ? (
-              <div className="mt-1 text-xs text-red-600">{errors.street}</div>
-            ) : null}
+          {field("street", "Street Address", { autoComplete: "address-line1" })}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {field("city", "City", { autoComplete: "address-level2" })}
+            {field("state", "State", {
+              autoComplete: "address-level1",
+              placeholder: "CA",
+              maxLength: 2,
+              uppercase: true,
+              // Two-letter US state code only — mirrors printer signup.
+              transform: (v) => v.replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 2),
+            })}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                City <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.city}
-                onChange={(e) =>
-                  setFormData({ ...formData, city: e.target.value })
-                }
-                className={`w-full px-3 py-2 border rounded-lg ${
-                  errors?.city ? "border-red-500" : "border-gray-300"
-                } ${formData.city ? "bg-[#F3F3F5]" : "bg-white"}`}
-              />
-              {errors?.city ? (
-                <div className="mt-1 text-xs text-red-600">{errors.city}</div>
-              ) : null}
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                State / Province <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.state}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    // Two-letter US state code only — mirrors printer signup.
-                    state: e.target.value.replace(/[^a-zA-Z]/g, "").toUpperCase().slice(0, 2),
-                  })
-                }
-                placeholder="CA"
-                maxLength={2}
-                className={`w-full px-3 py-2 border rounded-lg uppercase ${
-                  errors?.state ? "border-red-500" : "border-gray-300"
-                } ${formData.state ? "bg-[#F3F3F5]" : "bg-white"}`}
-              />
-              {errors?.state ? (
-                <div className="mt-1 text-xs text-red-600">{errors.state}</div>
-              ) : null}
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                Postal Code <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.postalCode}
-                onChange={(e) =>
-                  setFormData({ ...formData, postalCode: e.target.value })
-                }
-                className={`w-full px-3 py-2 border rounded-lg ${
-                  errors?.postalCode ? "border-red-500" : "border-gray-300"
-                } ${formData.postalCode ? "bg-[#F3F3F5]" : "bg-white"}`}
-              />
-              {errors?.postalCode ? (
-                <div className="mt-1 text-xs text-red-600">{errors.postalCode}</div>
-              ) : null}
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">
-                Country <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.country}
-                onChange={(e) =>
-                  setFormData({ ...formData, country: e.target.value })
-                }
-                className={`w-full px-3 py-2 border rounded-lg ${
-                  errors?.country ? "border-red-500" : "border-gray-300"
-                } ${formData.country ? "bg-[#F3F3F5]" : "bg-white"}`}
-              />
-              {errors?.country ? (
-                <div className="mt-1 text-xs text-red-600">{errors.country}</div>
-              ) : null}
-            </div>
+            {field("postalCode", "ZIP Code", { autoComplete: "postal-code", inputMode: "numeric", placeholder: "97201" })}
+            {field("country", "Country", { autoComplete: "country" })}
           </div>
         </div>
       </div>
+
+      {shippingPicker}
 
       {detectedRegion && (
         <div className={`flex mb-4.5 items-center gap-2 px-4 py-2.5 rounded-lg border text-xs font-medium ${REGION_COLORS[detectedRegion] ?? "bg-slate-50 text-slate-600 border-slate-200"}`}>
@@ -274,8 +205,6 @@ export default function CheckoutStep({
       )}
 
       <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-        {/* The badge used to say "Review Warnings" whatever the cart held. It now
-            reports the artboard's own flags for the artwork being ordered. */}
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-normal text-[11px]">Design Validation</h3>
           {warnings.length > 0 ? (
@@ -312,16 +241,33 @@ export default function CheckoutStep({
             flags as low.
           */}
           <div className="space-y-2.5 text-sm text-gray-700">
+            {/*
+              The two rows the artwork is checked against follow that check.
+              Every row wore a green tick, so "Transparency" was ticked on the
+              same card that flagged fades a few lines above it.
+            */}
             {[
-              `Sheet size: ${sheetWidthIn}" wide (the roll width), any length — billed from ${minSheetLengthIn}" minimum`,
-              `Resolution: ${DPI.THRESHOLD} DPI for sharp prints — anything lower is flagged on your sheet`,
-              `Formats: ${UPLOAD_FORMAT_LABELS.join(", ")}`,
-              "Transparency: fades and see-through areas don't print as shown — they're flagged on your sheet",
-              "Color: RGB — CMYK files are converted to RGB automatically",
-            ].map((line) => (
-              <div key={line} className="flex items-center text-[10px] gap-2">
-                <IoMdCheckmarkCircleOutline className="w-4 h-4 shrink-0 text-green-600" />
-                <span>{line}</span>
+              { text: `Sheet size: ${sheetWidthIn}" wide (the roll width), any length — billed from ${minSheetLengthIn}" minimum`, state: "ok" },
+              {
+                text: `Resolution: ${DPI.THRESHOLD} DPI for sharp prints — anything lower is flagged on your sheet`,
+                state: warnings.some((w) => w.kind !== "transparency") ? "warn" : "ok",
+              },
+              { text: `Formats: ${UPLOAD_FORMAT_LABELS.join(", ")}`, state: "ok" },
+              {
+                text: "Transparency: fades and see-through areas don't print as shown — they're flagged on your sheet",
+                state: warnings.some((w) => w.kind === "transparency") ? "warn" : checking ? "pending" : "ok",
+              },
+              { text: "Color: RGB — CMYK files are converted to RGB automatically", state: "ok" },
+            ].map(({ text, state }) => (
+              <div key={text} className="flex items-center text-[10px] gap-2">
+                {state === "warn" ? (
+                  <MdWarningAmber className="w-4 h-4 shrink-0 text-yellow-600" aria-label="Flagged" />
+                ) : state === "pending" ? (
+                  <IoMdCheckmarkCircleOutline className="w-4 h-4 shrink-0 text-gray-300" aria-label="Checking" />
+                ) : (
+                  <IoMdCheckmarkCircleOutline className="w-4 h-4 shrink-0 text-green-600" />
+                )}
+                <span>{text}</span>
               </div>
             ))}
           </div>

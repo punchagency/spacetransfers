@@ -1,18 +1,5 @@
 import { assetFingerprint } from "./assetIdentity";
 
-/**
- * A change-detection snapshot of the board.
- *
- * This is compared against a baseline to decide whether to prompt about unsaved
- * work — it is never sent anywhere, so it must carry identity, not content.
- *
- * It previously embedded each item's `url` verbatim. Since the editor writes
- * canvas results back as `data:image/png;base64,…`, that meant serializing
- * every image on the board into one string; on a busy sheet the result exceeded
- * V8's ~512 MB string cap and `JSON.stringify` threw `RangeError: Invalid
- * string length`. Fingerprinting the URLs keeps the snapshot's discriminating
- * power while making its size track item count instead of pixel count.
- */
 export const getGangsheetSnapshot = (items: any[]): string => {
   if (!Array.isArray(items)) return "[]";
 

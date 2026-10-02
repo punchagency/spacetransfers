@@ -17,7 +17,7 @@ import {
 } from "../utils";
 import { showLargeImageWarning } from "../../../common/LargeImageWarning";
 import { snapToGridPoint } from "../utils";
-import { CANVAS, PRICING, UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import { UNIT, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { usePricingSettings } from "../../../../lib/utils/pricingRates";
 import toast from "react-hot-toast";
 
@@ -38,13 +38,6 @@ export const useArtboardEffects = (
   onDataChange?: (data: any) => void,
   counter?: number
 ) => {
-  /*
-   * The whole settings snapshot, not just the rate.
-   *
-   * Watching `pricePerSqFt` alone meant a change to the roll width or the
-   * minimum length never reached this effect — the rate compared equal, React
-   * bailed out, and the board kept the compiled fallback for the session.
-   */
   const pricingSettings = usePricingSettings();
   const pricePerSqFt = pricingSettings.pricePerSqFt;
   const [originalPositions, setOriginalPositions] = useState<
@@ -73,7 +66,6 @@ export const useArtboardEffects = (
       onDataChange({ items, counter });
     }
   }, [items, counter, onDataChange]);
-
 
   // Animate items only when gravity is active (and not suppressed by a copies change)
   useEffect(() => {
@@ -165,18 +157,6 @@ export const useArtboardEffects = (
         return nextPosY;
       };
 
-      /*
-       * Nothing may reach outside the margins — the roll cannot print past its
-       * edge, and the margin is the clearance the customer set from it. Checked
-       * first, on every piece, so it holds however a piece got there: a piece
-       * pinned near the edge and then rotated, a width typed in the properties
-       * panel, an oversized upload, or a design built on a wider roll.
-       *
-       * With auto-nest on, a hand-placed piece that no longer fits where it was
-       * put is released to be nested again rather than pushed onto its
-       * neighbours; a piece free to move is only shrunk if turning it would not
-       * make it fit, since the packer turns it.
-       */
       const resizedIds = new Set<number>();
       const fitChangedIds = new Set<number>();
       // Groups first, as whole units, so the per-piece pass finds them already inside.
@@ -238,14 +218,6 @@ export const useArtboardEffects = (
 
       let updatesToUse: ArtboardItem[];
 
-      /*
-       * Auto-nest ON re-nests the whole sheet on every change. With it off, a
-       * spacing or margin change no longer re-nests anything: every group's
-       * columns are re-fitted to the new gap below, and then, in both modes,
-       * only pieces now closer than the spacing move (`separateCrowdedItems`).
-       * Re-nesting here rearranged a hand-built board for a nudge of the
-       * spacing, yet left hand-placed pieces as close together as before.
-       */
       const runGlobalPack = autoNestStickers;
       if (runGlobalPack) {
         // Strip `pinned` ONLY at the moment auto-nest is switched on, so a
@@ -471,18 +443,10 @@ export const useArtboardEffects = (
   // Header info change
   useEffect(() => {
     if (onHeaderInfoChange) {
-      // The length the sheet prints at — see `sheetContentLengthIn` for why this
-      // no longer has arithmetic of its own.
       const usedHeightIn =
         items.length > 0 ? sheetContentLengthIn(items, canvasWidth, marginSize, spacing) : 0;
 
       // Pricing is based on actual utilized area (not hardcoded).
-      /*
-       * Billed on the roll, with a minimum run length — the same rule the
-       * server charges by. This priced `usedWidthIn * usedHeightIn`, the
-       * bounding box of the artwork, so a sparse sheet was quoted a fraction of
-       * what it would actually cost and a short one ignored the minimum.
-       */
       const billed = billableSheetDimensions(usedHeightIn);
       /*
        * Zero only while the board is genuinely empty — there is nothing to

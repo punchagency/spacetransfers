@@ -275,7 +275,6 @@ function decontaminateEdges(
       const i = flat * 4;
       const r = data[i], g = data[i + 1], b = data[i + 2];
 
-      // How contaminated is this rim pixel by the old background colour?
       let strength: number;
       if (bgType === "white") {
         strength = Math.min(1, Math.max(0, (Math.min(r, g, b) - 150) / 105));
