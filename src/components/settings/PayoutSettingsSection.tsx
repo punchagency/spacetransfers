@@ -167,8 +167,8 @@ const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus 
               <FiCalendar className="w-3.5 h-3.5 mt-0.5 text-blue-500 flex-shrink-0" />
               <span>
                 {platformReady
-                  ? "Payouts are processed automatically every Friday via Stripe Connect (test mode). Bank transfers typically arrive within 1–3 business days."
-                  : "Once payouts open, they run automatically every Friday and bank transfers typically arrive within 1–3 business days."}
+                  ? "Every Friday your shipped jobs are put forward for payout. Space Transfers reviews and sends each payout; bank transfers then typically arrive within 1–3 business days."
+                  : "Once payouts open, your shipped jobs are put forward every Friday for Space Transfers to review and pay."}
               </span>
             </div>
             <div className="flex items-start gap-2 text-xs text-gray-500 mt-2">

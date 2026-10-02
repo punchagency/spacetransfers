@@ -192,9 +192,9 @@ const Earnings = () => {
 
   const stats = summary
     ? [
-        { title: "Total Earnings",    value: formatCurrency(summary.totalEarnings),    sub: "All time",         icon: TbCurrencyDollar,  color: "blue"   },
+        { title: "Total Earnings",    value: formatCurrency(summary.totalEarnings),    sub: "All time, shipped jobs", icon: TbCurrencyDollar,  color: "blue"   },
         { title: "Available Balance", value: formatCurrency(summary.availableBalance), sub: "Ready for payout", icon: FiCheckCircle,     color: "green"  },
-        { title: "Pending Earnings",  value: formatCurrency(summary.pendingEarnings),  sub: "Jobs in progress", icon: FiClock,           color: "orange" },
+        { title: "Pending Earnings",  value: formatCurrency(summary.pendingEarnings),  sub: "Expected, not earned until shipped", icon: FiClock,           color: "orange" },
         { title: "Paid Out",          value: formatCurrency(summary.paidOutAmount),    sub: "Total transferred",icon: HiArrowTrendingUp, color: "purple" },
       ]
     : [];
@@ -328,14 +328,14 @@ const Earnings = () => {
                 <FiCalendar className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-blue-900">
-                    Automatic Weekly Payouts
+                    Weekly Payouts
                   </p>
                   <p className="text-xs text-blue-700 mt-0.5">
-                    Payouts are processed automatically every Friday.
+                    Every Friday your shipped jobs are put forward for payout, then reviewed and paid by Space Transfers.
                     {summary.nextScheduledPayoutDate && (
                       <> Next scheduled: <strong>{formatDate(summary.nextScheduledPayoutDate)}</strong>.</>
                     )}{" "}
-                    Minimum payout threshold: <strong>{formatCurrency(summary.minimumPayoutAmount)}</strong>.
+                    Smallest payout: <strong>{formatCurrency(summary.minimumPayoutAmount)}</strong>.
                   </p>
                 </div>
                 {!summary.stripeOnboarded && (

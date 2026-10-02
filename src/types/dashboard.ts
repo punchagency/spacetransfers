@@ -13,7 +13,9 @@ export interface DashboardJob {
   displayId?: string | null;
   customerName: string;
   order: string;
-  deadline: string;
+  /** When the next step is due, and which step; null once nothing is due. */
+  deadline: string | null;
+  dueStage?: "ACCEPT" | "PRINT" | null;
   status: DashboardJobStatus;
   isUrgent?: boolean;
   createdAt?: string | null;

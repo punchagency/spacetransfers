@@ -797,7 +797,11 @@ export default function OrderDetailsPage() {
                 <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
                   <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Your Earnings</div>
                   <div className="p-5">
-                    {!earningsBreakdown.derivable ? (
+                    {overview.status === "CANCELLED" && !earningsBreakdown.realized ? (
+                      <p className="text-sm text-gray-600">
+                        This job was cancelled before it shipped, so it doesn&rsquo;t pay.
+                      </p>
+                    ) : !earningsBreakdown.derivable ? (
                       <p className="text-sm text-amber-700">
                         This job&rsquo;s artwork carries no printable dimensions, so we cannot work out
                         its payout yet. Please contact support before printing it.
@@ -838,7 +842,9 @@ export default function OrderDetailsPage() {
                         </div>
                         <p className="mt-2 text-[11px] text-gray-400">
                           {earningsBreakdown.realized
-                            ? "Payable — it joins your next payout."
+                            ? overview.status === "CANCELLED"
+                              ? "This job was cancelled, but you're still paid for it. It joins your next payout."
+                              : "Payable — it joins your next payout."
                             : "Becomes payable once you ship this job."}
                         </p>
                       </>

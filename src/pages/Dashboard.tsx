@@ -129,12 +129,27 @@ const Dashboard = () => {
     { header: "Customer Name", key: "customerName" as const, className: "text-gray-600" },
     { header: "Order",         key: "order"        as const, className: "text-gray-600" },
     {
-      header: "Deadline",
-      render: (job: DashboardJob) => <DeadlineCountdown iso={job.deadline} />,
+      header: "Next deadline",
+      render: (job: DashboardJob) =>
+        job.deadline && job.dueStage ? (
+          <span>
+            <span className="text-gray-500">{job.dueStage === "PRINT" ? "Print by " : "Accept by "}</span>
+            <DeadlineCountdown iso={job.deadline} />
+          </span>
+        ) : (
+          <span className="text-gray-400" title="Nothing is due from you on this job right now.">None</span>
+        ),
     },
     {
       header: "Status",
-      render: (job: DashboardJob) => <StatusBadge status={job.isUrgent ? "Urgent" : job.status} />,
+      // The job's stage, with Urgent as its own tag: urgent is the order's
+      // type, not a stage, and it used to replace the stage in this column.
+      render: (job: DashboardJob) => (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <StatusBadge status={job.status} />
+          {job.isUrgent && <StatusBadge status="Urgent" />}
+        </span>
+      ),
     },
     {
       header: "Action",
