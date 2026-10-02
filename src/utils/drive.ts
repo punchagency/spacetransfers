@@ -43,6 +43,12 @@ const getStoredToken = (): DriveToken | null => {
   }
 };
 
+/** A saved Drive connection that is still good, without asking Google. */
+export const getSavedDriveToken = (): string | null => {
+  const stored = getStoredToken();
+  return stored && stored.expiresAt - nowMs() > 60_000 ? stored.accessToken : null;
+};
+
 const storeToken = (t: DriveToken) => {
   localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(t));
 };
@@ -66,12 +72,29 @@ export const getGoogleDriveAccessToken = async ({
       return;
     }
 
+    /*
+     * Google reports a blocked or closed popup through `error_callback`, not
+     * `callback`. With only the latter, a popup the browser blocked left the
+     * promise — and the "Connecting to Google Drive…" spinner — waiting forever.
+     */
     const client = oauth2.initTokenClient({
       client_id: clientId,
       scope: "https://www.googleapis.com/auth/drive.file",
       callback: (resp: any) => {
-        if (resp?.error) reject(new Error(String(resp.error)));
+        if (resp?.error) reject(new Error(String(resp.error_description || resp.error)));
         else resolve(resp);
+      },
+      error_callback: (err: any) => {
+        const type = String(err?.type || "");
+        reject(
+          new Error(
+            type === "popup_failed_to_open"
+              ? "Your browser blocked the Google window. Allow pop-ups for this site and try again."
+              : type === "popup_closed"
+                ? "The Google window was closed before Drive was connected."
+                : "Google Drive couldn't be connected. Please try again.",
+          ),
+        );
       },
     });
 

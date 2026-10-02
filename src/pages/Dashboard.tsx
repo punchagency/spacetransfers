@@ -64,26 +64,20 @@ const Dashboard = () => {
   const [assignedTotal, setAssignedTotal] = useState(0);
   const [urgentTotal, setUrgentTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Whether the stats have ever arrived, so a failure before then isn't shown as zeros.
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [range, setRange] = useState<Range>("30d");
 
-  /*
-   * The same name the top bar shows. This read `name` while `UserMenu` reads
-   * `companyName || name`, so one screen greeted you by two different names.
-   *
-   * Read from the profile store rather than localStorage directly, so editing
-   * your name on Profile updates the greeting instead of leaving it stale until
-   * the next sign-in.
-   */
   const { name: storeName } = useProfileStore();
   const userName = useMemo(() => {
     if (storeName?.trim()) return storeName.trim();
     try {
       const raw = localStorage.getItem("printer_user");
-      if (!raw) return "there";
+      if (!raw) return "";
       const u = JSON.parse(raw);
-      return String(u?.companyName || u?.name || "there");
+      return String(u?.companyName || u?.name || "");
     } catch {
-      return "there";
+      return "";
     }
   }, [storeName]);
 
@@ -104,14 +98,10 @@ const Dashboard = () => {
     setAssignedTotal(Number(r?.assignedTotal ?? 0));
     setUrgentTotal(Number(r?.urgentTotal ?? 0));
     setLoadError(null);
+    setHasLoaded(true);
   }, []);
 
   useEffect(() => {
-    /*
-     * Recorded, not swallowed. A failed load used to leave empty cards and an
-     * empty table with nothing saying so — a partner would read "$0.00 earned,
-     * no jobs" as fact rather than as a request that never returned.
-     */
     fetchData(range)
       .catch((e: any) => setLoadError(e?.message || "Could not load your dashboard"))
       .finally(() => setLoading(false));
@@ -165,9 +155,12 @@ const Dashboard = () => {
   return (
     <div className="flex flex-col gap-8">
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 flex items-start justify-between border-b border-gray-200">
+      <div className="sticky top-0 z-10 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4 flex flex-col md:flex-row gap-3 md:gap-0 md:items-start md:justify-between border-b border-gray-200">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Welcome back, {userName}!</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Welcome back{userName ? `, ${userName}` : ""}!</h1>
+          {!hasLoaded && loadError ? (
+            <p className="text-gray-500 mt-1">Your jobs couldn't be loaded right now.</p>
+          ) : (
           <p className="text-gray-500 mt-1">
             Here's your fulfillment overview for today. You have{" "}
             {/*
@@ -185,6 +178,7 @@ const Dashboard = () => {
             </button>{" "}
             assigned to you{urgentTotal ? ` • ${urgentTotal} urgent` : ""}.
           </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -246,7 +240,7 @@ const Dashboard = () => {
                     </div>
                   </div>
                   <div>
-                    <span className="text-3xl font-bold text-gray-900 tracking-tight">{card.value}</span>
+                    <span className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">{card.value}</span>
                     {card.note && (
                       <p className="text-xs mt-1 text-gray-400">
                         {card.note}

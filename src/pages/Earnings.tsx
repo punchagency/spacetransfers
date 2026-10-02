@@ -1,3 +1,4 @@
+import { AlertBanner } from "../components/common/AlertBanner";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FiDownload,
@@ -67,6 +68,7 @@ const Earnings = () => {
   const [jobsLoading, setJobsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Track whether the initial load has completed so filter changes
   // don't trigger the full-page loader.
@@ -97,8 +99,9 @@ const Earnings = () => {
     const init = async () => {
       try {
         await Promise.all([fetchSummary(), fetchJobs(RANGE_MAP["All Time"])]);
+        setLoadError(null);
       } catch (err: any) {
-        toast.error(err.message || "Failed to load earnings");
+        setLoadError(err.message || "Failed to load earnings");
       } finally {
         setInitialLoading(false);
         didInitialLoad.current = true;
@@ -113,7 +116,8 @@ const Earnings = () => {
     if (!didInitialLoad.current) return;
     setJobsLoading(true);
     fetchJobs(RANGE_MAP[timeFilter])
-      .catch((err: any) => toast.error(err.message || "Failed to load jobs"))
+      .then(() => setLoadError(null))
+      .catch((err: any) => setLoadError(err.message || "Failed to load jobs"))
       .finally(() => setJobsLoading(false));
   }, [timeFilter, fetchJobs]);
 
@@ -122,7 +126,9 @@ const Earnings = () => {
     setRefreshing(true);
     try {
       await Promise.all([fetchSummary(), fetchJobs(RANGE_MAP[timeFilter])]);
+      setLoadError(null);
     } catch (err: any) {
+      setLoadError(err.message || "Failed to refresh");
       toast.error(err.message || "Failed to refresh");
     } finally {
       setRefreshing(false);
@@ -219,11 +225,6 @@ const Earnings = () => {
     },
     {
       header: "Completed",
-      /*
-       * Null until a job actually ships. This rendered `updatedAt` for every
-       * row, so an unfinished job showed a "completed" date — the day someone
-       * last touched it.
-       */
       render: (job: EarningsJob) => (
         <span className="text-gray-600">
           {job.completedAt ? (
@@ -274,9 +275,9 @@ const Earnings = () => {
   return (
     <div className="flex flex-col gap-8">
       {/* Header — always visible */}
-      <div className="sticky top-0 z-20 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 flex justify-between items-start border-b border-gray-200">
+      <div className="sticky top-0 z-20 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4 flex flex-col md:flex-row gap-3 md:gap-0 md:justify-between md:items-start border-b border-gray-200">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Earnings & Payouts</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Earnings & Payouts</h1>
           <p className="text-gray-500 mt-1">Track your earnings and payout history</p>
         </div>
         <div className="flex items-center gap-2">
@@ -305,6 +306,13 @@ const Earnings = () => {
         </div>
       ) : (
         <>
+          {loadError && (
+            <AlertBanner
+              title="Your earnings couldn't be loaded"
+              message={`${loadError} — the figures below may be missing or out of date. Try Refresh.`}
+              variant="error"
+            />
+          )}
           {/* Payout info banner */}
           {summary && (
             /*
@@ -353,7 +361,7 @@ const Earnings = () => {
           )}
 
           {/* Stats Cards */}
-          <div className="grid grid-cols-4 gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6">
             {stats.map((stat, index) => {
               const Icon = stat.icon;
               return (
@@ -365,7 +373,7 @@ const Earnings = () => {
                     </div>
                   </div>
                   <div>
-                    <span className="text-3xl font-bold text-gray-900 tracking-tight">{stat.value}</span>
+                    <span className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">{stat.value}</span>
                     <p className="text-xs text-gray-500 mt-1">{stat.sub}</p>
                   </div>
                 </div>
@@ -374,13 +382,13 @@ const Earnings = () => {
           </div>
 
           {/* Filter & Search */}
-          <div className="flex items-center p-2 bg-white rounded-2xl border border-gray-200 shadow-sm h-[72px]">
-            <div className="flex items-center p-1.5 bg-[#F3F4F6] rounded-xl ml-2">
+          <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-0 p-2 bg-white rounded-2xl border border-gray-200 shadow-sm md:h-[72px]">
+            <div className="flex items-center p-1.5 bg-[#F3F4F6] rounded-xl md:ml-2 overflow-x-auto">
               {TIME_FILTERS.map((filter) => (
                 <button
                   key={filter}
                   onClick={() => setTimeFilter(filter)}
-                  className={`px-6 py-2 text-sm font-semibold rounded-lg transition-all cursor-pointer ${
+                  className={`px-4 md:px-6 py-2 text-sm font-semibold rounded-lg whitespace-nowrap transition-all cursor-pointer ${
                     timeFilter === filter
                       ? "bg-[#3B82F6] text-white shadow-sm"
                       : "text-gray-500 hover:text-gray-900"
@@ -391,9 +399,9 @@ const Earnings = () => {
               ))}
             </div>
 
-            <div className="h-8 w-px bg-gray-200 mx-6" />
+            <div className="hidden md:block h-8 w-px bg-gray-200 mx-6" />
 
-            <div className="relative flex-1 mr-2">
+            <div className="relative flex-1 md:mr-2">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <FiSearch className="h-5 w-5 text-gray-400" />
               </div>
@@ -421,6 +429,7 @@ const Earnings = () => {
               showFooterInfo={true}
               footerLabel="jobs"
               itemsPerPage={10}
+              emptyMessage={loadError ? "Your jobs couldn't be loaded. Try Refresh." : undefined}
               onRowClick={(job) => { setSelectedJob(job); setIsModalOpen(true); }}
               footerRightContent={
                 <div className="flex items-center gap-6">

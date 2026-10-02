@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getToken } from "../../utils/auth";
 import { FiDownload } from "react-icons/fi";
 import { Modal } from "../common/Modal";
 import type { PrintJob } from "../../types/printQueue";
@@ -226,7 +227,7 @@ export const DownloadAssetsModal = ({
   );
 
   const getAuthHeader = (): Record<string, string> => {
-    const token = localStorage.getItem("printer_token");
+    const token = getToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 

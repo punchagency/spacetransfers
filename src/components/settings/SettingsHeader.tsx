@@ -1,7 +1,7 @@
 
 const SettingsHeader = () => {
   return (
-    <div className="flex items-center justify-between sticky top-0 z-20 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 border-b border-gray-200">
+    <div className="flex flex-col md:flex-row gap-3 md:gap-0 md:items-center md:justify-between sticky top-0 z-20 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4 border-b border-gray-200">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-500 mt-1">

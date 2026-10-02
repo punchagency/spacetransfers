@@ -88,6 +88,16 @@ export function isAuthenticated(): boolean {
   return true;
 }
 
+export function updateStoredUser(patch: Partial<AuthUser>): void {
+  try {
+    const user = getUser();
+    if (!user) return;
+    localStorage.setItem(USER_KEY, JSON.stringify({ ...user, ...patch }));
+  } catch {
+    /* storage unavailable — the in-memory state still updates */
+  }
+}
+
 export function setAuth(token: string, user: AuthUser): void {
   try {
     localStorage.setItem(TOKEN_KEY, token);

@@ -13,6 +13,8 @@ const Profile = () => {
   const [activeTab, setActiveTab] = useState<ProfileTabId>("overview");
   const [profile, setProfile] = useState<PrinterProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  // Why the profile didn't load, so the page can say so instead of "not found".
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const { notifications } = useNotificationsStore();
 
@@ -21,8 +23,9 @@ const Profile = () => {
       setLoading(true);
       const data = await apiFetch("/printer/profile");
       setProfile(data);
+      setLoadError(null);
     } catch (error: any) {
-      toast.error(error.message || "Failed to fetch profile");
+      setLoadError(error.message || "Failed to fetch profile");
     } finally {
       setLoading(false);
     }
@@ -51,8 +54,8 @@ const Profile = () => {
 
   return (
     <div className="flex flex-col gap-8">
-      <div className="sticky top-0 z-20 bg-gray-50 -mx-6 -mt-6 px-6 pt-6 pb-4 border-b border-gray-200">
-        <h1 className="text-3xl font-bold text-gray-900">Profile</h1>
+      <div className="sticky top-0 z-20 bg-gray-50 -mx-4 md:-mx-6 -mt-4 md:-mt-6 px-4 md:px-6 pt-4 md:pt-6 pb-4 border-b border-gray-200">
+        <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Profile</h1>
         <p className="text-gray-500 mt-1">
           Manage your account information and business details
         </p>
@@ -64,7 +67,9 @@ const Profile = () => {
         </div>
       ) : !profile ? (
         <div className="flex flex-col items-center justify-center min-h-[400px]">
-          <p className="text-gray-500">Profile not found</p>
+          {/* It exists — it just didn't load. "Profile not found" said otherwise. */}
+          <p className="text-gray-900 font-semibold">Your profile couldn't be loaded</p>
+          {loadError && <p className="text-gray-500 text-sm mt-1 max-w-md text-center">{loadError}</p>}
           <button
             onClick={fetchProfile}
             className="mt-4 text-blue-600 hover:underline"

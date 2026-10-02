@@ -4,16 +4,16 @@ import { FiLogOut, FiUser, FiChevronDown, FiSettings } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { useProfileStore } from '../../state/ProfileStore';
 import { UserAvatar } from './UserAvatar';
-import { clearAuth } from '../../utils/auth';
+import { clearAuth, getUser } from '../../utils/auth';
 
 export const UserMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
-  const { avatarUrl: globalAvatarUrl } = useProfileStore();
+  const { avatarUrl: globalAvatarUrl, name: storeName } = useProfileStore();
 
-  const userStr = localStorage.getItem('printer_user');
-  const user = userStr ? JSON.parse(userStr) : { name: 'Printer', email: 'printer@company.com', avatarUrl: null };
+  const user = (getUser() ?? {}) as { name?: string; email?: string; avatarUrl?: string | null; companyName?: string };
+  const displayName = user.companyName || storeName || user.name || 'Your account';
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -53,11 +53,13 @@ export const UserMenu = () => {
         />
         <div className="hidden md:block text-left leading-tight">
           <div className="text-sm font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">
-            {user.companyName || user.name}
+            {displayName}
           </div>
-          <div className="text-[11px] text-gray-500">
-            {user.email}
-          </div>
+          {user.email && (
+            <div className="text-[11px] text-gray-500">
+              {user.email}
+            </div>
+          )}
         </div>
         <FiChevronDown
           className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${
@@ -74,8 +76,8 @@ export const UserMenu = () => {
           aria-orientation="vertical"
         >
           <div className="px-4 py-2 border-b border-gray-50 mb-1 md:hidden">
-            <div className="text-sm font-semibold text-gray-900">{user.companyName || user.name}</div>
-            <div className="text-xs text-gray-500">{user.email}</div>
+            <div className="text-sm font-semibold text-gray-900">{displayName}</div>
+            {user.email && <div className="text-xs text-gray-500">{user.email}</div>}
           </div>
 
           <button

@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { describeLabelFailure } from "../utils/labelFailure";
+import { getToken } from "../utils/auth";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { apiFetch, fetchBlobWithProgress, getApiBaseUrl, triggerAuthedDownload } from "../utils/api";
@@ -13,9 +15,15 @@ import { SpaceLoader } from "../components/common/SpaceLoader";
 import { DriveSaveModal } from "../components/drive/DriveSaveModal";
 import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResumable } from "../utils/drive";
 import { GangsheetPreview } from "../components/print/download-gangsheet/GangsheetPreview";
+import { SheetPicker, type JobSheet } from "../components/print/SheetPicker";
+import { ConfirmDialog } from "../components/common/ConfirmDialog";
+import { confirmCopy, type ConfirmableStep } from "../utils/statusActions";
 
 type Overview = {
   id: string;
+  sheets?: JobSheet[];
+  /** Why the last label attempt failed; cleared when a label is made. */
+  shipStationError?: string | null;
   orderId: string;
   displayId?: string | null;
   status: string;
@@ -24,11 +32,20 @@ type Overview = {
   priority: string;
   createdAt: string;
   assignedAt?: string | null;
-  /** ISO fulfilment deadline (assignment + 24h). */
+  /** When the next step is due (ISO): accept by, then print by; null after that. */
   deadline?: string | null;
+  dueStage?: "ACCEPT" | "PRINT" | null;
   customer: { name: string; email: string | null; phone: string | null; region: string | null };
   shippingAddress: any | null;
-  specs: { sheetSize: string; filmType: string; itemsCount: number };
+  specs: {
+    sheetSize: string;
+    filmType: string;
+    itemsCount: number;
+    sheetCount?: number;
+    graphicCount?: number;
+    printCount?: number;
+    printDpi?: number;
+  };
   notes: string;
   timeline: { status: string; time: string; message?: string | null }[];
   faceThumbnail?: string | null;
@@ -82,8 +99,32 @@ const BACKEND_STATUS_RANK: Record<string, number> = {
 };
 
 const getAuthHeader = (): Record<string, string> => {
-  const token = localStorage.getItem("printer_token");
+  const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
+const LabelFailed = ({ error, busy, onRetry }: { error: string; busy: boolean; onRetry: () => void }) => {
+  const { title, body } = describeLabelFailure(error);
+  return (
+    <div role="alert" className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4">
+      <div>
+        <div className="text-sm font-semibold text-red-800">{title}</div>
+        <p className="mt-1 text-xs leading-relaxed text-red-700">{body}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={busy}
+        className="flex items-center justify-center rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-red-700 border border-red-200 hover:bg-red-100 disabled:opacity-60"
+      >
+        {busy ? "Trying again…" : "Try again"}
+      </button>
+      <details className="text-[11px] text-red-600/80">
+        <summary className="cursor-pointer select-none">Details for support</summary>
+        <div className="mt-1 break-words font-mono">{error}</div>
+      </details>
+    </div>
+  );
 };
 
 export default function OrderDetailsPage() {
@@ -97,6 +138,20 @@ export default function OrderDetailsPage() {
     widthIn: null,
     heightIn: null,
   });
+  const [sheetIndex, setSheetIndex] = useState(0);
+  const sheetRef = useRef(0);
+  sheetRef.current = sheetIndex;
+  const previewPath = () =>
+    `/printer/jobs/${encodeURIComponent(String(jobId))}/gangsheet/preview?resolution=600&sheet=${sheetRef.current}`;
+  /** Applies a preview only if it is for the sheet still on screen. */
+  const applyPreview = (forSheet: number, prev: any) => {
+    if (forSheet !== sheetRef.current) return;
+    setPreviewDataUrl(prev?.previewDataUrl || null);
+    setPreviewSheet({
+      widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
+      heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
+    });
+  };
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
   const [pngExportProgress, setPngExportProgress] = useState<{ phase: string; pct: number } | null>(null);
@@ -104,17 +159,13 @@ export default function OrderDetailsPage() {
   const [savingToDrive, setSavingToDrive] = useState(false);
   const [driveProgress, setDriveProgress] = useState<{ phase: "download" | "upload"; loaded: number; total: number } | null>(null);
 
-  /**
-   * The canonical order number (DTF-####), which is what the customer, the
-   * admin console, invoices and ShipStation all use. This used to derive its
-   * own "ORD-9CA3" from the ObjectId, so the same order carried a different
-   * number here than everywhere else.
-   */
   const displayId = useMemo(() => {
     if (overview?.displayId) return String(overview.displayId);
     const id = String(jobId || "");
     return id ? `#${id.slice(-8).toUpperCase()}` : "—";
   }, [overview?.displayId, jobId]);
+
+  const sheets: JobSheet[] = Array.isArray(overview?.sheets) ? overview!.sheets! : [];
 
   const selectedStatus = useMemo(() => {
     if (!overview) return "Pending Review";
@@ -130,19 +181,15 @@ export default function OrderDetailsPage() {
   useEffect(() => {
     if (!jobId) return;
     setLoading(true);
-    const previewFetch = apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`)
-      .catch(() => null);
+    const forSheet = sheetRef.current;
+    const previewFetch = apiFetch(previewPath()).catch(() => null);
     Promise.all([
       apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
       previewFetch,
     ])
       .then(([ov, prev]) => {
         setOverview(ov || null);
-        setPreviewDataUrl(prev?.previewDataUrl || null);
-        setPreviewSheet({
-          widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
-          heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
-        });
+        applyPreview(forSheet, prev);
       })
       .catch((e: any) => {
         toast.error(e?.message || "Failed to load job");
@@ -150,6 +197,17 @@ export default function OrderDetailsPage() {
       })
       .finally(() => setLoading(false));
   }, [jobId, navigate]);
+
+  // A different sheet chosen: show its preview.
+  useEffect(() => {
+    if (!jobId) return;
+    const forSheet = sheetIndex;
+    setPreviewDataUrl(null);
+    apiFetch(previewPath())
+      .then((prev) => applyPreview(forSheet, prev))
+      .catch(() => applyPreview(forSheet, null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetIndex]);
 
   // Poll every 3 s while ShipStation is generating the label (QUALITY_CHECK, no labelUrl yet).
   useEffect(() => {
@@ -172,17 +230,14 @@ export default function OrderDetailsPage() {
     let alive = true;
     const poll = async () => {
       try {
+        const forSheet = sheetRef.current;
         const [ov, prev] = await Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`).catch(() => null),
+          apiFetch(previewPath()).catch(() => null),
         ]);
         if (!alive) return;
         setOverview(ov || null);
-        setPreviewDataUrl(prev?.previewDataUrl || null);
-        setPreviewSheet({
-          widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
-          heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
-        });
+        applyPreview(forSheet, prev);
       } catch {
       }
     };
@@ -196,7 +251,7 @@ export default function OrderDetailsPage() {
   useEffect(() => {
     if (!jobId) return;
     const ac = new AbortController();
-    const token = localStorage.getItem("printer_token");
+    const token = getToken();
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
     const url = `${getApiBaseUrl()}/orders/${encodeURIComponent(jobId)}/stream`;
 
@@ -207,17 +262,14 @@ export default function OrderDetailsPage() {
       if (pendingRefresh != null) return;
       pendingRefresh = window.setTimeout(() => {
         pendingRefresh = null;
+        const forSheet = sheetRef.current;
         Promise.all([
           apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`),
-          apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/gangsheet/preview?resolution=600`).catch(() => null),
+          apiFetch(previewPath()).catch(() => null),
         ])
           .then(([ov, prev]) => {
             setOverview(ov || null);
-            setPreviewDataUrl(prev?.previewDataUrl || null);
-            setPreviewSheet({
-              widthIn: typeof prev?.sheetWidthIn === "number" ? prev.sheetWidthIn : null,
-              heightIn: typeof prev?.sheetHeightIn === "number" ? prev.sheetHeightIn : null,
-            });
+            applyPreview(forSheet, prev);
           })
           .catch(() => {});
       }, 250);
@@ -276,6 +328,15 @@ export default function OrderDetailsPage() {
     };
   }, [overview]);
 
+  const [pendingStep, setPendingStep] = useState<ConfirmableStep | null>(null);
+
+  const [labelRetryAt, setLabelRetryAt] = useState<number | null>(null);
+  const retryingLabel = labelRetryAt !== null && Date.now() - labelRetryAt < 8000;
+  const retryLabel = async () => {
+    setLabelRetryAt(Date.now());
+    await setStatus("Print Shipping Label");
+  };
+
   const setStatus = async (nextKey: string) => {
     if (!overview) return;
     setUpdatingStatus(true);
@@ -300,6 +361,7 @@ export default function OrderDetailsPage() {
     try {
       const startRes = await apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/gangsheet/png-export`, {
         method: "POST",
+        body: JSON.stringify({ sheet: sheetIndex }),
       });
       const exportJobId = String(startRes?.exportJobId || "");
       if (!exportJobId) throw new Error("Export failed to start");
@@ -344,7 +406,7 @@ export default function OrderDetailsPage() {
     try {
       const r = await apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/gangsheet/export`, {
         method: "POST",
-        body: JSON.stringify({ format: "PNG", toDrive: false }),
+        body: JSON.stringify({ format: "PNG", toDrive: false, sheet: sheetIndex }),
       });
       const exportJobId = String(r?.exportJobId || "");
       if (!exportJobId) throw new Error("Export failed");
@@ -371,7 +433,7 @@ export default function OrderDetailsPage() {
         },
       });
 
-      const fileName = downloaded.filename || `gangsheet_${overview.orderId}_600dpi.png`;
+      const fileName = downloaded.filename || `gangsheet_${overview.orderId}.png`;
       const mimeType = downloaded.contentType || "image/png";
 
       setDriveProgress({ phase: "upload", loaded: 0, total: Math.max(downloaded.blob.size, 1) });
@@ -434,8 +496,11 @@ export default function OrderDetailsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
           <div className="lg:col-span-2 space-y-6">
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">Gangsheet Preview</div>
+              <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
+                {sheets.length > 1 ? `Gangsheet Preview · ${sheets.length} sheets` : "Gangsheet Preview"}
+              </div>
               <div className="p-4">
+                <SheetPicker sheets={sheets} value={sheetIndex} onChange={setSheetIndex} />
                 <GangsheetPreview
                   showTitle={false}
                   previewDataUrl={previewDataUrl}
@@ -461,6 +526,8 @@ export default function OrderDetailsPage() {
                           />
                         </span>
                       </span>
+                    ) : sheets.length > 1 ? (
+                      `Export Sheet ${sheetIndex + 1} PNG`
                     ) : (
                       "Export PNG"
                     )}
@@ -511,6 +578,8 @@ export default function OrderDetailsPage() {
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
                   }}
                   timeline={overview.timeline || []}
+                  backendStatus={overview.status}
+                  assignedAt={overview.assignedAt || null}
                 />
                 <PrintSpecifications
                   job={{
@@ -524,8 +593,8 @@ export default function OrderDetailsPage() {
                     createdAt: overview.createdAt,
                     priority: overview.priority === "URGENT" ? ("Urgent" as any) : undefined,
                   }}
-                  itemsCount={overview.specs.itemsCount}
-                  exportDpi={600}
+                  specs={overview.specs}
+                  sheets={sheets}
                 />
                 <ProductionNotes jobId={overview.id} initialNotes={overview.notes} />
               </>
@@ -620,21 +689,33 @@ export default function OrderDetailsPage() {
                       </div>
                     )}
 
-                    <a
-                      href={overview.shipStationLabelUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-                      </svg>
-                      Open & Print Label
-                    </a>
+                    {/*
+                      "generated" means ShipStation made the label but sent back no
+                      printable copy. Linking to it opened a page that doesn't exist;
+                      the label modal already treats it this way.
+                    */}
+                    {overview.shipStationLabelUrl !== "generated" ? (
+                      <a
+                        href={overview.shipStationLabelUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                        </svg>
+                        Open & Print Label
+                      </a>
+                    ) : (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+                        The label was created, but ShipStation didn't send back a printable copy.
+                        Contact Space Transfers for the label before you hand the package over.
+                      </div>
+                    )}
 
                     <button
                       disabled={updatingStatus}
-                      onClick={() => void setStatus("Order Shipped")}
+                      onClick={() => setPendingStep("Order Shipped")}
                       className="flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors disabled:opacity-60"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -647,12 +728,18 @@ export default function OrderDetailsPage() {
                       Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
                     </div>
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationTriggeredAt ? (
+                ) : overview?.status === "QUALITY_CHECK" && (overview?.shipStationTriggeredAt || retryingLabel) ? (
                   <div className="flex flex-col items-center gap-3 py-4 text-center">
                     <SpaceLoader size={28} layout="inline" />
                     <div className="text-sm font-semibold text-gray-800">Generating shipping label…</div>
                     <div className="text-xs text-gray-500">ShipStation is creating your label. This usually takes a few seconds.</div>
                   </div>
+                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationError ? (
+                  <LabelFailed
+                    error={overview.shipStationError}
+                    busy={updatingStatus}
+                    onRetry={() => void retryLabel()}
+                  />
                 ) : (
                   radioOptions.map((o) => {
                     const isPast = o.rank < currentStatusRank;
@@ -673,7 +760,10 @@ export default function OrderDetailsPage() {
                           name="status"
                           checked={isCurrent}
                           disabled={updatingStatus || isPast}
-                          onChange={() => { if (!isPast) void setStatus(o.key); }}
+                          onChange={() => {
+                            if (isPast || isCurrent) return;
+                            if (o.key === "In Progress - Printing" || o.key === "Print Shipping Label") setPendingStep(o.key);
+                          }}
                           className="w-4 h-4"
                         />
                         <div className={`text-sm font-semibold ${isPast ? "text-gray-400" : "text-gray-800"}`}>
@@ -759,8 +849,9 @@ export default function OrderDetailsPage() {
                 <OrderDetails
                   orderId={overview.orderId}
                   createdAt={formatDateTime(overview.createdAt)}
-                  dueDate={formatDateTime(overview.deadline)}
-                  itemsCount={overview.specs.itemsCount}
+                  dueLabel={overview.dueStage === "PRINT" ? "Print by" : overview.dueStage === "ACCEPT" ? "Accept by" : null}
+                  dueDate={overview.deadline ? formatDateTime(overview.deadline) : null}
+                  sheetCount={overview.specs.sheetCount ?? overview.specs.itemsCount}
                 />
               </>
             )}
@@ -782,10 +873,22 @@ export default function OrderDetailsPage() {
         }} />
       )}
 
+      <ConfirmDialog
+        isOpen={pendingStep !== null}
+        busy={updatingStatus}
+        {...(pendingStep ? confirmCopy(pendingStep, displayId) : { title: "", body: "", confirmLabel: "" })}
+        onConfirm={() => {
+          const step = pendingStep;
+          if (!step) return;
+          void setStatus(step).finally(() => setPendingStep(null));
+        }}
+        onCancel={() => setPendingStep(null)}
+      />
+
       <DriveSaveModal
         isOpen={driveModalOpen}
         onClose={() => setDriveModalOpen(false)}
-        fileName={overview ? `gangsheet_${overview.orderId}_600dpi.png` : "gangsheet.png"}
+        fileName={overview ? `gangsheet_${overview.orderId}.png` : "gangsheet.png"}
         clientId={driveClientId}
         onConnected={(v) => void saveGangsheetToDrive(v)}
       />

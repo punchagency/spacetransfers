@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, ReactNode } from "react";
+import { getUser, updateStoredUser } from "../utils/auth";
 
 /*
  * Two states. "Stopped" existed alongside "Paused" and did exactly the same
@@ -35,43 +36,27 @@ const resolveAvatarUrl = (url: string | null | undefined): string | null => {
 export const useProfileStore = () => useContext(ProfileContext);
 
 export const ProfileStoreProvider = ({ children }: { children: ReactNode }) => {
-  const userStr = localStorage.getItem("printer_user");
-  const user = userStr ? JSON.parse(userStr) : null;
+  const user = getUser();
 
   const [name, setNameState] = useState<string>(user?.name || "");
-  const [avatarUrl, setAvatarUrlState] = useState<string | null>(resolveAvatarUrl(user?.avatarUrl));
+  const [avatarUrl, setAvatarUrlState] = useState<string | null>(resolveAvatarUrl(user?.avatarUrl as string | undefined));
   const [availabilityStatus, setAvailabilityStatusState] = useState<AvailabilityStatus>(
     (user?.availabilityStatus as AvailabilityStatus) || "open"
   );
 
   const setName = (newName: string) => {
     setNameState(newName);
-    const stored = localStorage.getItem("printer_user");
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      parsed.name = newName;
-      localStorage.setItem("printer_user", JSON.stringify(parsed));
-    }
+    updateStoredUser({ name: newName });
   };
 
   const setAvatarUrl = (url: string) => {
     setAvatarUrlState(url);
-    const stored = localStorage.getItem("printer_user");
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      parsed.avatarUrl = url;
-      localStorage.setItem("printer_user", JSON.stringify(parsed));
-    }
+    updateStoredUser({ avatarUrl: url });
   };
 
   const setAvailabilityStatus = (s: AvailabilityStatus) => {
     setAvailabilityStatusState(s);
-    const stored = localStorage.getItem("printer_user");
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      parsed.availabilityStatus = s;
-      localStorage.setItem("printer_user", JSON.stringify(parsed));
-    }
+    updateStoredUser({ availabilityStatus: s });
   };
 
   return (

@@ -10,8 +10,6 @@ const AuthPage = () => {
   const [isSignIn, setIsSignIn] = useState(false);
   const [params] = useSearchParams();
 
-  // Invitations used to point here, where the token was silently ignored.
-  // Kept as a redirect so any link already sitting in an inbox still works.
   const token = params.get("inviteToken") || params.get("resetToken");
   if (token) {
     const key = params.get("inviteToken") ? "inviteToken" : "resetToken";

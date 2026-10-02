@@ -29,14 +29,6 @@ export const ProfileHeader = ({ profile, onUpdate }: ProfileHeaderProps) => {
 
   const isVerified = Boolean(profile.verificationStatus?.email);
 
-  /*
-   * Average time from being given a job to shipping it.
-   *
-   * This tile used to read a stored `responseTime` that nothing ever set, and
-   * its zero fell through to `"< 2 hours"` — so every partner was told they
-   * responded in under two hours, measured from nothing. This is computed from
-   * their own orders, and says so plainly when there is nothing to measure.
-   */
   const hours = profile.performance?.averageProductionHours ?? null;
   const productionLabel =
     hours === null ? "No data yet" : hours < 24 ? `${hours} hrs` : `${(hours / 24).toFixed(1)} days`;

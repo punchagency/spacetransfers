@@ -138,12 +138,6 @@ const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus 
             </div>
           )}
 
-          {/*
-            The button is not offered while the platform's payment provider is
-            unconfigured. Pressing it used to reach Stripe with a placeholder
-            key, come back 401, and sign the partner out of a perfectly valid
-            session. Saying so plainly beats a control that punishes the press.
-          */}
           {!platformReady ? (
             <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 leading-relaxed">
               <span className="font-semibold text-gray-900">Payouts aren&rsquo;t open yet.</span> Our

@@ -62,13 +62,6 @@ export const AvailabilityStatusBadge = () => {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [capacityLocked, setCapacityLocked] = useState(false);
-  /*
-   * Distinct from `capacityLocked`, which is only "at the limit right now".
-   * This is "the system paused you and will unpause you" — the promise of
-   * automatic recovery holds for a pause the monitor made, and not for one you
-   * chose. Both used to read the same flag, so pausing yourself while at your
-   * limit told you you would be reopened automatically. You would not have been.
-   */
   const [capacityPaused, setCapacityPaused] = useState(false);
   const [maxJobs, setMaxJobs] = useState<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -99,11 +92,6 @@ export const AvailabilityStatusBadge = () => {
       } else if (detail.reason === "capacity_recovered") {
         toast.success("You're available again — status set back to Open.");
       } else if (detail.reason === "admin_changed") {
-        /*
-         * An admin can now change this too, and the change lands here live. It
-         * used to arrive with no explanation at all — the pill simply moved on
-         * its own, which reads as a bug rather than as someone acting.
-         */
         const who = typeof detail.changedBy === "string" && detail.changedBy ? detail.changedBy : "An administrator";
         if (detail.availabilityStatus === "paused") {
           toast(`${who} set your availability to Paused.`, { icon: "⏸️" });
@@ -178,7 +166,7 @@ export const AvailabilityStatusBadge = () => {
         disabled={saving}
         aria-label={`Availability: ${cfg.label}`}
         className={[
-          "flex items-center gap-1.5 px-2.5 h-8 rounded-full border text-xs font-semibold shadow-sm",
+          "flex items-center gap-1.5 px-2.5 h-8 max-md:h-10 max-md:px-3 rounded-full border text-xs font-semibold shadow-sm",
           "transition-all duration-300 ease-out",
           "hover:scale-[1.04] active:scale-[.97]",
           "focus:outline-none focus:ring-2 focus:ring-offset-1",
@@ -211,7 +199,8 @@ export const AvailabilityStatusBadge = () => {
 
       {/* ── Animated dropdown ── */}
       {open && (
-        <div className="avail-dropdown absolute right-0 mt-2 w-60 rounded-2xl border border-gray-200 bg-white shadow-2xl z-50 overflow-hidden origin-top-right">
+        <div className="avail-dropdown absolute right-0 mt-2 w-60 rounded-2xl border border-gray-200 bg-white shadow-2xl z-50 overflow-hidden origin-top-right
+          max-md:fixed max-md:inset-x-2 max-md:top-[calc(env(safe-area-inset-top,0px)+60px)] max-md:mt-0 max-md:w-auto">
           <div className="px-4 py-2.5 border-b border-gray-100">
             <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Availability</span>
           </div>
@@ -229,7 +218,7 @@ export const AvailabilityStatusBadge = () => {
                   onClick={() => void select(opt.value)}
                   disabled={disabled}
                   className={[
-                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left",
+                    "w-full flex items-center gap-3 px-3 py-2.5 max-md:py-3.5 rounded-xl text-left",
                     "transition-all duration-150",
                     disabled ? "opacity-50 cursor-not-allowed" : "hover:scale-[1.01]",
                     active

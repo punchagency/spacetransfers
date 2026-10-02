@@ -1,11 +1,3 @@
-/**
- * Where a job's money actually is, lining up one-for-one with the four cards
- * above the table.
- *
- * "Paid" used to mean nothing more than SHIPPED, so with no payouts in existence
- * every shipped job displayed as Paid to a partner who had never been paid.
- * "Scheduled" existed in the badge and the server never produced it.
- */
 export type EarningsJobStatus = "Paid" | "Scheduled" | "Available" | "Pending";
 
 export interface EarningsJobDetails {

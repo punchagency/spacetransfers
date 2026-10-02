@@ -427,11 +427,6 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
         </div>
       </div>
 
-      {/*
-        "Badges & Achievements" removed. No code path anywhere awarded one — the
-        array was empty on every partner and there was no way to fill it — so
-        this rendered nothing, forever, while implying a scheme that existed.
-      */}
     </div>
   );
 };

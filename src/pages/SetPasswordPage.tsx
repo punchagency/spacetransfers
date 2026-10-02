@@ -37,15 +37,6 @@ const SetPasswordPage = () => {
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);
   const [saving, setSaving] = useState(false);
-  /*
-   * Consent, collected only on an invitation.
-   *
-   * A partner who signs up accepts the terms on the form. A partner an admin
-   * adds arrives straight here and was previously working the moment they chose
-   * a password, having never been shown them — so half the partner base had no
-   * acceptance record at all. A forgotten-password reset belongs to someone who
-   * already accepted, and is not asked again.
-   */
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [contentResponsibilityAccepted, setContentResponsibilityAccepted] = useState(false);
 

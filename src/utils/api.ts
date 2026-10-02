@@ -1,7 +1,35 @@
 import { clearAuth, getToken } from "./auth";
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
-export async function apiFetch(endpoint: string, options: RequestInit = {}) {
+/**
+ * How long a request may take before it is given up on. There was no limit, so
+ * a request that never answered left its spinner running for good. Callers
+ * with slow work pass their own `timeoutMs`; 0 turns it off.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
+export type ApiFetchOptions = RequestInit & { timeoutMs?: number };
+
+export async function apiFetch(endpoint: string, fetchOptions: ApiFetchOptions = {}) {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...options } = fetchOptions;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs) : null;
+  const callerSignal = options.signal;
+  const onCallerAbort = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", onCallerAbort);
+  }
+  try {
+    return await apiFetchWithin(endpoint, { ...options, signal: controller.signal }, () => timedOut);
+  } finally {
+    if (timer) clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  }
+}
+
+async function apiFetchWithin(endpoint: string, options: RequestInit, timedOut: () => boolean) {
   const token = getToken();
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
@@ -21,8 +49,17 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
       ...options,
       headers,
     });
-  } catch {
-    throw new Error(`API server is not reachable. Check that the backend is running at ${API_BASE_URL}.`);
+  } catch (err) {
+    if (timedOut()) {
+      console.warn(`[api] ${endpoint}: no answer in time`);
+      throw Object.assign(new Error("This is taking longer than it should. Please try again in a moment."), { timeout: true });
+    }
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    console.warn(`[api] ${endpoint}: no response from ${API_BASE_URL}`, err);
+    throw Object.assign(
+      new Error("Can't connect to Space Transfers right now. Check your internet connection and try again."),
+      { network: true },
+    );
   }
 
   let data: any = null;
