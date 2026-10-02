@@ -67,7 +67,7 @@ src/
 | Order Shipped | Waiting on the carrier | None |
 | Completed | Delivered | None |
 
-Every move is forward-only and asks for confirmation. A job is marked Completed by the carrier's delivery confirmation, never by hand.
+Every move is forward-only and asks for confirmation. Cancel Job hands the job back to Space Transfers to reassign; it does not cancel the customer's order. A job is marked Completed by the carrier's delivery confirmation, never by hand.
 
 ## Things worth knowing
 
