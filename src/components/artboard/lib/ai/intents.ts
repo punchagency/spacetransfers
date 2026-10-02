@@ -303,14 +303,6 @@ export const INTENT_VERBS: Record<AiIntentId, string> = {
   custom: "Generating",
 };
 
-/**
- * Intents that never call out to a model.
- *
- * Used to keep their chips live and their copy honest while the generative
- * tier is capped or unreachable — telling a customer that background and
- * colour removal are unavailable when they run entirely in their own browser
- * would be simply untrue.
- */
 export const LOCAL_ONLY_INTENTS: readonly AiIntentId[] = [
   "remove-bg",
   "remove-color",

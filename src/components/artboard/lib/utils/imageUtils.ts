@@ -24,7 +24,6 @@ export const readDPI = async (file: File): Promise<{ dpiX?: number; dpiY?: numbe
           }
         }
 
-        // EXIF APP1 — covers DPI stored in EXIF, which readDPI previously missed
         if (marker === 0xe1 && segStart + 14 <= dv.byteLength) {
           if (dv.getUint8(segStart)===0x45 && dv.getUint8(segStart+1)===0x78 &&
               dv.getUint8(segStart+2)===0x69 && dv.getUint8(segStart+3)===0x66 &&
@@ -106,41 +105,6 @@ export const readDPI = async (file: File): Promise<{ dpiX?: number; dpiY?: numbe
  * "fails with a message", which is the only outcome the caller can act on.
  */
 const DECODE_TIMEOUT_MS = 15_000;
-
-/**
- * Encodes a canvas to a URL without blocking the main thread.
- *
- * `toDataURL` encodes synchronously, so on a full-resolution crop it freezes
- * the UI for the entire encode. `toBlob` hands the same work to the browser's
- * encoder off-thread and calls back when it is done, which is the part that
- * actually caused the stall.
- *
- * The result is deliberately a `data:` URL rather than an object URL. Every
- * stage of the upload pipeline — `useMaterializeImages`, `toHostedUrl`,
- * `stripEmbeddedImages` — recognises artwork by the `data:` prefix, so a
- * `blob:` URL would slip past all of them: it is short enough that no payload
- * limit complains, but it is local to the tab, so the order would reach the
- * print pipeline holding a reference that resolves to nothing. Producing a
- * `data:` URL keeps the crop on the existing path, where it is uploaded to
- * Cloudinary within moments and replaced by a short hosted URL.
- */
-export const canvasToLocalUrl = (
-  canvas: HTMLCanvasElement,
-  type: string = "image/png",
-): Promise<string> =>
-  new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("The image could not be encoded. Please try again."));
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () =>
-        reject(new Error("The image could not be read after encoding. Please try again."));
-      reader.readAsDataURL(blob);
-    }, type);
-  });
 
 /** Thrown when a file's contents can't be decoded as an image. */
 export class ImageDecodeError extends Error {

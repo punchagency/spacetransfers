@@ -1,15 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "./api";
 
-/**
- * The server's price for the cart — the same figures the card is charged.
- *
- * Checkout used to show flat shipping rates while the charge used the live
- * carrier rate for the address, so once carrier rates were on, the customer
- * paid a shipping figure they had never been shown. This asks the server's
- * quote (priced by the same function as the charge) once the address is known.
- */
-
 export type ShippingMethod = "standard" | "express";
 
 export interface CheckoutQuote {

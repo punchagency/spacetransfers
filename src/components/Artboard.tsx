@@ -346,7 +346,6 @@ export default function Artboard({
       const target = Math.max(maxId, initCounter);
       setCounter((prev) => (prev < target ? target : prev));
     }
-    // Loading a different design discards prior history — those steps no longer make sense
     history.reset();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData]);
@@ -544,13 +543,6 @@ export default function Artboard({
     );
   }, [setItems]);
 
-  /**
-   * Duplicates everything selected, and selects the copies.
-   *
-   * It used to duplicate only the piece last clicked, however many were
-   * selected. A locked piece may be duplicated — the copy starts unlocked, since
-   * it is a new piece the customer has not locked.
-   */
   const duplicateSelected = () => {
     const sourceIds = [
       ...(selectedId == null ? [] : [selectedId]),
@@ -648,9 +640,6 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
-      {/* Resolution is no longer routed through here — it is raised as a toast
-          when a drop lands (`showLowDpiWarning`) and reported continuously by
-          the top-bar chip, so this banner is now purely about fades. */}
       <ArtboardWarning flagged={flaggedTransparency} />
       <input
         ref={fileInputRef}
@@ -724,8 +713,6 @@ export default function Artboard({
                 else next.add(u);
               }
               setSelectedIds(next);
-              // Deselecting used to leave the deselected piece as the one the
-              // toolbar acted on.
               setSelectedId(removing ? ([...next][0] ?? null) : id);
             } else {
               setSelectedId(id);

@@ -93,11 +93,6 @@ export default function OrderHistoryModal({
     }
   };
 
-  /*
-   * The reorder handler reports its own result. This used to toast "Order added
-   * to cart" after it returned — including when it had just said the order
-   * couldn't be reordered, so the customer saw both.
-   */
   const handleReorder = async (orderId: string) => {
     if (busy || !onReorderToCart) return;
     setBusy(`reorder-${orderId}`);

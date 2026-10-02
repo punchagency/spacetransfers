@@ -109,24 +109,6 @@ export default function CheckoutModal({
   // The canonical DTF-#### number the customer will see everywhere else.
   const [orderDisplayId, setOrderDisplayId] = useState<string | null>(null);
 
-  /**
-   * Resolves any leftover embedded artwork as soon as checkout opens, rather
-   * than waiting for the "Place Order" click to discover it.
-   *
-   * `placeOrder` already calls `stripEmbeddedImages` as a safety net — the
-   * artboard uploads as it edits, so this is normally a no-op — but on the
-   * rare path where it isn't (mid-upload checkout, an earlier failed upload),
-   * that safety net used to run for the first time on submit, so the customer
-   * discovered a slow or failing upload only after clicking the button that
-   * was supposed to place their order in under 5 seconds.
-   *
-   * `toHostedUrl`'s cache is keyed by URL and process-lifetime, so calling it
-   * here costs nothing extra later: by the time `placeOrder` runs its own
-   * `stripEmbeddedImages`, every image resolved here is a cache hit. A
-   * failure here is swallowed deliberately — this is a warm-up, not a gate,
-   * and `placeOrder`'s own call is what actually decides whether checkout can
-   * proceed; surfacing an error twice for the same cause would be confusing.
-   */
   useEffect(() => {
     if (!isOpen) return;
     stripEmbeddedImages({ items: cartItems }).catch(() => {});
@@ -144,30 +126,12 @@ export default function CheckoutModal({
       )
       .toFixed(2),
   );
-  /**
-   * Shipping and tax rates come from the server so the total shown here is the
-   * total that gets charged.
-   *
-   * These were hardcoded — express $19.99 and tax always 0 — while the server
-   * charged $24.99 plus 8%. On a $100 express order the customer saw $119.99
-   * and was charged $132.99.
-   *
-   * The fallback matches the server's own default, so a failed fetch shows a
-   * plausible figure rather than $0 shipping; the server recomputes on submit
-   * either way, so it can never be the figure actually charged.
-   */
   const [rates, setRates] = useState<{
     shipping: { standard: number; express: number };
     taxRatePct: number;
     rushSurchargePct: number;
   }>({ shipping: { standard: 8.99, express: 24.99 }, taxRatePct: 8, rushSurchargePct: 10 });
 
-  /*
-   * A finished order is not where the next visit starts. The modal stays
-   * mounted while closed, so closing the success screen by clicking outside it
-   * left `step` at 4 — the next cart visit, or a Reorder, reopened on the old
-   * order's "Order Placed Successfully!" instead of the new cart.
-   */
   useEffect(() => {
     if (isOpen && step === 4) {
       setStep(0);
@@ -223,7 +187,6 @@ export default function CheckoutModal({
 
   const isCartValid = cartItems.length > 0;
   const checkoutErrors = useMemo(() => checkoutFormErrors(formData), [formData]);
-  const isCheckoutValid = Object.keys(checkoutErrors).length === 0;
 
   // Quoted once the destination is usable; before that a quote is only the flat rate.
   const addressQuotable =
@@ -250,16 +213,6 @@ export default function CheckoutModal({
   const mapItems = () =>
     cartItems.map((item) => {
       const isGangsheet = (item.type || "gangsheet") === "gangsheet";
-      /**
-       * One table of distinct URLs per sheet; placements reference it by index.
-       *
-       * A gang sheet repeats the same few graphics many times, and each
-       * placement previously carried its own full copy of the artwork URL —
-       * twice, as `assetId` and `croppedUrl`. At ~121 chars each that is ~242
-       * bytes of pure repetition per placement, which put a large sheet over
-       * the body limit on its own. Interning makes the payload scale with
-       * distinct artwork (typically 5–50 URLs) instead of placement count.
-       */
       const assets = new AssetIndex();
 
       const artboardItems = isGangsheet && Array.isArray((item as any).items)
@@ -798,7 +751,6 @@ export default function CheckoutModal({
                         </div>
                       )}
                       <p className="mb-8 max-w-md text-gray-600">
-                        {/* This promised a confirmation email, which nothing on the server sends. */}
                         Thank you for your purchase! We've received your order and will begin processing it right
                         away. You can follow it any time in Order history.
                       </p>
@@ -911,8 +863,6 @@ export default function CheckoutModal({
           </ErrorBoundary>
         </div>
       </div>
-      {/* Its own layer: a click inside it used to bubble to the backdrop above,
-          closing checkout before the emptied cart reached its owner. */}
       <div onClick={(e) => e.stopPropagation()}>
         <ConfirmModal
           isOpen={confirmWarnings}

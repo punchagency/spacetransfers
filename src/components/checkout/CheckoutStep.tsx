@@ -70,12 +70,6 @@ export default function CheckoutStep({
   shippingPicker,
   onArtworkCheck,
 }: CheckoutStepProps) {
-  /*
-   * Inline validation: a field's problem appears when the shopper leaves it,
-   * not while they are still typing, and once shown it follows every keystroke
-   * so it clears the moment the value is right. Errors used to exist only after
-   * Continue, which stayed disabled until every field had something in it.
-   */
   const [shown, setShown] = useState<Partial<Record<CheckoutField, string>>>({});
 
   useEffect(() => {
@@ -211,8 +205,6 @@ export default function CheckoutStep({
       )}
 
       <div className="bg-white rounded-lg border border-gray-200 p-4 sm:p-6">
-        {/* The badge used to say "Review Warnings" whatever the cart held. It now
-            reports the artboard's own flags for the artwork being ordered. */}
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-normal text-[11px]">Design Validation</h3>
           {warnings.length > 0 ? (

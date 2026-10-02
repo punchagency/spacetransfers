@@ -32,11 +32,6 @@ function DimInput({
   label,
   value,
   onChange,
-  /**
-   * Smallest value the field accepts. A size must be positive, but a position
-   * may be 0 — typing it there used to be ignored, so "put it at the top" did
-   * nothing. It is applied and then clamped to the margin, like any other move.
-   */
   min = 0.01,
   disabled = false,
 }: {
@@ -64,8 +59,6 @@ function DimInput({
         inputMode="decimal"
         value={local}
         disabled={disabled}
-        // Applied on Enter or leaving the field, not per keystroke: typing "12"
-        // used to make the piece 1in first, and auto-nest re-packed around it.
         onChange={(e) => setLocal(e.target.value)}
         onBlur={() => {
           const n = parseFloat(local);

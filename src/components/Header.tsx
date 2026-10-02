@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useCanHover } from "../lib/useIsMobile";
 import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
-import { CANVAS } from "../config/artboard.config";
 import { usePricingSettings } from "../lib/utils/pricingRates";
 import { DpiStatusChip } from "./common/DpiStatus";
 type HeaderInfo = {
@@ -309,19 +308,6 @@ export default function Header({
             {(info?.isEmpty ? (info?.minimumAreaSf ?? 0) : (info?.areaSf ?? 0)).toFixed(2)}sf
           </span>
           <span className="text-gray-300">|</span>
-          {/*
-            The width that is actually priced, not a literal.
-
-            This read "23.50in wide" — the roll width — while the `sf` figure
-            beside it, and the price, are computed from the artwork's own
-            bounding box. Place one 6x10in graphic and the strip said
-            "0.42sf | 23.50in wide x 10.00in long": 23.5 x 10 is 1.63sf, four
-            times the area shown next to it. The two numbers described
-            different rectangles.
-
-            `info.widthIn` was already being computed and passed in, and simply
-            thrown away here.
-          */}
           <span
             title={
               info?.atMinimumLength
@@ -341,13 +327,6 @@ export default function Header({
      
           <span className="text-gray-300">|</span>
           {nameControl("max-w-xs")}
-          {/*
-            Whether the work is safe, in the place the sheet is named.
-
-            Saving used to be a sidebar button, so "is my sheet saved?" had no
-            answer on screen at all. Autosave answers it continuously; this is
-            where it says so.
-          */}
           <SaveStateChip
             state={saveState}
             isSheetSaved={isSheetSaved}
@@ -507,15 +486,6 @@ export default function Header({
       </div>
       </div>
 
-      {/*
-        The phone's version of the detail strip.
-
-        All of it — the sheet's name, whether it is saved, low-resolution
-        warnings, the size and the price — used to be `hidden md:flex`, so on a
-        phone you could build a sheet and add it to the cart without ever seeing
-        what it would cost or what it was called. This is the same information in
-        one line, with the same controls behind it.
-      */}
       <div className="flex md:hidden h-11 items-center gap-2 border-t border-gray-100 text-[11px] text-gray-800">
         {info?.hasItem && (
           <>

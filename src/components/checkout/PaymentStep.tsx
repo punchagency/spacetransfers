@@ -2,7 +2,7 @@ import { MdCreditCard } from "react-icons/md";
 import { CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { apiFetch } from "../../lib/utils/api";
 import { toPricedItems } from "../../lib/utils/checkoutQuote";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 
 interface PaymentStepProps {
   payment: "card";
@@ -243,16 +243,10 @@ export default function PaymentStep({
   );
 }
 
-
 /**
  * Shown in place of the card form when no Stripe key is configured. Purely
  * presentational — PaymentStep clears the card handler and the complete flag,
  * which is what actually keeps checkout blocked.
- */
-/**
- * Shown only when the site has no Stripe key, so no payment can be taken.
- * Written for the customer: it used to tell them to "set a Stripe key on the
- * server", an operator's instruction on a customer's screen.
  */
 function CardUnavailable() {
   return (

@@ -32,24 +32,14 @@
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",
-    "@react-three/cannon": "^6.6.0",
-    "@react-three/drei": "^9.122.0",
-    "@react-three/fiber": "^8.18.0",
     "@stripe/react-stripe-js": "^3.9.0",
     "@stripe/stripe-js": "^7.5.0",
-    "@types/three": "^0.182.0",
     "ag-psd": "^31.0.2",
-    "dom-to-image": "^2.6.0",
-    "framer-motion": "^12.23.26",
     "gsap": "^3.14.2",
     "heic-to": "^1.5.2",
-    "html2canvas": "^1.4.1",
-    "lucide-react": "^0.556.0",
-    "maxrects-packer": "^2.7.3",
     "pdfjs-dist": "^4.10.38",
     "react-hot-toast": "^2.6.0",
     "react-icons": "4.10.1",
-    "three": "^0.182.0",
     "utif": "^3.1.0"
   }
 }

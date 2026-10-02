@@ -1,13 +1,5 @@
 import { clearAuth, getToken } from "./auth";
 
-/*
- * Falls back to localhost, like the printer and admin apps.
- *
- * This defaulted to a hard-coded Heroku host, which now answers 404. With
- * `.env` present that never showed — but a fresh clone or a CI run without it
- * would silently talk to a dead remote server, and the failure would read as
- * "the app is broken" rather than "VITE_API_URL is not set".
- */
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
 /**
@@ -88,13 +80,7 @@ async function apiFetchOnce(endpoint: string, options: ApiFetchOptions) {
       console.warn(`[api] ${endpoint}: no answer within ${timeoutMs} ms`);
       throw Object.assign(new Error(TIMEOUT_MESSAGE), { timeout: true });
     }
-    // A request the app cancelled on purpose (Stop, a timeout that retries) is
-    // not a lost connection: pass it through so callers can tell. It used to be
-    // swallowed into the message below.
     if (err instanceof DOMException && err.name === "AbortError") throw err;
-    // The detail is for whoever is debugging; the message is for the person
-    // using the app. It used to name the API address and ask them to check the
-    // backend was running.
     console.warn(`[api] ${endpoint}: no response from ${API_BASE_URL}`, err);
     throw Object.assign(
       new Error("Can't connect to Space Transfers right now. Check your internet connection and try again."),
@@ -118,15 +104,6 @@ async function apiFetchOnce(endpoint: string, options: ApiFetchOptions) {
   }
 
   if (!response.ok) {
-    /*
-     * The server is the authority on the session. A 401 means the token is
-     * gone, expired or revoked, so drop it and let the app fall back to
-     * signed-out — previously nothing did this, so an expired token left
-     * someone apparently signed in with every request failing.
-     *
-     * Signing in is the exception: a 401 there is a rejected credential, not a
-     * dead session, and clearing storage would be meaningless.
-     */
     const isAuthAttempt =
       endpoint.startsWith("/auth/login") ||
       endpoint.startsWith("/auth/register") ||

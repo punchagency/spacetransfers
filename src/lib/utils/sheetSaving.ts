@@ -6,15 +6,6 @@
  * sheets all called the same thing.
  */
 
-/**
- * True when any artwork on the board exists only in this browser.
- *
- * A failed upload leaves its image as a `blob:` URL, which no other device and
- * no printer can read. Saving those produced a design that looked right until it
- * was reopened, when every image was gone — which is what the unexplained DPI
- * warnings on a reopened sheet actually were: the board measuring images that
- * could no longer load.
- */
 export const artworkNotUploaded = (items: ReadonlyArray<Record<string, any>>): boolean =>
   items.some((it) =>
     [it?.url, it?.croppedUrl, it?.uncroppedUrl, it?.originalUrl, it?.assetId].some(

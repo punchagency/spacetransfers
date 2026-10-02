@@ -33,15 +33,6 @@ export function computeRenderCopies(
   return Math.max(1, Math.min(item.copies, maxCopiesThatFit));
 }
 
-/**
- * Effective print DPI for the item's CURRENT display size — recalculates on
- * every resize rather than trusting the (possibly stale) stored `dpi` field.
- * Prefers actual pixel width (croppedWidthPx, then nativeWidthPx — both kept
- * in sync whenever the underlying image pixels change: crop, BG removal, AI
- * upscale) since that's correct regardless of how many times widthIn has
- * changed since upload. Only falls back to the stored `dpi` snapshot for
- * items that predate these fields (e.g. designs saved before this existed).
- */
 /** Vertical span an item occupies on the sheet, in inches. */
 export interface VerticalExtent {
   topIn: number;
@@ -139,21 +130,6 @@ export function computeEffectiveDpi(item: {
 /** The shape the DPI predicates need — a subset of `ArtboardItem`. */
 export type DpiMeasurable = Parameters<typeof computeEffectiveDpi>[0];
 
-/**
- * The three DPI verdicts, in one place.
- *
- * The top-bar chip's count, the tooltip's breakdown and the on-sheet highlight
- * all have to agree about which artwork is flagged — a chip reading "5" that
- * lights up four images is worse than no highlight at all. They previously
- * agreed by having the same expression written out at each call site, which is
- * an agreement that lasts exactly until someone edits one of them.
- *
- * `null` from `computeEffectiveDpi` means *unmeasurable*, not zero: the item's
- * pixel dimensions aren't known yet (or were never recorded). That is a
- * different problem from artwork that is measurably soft, so the two are
- * counted separately — but both are "needs a look", which is what
- * `isDpiFlagged` covers and what the chip totals.
- */
 export const isLowDpi = (item: DpiMeasurable): boolean => {
   const dpi = computeEffectiveDpi(item);
   return dpi !== null && dpi < DPI.THRESHOLD;
@@ -214,81 +190,6 @@ export const getRenderedGroupSize = (
 
   return { width, height, cols, rows };
 };
-
-export const getRenderedBounds = (
-  item: LayoutItem,
-  canvasWidthIn: number,
-  marginIn: number
-) => {
-  const effectiveMargin = Math.max(0, Number(marginIn || 0));
-  const maxAvailableWidth = Math.max(0, canvasWidthIn - 2 * effectiveMargin);
-  const copies = typeof item.copies === "number" && item.copies > 0 ? item.copies : 1;
-  // Use effective dimensions (post nest-rotation) for bounds calculation.
-  const w = item.nestRotation === 90 ? item.heightIn : item.widthIn;
-  const h = item.nestRotation === 90 ? item.widthIn : item.heightIn;
-  const group = getRenderedGroupSize(w, h, copies, maxAvailableWidth);
-
-  const centeredLeft = effectiveMargin + (maxAvailableWidth - group.width) / 2;
-  const rightBoundLeft = canvasWidthIn - effectiveMargin - group.width;
-  const left =
-    copies > 1
-      ? Math.max(effectiveMargin, Math.min(centeredLeft, rightBoundLeft))
-      : Math.max(effectiveMargin, item.posX);
-
-  const bottomLimitTop = MAX_SHEET_HEIGHT_IN - group.height;
-  const top = Math.min(item.posY, bottomLimitTop);
-
-  return {
-    left,
-    top,
-    right: left + group.width,
-    bottom: top + group.height,
-    width: group.width,
-    height: group.height,
-  };
-};
-
-// ── Free-Rectangle Bin-Packing Engine ─────────────────────────────────────
-// This is the ONE layout engine for the artboard: every add, duplicate,
-// delete, resize, rotate, or copy-count change triggers a full rebuild of
-// every unpinned/unlocked item from scratch (see useArtboardEffects). It
-// replaces the earlier shelf-packing, free-rect "gravity lane", and row/lane
-// based implementations that used to live here.
-//
-// Algorithm (classic MaxRects, extended with an explicit merge pass):
-//   1. Start with one free rectangle covering the full usable print area.
-//   2. Pinned/locked items are stamped into the free-space list first (at
-//      their current position) so packable items are placed around them,
-//      never on top — but they're never themselves repositioned.
-//   3. Remaining items are sorted by descending total footprint (copies ×
-//      area) so large groups claim space before it fragments into slivers.
-//   4. For each item, every free rectangle is evaluated at 0° and (when the
-//      item isn't square) 90°, scoring each candidate by:
-//        - added canvas height (heavily weighted — never grow the sheet if
-//          an existing hole already fits, regardless of which hole),
-//        - unused area within the candidate rect (tightest fit wins among
-//          equally-good holes),
-//        - fragmentation (a small penalty for leaving an unusably thin
-//          sliver behind),
-//        - a small rotation bias so rotating is only chosen when it's
-//          actually the best option, not merely "different."
-//      The lowest-scoring candidate is used.
-//   5. Placing an item splits every free rectangle it overlaps into up to
-//      four pieces, discards any that are now fully contained by another,
-//      then merges adjacent pieces that recombine into one clean rectangle
-//      (kept as its own explicit pass — plain MaxRects skips this and just
-//      lets the free-rect list grow, but re-merging keeps later scoring
-//      accurate and the list small).
-//   6. If literally no free rectangle can hold an item, the usable area is
-//      expanded downward by appending one new rectangle sized for it, and
-//      placement is retried — this always succeeds.
-//
-// Deliberately structured as small, composable, pure functions (FreeRect
-// list in, FreeRect list out; one placement decision at a time) rather than
-// one monolithic loop, so a future enhancement — e.g. letting a single
-// multi-copy item split across more than one free rectangle instead of
-// requiring one atomic block — only needs a new "which chunk goes where"
-// step in the middle, not a rewrite of the split/merge/scoring machinery.
 
 interface FreeRect {
   x: number;
@@ -584,19 +485,6 @@ function placeAndSplit(
     if (fy2 < ry2) next.push({ x: r.x, y: fy2, w: r.w, h: ry2 - fy2 });
   }
 
-  /**
-   * Drop degenerate slivers, then any rectangle fully contained by another.
-   *
-   * The containment test used to be `next.some(...)` inside `next.filter(...)`
-   * — every surviving rectangle compared against every other, once per placed
-   * cell. On a large sheet the free-rect list is long enough that this was ~43%
-   * of all layout time.
-   *
-   * Containment implies overlap, so bucketing by grid cell and comparing only
-   * against rectangles sharing a bucket yields exactly the same survivors: any
-   * `o` that could contain `r` must occupy at least one of `r`'s buckets. The
-   * predicate itself is unchanged and still decides every candidate.
-   */
   const sized = next.filter((r) => r.w > 1e-4 && r.h > 1e-4);
 
   // Cheap for the short lists that dominate small boards; the index only pays
@@ -884,12 +772,6 @@ function freeRectPack(
   overflowedIds?: Set<number>,
   /** The order pieces are offered to the packer in. See PACK_ORDERS. */
   order: PackOrder = PACK_ORDERS[0],
-  /**
-   * "free" turns a piece whenever the score says the sheet comes out shorter;
-   * "only-to-fit" turns one only when it would not fit the width upright, which
-   * is what the packer used to do. Greedy packing can lose from an early turn,
-   * so `calculateGridLayout` runs both and keeps the shorter sheet.
-   */
   rotation: "free" | "only-to-fit" = "free",
 ): LayoutItem[] {
   const margin = Math.max(0, marginIn);
@@ -947,24 +829,6 @@ function freeRectPack(
     void gw;
     maxUsedBottom = Math.max(maxUsedBottom, relY + gh + gap);
   }
-  /**
-   * Bound the leftovers of the sentinel seed instead of discarding them.
-   *
-   * Carving a fixed item out of an unbounded reservoir leaves the strip beside
-   * it just as unbounded, so the old filter threw that strip away along with
-   * the seed. That is the space to the left and right of existing artwork —
-   * exactly the space nesting is supposed to use — and while it was invisible
-   * the incremental path (`placeNewItems`, which treats everything already on
-   * the sheet as fixed) could only ever start a new row underneath.
-   *
-   * The genuine extent of such a strip is the bottom of the existing content:
-   * past that point there is nothing to nest *beside*, and the fresh-row
-   * fallback already covers growing the sheet downward. Clamping to
-   * `maxUsedBottom` therefore turns the discarded remainder into the real gap
-   * without inventing space. A strip with nothing left after the clamp — the
-   * usual case when there are no fixed items at all, where `maxUsedBottom` is
-   * still 0 — drops out exactly as it did before.
-   */
   freeRects = freeRects.reduce<FreeRect[]>((kept, r) => {
     if (r.h < RESERVOIR_HEIGHT_THRESHOLD_IN) {
       kept.push(r);
@@ -981,20 +845,6 @@ function freeRectPack(
 
   for (const item of packable) {
     const copies = Math.max(1, item.copies || 1);
-    /*
-     * Both orientations are offered; the score picks between them.
-     *
-     * The sheet's width is fixed, so its length is the only thing a layout can
-     * save and the only thing the customer pays for — a piece is turned whenever
-     * that makes the sheet shorter. Rotation used to be refused for a single
-     * piece unless it was the only way it fit at all, so a portrait design was
-     * laid out upright at its full height: a 10.8 x 16.3in photo took 16.4in of
-     * roll where turning it takes 11in, under the minimum billable length.
-     *
-     * Turning is not free in the score (`SCORE_WEIGHT_ROTATION`), so a piece is
-     * only turned when it genuinely buys length or fills a gap that upright
-     * cannot — never on a tie.
-     */
     const canRotate =
       !item.rigid &&
       Math.abs(item.widthIn - item.heightIn) >= 1e-4 &&
@@ -1013,14 +863,6 @@ function freeRectPack(
       evaluateSpill(freeRects, placedIndex, item.heightIn, item.widthIn, copies, gap, maxUsedBottom, 90, best);
     }
 
-    // Starting a brand new full-width row is always a valid option too, and
-    // it MUST be scored against whatever evaluateSpill just found rather
-    // than only tried when nothing else exists. A narrow leftover sliver
-    // can make evaluateSpill "succeed" by stacking many copies into a
-    // single tall column (huge added height) — that candidate used to win
-    // by default just for being the only one found, permanently starving a
-    // much better fresh row of ever being considered and leaving the rest
-    // of that sliver's row as a giant unused gap beside it.
     const fallbackDims0 = computeGroupDims(item.widthIn, item.heightIn, copies, maxWidth, gap);
     const fallbackRect0: FreeRect = { x: 0, y: maxUsedBottom, w: maxWidth, h: fallbackDims0.gh + gap };
     evaluateOrientation([fallbackRect0], item.widthIn, item.heightIn, copies, gap, maxUsedBottom, 0, best);
@@ -1254,7 +1096,6 @@ export function rotateGroupClockwise<T extends LayoutItem & { rotation?: number;
       heightIn: m.widthIn,
       originalWidthIn: m.originalHeightIn,
       originalHeightIn: m.originalWidthIn,
-      // Columns were chosen for the old shape.
       flowCols: undefined,
       flowStartCol: undefined,
       flowEndCol: undefined,
@@ -1357,14 +1198,6 @@ const calculateGridLayoutFlat = (
   return best;
 };
 
-/**
- * The columns an item's copies wrap into.
- *
- * What the artboard draws, what the print export lays out and what the billed
- * length measures. Sent with every order and saved design, so the export never
- * has to guess — it used to, with a rule of its own, and printed copy groups in
- * a different shape from the one the customer approved.
- */
 export function resolveFlowCols(
   item: LayoutItem,
   canvasWidthIn: number,
@@ -1554,30 +1387,6 @@ export interface FitResult<T> {
   changed: boolean;
 }
 
-/**
- * A piece brought inside the sheet's safe print area — the margin lines.
- *
- * The roll cannot print past its edge, and the margin is the customer's own
- * clearance from it, so no piece may reach beyond either. Pieces used to be kept
- * inside only when a drag was validated: a piece pinned near the right edge and
- * then rotated, resized from the properties panel, uploaded wider than the sheet,
- * or left over from a wider roll kept its position and ran off the sheet — on
- * screen, in the price, and cut off in print. The top margin was enforced
- * nowhere at all, so artwork could sit above the "Safe Print Area" line.
- *
- *  1. One copy wider than the printable width is scaled down to fit, keeping
- *     its proportions (the width axis is the nested one when auto-nest turned it).
- *     With `canNestRotate` — auto-nest on, piece free to move — it is scaled only
- *     if it would not fit turned either, since the packer turns it to fit at
- *     full size.
- *  2. A copy group whose recorded columns no longer fit has them cleared, so the
- *     group re-wraps within the width.
- *  3. The piece is moved left, or down off the top margin, just far enough to
- *     lie inside the margins. The sheet grows downward, so there is no bottom
- *     bound here — `clampPosY` keeps a piece inside the sheet's maximum length.
- *
- * Returns the same object when nothing needed to change.
- */
 export function fitItemToPrintableArea<T extends LayoutItem>(
   item: T,
   canvasWidthIn: number,
@@ -1923,20 +1732,6 @@ function planLocalDisplacementFlat(
   return moves;
 }
 
-/**
- * Moves apart pieces closer than the spacing allows — and nothing else.
- *
- * Spacing is the sheet's cutting clearance, so it has to hold for every piece,
- * including ones placed by hand. A hand-placed (pinned) piece used to be fixed
- * whatever the spacing: raising it re-spaced everything around that piece and
- * left the piece itself as close to its neighbours as before, so the control
- * looked as though it did nothing.
- *
- * Pieces settle in reading order. One that crowds a piece already settled moves
- * to the nearest spot clear of everything settled, found with the same gap
- * search a displaced neighbour uses; every other piece stays exactly where it
- * is. Locked pieces never move, and settle first so the others clear them.
- */
 export function separateCrowdedItems(
   items: LayoutItem[],
   canvasWidthIn: number,
@@ -2085,73 +1880,6 @@ export function resolveDragPlacement(
 
   return { moves, valid: true };
 }
-
-export const calculateDropPosition = (
-  items: LayoutItem[],
-  newItem: LayoutItem,
-  canvasWidth: number,
-  topCenterY: number,
-  spacing: number = 0.5,
-  margin: number = 0.15
-): { targetX: number; targetY: number } => {
-  const selectionBuffer = CANVAS.SELECTION_BUFFER_IN;
-  const minSpacing = Math.max(spacing, 0.3);
-  const maxWidth = canvasWidth - margin * 2;
-  const allItems = [...items, newItem];
-
-  const rows: LayoutItem[][] = [];
-  let currentRow: LayoutItem[] = [];
-  let currentRowWidth = 0;
-
-  allItems.forEach((it) => {
-    const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
-    const { width } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
-    const itemWidth = width + selectionBuffer + minSpacing;
-    if (currentRowWidth + itemWidth > maxWidth && currentRow.length > 0) {
-      rows.push(currentRow);
-      currentRow = [it];
-      currentRowWidth = itemWidth;
-    } else {
-      currentRow.push(it);
-      currentRowWidth += itemWidth;
-    }
-  });
-  if (currentRow.length > 0) rows.push(currentRow);
-
-  let targetX = canvasWidth / 2;
-  let targetY = margin + selectionBuffer / 2 + 0.02;
-  let found = false;
-
-  for (const row of rows) {
-    const rowWidth = row.reduce((sum, it, idx) => {
-      const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
-      const { width } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
-      return sum + (width + selectionBuffer) + (idx > 0 ? minSpacing : 0);
-    }, 0);
-    let currentX = margin + (maxWidth - rowWidth) / 2;
-    const maxHeight = Math.max(...row.map((it) => {
-      const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
-      const { height } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
-      return height + selectionBuffer;
-    }));
-
-    for (const it of row) {
-      if (it.id === newItem.id) {
-        targetX = currentX + selectionBuffer / 2;
-        found = true;
-        break;
-      }
-      const copies = typeof it.copies === "number" && it.copies > 0 ? it.copies : 1;
-      const { width } = getRenderedGroupSize(it.widthIn, it.heightIn, copies, maxWidth);
-      currentX += width + selectionBuffer + minSpacing;
-    }
-
-    if (found) break;
-    targetY += maxHeight + minSpacing;
-  }
-
-  return { targetX, targetY };
-};
 
 /**
  * Bottom edge of the sheet's content, in inches.

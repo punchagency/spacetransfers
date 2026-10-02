@@ -88,8 +88,6 @@ export const useAiConversation = (
    * prompt looked lost and could be sent twice.
    */
   const [isThinking, setIsThinking] = useState(false);
-  // Bumped by every send and by `stopThinking`; a send whose number is no longer
-  // current was stopped (or superseded) and must not act on its plan.
   const sendSeqRef = useRef(0);
   /**
    * The thread, for the planner.
@@ -132,25 +130,6 @@ export const useAiConversation = (
       // board half, so the image half below must not post it a second time.
       let userAlreadyPosted = false;
 
-      /**
-       * Board commands are checked before the image classifier. They resolve
-       * against geometry the app already owns, so they run locally and land in
-       * the same frame — no model call, no network, no cost.
-       *
-       * A chained request can mix the two kinds of work, though: "make it 4
-       * inches wide, then remove the background" is a board command *and* an
-       * image edit. So the prompt is split on its sequence markers first and
-       * each fragment is routed on its own merits. Without that, the board
-       * parser recognises the resize, claims the whole sentence, and the image
-       * half is silently dropped — the customer gets a resized image and no
-       * explanation of why the background is still there.
-       *
-       * A prompt with no sequence markers yields a single fragment, so the
-       * ordinary single-instruction path is unchanged.
-       *
-       * Skipped entirely when the caller forced an intent (a quick-action chip),
-       * since that is an explicit request for a specific image edit.
-       */
       let imagePrompt = trimmed;
 
       if (runBoardCommands && !intentOverride) {

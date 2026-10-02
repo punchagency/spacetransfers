@@ -1,18 +1,5 @@
 import { isValidPhone } from "./validators";
 
-/**
- * The checkout form's rules, one message per field.
- *
- * Kept apart from the form so the modal (on Continue) and the fields (on blur)
- * judge a value the same way. Before this, the modal checked on Continue only,
- * and Continue stayed disabled until every field had *something* in it — so a
- * shopper with one bad field faced a grey button and no hint which field.
- *
- * Addresses are US-only on purpose: every order ships on a domestic label, and
- * the label step refuses a non-US address (`shipstation.service.ts`). Letting
- * one through here meant a paid order that could never ship.
- */
-
 export type CheckoutFields = {
   firstName: string;
   lastName: string;

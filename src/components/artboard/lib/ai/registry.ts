@@ -29,11 +29,6 @@ export const listProviders = (): readonly AiEditProvider[] => [...providers];
 const candidatesFor = (intent: AiIntentId) =>
   providers.filter((p) => p.supports(intent)).sort((a, b) => a.priority - b.priority);
 
-/**
- * True when at least one registered provider can serve the intent right now.
- * Used to disable chips whose backing model isn't connected, so the user never
- * clicks into a guaranteed error.
- */
 export const canServeIntent = async (intent: AiIntentId): Promise<boolean> => {
   for (const provider of candidatesFor(intent)) {
     try {

@@ -182,11 +182,6 @@ export default function AiImagePanel({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [isRunning, onCancel, requestClose]);
 
-  // Click-outside closes. The toolbar's AI toggle is exempt so its own
-  // open/close handler runs alone instead of racing this one (double-close).
-  // So is the review dialog: it belongs to this panel, and a real click on its
-  // Apply, Discard or Try again used to close the panel too — cancelling the
-  // retry Try again had just started.
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
@@ -595,10 +590,6 @@ function Message({
     );
   }
 
-  // Only failure gets a colour. Everything else sits on the same neutral
-  // surface the rest of the app uses for panels and rows — a green "success"
-  // bubble on every reply is what made this read as a bolted-on chatbot rather
-  // than part of the editor. Status still reads clearly from the leading icon.
   const tone =
     message.status === "error"
       ? "bg-red-50 text-red-700 border-red-100"

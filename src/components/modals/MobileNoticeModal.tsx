@@ -7,15 +7,6 @@ type MobileNoticeModalProps = {
   onDismiss: (dontShowAgain: boolean) => void;
 };
 
-/**
- * A short notice shown once on phones (see the matchMedia gate in Editor).
- *
- * It used to say the mobile experience was limited and to switch devices, which
- * was fair when a phone could not move, resize or price a sheet at all. Those
- * work now, so it says what is actually still desktop-only — the two in-browser
- * AI tools, which download and run a large model — rather than warning people
- * away from a store that works on their phone.
- */
 export default function MobileNoticeModal({ isOpen, onDismiss }: MobileNoticeModalProps) {
   const [dontShowAgain, setDontShowAgain] = useState(false);
   if (!isOpen) return null;

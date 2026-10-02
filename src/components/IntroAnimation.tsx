@@ -4,21 +4,6 @@ interface IntroAnimationProps {
   onComplete: () => void;
 }
 
-/**
- * The opening screen: a still of the earth, the name, then the tagline.
- *
- * The still is the point. The background behind the text used to be whatever had
- * downloaded so far — often black, because the animation is a video and the
- * poster was an 825KB PNG that hadn't arrived either. So the first thing a
- * customer saw was floating text on nothing, and it read as broken rather than
- * as loading. Now a 32KB still paints immediately (it is a frame of the video,
- * so nothing jumps) and the video fades in over it once it can actually play.
- *
- * The video is also H.264 MP4 rather than the HEVC .mov it was: Chrome cannot
- * play HEVC in a QuickTime container at all — `canPlayType("video/quicktime")`
- * is empty — so every Chrome visitor downloaded 9.3MB that could never render,
- * while the still they were looking at waited behind it in the queue.
- */
 export default function IntroAnimation({ onComplete }: IntroAnimationProps) {
   const [currentFrame, setCurrentFrame] = useState(0);
   /** The video has enough data to show something; until then the still stands alone. */

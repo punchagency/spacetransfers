@@ -1,4 +1,3 @@
-import { MdOutlineFileUpload } from "react-icons/md";
 import { UPLOAD_FORMAT_LABELS } from "../../../../config/artboard.config";
 
 export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {

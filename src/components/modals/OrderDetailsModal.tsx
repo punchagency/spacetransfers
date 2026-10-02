@@ -79,18 +79,6 @@ export default function OrderDetailsModal({
     }
   };
 
-  /**
-   * Reorder puts the items back in the cart. It does not place an order.
-   *
-   * This used to POST `/customer/orders/:id/reorder`, which created a live order
-   * on the spot and toasted "Order placed successfully!" — one click, no cart, no
-   * address confirmation, no payment step. The order it created carried no
-   * `paymentIntentId` and was priced from the *original* order's stored
-   * `unitPrice`, so it skipped server-side pricing entirely and would have
-   * charged an old rate.
-   *
-   * Order History's reorder already did the right thing; this is the same path.
-   */
   const handleReorder = async () => {
     if (!orderId || busy || !onReorderToCart) return;
     setBusy("reorder");
@@ -177,8 +165,6 @@ export default function OrderDetailsModal({
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-gray-500 text-xs">Order Number</p>
-                {/* The DTF number, the one on the invoice and every other screen.
-                    This showed the database id, which the customer sees nowhere else. */}
                 <div className="flex items-center gap-1 font-medium text-gray-900">
                   <span className="select-all">{orderNumber}</span>
                   <button onClick={copyOrderNumber} aria-label="Copy order number">
@@ -197,8 +183,6 @@ export default function OrderDetailsModal({
             </div>
           </div>
 
-          {/* Items — one row per sheet. These were merged by name, which folded
-              two different sheets that shared a name into one line. */}
           <div>
             <h3 className="mb-3 text-sm font-semibold text-gray-900">
               {items.length === 1 ? "1 sheet" : `${items.length} sheets`}

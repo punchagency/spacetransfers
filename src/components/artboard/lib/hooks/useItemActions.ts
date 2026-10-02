@@ -1,5 +1,5 @@
 import { ArtboardItem } from "../../types";
-import { CANVAS, DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
+import { DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import {
   computeEffectiveDpi,
   computeRenderCopies,
@@ -63,24 +63,12 @@ export const useItemActions = (
   };
   const commit = (tag?: string) => commitHistory?.(tag);
 
-  /**
-   * The pieces an action applies to: everything selected, the clicked one first.
-   *
-   * Toolbar actions used to touch `selectedId` alone, so with three pieces
-   * selected — all showing handles — Delete removed one of them and left two.
-   */
   const targetIds = (): number[] => {
     const ids = selectedId == null ? [] : [selectedId];
     for (const id of selectedIds) if (id !== selectedId) ids.push(id);
     return ids.filter((id) => items.some((it) => it.id === id));
   };
 
-  /**
-   * A locked piece is fully locked: it cannot be moved, resized, turned,
-   * flipped, edited or deleted until it is unlocked. Lock used to stop dragging
-   * and nothing else, so a "locked" piece still rotated, took a typed width and
-   * went on being editable.
-   */
   const UNLOCK_TO_EDIT = "This image is locked. Unlock it to make changes.";
   const isLocked = (id: number | null) => id != null && Boolean(items.find((it) => it.id === id)?.locked);
 
@@ -195,26 +183,6 @@ export const useItemActions = (
     emit({ type: "flip", id: selectedId ?? undefined });
   };
 
-  /**
-   * Auto crop on or off for the selected piece, keeping its scale either way.
-   *
-   * It works from the piece's uncropped image (`uncroppedSourceOf`), which every
-   * edit updates. Working from the upload instead undid edits: a background
-   * removed and then auto-crop turned off brought the background back.
-   *
-   * Three faults in the old toggle, each confirmed in the browser:
-   *   - turning it off swapped the image shown but left `croppedUrl` — the copy
-   *     the print is made from — as the cropped image, so the order printed the
-   *     crop stretched to the uncropped size, and the stale pixel count flagged
-   *     the piece at 76dpi;
-   *   - both directions snapped the piece back to its upload size, discarding
-   *     any resize (set to 10in, it came back at 1.67in);
-   *   - turning it on ran a second, older copy of the crop at full resolution on
-   *     the main thread, cutting 500px where the upload had cut 504.
-   *
-   * Scale is carried through as inches per image pixel along the image's own
-   * width axis, which a quarter turn leaves alone.
-   */
   const toggleAutoCrop = async () => {
     if (selectedId == null || blockedByLock()) return;
     const id = selectedId;
@@ -309,8 +277,6 @@ export const useItemActions = (
       const item = prev.find((it) => it.id === selectedId);
       if (!item) return prev;
 
-      // Locks proportions only. With copies it used to split the group into
-      // separate images instead, under the same Link/Unlink label.
       return prev.map((it) =>
         it.id === selectedId ? { ...it, linked: !it.linked } : it
       );
@@ -350,16 +316,6 @@ export const useItemActions = (
     });
   };
 
-  /**
-   * No printable-width guard.
-   *
-   * This used to refuse any value wider than the printable area and show an
-   * error. Both halves were wrong: the customer had typed a deliberate number,
-   * and rejecting it outright left the field showing one value while the item
-   * kept another. Oversized artwork is now allowed everywhere — it is reported
-   * by the artboard banner on upload, and sizing beyond the sheet is a choice
-   * the customer is entitled to make while laying out.
-   */
   const setWidthIn = (n: number) => {
     if (selectedId == null || blockedByLock()) return;
     commit(`setWidthIn-${selectedId}`);
@@ -406,15 +362,6 @@ export const useItemActions = (
     });
   };
 
-  /**
-   * Moves the selected piece to a typed position, the way a drop does.
-   *
-   * A typed position used to be written as-is. It could sit on top of other
-   * artwork, which prints as overlapping ink, or past the printable width, where
-   * the artboard drew it clamped but the export used the raw number. It is now
-   * clamped to the sheet and checked like a drag: neighbours in the way move
-   * aside if they can, and a spot that cannot be cleared is refused.
-   */
   const moveSelected = (axis: "posX" | "posY", n: number) => {
     if (selectedId == null || blockedByLock()) return;
     const id = selectedId;

@@ -2,30 +2,8 @@ import { useSyncExternalStore } from "react";
 import { apiFetch } from "./api";
 import { PRICING } from "../../config/artboard.config";
 
-/**
- * The retail rate the editor prices sheets at, served by the admin.
- *
- * This used to be `PRICING.PRICE_PER_SQ_FT`, a constant compiled into the
- * bundle. Since the editor's price is what lands on the saved design and then
- * on the cart line, that constant — not the admin's Retail Pricing field — was
- * what actually charged every customer. Changing the published rate meant a
- * redeploy, and the admin field it contradicted was authoritative over nothing.
- *
- * Held in a module-level cell rather than context because the three call sites
- * sit in an effect hook, the editor and the header, with no common provider
- * between them.
- */
 let ratePerSqFt: number = PRICING.FALLBACK_PRICE_PER_SQ_FT;
 
-/*
- * The billing shape of a sheet, served alongside the rate.
- *
- * A gang sheet is cut from a fixed roll and has a minimum run length, so the
- * billed area is the roll width by the length — not the bounding box of the
- * artwork, which is what the editor used to price. On a sparse sheet those
- * differ several-fold, and the server bills the roll, so quoting the bounding
- * box showed a customer one number and charged them another.
- */
 let sheetWidthIn = 23.5;
 let minSheetLengthIn = 10;
 
@@ -44,11 +22,6 @@ export const getMinSheetLengthIn = () => minSheetLengthIn;
  * header never re-ran: the board kept the compiled fallback of 10in for the
  * whole session, reload included, because hydration resolves *after* mount and
  * changed nothing the editor was watching.
- */
-/**
- * False until the admin's settings have arrived. Before that the figures are
- * compiled fallbacks, which must not be used to rewrite anything the customer
- * already has — a cart re-priced against them would show the wrong totals.
  */
 let loaded = false;
 
@@ -120,14 +93,6 @@ export const hydratePricePerSqFt = (): Promise<void> => {
         );
         return;
       }
-      /*
-       * All three settings, not just the rate.
-       *
-       * This read `baseRatePerSqFt` alone, so an admin changing the roll width
-       * or the minimum billable length was fetched and then thrown away — the
-       * editor kept its compiled fallback of 10in for the life of the tab and
-       * priced against a figure the server would not charge.
-       */
       const width = Number(res?.sheetWidthIn);
       const minLength = Number(res?.minSheetLengthIn);
 
@@ -158,16 +123,6 @@ export const hydratePricePerSqFt = (): Promise<void> => {
   return inflight;
 };
 
-/**
- * Re-read the settings when the tab is brought back to the front.
- *
- * Hydration ran once at start-up, so an admin changing the rate or the minimum
- * length did not reach anyone with the editor already open — they would price a
- * sheet at the old figures for as long as the tab lived, and only discover the
- * difference at checkout, where the server prices independently.
- *
- * Cheap: one request when a tab regains focus, and it no-ops if nothing moved.
- */
 export const watchPricingSettings = (): (() => void) => {
   const onFocus = () => {
     void hydratePricePerSqFt();

@@ -1,33 +1,6 @@
 import toast from "react-hot-toast";
 import { NoticeCard, WarningIcon } from "./UnsupportedFilesWarning";
 
-/**
- * Shared definition for the resolution (DPI) status system.
- *
- * The DPI state is surfaced in three places at once — a compact chip in the
- * top bar, a hover tooltip off that chip, and a toast when a drop lands — and
- * all three describe the same counts. This is the one place that defines the
- * wording, so the three can't drift into disagreeing about what the same
- * numbers mean.
- *
- * Visually, the whole system renders through the same amber chrome as every
- * other advisory in the app (`WarningIcon` / `NoticeCard`, both from
- * `UnsupportedFilesWarning`) rather than keeping its own palette.
- *
- * ## Why a toast rather than a card docked over the canvas
- *
- * The two halves of "low DPI" want opposite lifetimes, and trying to serve
- * both with one surface is what made the docked card awkward. *That a drop
- * contained low-DPI artwork* is news, tied to that drop, and belongs in the
- * same transient notice as "3 files skipped" and "large image detected" — it
- * ages out on the same timer they do, and it stacks with them instead of
- * occupying its own private slot over the artboard. *That the sheet currently
- * holds low-DPI artwork* is a standing condition, and that is exactly what the
- * top-bar chip reports, for as long as it holds. Splitting them this way also
- * means the notice no longer has to justify a dismiss button that couldn't
- * make the artwork's resolution stop being low.
- */
-
 /** Below this, at print size, artwork is flagged. Display only — the detection
  *  logic lives in `computeEffectiveDpi` / `useDropHandler` and is unchanged. */
 export const DPI_TARGET = 300;
@@ -35,15 +8,6 @@ export const DPI_TARGET = 300;
 const plural = (n: number, singular: string, many: string) =>
   n === 1 ? singular : many;
 
-/**
- * Title for a given pair of counts.
- *
- * Kept as one function because the header and the banner previously disagreed:
- * the header hardcoded "Low DPI Detected" per-indicator (so both could appear
- * at once, saying two different things side by side), while the banner derived
- * a combined title. The banner's derivation was the right one and is now the
- * only one.
- */
 export const dpiStatusTitle = (lowDpiCount: number, unknownDpiCount: number) => {
   if (lowDpiCount > 0 && unknownDpiCount > 0) return "DPI Issues Detected";
   if (unknownDpiCount > 0) return "Unknown DPI Detected";

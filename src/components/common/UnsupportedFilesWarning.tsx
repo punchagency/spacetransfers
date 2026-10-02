@@ -1,22 +1,6 @@
 import toast from "react-hot-toast";
 import { MdClose } from "react-icons/md";
 
-/**
- * Notice for files skipped because the artboard cannot read their format.
- *
- * Replaces `toast.error("N unsupported files skipped. Accepted: …")`, which was
- * wrong in the same two ways the large-image notice used to be. Red is reserved
- * for states that actually blocked the customer's work; skipping an unreadable
- * file while adding every valid one alongside it is information, not a failure,
- * and dressing it as an error is what teaches people to ignore red. And a
- * single run-on sentence buried the two things they need — how many were
- * dropped, and what to re-export as — in the middle of the line.
- *
- * Deliberately more compact than `LargeImageWarning`: that notice has to
- * explain a consequence and a remedy, this one only has to name a count and
- * four formats. Same palette, radius and type scale so they read as one family.
- */
-
 /** Matches the large-image notice, so two warnings from one drop age out together. */
 const WARNING_DURATION_MS = 7000;
 
@@ -50,15 +34,6 @@ export const WarningIcon = ({
   </svg>
 );
 
-/**
- * Human-facing format names, derived from the MIME types the drop handler
- * actually accepts rather than written out again here.
- *
- * The old copy hardcoded "PNG, JPG, SVG, PDF" in the toast while the accepted
- * list lived in `useDropHandler`. Two sources for one fact drift: the list a
- * customer is told to re-export to has to be the list that will actually be
- * taken, or the advice sends them round the loop a second time.
- */
 const MIME_LABELS: Record<string, string> = {
   "image/png": "PNG",
   "image/jpeg": "JPG",
@@ -156,18 +131,6 @@ function NoticeCardChrome({
   );
 }
 
-/**
- * Toast form: fades with the toast queue's visibility and can be dismissed.
- *
- * Deliberately carries no top margin. react-hot-toast stacks toasts by
- * measuring each one's `getBoundingClientRect().height` and translating the
- * next down by the running total — and that measurement excludes margins. The
- * `mt-16` this used to have was therefore invisible to the stacking maths, so
- * the moment two notices were on screen together the second was placed 64px
- * too high and overlapped the first. The clearance now lives on the `Toaster`'s
- * `containerStyle` in `App.tsx`, where it applies once to the stack rather than
- * once per card.
- */
 export const NoticeCard = ({
   t,
   title,

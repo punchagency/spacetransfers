@@ -152,21 +152,6 @@ export default function CanvasContainer({
   const scrollStopTimerRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
 
-  /**
-   * Whether a pointer event landed on empty sheet rather than on artwork.
-   *
-   * This used to be `e.target === e.currentTarget` — true only when the browser
-   * reported the scroll container itself. The sheet inside it is sized in zoomed
-   * pixels and then scaled by zoom again, so its hit box is zoom² of the sheet:
-   * at 62% it covered the left 62%, where a click reported that inner div and
-   * was ignored. Clicking away did not deselect and double-click did not add
-   * files there, yet both worked on the strip to its right.
-   *
-   * So this asks what matters instead: was it outside every item? `contains`
-   * keeps out events React bubbles up from portals — the item toolbar and the
-   * properties panel live elsewhere in the DOM but still bubble through this
-   * component, and pressing one of their buttons must not deselect the item.
-   */
   const isEmptySheetTarget = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as Element | null;
     return Boolean(target && e.currentTarget.contains(target) && !target.closest("[data-item-id]"));
@@ -433,12 +418,6 @@ export default function CanvasContainer({
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      {/*
-        Behind everything. With artwork on the board this is the space *around*
-        the sheet, in a flat neutral; the sheet draws its own surface below. The
-        preview background used to fill this whole area, so zoomed out it ran
-        past the sheet's edge and nothing showed where the roll ended.
-      */}
       <div
         className="absolute inset-0 z-0 opacity-100 transition-[background-color,background-image] duration-200"
         style={

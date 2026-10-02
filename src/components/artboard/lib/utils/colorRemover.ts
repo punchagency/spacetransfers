@@ -1,31 +1,3 @@
-/**
- * Colour removal and replacement.
- *
- * Runs entirely in the browser on a canvas, which is the right call rather than
- * a limitation: "remove this exact colour" is a deterministic pixel operation
- * with an unambiguous correct answer, so handing it to a generative model would
- * be slower, cost a quota credit, and — worst — return an *approximation* of
- * the artwork with the colour mostly gone. For transfer printing, where a
- * removed colour usually means a background that has to be genuinely absent,
- * "mostly" is a reprint.
- *
- * Three things make the difference between this and a naive RGB threshold:
- *
- *  - **Perceptual distance.** Matching in RGB treats a 30-unit shift in green
- *    as the same as 30 in blue, which the eye does not. Distances are measured
- *    in CIE L*a*b* instead, so one tolerance value behaves consistently whether
- *    the user picked a pale sky or a deep navy.
- *  - **A clean cut.** A removed pixel becomes fully transparent and every
- *    other pixel keeps its exact colour and opacity. This used to ramp alpha
- *    across a band near the tolerance boundary for softer edges, but DTF film
- *    cannot print partial transparency: those pixels printed solid, and on a
- *    Wide pick of a gradient the ramp covered whole areas and tripped the
- *    see-through flag. The BG remover made the same change for the same reason.
- *  - **Blended replacement.** Replacing one colour with another still
- *    cross-fades across the band — opacity is untouched there, so soft edges
- *    cost nothing in print.
- */
-
 export interface RemoveColorOptions {
   /** Hex colour to remove, e.g. "#ffffff". */
   targetColor: string;
@@ -150,56 +122,6 @@ const loadImage = (url: string): Promise<HTMLImageElement> =>
     img.onerror = () => reject(new Error("Could not load the image"));
     img.src = url;
   });
-
-/**
- * Samples the colour at a normalised point in an image, for the eyedropper.
- * `x`/`y` are 0–1 so the caller can pass a click position without knowing the
- * image's pixel size or how it was scaled for display.
- *
- * Averages a small neighbourhood rather than reading a single pixel: artwork
- * that has been through JPEG compression has per-pixel noise, and a lone
- * outlier pixel makes the picked colour miss the flat region around it.
- */
-export const sampleColorAt = async (
-  imageUrl: string,
-  x: number,
-  y: number,
-  radiusPx = 2,
-): Promise<string> => {
-  const image = await loadImage(imageUrl);
-  const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("Canvas is unavailable in this browser");
-  ctx.drawImage(image, 0, 0);
-
-  const cx = Math.round(Math.max(0, Math.min(1, x)) * (canvas.width - 1));
-  const cy = Math.round(Math.max(0, Math.min(1, y)) * (canvas.height - 1));
-  const x0 = Math.max(0, cx - radiusPx);
-  const y0 = Math.max(0, cy - radiusPx);
-  const w = Math.min(canvas.width - x0, radiusPx * 2 + 1);
-  const h = Math.min(canvas.height - y0, radiusPx * 2 + 1);
-
-  const { data } = ctx.getImageData(x0, y0, w, h);
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let n = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    // Transparent pixels carry no meaningful colour — including them would
-    // drag the average toward whatever happens to be in the unused channels.
-    if (data[i + 3] < 8) continue;
-    r += data[i];
-    g += data[i + 1];
-    b += data[i + 2];
-    n++;
-  }
-  if (n === 0) return "#000000";
-
-  const hex = (v: number) => Math.round(v / n).toString(16).padStart(2, "0");
-  return `#${hex(r)}${hex(g)}${hex(b)}`;
-};
 
 /**
  * Removes (or replaces) every occurrence of a colour.

@@ -30,16 +30,6 @@ function ConfidenceBadge({ confidence, source }: { confidence: number; source: s
   );
 }
 
-/**
- * Fade mark.
- *
- * Fade keeps a warning triangle where DPI does not, and keeps its colour in the
- * glyph rather than in a dot. That asymmetry is deliberate and is the banner's
- * only severity signal: DTF physically cannot reproduce a fade, so the sheet
- * will come off the press wrong, whereas low DPI prints — just softer. Giving
- * both the same weight is what made the old all-amber treatment unreadable as a
- * priority ordering.
- */
 const FadeMark = (
   <svg
     className="shrink-0 text-orange-600"
@@ -106,20 +96,6 @@ function NoticeBanner({
   );
 }
 
-/**
- * The docked fade banner.
- *
- * Resolution used to share this component, which forced a third "Print Issues
- * Detected" variant whenever both conditions held at once. That merge is gone:
- * low DPI is now a toast in the shared notice queue (see `showLowDpiWarning`),
- * so a sheet with both a fade and soft artwork shows two independent notices
- * rather than one sentence trying to carry both.
- *
- * Fade stays docked rather than joining the queue because the two are not the
- * same kind of statement. A fade cannot be printed at all — the sheet comes off
- * the press wrong — so it has to remain on screen for as long as the offending
- * artwork is on the board, which a timed toast cannot express.
- */
 export default function ArtboardWarning({ flagged = [] }: ArtboardWarningProps) {
   const count = flagged.length;
   if (count === 0) return null;

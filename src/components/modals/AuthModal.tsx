@@ -28,7 +28,6 @@ const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || ""
  */
 const MIN_PASSWORD_LENGTH = 8;
 
-
 export default function AuthModal({
   isOpen,
   onClose,
@@ -404,10 +403,6 @@ export default function AuthModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        // max-h + scroll: the register view is the tallest form (name, email,
-        // password, two agreements) and previously ran off the bottom of a short
-        // viewport, taking the submit button with it. dvh rather than vh so
-        // mobile browser chrome is accounted for.
         className="w-full max-w-sm max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain rounded-2xl bg-white shadow-2xl p-5"
       >
         {/* Header */}

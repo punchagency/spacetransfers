@@ -1,4 +1,4 @@
-import { GRID, CANVAS } from "../../../../config/artboard.config";
+import { GRID } from "../../../../config/artboard.config";
 
 /**
  * Two-tone checker colors [checkerSquare, backgroundColor] per bg id.

@@ -25,7 +25,6 @@ import { isTypingTarget } from "../lib/utils/keyboard";
 import { artworkNotUploaded, nextUntitledName, titleTaken, UNTITLED_SHEET } from "../lib/utils/sheetSaving";
 import { stripEmbeddedData } from "../lib/utils/assetIdentity";
 import { stripEmbeddedImages } from "../lib/utils/payloadImages";
-import { CANVAS, PRICING } from "../config/artboard.config";
 import {
   DEFAULT_SHEET_SETTINGS,
   loadEditorSettings,
@@ -49,7 +48,6 @@ type SaveResult = {
 
 export default function Editor() {
   const pricingSettings = usePricingSettings();
-  const { pricePerSqFt } = pricingSettings;
   // Phone detection drives both the one-time notice and the hiding of tools
   // that can't be operated smoothly on a small touch screen (see below).
   const isMobile = useIsMobile();
@@ -123,12 +121,6 @@ export default function Editor() {
     if (!getToken()) return;
     apiFetch("/auth/me")
       .then((userData) => {
-        /*
-         * Only customer accounts belong in the store. A session of another kind
-         * — a token from the printer or admin app, or one minted before this
-         * check existed — could work the board but never save it, since every
-         * `/customer/*` route refuses it.
-         */
         if (String(userData?.role || "").toUpperCase() !== "CUSTOMER") {
           clearAuth();
           setIsLoggedIn(false);
@@ -149,13 +141,6 @@ export default function Editor() {
       });
   }, []);
 
-  /*
-   * The session ending mid-flight — an expired or revoked token — used to leave
-   * the header showing a signed-in user while every request failed. `apiFetch`
-   * clears the token on a 401 and announces it; this is what listens.
-   *
-   * It also covers signing out in another tab.
-   */
   useEffect(
     () =>
       onAuthChanged(() => {
@@ -270,22 +255,6 @@ export default function Editor() {
   }, [pricingSettings, cartItems]);
 
   useEffect(() => {
-    /**
-     * Persist the cart without its artwork.
-     *
-     * Stripping happens *before* the write, not as a retry after one fails.
-     * The old order assumed the failure mode was a `QuotaExceededError` from
-     * localStorage — but `JSON.stringify` runs first, and on a cart holding
-     * several base64 images it throws `RangeError: Invalid string length`
-     * (V8 caps a string near 512 MB) before localStorage is ever consulted.
-     * The fallback that was supposed to save the situation could not run,
-     * because the code that would have triggered it never returned.
-     *
-     * Nothing is lost by stripping unconditionally: a `data:` URL is a local
-     * render of an asset the server already holds, and the structural data
-     * kept here (items, artboardData, pricing, size) is what the cart needs to
-     * restore.
-     */
     const writeCart = (payload: any[]) => {
       localStorage.setItem("cart", JSON.stringify(payload));
     };
@@ -462,15 +431,6 @@ export default function Editor() {
   const [currentLoadedDesignId, setCurrentLoadedDesignId] = useState<string | null>(null);
   const [currentLoadedDesignString, setCurrentLoadedDesignString] = useState<string | null>(null);
   const [currentLoadedDesignTitle, setCurrentLoadedDesignTitle] = useState<string | null>(null);
-  /*
-   * A name for a board that has not been saved yet.
-   *
-   * Renaming used to require `currentLoadedDesignId`, because it PATCHes a
-   * design record — so a fresh board read "Untitled gang sheet" with no way to
-   * name it until after saving, which is backwards from how every document
-   * editor works. This holds the name until there is something to attach it to,
-   * and seeds the save dialog when there is.
-   */
   const [draftDesignTitle, setDraftDesignTitle] = useState<string | null>(null);
   const prevUserIdRef = useRef<string | null>(null);
 
@@ -518,25 +478,12 @@ export default function Editor() {
     return loadedItems;
   };
 
-  // Memoized on the item lists themselves. This ran on *every* render before —
-  // including renders caused by typing in an unrelated field — so the board was
-  // re-serialized continuously rather than when it actually changed.
   const currentSnapshot = useMemo(
     () => getGangsheetSnapshot(getCurrentItems()),
     [artboardData?.items, loadedDesignData?.items],
   );
   const hasUnsavedChanges = currentSnapshot !== baselineSnapshot;
 
-  /**
-   * The cart line for the sheet on the board.
-   *
-   * A cart line is a saved sheet: one saved sheet, at most one line, and the
-   * line records which sheet it is (`designId`). So whether the board is "in the
-   * cart" follows from which sheet is open, however it was opened — Add to Cart,
-   * Edit sheet in the cart, or Load gang sheet. It used to be remembered
-   * separately, and each route set it differently: a sheet opened from Load gang
-   * sheet didn't know it was in the cart, and adding it again made a second line.
-   */
   const cartLine =
     (currentLoadedDesignId &&
       cartItems.find(
@@ -587,12 +534,6 @@ export default function Editor() {
     const mappedItems = normalizedItems.map((it: any) => ({
       id: it.id,
       assetId: it.assetId || it.originalUrl || it.url,
-      /*
-       * The image the piece shows and prints, cropped or not. It used to be
-       * dropped whenever auto-crop was off, so an uncropped piece reopened as
-       * its original upload — losing any background removal or AI edit — and
-       * was sent to print as the asset's trimmed copy, not the image laid out.
-       */
       croppedUrl:
         typeof it.croppedUrl === "string" && it.croppedUrl
           ? it.croppedUrl
@@ -840,8 +781,6 @@ export default function Editor() {
             croppedHeightPx: typeof it.croppedHeightPx === "number" && it.croppedHeightPx > 0 ? it.croppedHeightPx : undefined,
             nativeWidthPx: typeof it.nativeWidthPx === "number" && it.nativeWidthPx > 0 ? it.nativeWidthPx : undefined,
             rotation: it.rotation || 0,
-            // Restored rather than reset: a locked or mirrored piece used to
-            // reopen unlocked and unmirrored.
             locked: Boolean(it.locked),
             expanded: false,
             flipped: Boolean(it.flipped),
@@ -891,22 +830,6 @@ export default function Editor() {
       setDeletedItems({});
       toast.success("Gangsheet loaded", { id: toastId });
 
-      /*
-       * Say when artwork cannot be fetched, instead of leaving the board to
-       * report it as unknown DPI. Designs saved before artwork was required to
-       * be uploaded can reference images that exist nowhere any more, and
-       * "0 DPI" is not an explanation anyone can act on.
-       *
-       * Two things this check used to get wrong, both seen on a real sheet:
-       *  - It loaded each image without CORS. The browser cached that copy, and
-       *    every later CORS read of the image (its pixel size, its transparency)
-       *    was served the cached copy and failed — so a perfectly good sheet
-       *    showed broken images and "unknown DPI" on every piece.
-       *  - It gave up after 15 seconds and called the image missing. A large
-       *    print file can take longer than that to download, so existing
-       *    artwork was reported as needing to be re-added. Only an actual load
-       *    error counts now; slow is not missing.
-       */
       void (async () => {
         const urls = Array.from(
           new Set(mappedItems.map((it: any) => String(it.url || "")).filter(Boolean)),
@@ -1033,10 +956,6 @@ export default function Editor() {
     );
   };
 
-  const hasAnyItems =
-    (Array.isArray(artboardData?.items) && artboardData.items.length > 0) ||
-    (Array.isArray(loadedDesignData?.items) && loadedDesignData.items.length > 0);
-
   useEffect(() => {
     const shouldWarn = hasUnsavedChanges;
     const handler = (e: BeforeUnloadEvent) => {
@@ -1056,14 +975,6 @@ export default function Editor() {
     return d.toLocaleString();
   };
 
-  /**
-   * Whether the saved list is being read, and why it last failed.
-   *
-   * The failure used to be swallowed: a dropped request left the list empty and
-   * the gallery said "No designs found", which is the same thing it says to
-   * someone who has never saved a sheet. On a phone — slower connection, more
-   * dropped requests — that reads as "my work is gone".
-   */
   const [designsLoading, setDesignsLoading] = useState(false);
   const [designsError, setDesignsError] = useState<string | null>(null);
   const lastDesignSearchRef = useRef<string | undefined>(undefined);
@@ -1126,7 +1037,6 @@ export default function Editor() {
     const widthIn = headerInfo?.widthIn || getSheetWidthIn();
     const heightIn = headerInfo?.heightIn || getMinSheetLengthIn();
     return {
-      // The sheet's own name — every line used to read "Gang Sheet".
       name,
       // Which saved sheet this is: Edit sheet reopens it, and Load gang sheet
       // and the cart agree on it.
@@ -1134,11 +1044,6 @@ export default function Editor() {
       autoNest: settings.autoNestStickers,
       items: normalized,
       designSignature: getGangsheetSnapshot(normalized),
-      /*
-       * Always the billed figures the header shows — roll width by run length,
-       * floored at the minimum. The unused-space prompt used to swap these for a
-       * "full" 23.5 x 23.5in sheet no setting defined.
-       */
       price: headerInfo?.price || 0,
       widthIn,
       heightIn,
@@ -1158,15 +1063,6 @@ export default function Editor() {
     }
   };
 
-  /**
-   * Add to Cart: saves the sheet, then puts that saved sheet in the cart.
-   *
-   * A saved sheet has one line. If this one is already in the cart, its line is
-   * brought up to date rather than a second line added — adding the same sheet
-   * twice used to leave the cart with more sheets than Load gang sheet had.
-   * A different sheet (Start a new sheet, or one loaded from the saved list) has
-   * its own record, so it gets its own line.
-   */
   const addGangSheetToCartNow = async (fromUnusedSpacePrompt: boolean = false) => {
     if (!isLoggedIn) {
       setAuthView("register");
@@ -1283,12 +1179,6 @@ export default function Editor() {
     void snapshotIntoCartLine(lineId);
   };
 
-  /**
-   * A line that isn't a saved sheet yet — added before lines recorded their
-   * sheet, a reorder, or one whose saved sheet was removed elsewhere — saved as
-   * one, so every sheet in the cart can be opened from Load gang sheet too.
-   * Returns the new sheet's id and name, or null if it can't be saved.
-   */
   const saveCartLineAsSheet = async (line: any): Promise<{ id: string; title: string } | null> => {
     const items = Array.isArray(line?.items) ? line.items : [];
     if (items.length === 0 || artworkNotUploaded(items)) return null;
@@ -1470,12 +1360,6 @@ export default function Editor() {
               const sheet = sheetSettingsFromSaved(design?.artboardData);
               const designSignature = getGangsheetSnapshot(items);
               const name = design?.title || line.name;
-              /*
-               * A line whose pieces can't be drawn or measured is refreshed even
-               * when nothing else changed: reorders used to add lines in the
-               * order's stored shape (no `url`, no pixel size), so the cart
-               * showed no preview and flagged sharp art as unreadable DPI.
-               */
               const lineComplete = (Array.isArray(line.items) ? line.items : []).every(
                 (it: any) => it?.url && (it?.croppedWidthPx > 0 || it?.nativeWidthPx > 0),
               );
@@ -1553,11 +1437,6 @@ export default function Editor() {
   /** A saved sheet the customer has asked to delete, waiting for them to confirm. */
   const [pendingSheetDelete, setPendingSheetDelete] = useState<{ id: string; title: string } | null>(null);
 
-  /**
-   * Deletes a saved sheet, and with it its cart line (a line whose sheet is gone
-   * couldn't be opened again) and, if it's the one on the board, the board — or
-   * autosave would quietly bring it back.
-   */
   const deleteSheet = async () => {
     const target = pendingSheetDelete;
     setPendingSheetDelete(null);
@@ -1662,15 +1541,6 @@ export default function Editor() {
       return;
     }
 
-    /*
-     * Reorder the sheet itself when it still exists as it was ordered.
-     *
-     * Every reorder used to become a new saved sheet ("Logo sheet 2", "3", …),
-     * though a different sheet should only come from Start a new sheet or
-     * Duplicate. If the saved sheet has been edited or deleted since, the order's
-     * artwork is no longer that sheet, so the line stays a copy (saved as a new
-     * sheet by the cart, as before).
-     */
     const sameSheet = await Promise.all(
       orderItems.map(async (item: any) => {
         if (!item?.designId || !Array.isArray(item?.artboardItems)) return null;
@@ -1705,11 +1575,6 @@ export default function Editor() {
         Number(item?.sheetHeightIn || item?.heightIn || 0),
       );
       const widthIn = isGangsheet && recordedWidthIn > 0 ? recordedWidthIn : billed.widthIn;
-      /*
-       * Priced at today's rate — not the `unitPrice` stored on the old order,
-       * which the server would not charge. `repriceCartLine` (via the cart's
-       * pricing effect) keeps it current from here on.
-       */
       const unitPrice = +(billed.areaSf * getPricePerSqFt()).toFixed(2);
 
       const same = sameSheet[idx];
@@ -1785,7 +1650,6 @@ export default function Editor() {
     );
     if (adding.some((line: any) => line.designId && !inCart.has(String(line.designId)))) fetchDesigns();
     setCartItems((prev) => [...prev, ...adding]);
-    // Both lists close — from Order details, checkout used to open on top of it.
     setShowOrderHistoryModal(false);
     setShowOrderDetailsModal(false);
     setShowCheckoutModal(true);
@@ -2105,12 +1969,6 @@ export default function Editor() {
               setShowAuthModal(true);
               return;
             }
-            /*
-             * The same save autosave uses, with the name this dialog collected.
-             * There used to be a second copy of the create/update logic here, so
-             * the two could disagree about whether a sheet was saved — and only
-             * this one refused to store artwork that had not finished uploading.
-             */
             const toastId = toast.loading("Saving gang sheet...");
             const result = await saveRef.current({ title: title.trim() || undefined, thumbnail });
             if (result.ok) {

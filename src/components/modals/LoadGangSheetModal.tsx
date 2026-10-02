@@ -96,11 +96,6 @@ const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose
 
         {/* Gang Sheet Cards */}
         <div className="p-4 sm:p-6 pb-8 flex gap-4 overflow-x-auto min-h-[280px] sm:min-h-[320px]">
-          {/*
-            Three different states, not one. "No designs found" used to be shown
-            whenever the list was empty — including when the request had failed,
-            so a dropped connection looked exactly like an empty account.
-          */}
           {error && designs.length === 0 ? (
             <div className="w-full flex flex-col items-center justify-center px-6 text-center text-gray-500">
               <div className="w-24 h-24 bg-red-50 rounded-full flex items-center justify-center mb-4">

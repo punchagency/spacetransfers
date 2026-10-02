@@ -174,20 +174,6 @@ export const useMouseInteractions = (
     if (item.groupId && current.some((it) => it.groupId === item.groupId && it.locked)) return;
     if (ids.length === 0) return;
 
-    /**
-     * Take ownership of every rendered element: stop in-flight settle tweens
-     * and zero their transforms so the drag starts clean.
-     *
-     * One `querySelectorAll` rather than a `querySelector` per item. The old
-     * loop issued one DOM query per item on every single drag start, so
-     * grabbing anything on a thousand-item sheet meant a thousand attribute
-     * lookups plus a thousand GSAP calls before the pointer moved — which is
-     * what made dragging progressively heavier as a design grew.
-     *
-     * Querying the DOM also naturally limits the work to items that are
-     * actually mounted: off-screen items are culled by the viewport
-     * virtualization and have no element to tween.
-     */
     const mounted = document.querySelectorAll<HTMLElement>("[data-item-id]");
     for (const el of mounted) {
       gsap.killTweensOf(el);

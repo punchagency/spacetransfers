@@ -119,10 +119,6 @@ export const executeBoardCommands = async (
     return ids.size;
   };
 
-  /**
-   * Why a command touched nothing. A selected piece that is locked used to get
-   * "Select an image first." — wrong, and no hint that Unlock is the fix.
-   */
   const noTargetsMessage = () => {
     const context = ctx();
     const selected = context.items.filter((it) => context.targetIds.includes(it.id));
