@@ -48,7 +48,7 @@ For Google Drive, the portal's address must be listed under Authorised JavaScrip
 
 ## Layout
 
-```
+```ts
 src/
   pages/        One file per screen
   components/   Grouped by area: orders, print, drive, profile, settings, layout
