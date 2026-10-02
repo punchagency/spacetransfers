@@ -56,13 +56,6 @@ export const PartnerOverview = ({
         }
     };
 
-    /*
-     * Capacity, supported sheet sizes, shipping carriers and supported formats
-     * were removed from this page. None of them affected anything: nothing
-     * filters assignment on a sheet size or a format, and the carrier line was
-     * a hard-coded "N/A". They read as commitments the platform was honouring
-     * and it was honouring none of them.
-     */
     const sampleNote =
         partner.performanceSampleSize && partner.performanceSampleSize > 0
             ? `Across ${partner.performanceSampleSize} completed order${partner.performanceSampleSize === 1 ? '' : 's'}`
@@ -161,11 +154,6 @@ export const PartnerOverview = ({
                         <div>
                             <p className="text-[12px] text-gray-400 font-medium">Address</p>
                             {(() => {
-                              /*
-                               * This was the literal string "N/A", never wired
-                               * to anything — so a partner who supplied a full
-                               * address at signup was shown as having none.
-                               */
                               const a = partner.address;
                               const lines = a
                                 ? [a.street, [a.city, a.state].filter(Boolean).join(", "), a.postalCode]

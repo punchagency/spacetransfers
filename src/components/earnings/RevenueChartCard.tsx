@@ -96,11 +96,6 @@ export const RevenueChartCard = ({
             />
             <Tooltip
               cursor={{ stroke: "#111827", strokeWidth: 1 }}
-              /*
-               * Shows the bucket and both series. It used to print
-               * `payload[0].value` alone — one unlabelled figure, with no way to
-               * tell which period it belonged to or which point on the axis.
-               */
               content={({ active, payload, label }) => {
                 if (!active || !payload || !payload.length) return null;
                 const find = (key: string) =>

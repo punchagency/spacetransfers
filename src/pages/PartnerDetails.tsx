@@ -18,11 +18,6 @@ export const PartnerDetails = () => {
     const [orders, setOrders] = useState<PartnerOrderRow[]>([]);
     const [loading, setLoading] = useState(true);
     const { subscribeToStream } = useNotificationsStore();
-    /*
-     * No Pricing tab. There is one rate for the whole network, set in
-     * Settings -> General, so a per-partner pricing screen would have been an
-     * editor for a value that no longer varies by partner.
-     */
     const tabs = ['Overview', 'Orders', 'Settings'];
 
     // Hoisted out of the mount effect so the live subscriber below can re-run it.
@@ -83,13 +78,6 @@ export const PartnerDetails = () => {
                     rating: Number(p.rating || 5.0),
                     availabilityStatus: p.availabilityStatus === 'paused' ? 'paused' : 'open',
                     capacityPaused: Boolean(p.capacityPaused),
-                    /*
-                     * Both of these were returned by the API and dropped here.
-                     * This mapper is built field by field, so anything not
-                     * named is silently discarded — the overview showed a
-                     * hardcoded "N/A" address and never rendered the status
-                     * reason, because neither ever arrived.
-                     */
                     address: p.address ?? null,
                     businessType: p.businessType ?? null,
                     statusHistory: Array.isArray(p.statusHistory) ? p.statusHistory : [],

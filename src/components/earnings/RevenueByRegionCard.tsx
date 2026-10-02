@@ -6,19 +6,6 @@ export type RevenueByRegionRow = {
   percentage: number;
 };
 
-/**
- * Revenue by service region.
- *
- * This card used to be built around a world map with four hardcoded markers —
- * California, the Northeast, Southeast Asia and southern Australia. They were
- * static: they never read `rows`, so they showed the same four dots whatever the
- * data said, and two of them implied operations on other continents for a
- * business that serves fifty US states. It also pulled a world atlas from a CDN
- * on every render to draw them.
- *
- * The list underneath was the only part carrying real numbers, so that is what
- * the card is now.
- */
 export const RevenueByRegionCard = ({ rows }: { rows: RevenueByRegionRow[] }) => {
   const data = rows || [];
   const maxValue = Math.max(1, ...data.map((r) => Number(r.value) || 0));

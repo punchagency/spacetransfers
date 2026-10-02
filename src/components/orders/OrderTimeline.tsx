@@ -20,15 +20,6 @@ interface OrderTimelineProps {
     };
 }
 
-/**
- * Labels come from the shared map so a step and a real timeline entry for the
- * same status cannot disagree.
- *
- * PROCESSING previously read "Payment Verified" here — unrelated to what the
- * state means (a partner is attached), and describing something the platform
- * does not do: payment verification is not implemented and there is no payment
- * status on an order.
- */
 const STATUS_STEPS = [
     { key: 'PENDING',       label: ORDER_STATUS_LABEL.PENDING },
     { key: 'PROCESSING',    label: ORDER_STATUS_LABEL.PROCESSING },

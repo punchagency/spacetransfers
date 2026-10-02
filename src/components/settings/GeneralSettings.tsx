@@ -34,9 +34,6 @@ interface GlobalPricing {
 }
 
 const FALLBACK: GlobalPricing = {
-  // Matches the server default. This read 24 while the field drove nothing;
-  // it now prices every sheet, so a failed load must not show a rate seven
-  // times what customers are actually charged.
   baseRatePerSqFt: 3.5,
   sheetWidthIn: 23.5,
   minSheetLengthIn: 10,

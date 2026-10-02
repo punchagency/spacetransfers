@@ -8,25 +8,6 @@ import { apiFetch } from "../utils/api";
 import toast from "react-hot-toast";
 import type { StatCardItem } from "../types/dashboard";
 
-/**
- * Earnings.
- *
- * The page answers four questions: how much came in, how much went out to
- * partners, what is left, and how much of that has actually been earned. Then it
- * shows the trend and where the money came from.
- *
- * The est./actual split is the load-bearing idea, and it follows the dashboard's
- * convention: a figure covering orders that have not shipped is a forecast and
- * says so, both in its label and in a subtitle naming what is still open. Only
- * "Earned so far" counts orders that have actually shipped.
- *
- * It previously led with a product-profitability table grouped by item name.
- * Every item in this business is a gang sheet, so that table was permanently one
- * row, with a product-name search box and a "High Margin / Low Margin" control
- * labelled "All Statuses" sitting above it. None of it told an admin anything
- * the cards did not, so it is gone rather than fixed.
- */
-
 const RANGES = [
   { key: "7d", label: "Last 7 days" },
   { key: "30d", label: "Last 30 days" },
@@ -212,11 +193,6 @@ export const Earnings = () => {
         <StatsGrid cards={statsCards} />
       )}
 
-      {/*
-        How margin is reached. Margin used to be revenue − partner cost, which
-        counted the state's tax and the carrier's shipping as profit and left out
-        card fees; with those taken off, the cards alone no longer add up.
-      */}
       {!loadError && data?.kpis.deductions && (
         <p className="text-sm text-gray-500 -mt-2">
           Margin is revenue less tax <span className="text-gray-400">({currency(data.kpis.deductions.tax)}, for the state)</span>,

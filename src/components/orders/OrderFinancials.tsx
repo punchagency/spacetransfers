@@ -36,14 +36,6 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
     const currency = f?.currency || order.pricing?.currency || 'USD';
     const customerPaid = f?.customerPaid ?? order.pricing?.total ?? 0;
 
-    /**
-     * `null` means the server could not derive a partner cost — an order whose
-     * items carry no sheet dimensions has an unknown cost, not a zero one.
-     *
-     * This used to fall back to `customerPaid * 0.6`, inventing a 60% cost out
-     * of nothing and deriving Admin Profit from it, so the panel could show a
-     * confident margin built entirely on a guess.
-     */
     const partnerCost = f?.partnerCost ?? null;
     const adminProfit = f?.adminProfit ?? null;
 
@@ -96,12 +88,6 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                         Internal — not shown to the customer
                     </p>
                 </div>
-                {/*
-                  What the customer paid, less everything that isn't the
-                  business's to keep. Profit used to be paid − partner cost,
-                  which counted the state's tax and the carrier's shipping as
-                  profit and ignored the card fee.
-                */}
                 {tax !== null && (
                     <div className="flex justify-between items-center text-sm">
                         <span className="text-gray-600">Tax <span className="text-gray-400">(for the state)</span></span>

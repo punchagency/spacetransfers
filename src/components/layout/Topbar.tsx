@@ -101,10 +101,6 @@ export const Topbar = ({ onOpenMenu }: { onOpenMenu?: () => void }) => {
 
   return (
     <header className="flex items-center justify-between px-4 md:px-6 py-3 md:py-4 bg-white border-b border-gray-200">
-      {/* Left slot intentionally empty. A global search box lived here with no
-          value, onChange or state — it was decoration. There is no cross-entity
-          search endpoint to wire it to, so it was removed rather than left
-          promising something it could not do. */}
       {/* On a phone this slot carries the way into the menu. */}
       <button
         onClick={onOpenMenu}

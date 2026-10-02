@@ -126,15 +126,6 @@ export const ProfileInfo = () => {
 
     setUploadingAvatar(true);
     try {
-      /**
-       * Uploaded as a file, not a base64 data URL.
-       *
-       * This previously read the image with FileReader and PATCHed the whole
-       * `data:` URL onto the profile, so the image was stored on the user
-       * document — and `authenticate` loads that document on every
-       * authenticated request. The server now resizes it, encodes WebP and
-       * puts it on Cloudinary, and only the URL is stored.
-       */
       const form = new FormData();
       form.append("file", file);
 

@@ -2,19 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { apiFetch } from "../../utils/api";
 
-/**
- * Partner job-assignment rules.
- *
- * Bound to `GET/PATCH /admin/settings/partner-assignment`. Two changes from the
- * previous static mockup:
- *
- *  - The "Price-Based" rule is gone. The server validates `assignmentRule`
- *    against `["nearest-region", "manual"]` and 400s anything else, so offering
- *    it could only ever produce an error.
- *  - The "Partner Onboarding Requirements" checklist is gone. It had no server
- *    counterpart at all — nothing read it and nothing stored it.
- */
-
 type AssignmentRule = "nearest-region" | "manual";
 
 const RULES: Array<{ id: AssignmentRule; label: string; desc: string }> = [
@@ -34,13 +21,6 @@ export const PartnerSettings = () => {
   const [assignmentRule, setAssignmentRule] = useState<AssignmentRule>("nearest-region");
   const [maxJobsEnabled, setMaxJobsEnabled] = useState(true);
   const [maxJobsValue, setMaxJobsValue] = useState("10");
-  /**
-   * The last limit the operator actually chose.
-   *
-   * Switching the limit off used to clear the field and switching it back on
-   * wrote "10" — so a partner limit of 25, toggled off and on, silently became
-   * 10. This remembers the real number so it comes back.
-   */
   const lastMaxJobsValue = useRef("10");
   /**
    * Deadlines per stage, per priority.

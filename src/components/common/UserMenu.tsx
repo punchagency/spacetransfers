@@ -9,11 +9,6 @@ export const UserMenu = () => {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  /**
-   * Subscribed rather than read once, so changing your profile picture updates
-   * the header immediately. This used to read localStorage during render, which
-   * meant a new avatar only appeared after a full page reload.
-   */
   const stored = useSyncExternalStore(subscribeToAuth, getUserSnapshot, () => null);
 
   // AuthUser carries an index signature, so its fields are `unknown` — narrowed

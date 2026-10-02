@@ -1,12 +1,5 @@
 import { clearAuth, getToken } from "./auth";
 
-/**
- * API base URL.
- *
- * Read from the environment so the same build works locally and in production —
- * this was previously hardcoded to localhost, which made every deployed build
- * call the operator's own machine. `.env.production` supplies the deployed value.
- */
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
 /**
@@ -62,13 +55,7 @@ async function apiFetchWithin(endpoint: string, options: RequestInit, timedOut: 
       console.warn(`[api] ${endpoint}: no answer in time`);
       throw Object.assign(new Error("This is taking longer than it should. Please try again in a moment."), { timeout: true });
     }
-    // A request the app cancelled on purpose (Stop, a timeout that retries) is
-    // not a lost connection: pass it through so callers can tell. It used to be
-    // swallowed into the message below.
     if (err instanceof DOMException && err.name === "AbortError") throw err;
-    // The detail is for whoever is debugging; the message is for the person
-    // using the app. It used to name the API address and ask them to check the
-    // backend was running.
     console.warn(`[api] ${endpoint}: no response from ${API_BASE_URL}`, err);
     throw Object.assign(
       new Error("Can't connect to Space Transfers right now. Check your internet connection and try again."),

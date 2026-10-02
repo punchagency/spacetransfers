@@ -39,9 +39,6 @@ export const OrdersStoreProvider = ({ children }: { children: ReactNode }) => {
     setRecords((prev) => {
       const next = { ...prev };
       for (const r of rows) {
-        // actualId (the raw ObjectId) is always set by the mapper; the second
-        // branch is a guard only. It used to strip a "#ORD-" prefix that no
-        // longer exists now that rows carry the canonical DTF-#### number.
         const key = r.actualId || r.id.toLowerCase();
         next[key] = { ...next[key], ...r };
       }

@@ -1,15 +1,6 @@
 import { StatCard } from './StatCard';
 import { type StatsGridProps } from '../../types/dashboard';
 
-/**
- * Renders skeletons while `cards` is undefined.
- *
- * This used to fall back to a hard-coded set — "24 orders, 1,847 completed,
- * $45,293 revenue" — which is what an admin saw both while loading and if the
- * request failed. Invented figures on a dashboard are worse than no figures:
- * they are indistinguishable from real ones, so a failed fetch looked like a
- * healthy business.
- */
 const Skeleton = () => (
   <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-200 animate-pulse">
     <div className="h-4 w-24 bg-gray-100 rounded" />

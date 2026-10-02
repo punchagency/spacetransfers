@@ -4,8 +4,6 @@ import toast from 'react-hot-toast';
 import { apiFetch } from '../../utils/api';
 import { REGIONS } from "../../utils/regions";
 
-
-
 const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
 export const AddPartnerModal = ({
@@ -26,7 +24,6 @@ export const AddPartnerModal = ({
   const [city, setCity] = useState('');
   const [stateCode, setStateCode] = useState('');
   const [postalCode, setPostalCode] = useState('');
-
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   /*
@@ -49,8 +46,6 @@ export const AddPartnerModal = ({
     if (stateCode.trim() && !/^[A-Z]{2}$/.test(stateCode.trim())) {
       errors.stateCode = 'Two-letter state code, e.g. CA';
     }
-
-
 
     return { errors, isValid: Object.keys(errors).length === 0 };
     // Only these three are validated now: name and email are required, and a
@@ -118,12 +113,6 @@ export const AddPartnerModal = ({
         }),
       });
 
-      /*
-       * Whether the invitation reached them decides whether this partner can do
-       * anything at all: the link in that email is the only way they can set a
-       * password. A failed send used to appear nowhere but the server log, so
-       * "Partner created" was shown for an account nobody could ever sign into.
-       */
       if (created?.invite && created.invite.sent === false) {
         toast.error(
           `Partner created, but the invitation email could not be sent (${created.invite.reason}). ` +
@@ -257,7 +246,6 @@ export const AddPartnerModal = ({
             </div>
             {errorFor('regions') && <p className="text-xs text-red-600">{errorFor('regions')}</p>}
           </div>
-
 
           {/*
             Collected because three systems silently degrade without it: the
