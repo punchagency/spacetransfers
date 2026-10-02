@@ -261,8 +261,8 @@ describe("Unknown customer state → assignment blocked", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Address update recalculates region correctly", () => {
-  // Simulates the logic in customer.controller.ts:updateAccount and
-  // printer.controller.ts:updatePrinterProfile — both call getRegionFromState(newState)
+  // Simulates the logic in the customer account update and
+  // the printer profile update — both call getRegionFromState(newState)
 
   it("Customer moves TX→NY: region changes South→Northeast", () => {
     let region = getRegionFromState("TX");
@@ -356,7 +356,7 @@ describe("Address update recalculates region correctly", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Admin manual assignment — region validation", () => {
-  // Mirrors the logic in admin.controller.ts:assignOrder
+  // Mirrors the logic in the admin's assignOrder
 
   const computeAdminRegionCheck = (
     orderState: string,

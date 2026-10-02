@@ -11,6 +11,9 @@ export type ShippingCostSource = "label" | "quote" | "at-cost";
 
 export interface OrderFinancials {
   customerPaid: number;
+  cancelled: boolean;
+  /** Returned to the customer when the order was cancelled. */
+  refunded: number;
   /** Collected for the state; not the business's money. */
   tax: number;
   shippingCharged: number;
@@ -48,13 +51,23 @@ export const computeOrderFinancials = (order: any, partnerPayRate: any): OrderFi
   const breakdown = derivable ? getOrderPartnerCostBreakdown(order, partnerPayRate) : null;
   const partnerCost = breakdown ? round2(breakdown.subtotal) : null;
 
-  const profit =
-    partnerCost === null
+  /*
+   * A cancelled order is not printed or shipped and its partner is not paid.
+   * What was refunded is gone; what is left is the card fee, which Stripe keeps.
+   */
+  const cancelled = String(order?.status || "").toUpperCase() === "CANCELLED";
+  const refunded = round2(num(order?.payment?.refundedAmount) ?? 0);
+
+  const profit = cancelled
+    ? round2(-(processingFee ?? 0))
+    : partnerCost === null
       ? null
       : round2(customerPaid - tax - shipping.cost - partnerCost - (processingFee ?? 0));
 
   return {
     customerPaid,
+    cancelled,
+    refunded,
     tax,
     shippingCharged,
     shippingCost: shipping.cost,

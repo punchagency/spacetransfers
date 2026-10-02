@@ -27,7 +27,7 @@ import {
   getPricingConfig,
   sendGangsheetUtilizationWarning,
   downloadInvoice
-} from "../controllers/customer.controller.js";
+} from "../controllers/customer/index.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload } from "../middleware/upload.js";
 

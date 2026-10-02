@@ -11,7 +11,7 @@ import PDFDocument from "pdfkit";
  * into a denial of service for every user of the API.
  *
  * pdfkit was already a dependency and already renders the gang-sheet PDFs in
- * `printer.controller`, so this uses the library the codebase had settled on
+ * the printer controllers, so this uses the library the codebase had settled on
  * rather than introducing another one. It draws synchronously in-process: no
  * headless browser, no binary, nothing that can fail out-of-band.
  */
@@ -47,6 +47,8 @@ export interface InvoiceData {
     total: string | number;
     currency: string;
   };
+  /** Shown under the total, e.g. a cancellation and refund. */
+  note?: string;
 }
 
 const INK = "#333333";
@@ -165,6 +167,12 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
     width: COL_W.sub,
     align: "right",
   });
+
+  if (data.note) {
+    y += 28;
+    doc.fontSize(10).font("Helvetica-Bold").fillColor(INK);
+    doc.text(data.note, 50, y, { width: doc.page.width - 100, align: "right" });
+  }
 
   // ── Footer ────────────────────────────────────────────────────────────────
   doc.fontSize(9).font("Helvetica").fillColor(MUTED);

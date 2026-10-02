@@ -66,3 +66,15 @@ export const orderChargeLines = (order: any): ChargeLine[] => {
   }
   return lines;
 };
+
+/** "Cancelled. $28.24 refunded on October 2, 2026." for a cancelled order, else null. */
+export const orderRefundNote = (order: any): string | null => {
+  if (String(order?.status || "").toUpperCase() !== "CANCELLED") return null;
+  const amount = Number(order?.payment?.refundedAmount) || 0;
+  if (amount <= 0) return "Cancelled. No payment was taken.";
+  const at = order?.payment?.refundedAt ? new Date(order.payment.refundedAt) : null;
+  const when = at && !Number.isNaN(at.getTime())
+    ? ` on ${at.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`
+    : "";
+  return `Cancelled. $${amount.toFixed(2)} refunded${when}.`;
+};

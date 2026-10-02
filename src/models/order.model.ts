@@ -92,6 +92,10 @@ export interface IOrder extends Document {
     paymentIntentId?: string;
     /** Stripe's fee for this payment, in the order's currency. */
     processingFee?: number;
+    /** Set when the order was cancelled and its payment refunded. */
+    refundId?: string;
+    refundedAmount?: number;
+    refundedAt?: Date;
   };
   pricing: {
     subtotal?: number;
@@ -123,6 +127,8 @@ export interface IOrder extends Document {
   assignedAt?: Date | null;
   assignmentDeadline?: Date | null;
   returnedAt?: Date;
+  /** Who cancelled the order, when and why. */
+  cancellation?: { reason: string; at: Date; byId?: string; byName?: string };
   cancelledByPrinterId?: mongoose.Types.ObjectId;
   cancelledByPrinterName?: string;
   // ShipStation fulfillment
@@ -289,7 +295,10 @@ const orderSchema = new Schema<IOrder>(
       cardBrand: { type: String },
       paymentIntentId: { type: String },
       // Stripe's actual fee (its balance transaction), so profit is after fees.
-      processingFee: { type: Number }
+      processingFee: { type: Number },
+      refundId: { type: String },
+      refundedAmount: { type: Number },
+      refundedAt: { type: Date }
     },
     pricing: {
       subtotal: { type: Number },
@@ -368,6 +377,11 @@ const orderSchema = new Schema<IOrder>(
     assignedAt: { type: Date, default: null },
     assignmentDeadline: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
+    cancellation: {
+      type: { reason: String, at: Date, byId: String, byName: String },
+      default: undefined,
+      _id: false,
+    },
     cancelledByPrinterId: { type: Schema.Types.ObjectId, ref: "User", default: null },
     cancelledByPrinterName: { type: String, default: null },
     shipStationOrderId: { type: String, default: null },

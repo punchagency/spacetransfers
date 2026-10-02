@@ -17,7 +17,7 @@ const body = (src: string, name: string) => {
 
 describe("cart quote and charge are priced the same way", () => {
   it("both go through priceItems", async () => {
-    const customer = await readFile("src/controllers/customer.controller.ts", "utf8");
+    const customer = await readFile("src/controllers/customer/cart.controller.ts", "utf8");
     const payments = await readFile("src/controllers/payments.controller.ts", "utf8");
 
     const quote = body(customer, "getCartQuote");

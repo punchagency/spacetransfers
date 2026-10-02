@@ -33,7 +33,7 @@ import {
   markAllPrinterNotificationsRead,
   getAvailabilityStatus,
   updateAvailabilityStatus,
-} from "../controllers/printer.controller.js";
+} from "../controllers/printer/index.js";
 import { upload } from "../middleware/upload.js";
 
 const router = express.Router();

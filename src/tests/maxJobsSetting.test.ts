@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
  * the limit off and on again came back to 10 rather than the 25 they had set —
  * silently changing every partner's capacity. These pin both halves of the
  * round trip, mirroring `updatePartnerAssignmentSettings` and
- * `getPartnerAssignmentSettings` in admin.controller.ts.
+ * `getPartnerAssignmentSettings` in the admin settings controller.
  */
 
 /** What the PATCH stores, given what is already stored and what was sent. */

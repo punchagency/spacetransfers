@@ -32,8 +32,11 @@ describe("partner status rules", () => {
     refused("PRINTING", "NONSENSE");
   });
 
-  it("allows cancelling and repeating the current status", () => {
-    ok("PRINTING", "CANCELLED");
+  it("never lets a partner cancel the customer's order", () => {
+    for (const from of ["PROCESSING", "PRINTING", "QUALITY_CHECK"]) refused(from, "CANCELLED");
+  });
+
+  it("allows repeating the current status", () => {
     ok("QUALITY_CHECK", "QUALITY_CHECK");
   });
 });

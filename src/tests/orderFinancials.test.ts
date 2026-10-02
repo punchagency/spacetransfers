@@ -46,6 +46,17 @@ describe("order financials", () => {
     assert.equal(f.profit, null);
   });
 
+  it("counts a cancelled, refunded order as a loss of the card fee only", () => {
+    const f = computeOrderFinancials(
+      order({ status: "CANCELLED", payment: { method: "card", processingFee: 1.12, refundedAmount: 28.24 } }),
+      RATE,
+    );
+    assert.equal(f.refunded, 28.24);
+    assert.equal(f.profit, -1.12);
+    // Cancelled without any payment to refund: nothing gained, nothing lost.
+    assert.equal(computeOrderFinancials(order({ status: "CANCELLED", payment: { method: "card" } }), RATE).profit, 0);
+  });
+
   it("reads Stripe's fee from the charge's balance transaction, in dollars", () => {
     assert.equal(stripeFeeOf({ balance_transaction: { fee: 112 } }), 1.12);
     // Not settled yet: an id string, not an object — unknown, not zero.

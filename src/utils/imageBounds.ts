@@ -22,7 +22,7 @@
  *    limit is only safe alongside an explicit one, which `MAX_IMAGE_PIXELS`
  *    supplies; the upload path enforces it once dimensions are known.
  *
- * `fetchImageBuffer` in the customer controller is the single caller of the
+ * `fetchImageBuffer` in the customer controllers is the single caller of the
  * decode helpers, so guarding it covers every downstream operation — trim,
  * upscale, fade check, AI edit, gangsheet export — rather than each having to
  * guard itself.
