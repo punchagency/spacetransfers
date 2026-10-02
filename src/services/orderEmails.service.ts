@@ -95,3 +95,33 @@ export const sendOrderConfirmationEmail = async (order: any): Promise<EmailResul
     return null;
   }
 };
+
+/** Tells the customer their order was cancelled and what was refunded. Never throws. */
+export const sendOrderCancelledEmail = async (
+  order: any,
+  refundAmount: number,
+  reason: string,
+): Promise<EmailResult | null> => {
+  const to = String(order?.customer?.email || "").trim();
+  if (!to) return null;
+  const number = String(order?.displayId || order?._id || "");
+  const currency = String(order?.pricing?.currency || "USD");
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111827; max-width: 560px;">
+      <h2 style="margin: 0 0 8px 0;">Your order ${esc(number)} was cancelled</h2>
+      <p style="margin: 0 0 12px 0;">${esc(reason)}</p>
+      <p style="margin: 0 0 12px 0;">${
+        refundAmount > 0
+          ? `We've refunded <strong>${usd(refundAmount, currency)}</strong> to the card you paid with. It usually shows within 5 to 10 business days.`
+          : "No payment was taken for this order, so there is nothing to refund."
+      }</p>
+      <p style="margin: 0; font-size: 12px; color: #6b7280;">Your gang sheet is still saved in your account if you want to order it again.</p>
+    </div>
+  `;
+  try {
+    return await sendEmail({ to, subject: `Your Space Transfers order ${number} was cancelled`, html });
+  } catch (err: any) {
+    console.warn(`[ORDER_EMAIL] order ${number} cancellation email failed: ${err?.message}`);
+    return null;
+  }
+};

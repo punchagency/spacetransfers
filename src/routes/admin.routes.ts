@@ -38,7 +38,8 @@ import {
   updatePartnerAssignmentSettings,
   getAdminNotificationSettings,
   updateAdminNotificationSettings,
-} from "../controllers/admin.controller.js";
+  cancelOrder,
+} from "../controllers/admin/index.js";
 
 const router = express.Router();
 
@@ -66,6 +67,7 @@ router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/gangsheet/preview", getOrderGangsheetPreview);
 router.post("/orders/:orderId/assign", assignOrder);
+router.post("/orders/:orderId/cancel", cancelOrder);
 router.get("/orders/:orderId/invoice", downloadOrderInvoice);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 

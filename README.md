@@ -52,13 +52,17 @@ The API will not start without `MONGO_URI` and `JWT_SECRET`. Everything else deg
 
 ## Layout
 
-```
+```ts
 src/
   server.ts        Starts the API and the background jobs
   app.ts           Express app: CORS, body limits, routes, error handling
   config/          Environment and legal document versions
   routes/          URL to handler mapping, one file per audience
-  controllers/     Request handlers: customer, printer, admin, auth, payouts, webhooks
+  controllers/     Request handlers
+    customer/        assets, aiEdit, designs, cart, orders
+    printer/         dashboard, jobs, files, earnings, account, notifications
+    admin/           dashboard, orders, partners, settings, account, notifications
+    *.controller.ts  auth, payments, payouts, webhooks, geocoding, health
   services/        Business logic: pricing, payments, shipping, export, email, notifications
   models/          Mongoose schemas
   middleware/      Authentication, rate limits, uploads
@@ -81,7 +85,7 @@ All routes are served under `/api`: `/auth`, `/customer`, `/printer`, `/admin`, 
 | `COMPLETED` | Completed | Completed | Completed |
 | `CANCELLED` | Cancelled | Cancelled | Cancelled |
 
-Partners can only move a job forward. `SHIPPED` needs a shipping label, and `COMPLETED` is set only when the carrier confirms delivery, because it makes the job payable. The rules are in `utils/partnerStatusRules.ts`.
+Partners can only move a job forward, and they cannot cancel an order: a partner who can't do a job hands it back to the queue to be reassigned. `SHIPPED` needs a shipping label, and `COMPLETED` is set only when the carrier confirms delivery, because it makes the job payable. The rules are in `utils/partnerStatusRules.ts`.
 
 ## Money
 
@@ -89,6 +93,8 @@ Partners can only move a job forward. `SHIPPED` needs a shipping label, and `COM
 - **Checkout** shows the server's quote, and the card is charged by the same calculation.
 - **Order lines** on the invoice, the order details and the confirmation email come from one helper (`utils/orderPresentation.ts`).
 - **Admin profit** is what the customer paid, less tax, shipping cost, partner cost and the Stripe fee (`services/orderFinancials.service.ts`).
+- **Cancelling an order** is an admin action, allowed until the order ships. The payment is refunded in full through Stripe first, and the order is cancelled only once the refund is accepted (`services/orderCancellation.service.ts`). The customer is emailed and the partner is told to stop.
+- **Placing an order** checks the request and builds each item in `services/orderCreation.service.ts`; the `createOrder` handler prices shipping, verifies the payment, saves and runs the follow-ups.
 - **Payouts** gather a partner's shipped, unpaid jobs. A payout must be approved and then paid by an admin (`/payouts/admin/*`); the weekly scheduler only creates payouts for review.
 - **Partner pay** is a per-square-foot rate plus a rush percentage (`services/partnerEarnings.service.ts`).
 

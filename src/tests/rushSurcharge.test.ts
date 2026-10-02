@@ -104,11 +104,13 @@ describe("priority is fixed at checkout", () => {
     // read as *higher* margin. Assignment overwrote it by default. And a
     // partner could mark their own job urgent, raising their own payout 10%
     // with no approval and no audit trail.
-    const { readFile } = await import("node:fs/promises");
+    const { readFile, readdir } = await import("node:fs/promises");
+    const controllersIn = async (dir: string) =>
+      (await readdir(dir)).filter((f) => f.endsWith(".ts")).map((f) => `${dir}/${f}`);
 
     for (const file of [
-      "src/controllers/admin.controller.ts",
-      "src/controllers/printer.controller.ts",
+      ...(await controllersIn("src/controllers/admin")),
+      ...(await controllersIn("src/controllers/printer")),
       "src/routes/admin.routes.ts",
       "src/routes/printer.routes.ts",
     ]) {
@@ -118,13 +120,13 @@ describe("priority is fixed at checkout", () => {
     }
 
     // Order creation remains the one writer.
-    const creation = await readFile("src/controllers/customer.controller.ts", "utf8");
+    const creation = await readFile("src/controllers/customer/orders.controller.ts", "utf8");
     assert.match(creation, /priorityForShippingMethod\(shippingMethod\)/);
   });
 
   it("assignment does not carry a priority", async () => {
     const { readFile } = await import("node:fs/promises");
-    const src = await readFile("src/controllers/admin.controller.ts", "utf8");
+    const src = await readFile("src/controllers/admin/orders.controller.ts", "utf8");
     const assign = src.slice(src.indexOf("export const assignOrder"), src.indexOf("export const assignOrder") + 6000);
     assert.ok(!/order\.priority\s*=/.test(assign), "assignOrder writes priority again");
   });

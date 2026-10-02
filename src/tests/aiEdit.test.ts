@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 
-import { buildEditRequest } from "../controllers/customer.controller.js";
+import { buildEditRequest } from "../controllers/customer/aiEdit.controller.js";
 import { conformToSource, readSourceGeometry } from "../utils/generativeImage.js";
 import { PLANNABLE_INTENTS } from "../services/gemini.service.js";
 

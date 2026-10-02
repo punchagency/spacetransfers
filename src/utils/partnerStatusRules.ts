@@ -1,7 +1,7 @@
 /**
  * Which status moves a print partner may make.
  *
- * Forward-only. Cancelling is always allowed. COMPLETED means delivered and
+ * Forward-only. Partners cannot cancel an order. COMPLETED means delivered and
  * makes the job payable, so only the carrier's delivery confirmation sets it.
  * SHIPPED needs the job's shipping label to exist.
  */
@@ -17,7 +17,9 @@ const RANK: Record<string, number> = {
 /** Why the move is refused, or null when it is allowed. */
 export const partnerTransitionError = (current: string, next: string, hasLabel: boolean): string | null => {
   if (next === current) return null;
-  if (next === "CANCELLED") return null;
+  // A partner hands a job back to the queue (the cancel endpoint); cancelling
+  // the customer's order, with its refund, is the admin's call.
+  if (next === "CANCELLED") return "Use Cancel Job to hand this job back. Only Space Transfers can cancel an order.";
   const from = RANK[current] ?? -1;
   const to = RANK[next] ?? -1;
   if (current === "COMPLETED" || from < 0 || to < 0 || to <= from) {
