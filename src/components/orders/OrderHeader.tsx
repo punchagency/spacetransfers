@@ -13,6 +13,8 @@ interface OrderHeaderProps {
     status: string;
     /** What the customer paid, shown in the cancel confirmation. */
     amountPaid?: number;
+    /** Set when a partner has started the job, so they can be paid for it on cancel. */
+    partnerPay?: { partnerName: string; amount: number | null } | null;
     /** Called after the order is cancelled, to reload it. */
     onCancelled?: () => void;
 }
@@ -20,11 +22,13 @@ interface OrderHeaderProps {
 /** An order can be cancelled until it ships. */
 const CANCELLABLE = ['PENDING', 'PROCESSING', 'PRINTING', 'QUALITY_CHECK'];
 
-export const OrderHeader = ({ orderId, displayId, status, amountPaid, onCancelled }: OrderHeaderProps) => {
+export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay, onCancelled }: OrderHeaderProps) => {
     const navigate = useNavigate();
     const [asking, setAsking] = useState(false);
     const [reason, setReason] = useState('');
     const [busy, setBusy] = useState(false);
+    // Ticked by default: a cancellation is the business's decision, not the partner's fault.
+    const [payPartner, setPayPartner] = useState(true);
     const number = formatOrderNumber(displayId, orderId);
     const started = status === 'PRINTING' || status === 'QUALITY_CHECK';
 
@@ -33,11 +37,11 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, onCancelle
         try {
             const res = await apiFetch(`/admin/orders/${encodeURIComponent(orderId)}/cancel`, {
                 method: 'POST',
-                body: JSON.stringify({ reason: reason.trim() }),
+                body: JSON.stringify({ reason: reason.trim(), payPartner: Boolean(partnerPay) && payPartner }),
             });
             toast.success(
                 res?.refunded
-                    ? `Order cancelled and $${Number(res.refundAmount).toFixed(2)} refunded`
+                    ? `Order cancelled and $${Number(res.refundAmount).toFixed(2)} refunded${res?.partnerPaid ? '. The partner will be paid for this job.' : ''}`
                     : `Order cancelled. ${res?.noRefundReason || ''}`,
                 { duration: 7000 },
             );
@@ -92,11 +96,28 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, onCancelle
                             {typeof amountPaid === 'number' ? ` $${amountPaid.toFixed(2)}` : ' in full'} to their card and
                             told by email. This can't be undone.
                         </p>
-                        {started && (
-                            <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                                The partner has already started this job. They'll be told to stop, and they aren't paid
-                                for a cancelled order.
-                            </p>
+                        {started && partnerPay && (
+                            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                                <p>{partnerPay.partnerName} has already started this job. They'll be told to stop.</p>
+                                <label htmlFor="order-cancel-pay-partner" className="mt-2 flex cursor-pointer items-start gap-2 font-medium">
+                                    <input
+                                        id="order-cancel-pay-partner"
+                                        type="checkbox"
+                                        checked={payPartner}
+                                        onChange={(e) => setPayPartner(e.target.checked)}
+                                        className="mt-0.5 h-4 w-4"
+                                    />
+                                    <span>
+                                        Pay the partner for this job anyway
+                                        {partnerPay.amount !== null ? ` ($${partnerPay.amount.toFixed(2)})` : ''}
+                                    </span>
+                                </label>
+                                <p className="mt-1 pl-6 text-xs text-amber-800">
+                                    {payPartner
+                                        ? 'It joins their next payout, as if the job had shipped.'
+                                        : "They won't be paid anything for the work done so far."}
+                                </p>
+                            </div>
                         )}
                         <label htmlFor="order-cancel-reason" className="mt-4 block text-sm font-medium text-gray-700">
                             Reason (the customer sees this)

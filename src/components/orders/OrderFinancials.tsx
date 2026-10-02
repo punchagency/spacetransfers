@@ -12,6 +12,8 @@ interface OrderFinancialsProps {
             /** True once the order is cancelled; `refunded` is what went back to the customer. */
             cancelled?: boolean;
             refunded?: number;
+            /** The order was cancelled but the partner is still paid for it. */
+            partnerPaidOnCancel?: boolean;
             /** Collected for the state; not the business's money. */
             tax?: number;
             shippingCharged?: number;
@@ -116,9 +118,9 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                         <span className="font-medium text-gray-900">{minus(f?.refunded ?? 0)}</span>
                     </div>
                 )}
-                {!cancelled && (
+                {(!cancelled || f?.partnerPaidOnCancel) && (
                 <div className="flex justify-between items-center text-sm">
-                    <span className="text-gray-600">Partner Cost</span>
+                    <span className="text-gray-600">{cancelled ? 'Partner paid for work started' : 'Partner Cost'}</span>
                     <span
                         className={`font-medium ${partnerCost === null ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
                         title={partnerCost === null ? f?.unavailableReason : undefined}

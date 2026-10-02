@@ -142,6 +142,11 @@ export const OrderDetails = () => {
           displayId={order.displayId}
           status={order.status}
           amountPaid={order.financials?.customerPaid}
+          partnerPay={
+            order.financials?.canPayPartnerOnCancel && order.assignedPartner
+              ? { partnerName: order.assignedPartner.name || 'The partner', amount: order.financials?.partnerCost ?? null }
+              : null
+          }
           onCancelled={() => {
             apiFetch(`/admin/orders/${id}`).then((data) => setOrder(data)).catch(() => {});
           }}
