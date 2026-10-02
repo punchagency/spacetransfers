@@ -5,7 +5,7 @@ import { printerStatusLabel } from "../../utils/orderStatusLabels.js";
 import { getPartnerPayRate } from "../../services/pricing.service.js";
 import { Order } from "../../models/order.model.js";
 import mongoose from "mongoose";
-import { calculateOrderPartnerEarning, getOrderCompletionDate } from "../../services/partnerEarnings.service.js";
+import { calculateOrderPartnerEarning, getOrderCompletionDate, payableOrderFilter } from "../../services/partnerEarnings.service.js";
 import { getAssignmentSettings, ACTIVE_ORDER_STATUSES } from "../../services/partnerCapacity.service.js";
 
 /** "Accept by" / "Print by" for a job, from the same clock the SLA enforces. */
@@ -66,9 +66,9 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
      */
     const finishedOrders = await Order.find({
       assignedPrinter: printerId,
-      status: { $in: ["SHIPPED", "COMPLETED"] },
+      ...payableOrderFilter(),
     })
-      .select("items pricing priority statusTimeline updatedAt")
+      .select("items pricing priority status statusTimeline updatedAt cancellation")
       .lean();
 
     const finishedInPeriod = finishedOrders.filter((o) => {
@@ -83,13 +83,16 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
      * "Total Earned", not "Total Revenue": revenue is what the company takes,
      * and this is a partner's own page.
      */
-    const allActiveOrders = await Order.find({
+    // Earned means shipped: a partner is paid for a job once it ships. Jobs
+    // still in progress are shown separately as expected, not as earned.
+    const totalEarned = sumEarnings(finishedOrders);
+    const inProgressOrders = await Order.find({
       assignedPrinter: printerId,
-      status: { $nin: ["CANCELLED"] },
+      status: { $in: ["PROCESSING", "PRINTING", "QUALITY_CHECK"] },
     })
       .select("items pricing priority")
       .lean();
-    const totalEarned = sumEarnings(allActiveOrders);
+    const expectedEarnings = sumEarnings(inProgressOrders);
 
     // Counted, not derived from the capped list below.
     const [totalPendingCount, assignedTotal, urgentTotal] = await Promise.all([
@@ -202,7 +205,11 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
         {
           label: "Total Earned",
           value: fmtMoney(totalEarned),
-          note: `All time, across ${allActiveOrders.length} job${allActiveOrders.length === 1 ? "" : "s"}`,
+          note:
+            `All time, from ${finishedOrders.length} shipped job${finishedOrders.length === 1 ? "" : "s"}` +
+            (inProgressOrders.length
+              ? `. ${fmtMoney(expectedEarnings)} more expected from ${inProgressOrders.length} in progress`
+              : ""),
           scoped: false,
         },
       ],

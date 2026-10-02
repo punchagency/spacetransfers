@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { publishOrderEvent } from "../../services/orderSyncHub.js";
-import { cancelOrderWithRefund } from "../../services/orderCancellation.service.js";
+import { canPayPartnerOnCancel, cancelOrderWithRefund } from "../../services/orderCancellation.service.js";
 import { sendOrderCancelledEmail } from "../../services/orderEmails.service.js";
 import { describeTimelineMessage } from "../../utils/orderStatusLabels.js";
 import { computeOrderFinancials } from "../../services/orderFinancials.service.js";
@@ -597,6 +597,8 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         customerPaid: money.customerPaid,
         cancelled: money.cancelled,
         refunded: money.refunded,
+        partnerPaidOnCancel: money.partnerPaidOnCancel,
+        canPayPartnerOnCancel: canPayPartnerOnCancel(order),
         // What the business does not keep, listed so the profit below adds up.
         tax: money.tax,
         shippingCharged: money.shippingCharged,
@@ -893,6 +895,8 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
       order,
       { id: String(req.user?.id || ""), name: String((admin as any)?.name || (admin as any)?.email || "Admin") },
       reason,
+      undefined,
+      { payPartner: req.body?.payPartner === true },
     );
 
     const displayId = String((order as any).displayId || orderId);
@@ -905,7 +909,9 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
         category: "jobs",
         priority: "high",
         title: "Order cancelled",
-        message: `Order ${displayId} was cancelled by Space Transfers. Please stop work on it.`,
+        message: result.partnerPaid
+          ? `Order ${displayId} was cancelled by Space Transfers. Please stop work on it. You'll still be paid for this job.`
+          : `Order ${displayId} was cancelled by Space Transfers. Please stop work on it.`,
         meta: { orderId, status: "CANCELLED" },
         settingsKey: "orderUpdates",
       }).catch(() => {});

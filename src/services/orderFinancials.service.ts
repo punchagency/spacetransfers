@@ -14,6 +14,8 @@ export interface OrderFinancials {
   cancelled: boolean;
   /** Returned to the customer when the order was cancelled. */
   refunded: number;
+  /** The order was cancelled but the partner is paid for the work they had started. */
+  partnerPaidOnCancel: boolean;
   /** Collected for the state; not the business's money. */
   tax: number;
   shippingCharged: number;
@@ -58,8 +60,10 @@ export const computeOrderFinancials = (order: any, partnerPayRate: any): OrderFi
   const cancelled = String(order?.status || "").toUpperCase() === "CANCELLED";
   const refunded = round2(num(order?.payment?.refundedAmount) ?? 0);
 
+  const partnerPaidOnCancel = cancelled && order?.cancellation?.partnerPaid === true;
+
   const profit = cancelled
-    ? round2(-(processingFee ?? 0))
+    ? round2(-(processingFee ?? 0) - (partnerPaidOnCancel ? partnerCost ?? 0 : 0))
     : partnerCost === null
       ? null
       : round2(customerPaid - tax - shipping.cost - partnerCost - (processingFee ?? 0));
@@ -68,6 +72,7 @@ export const computeOrderFinancials = (order: any, partnerPayRate: any): OrderFi
     customerPaid,
     cancelled,
     refunded,
+    partnerPaidOnCancel,
     tax,
     shippingCharged,
     shippingCost: shipping.cost,

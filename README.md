@@ -93,7 +93,7 @@ Partners can only move a job forward, and they cannot cancel an order: a partner
 - **Checkout** shows the server's quote, and the card is charged by the same calculation.
 - **Order lines** on the invoice, the order details and the confirmation email come from one helper (`utils/orderPresentation.ts`).
 - **Admin profit** is what the customer paid, less tax, shipping cost, partner cost and the Stripe fee (`services/orderFinancials.service.ts`).
-- **Cancelling an order** is an admin action, allowed until the order ships. The payment is refunded in full through Stripe first, and the order is cancelled only once the refund is accepted (`services/orderCancellation.service.ts`). The customer is emailed and the partner is told to stop.
+- **Cancelling an order** is an admin action, allowed until the order ships. The payment is refunded in full through Stripe first, and the order is cancelled only once the refund is accepted (`services/orderCancellation.service.ts`). The customer is emailed and the partner is told to stop. If the partner had already started the job, the admin can choose to pay them for it anyway; the job then counts as payable like a shipped one (`payableOrderFilter` in `services/partnerEarnings.service.ts`).
 - **Placing an order** checks the request and builds each item in `services/orderCreation.service.ts`; the `createOrder` handler prices shipping, verifies the payment, saves and runs the follow-ups.
 - **Payouts** gather a partner's shipped, unpaid jobs. A payout must be approved and then paid by an admin (`/payouts/admin/*`); the weekly scheduler only creates payouts for review.
 - **Partner pay** is a per-square-foot rate plus a rush percentage (`services/partnerEarnings.service.ts`).
@@ -109,7 +109,7 @@ Started by `server.ts` in every environment except tests:
 | Payment check | Every 10 minutes, reports any card payment that has no order to the admins |
 | Tracking poller | Marks shipped orders completed when the carrier confirms delivery |
 | SLA monitor | Reassigns or escalates late jobs; off until enabled in the admin console |
-| Payout scheduler | Each Friday, puts partners' shipped, unpaid jobs into payouts for an admin to review |
+| Payout scheduler | Each Friday, puts partners' payable, unpaid jobs into payouts for an admin to review. It never sends money |
 | Notification email batches | Sends queued admin notification emails |
 
 ## Scripts

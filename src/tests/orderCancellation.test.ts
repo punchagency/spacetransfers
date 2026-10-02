@@ -31,7 +31,7 @@ describe("cancelling an order", () => {
     const { d, saved, refunds } = deps();
     const result = await cancelOrderWithRefund(order(), ACTOR, "Customer asked", d);
     assert.deepEqual(refunds, ["pi_1"]);
-    assert.deepEqual(result, { refunded: true, refundAmount: 28.24, refundId: "re_1", noRefundReason: null });
+    assert.deepEqual(result, { refunded: true, refundAmount: 28.24, refundId: "re_1", noRefundReason: null, partnerPaid: false });
     assert.equal(saved[0].$set.status, "CANCELLED");
     assert.equal(saved[0].$set["payment.refundedAmount"], 28.24);
     assert.match(saved[0].$push.statusTimeline.message, /Cancelled and refunded \$28\.24: Customer asked/);
@@ -49,6 +49,22 @@ describe("cancelling an order", () => {
     assert.equal(refunds.length, 0);
     assert.equal(result.refunded, false);
     assert.equal(saved[0].$set.status, "CANCELLED");
+  });
+
+  it("pays the partner only when asked, and only for a job they had started", async () => {
+    const started = order({ status: "PRINTING", assignedPrinter: "p1" });
+    const a = deps();
+    const paid = await cancelOrderWithRefund(started, ACTOR, "Customer changed their mind", a.d, { payPartner: true });
+    assert.equal(paid.partnerPaid, true);
+    assert.equal(a.saved[0].$set.cancellation.partnerPaid, true);
+    assert.match(a.saved[0].$push.statusTimeline.message, /partner is still paid/);
+
+    const b = deps();
+    assert.equal((await cancelOrderWithRefund(started, ACTOR, "x", b.d)).partnerPaid, false);
+    // Not started (or nobody assigned): there is no work to pay for.
+    const c = deps();
+    const notStarted = order({ status: "PROCESSING", assignedPrinter: "p1" });
+    assert.equal((await cancelOrderWithRefund(notStarted, ACTOR, "x", c.d, { payPartner: true })).partnerPaid, false);
   });
 
   it("needs a reason, and refuses shipped orders", async () => {

@@ -50,7 +50,24 @@ const roundMoney = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
  * that gates real payouts, rather than a second copy that could drift.
  */
 export const isPartnerEarningRealized = (order: any): boolean =>
-  (PAYOUT_ELIGIBLE_ORDER_STATUSES as readonly string[]).includes(String(order?.status || ""));
+  (PAYOUT_ELIGIBLE_ORDER_STATUSES as readonly string[]).includes(String(order?.status || "")) ||
+  isCancelledButPaid(order);
+
+/** An order the admin cancelled after work began, choosing to pay the partner anyway. */
+export const isCancelledButPaid = (order: any): boolean =>
+  String(order?.status || "") === "CANCELLED" && order?.cancellation?.partnerPaid === true;
+
+/**
+ * The orders a partner is paid for: shipped or delivered, plus any cancelled
+ * job the admin chose to pay. Every earnings and payout query uses this, so
+ * the screens cannot disagree about what is owed.
+ */
+export const payableOrderFilter = () => ({
+  $or: [
+    { status: { $in: [...PAYOUT_ELIGIBLE_ORDER_STATUSES] } },
+    { status: "CANCELLED", "cancellation.partnerPaid": true },
+  ],
+});
 
 export const canDerivePartnerEarning = (order: any): boolean => {
   const items = Array.isArray(order?.items) ? order.items : [];
@@ -100,6 +117,7 @@ export const getOrderCompletionDate = (order: any): Date | null => {
     .reverse()
     .find((e: any) => e?.status === "COMPLETED" || e?.status === "SHIPPED");
   if (done?.time) return new Date(done.time);
+  if (isCancelledButPaid(order) && order.cancellation?.at) return new Date(order.cancellation.at);
   return order?.updatedAt ? new Date(order.updatedAt) : null;
 };
 
@@ -149,9 +167,9 @@ export const getEligibleJobsForPrinter = async (
 
   const orders = await Order.find({
     assignedPrinter: new mongoose.Types.ObjectId(String(printerId)),
-    status: { $in: PAYOUT_ELIGIBLE_ORDER_STATUSES as any },
+    ...payableOrderFilter(),
   })
-    .select("displayId items pricing priority status statusTimeline customer updatedAt createdAt")
+    .select("displayId items pricing priority status statusTimeline customer updatedAt createdAt cancellation")
     .sort({ updatedAt: -1 })
     .lean();
 
