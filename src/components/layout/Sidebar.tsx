@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { MdClose } from "react-icons/md";
 import {
+  AiOutlineBank,
   AiOutlineDollar,
   AiOutlineUser,
   AiOutlineSetting,
@@ -17,6 +18,7 @@ const nav = [
   },
   { label: "Approvals", icon: AiOutlineCheckCircle, path: "/printer-approvals" },
   { label: "Earnings", icon: AiOutlineDollar, path: "/earnings" },
+  { label: "Payouts", icon: AiOutlineBank, path: "/payouts" },
 ];
 
 const bottomNav = [

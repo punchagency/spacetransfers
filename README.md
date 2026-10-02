@@ -11,6 +11,7 @@ It talks to the API in `space-transfer-server`. Customers use `space-transfers`,
 - **Fulfilment Partners.** The partner list, each partner's details and performance, and manual order assignment.
 - **Approvals.** Approve or reject partners who signed up in the printer portal.
 - **Earnings.** Revenue, partner cost, margin and what has been earned, with revenue by region.
+- **Payouts.** What each partner is owed for shipped jobs. Create a payout, review its jobs, approve or reject it, then pay it through Stripe Connect. Nothing is paid without an admin approving and then paying it. Payouts can be paused per partner and exported as CSV.
 - **Settings.** Retail price, sheet size, shipping rates, tax, the rush fee, partner pay, the assignment rule, partner job limits and the SLA.
 - **Notifications.** Live alerts for new orders, partner sign-ups and problems such as a payment with no order.
 
@@ -53,7 +54,7 @@ node scripts/create-admin.mjs "Full Name" email@company.com
 
 ## Layout
 
-```
+```ts
 src/
   pages/        One file per screen
   components/   Grouped by screen: orders, partners, earnings, settings, layout
@@ -65,5 +66,6 @@ src/
 ## Things worth knowing
 
 - **Profit** is what the customer paid, less tax, shipping cost, partner cost and the Stripe fee. It is marked "est." until the order ships, because partners are paid on shipment.
+- **Payouts** move in steps: Awaiting review, Approved, Paying, Paid (or Rejected, or Failed and retried). A rejected payout frees its jobs for a new one.
 - **Status labels** are the admin's own words for the stored statuses (`utils/orderStatus.ts`): Unassigned, Assigned, Printing, Ready to Ship, Shipped, Completed, Cancelled.
 - **An order can hold several sheets.** The order page has a switcher; contents and preview follow the selected sheet.

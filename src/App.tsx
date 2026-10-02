@@ -8,6 +8,7 @@ import { FulfilmentPartners } from './pages/FulfilmentPartners';
 import { PrinterApprovals } from './pages/PrinterApprovals';
 import { PartnerDetails } from './pages/PartnerDetails';
 import { Earnings } from './pages/Earnings';
+import { Payouts } from './pages/Payouts';
 import { Profile } from './pages/Profile';
 import { Settings } from './pages/Settings';
 import { Toaster } from 'react-hot-toast';
@@ -57,6 +58,7 @@ function App() {
                         <Route path="/printer-approvals" element={<PrinterApprovals />} />
                         <Route path="/dashboard/fulfilment-partners/:id" element={<PartnerDetails />} />
                         <Route path="/earnings" element={<Earnings />} />
+                        <Route path="/payouts" element={<Payouts />} />
                         <Route path="/profile" element={<Profile />} />
                         <Route path="/settings" element={<Settings />} />
                     </Route>
