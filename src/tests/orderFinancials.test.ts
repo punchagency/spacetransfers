@@ -53,6 +53,12 @@ describe("order financials", () => {
     );
     assert.equal(f.refunded, 28.24);
     assert.equal(f.profit, -1.12);
+    // Cancelled after printing began, partner paid anyway: the loss includes their fee.
+    const paid = computeOrderFinancials(
+      order({ status: "CANCELLED", cancellation: { partnerPaid: true }, payment: { method: "card", processingFee: 1.12, refundedAmount: 28.24 } }),
+      RATE,
+    );
+    assert.equal(paid.profit, -13.85);
     // Cancelled without any payment to refund: nothing gained, nothing lost.
     assert.equal(computeOrderFinancials(order({ status: "CANCELLED", payment: { method: "card" } }), RATE).profit, 0);
   });

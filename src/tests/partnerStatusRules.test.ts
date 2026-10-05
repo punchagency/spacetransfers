@@ -40,3 +40,16 @@ describe("partner status rules", () => {
     ok("QUALITY_CHECK", "QUALITY_CHECK");
   });
 });
+
+import { isPartnerEarningRealized, payableOrderFilter } from "../services/partnerEarnings.service.js";
+
+describe("which jobs a partner is paid for", () => {
+  it("shipped and delivered jobs, and a cancelled job the admin chose to pay", () => {
+    assert.equal(isPartnerEarningRealized({ status: "SHIPPED" }), true);
+    assert.equal(isPartnerEarningRealized({ status: "COMPLETED" }), true);
+    assert.equal(isPartnerEarningRealized({ status: "CANCELLED", cancellation: { partnerPaid: true } }), true);
+    assert.equal(isPartnerEarningRealized({ status: "CANCELLED" }), false);
+    assert.equal(isPartnerEarningRealized({ status: "PRINTING" }), false);
+    assert.deepEqual(payableOrderFilter().$or[1], { status: "CANCELLED", "cancellation.partnerPaid": true });
+  });
+});

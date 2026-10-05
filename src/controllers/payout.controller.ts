@@ -17,7 +17,8 @@ import { getPartnerPayRate } from "../services/pricing.service.js";
 import mongoose from "mongoose";
 import {
   getEligibleJobsForPrinter,
-    calculateOrderPartnerEarning
+  calculateOrderPartnerEarning,
+  payableOrderFilter,
 } from "../services/partnerEarnings.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import type { IPayout, PayoutStatus } from "../models/payout.model.js";
@@ -172,7 +173,7 @@ export const getPrinterPayoutSummary = async (
     // Aggregate completed (paid-out) orders
     const completedOrders = await Order.find({
       assignedPrinter: printerId,
-      status: { $in: ["SHIPPED", "COMPLETED"] },
+      ...payableOrderFilter(),
     }).lean();
 
     // Pending orders (not yet paid out)
@@ -199,10 +200,8 @@ export const getPrinterPayoutSummary = async (
     const partnerPricing = await getPartnerPayRate();
     const calcEarning = (order: any): number => calculateOrderPartnerEarning(order, partnerPricing);
 
-    const totalEarnings = [...completedOrders, ...pendingOrders].reduce(
-      (s, o) => s + calcEarning(o),
-      0
-    );
+    // Earned means shipped. Jobs in progress are reported as pending, not earned.
+    const totalEarnings = completedOrders.reduce((s, o) => s + calcEarning(o), 0);
     const pendingEarnings = pendingOrders.reduce(
       (s, o) => s + calcEarning(o),
       0

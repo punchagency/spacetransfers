@@ -4,7 +4,7 @@ import { getPartnerPayRate } from "../../services/pricing.service.js";
 import { Order } from "../../models/order.model.js";
 import { Payout } from "../../models/payout.model.js";
 import mongoose from "mongoose";
-import { calculateOrderPartnerEarning, getOrderCompletionDate } from "../../services/partnerEarnings.service.js";
+import { calculateOrderPartnerEarning, getOrderCompletionDate, isPartnerEarningRealized } from "../../services/partnerEarnings.service.js";
 
 /**
  * The rows behind the earnings table, shared with the CSV export so the file a
@@ -38,19 +38,22 @@ const buildEarningsRows = async (
       }
     }
 
-  const query: any = { assignedPrinter: printerId, status: { $nin: ["CANCELLED"] } };
+  // Cancelled jobs are left out, except one the admin chose to pay for.
+  const query: any = {
+    assignedPrinter: printerId,
+    $or: [{ status: { $nin: ["CANCELLED"] } }, { status: "CANCELLED", "cancellation.partnerPaid": true }],
+  };
 
     const orders = await Order.find(query)
-      .select("displayId items pricing priority status statusTimeline updatedAt createdAt customer")
+      .select("displayId items pricing priority status statusTimeline updatedAt createdAt customer cancellation")
       .sort({ updatedAt: -1 })
       .limit(500)
       .lean();
 
-    const FINISHED = ["SHIPPED", "COMPLETED"];
 
     const rows = orders.map((order: any) => {
       const id = String(order._id);
-      const isFinished = FINISHED.includes(String(order.status));
+      const isFinished = isPartnerEarningRealized(order);
 
       /*
        * Four states that line up with the four summary cards above the table,

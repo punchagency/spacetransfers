@@ -128,7 +128,14 @@ export interface IOrder extends Document {
   assignmentDeadline?: Date | null;
   returnedAt?: Date;
   /** Who cancelled the order, when and why. */
-  cancellation?: { reason: string; at: Date; byId?: string; byName?: string };
+  cancellation?: {
+    reason: string;
+    at: Date;
+    byId?: string;
+    byName?: string;
+    /** True when the admin chose to pay the partner for work already started. */
+    partnerPaid?: boolean;
+  };
   cancelledByPrinterId?: mongoose.Types.ObjectId;
   cancelledByPrinterName?: string;
   // ShipStation fulfillment
@@ -378,7 +385,7 @@ const orderSchema = new Schema<IOrder>(
     assignmentDeadline: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
     cancellation: {
-      type: { reason: String, at: Date, byId: String, byName: String },
+      type: { reason: String, at: Date, byId: String, byName: String, partnerPaid: Boolean },
       default: undefined,
       _id: false,
     },

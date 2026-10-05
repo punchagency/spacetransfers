@@ -20,6 +20,10 @@ export const cancellationError = (status: unknown): string | null => {
   return (CANCELLABLE_STATUSES as readonly string[]).includes(s) ? null : "This order can't be cancelled.";
 };
 
+/** A partner can be paid for a cancelled job only if they had started it. */
+export const canPayPartnerOnCancel = (order: any): boolean =>
+  Boolean(order?.assignedPrinter) && ["PRINTING", "QUALITY_CHECK"].includes(String(order?.status || "").toUpperCase());
+
 export interface CancellationDeps {
   stripeConfigured: () => boolean;
   /** Refunds the whole payment. Returns Stripe's refund id and the amount in dollars. */
@@ -48,6 +52,8 @@ export interface CancellationResult {
   refundId: string | null;
   /** Why no refund was made, when there was nothing Stripe could refund. */
   noRefundReason: string | null;
+  /** The partner keeps this job's pay; it joins their next payout. */
+  partnerPaid: boolean;
 }
 
 const httpError = (message: string, statusCode: number) => Object.assign(new Error(message), { statusCode });
@@ -57,6 +63,7 @@ export const cancelOrderWithRefund = async (
   actor: { id: string; name: string },
   reason: string,
   deps: CancellationDeps = defaultDeps,
+  options: { payPartner?: boolean } = {},
 ): Promise<CancellationResult> => {
   const refusal = cancellationError(order?.status);
   if (refusal) throw httpError(refusal, 409);
@@ -82,11 +89,14 @@ export const cancelOrderWithRefund = async (
     noRefundReason = "This order has no card payment on record, so there was nothing to refund.";
   }
 
+  // Paying the partner only applies when one has actually started the job.
+  const partnerPaid = Boolean(options.payPartner) && canPayPartnerOnCancel(order);
+
   const now = new Date();
   const set: Record<string, unknown> = {
     status: "CANCELLED",
     updatedAt: now,
-    cancellation: { reason: why, at: now, byId: actor.id, byName: actor.name },
+    cancellation: { reason: why, at: now, byId: actor.id, byName: actor.name, partnerPaid },
   };
   if (refundId) {
     set["payment.refundId"] = refundId;
@@ -99,9 +109,11 @@ export const cancelOrderWithRefund = async (
       statusTimeline: {
         status: "CANCELLED",
         time: now,
-        message: refundId
-          ? `Cancelled and refunded $${refundAmount.toFixed(2)}: ${why}`
-          : `Cancelled, no refund needed: ${why}`,
+        message:
+          (refundId
+            ? `Cancelled and refunded $${refundAmount.toFixed(2)}: ${why}`
+            : `Cancelled, no refund needed: ${why}`) +
+          (partnerPaid ? " The partner is still paid for this job." : ""),
         actorRole: "ADMIN",
         actorId: actor.id,
         actorName: actor.name,
@@ -109,5 +121,5 @@ export const cancelOrderWithRefund = async (
     },
   });
 
-  return { refunded: Boolean(refundId), refundAmount, refundId, noRefundReason };
+  return { refunded: Boolean(refundId), refundAmount, refundId, noRefundReason, partnerPaid };
 };
