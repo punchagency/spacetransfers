@@ -91,6 +91,10 @@ With the rule on **Nearest Region** a paid order is assigned as soon as it is pl
 
 Partners can only move a job forward, and they cannot cancel an order: a partner who can't do a job hands it back to the queue to be reassigned. `SHIPPED` needs a shipping label, and `COMPLETED` is set only when the carrier confirms delivery, because it makes the job payable. The rules are in `utils/partnerStatusRules.ts`.
 
+### Print files
+
+A partner's PNG export is the full roll width the order was built on (23.5in, 7,050px at 300 DPI) and as long as the artwork: down to the lowest graphic plus the sheet margin. A sheet billed at the minimum length is not padded out to it. Sheets longer than 100in are split into parts between graphics. See `printFileLengthIn` in `services/gangsheetExport.service.ts`.
+
 ## Money
 
 - **Pricing** is always computed on the server (`services/pricing.service.ts`). A sheet is billed as roll width times its length, with a minimum length. Express shipping adds a rush fee. Rates are set in the admin console.

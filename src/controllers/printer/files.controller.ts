@@ -15,6 +15,7 @@ import { GangsheetExport } from "../../models/gangsheetExport.model.js";
 import { GangsheetExportAudit } from "../../models/gangsheetExportAudit.model.js";
 import {
   exportGangsheetPng24,
+  orderSheetPrintFileIn,
   computeItemVerticalSpansIn,
   computeGangsheetCuts,
   orderSheetWidthIn,
@@ -533,16 +534,17 @@ export const exportJobGangsheet = async (req: Request, res: Response, next: Next
           }
         }
 
+        const printFile = orderSheetPrintFileIn(gangsheetItem);
         const rendered = await exportGangsheetPng24({
           jobId: job.id,
           printerId: String(printerId),
           // The roll this order was built on, so every posX lands where the
           // artboard put it — see `orderSheetWidthIn`.
-          sheetWidthIn: orderSheetWidthIn(gangsheetItem),
-          sheetHeightIn: gangsheetItem.sheetHeightIn ?? gangsheetItem.heightIn,
+          sheetWidthIn: printFile.widthIn,
+          sheetHeightIn: printFile.heightIn,
           artboardItems: fullResItems,
           dpi: exportDpi,
-          // Full sheet — preserves the artboard layout 1:1 so item positions
+          // Full width — preserves the artboard layout 1:1 so item positions
           // match exactly what the customer approved.
           cropToContent: false,
           itemSpacingIn: typeof gangsheetItem.itemSpacingIn === "number" ? gangsheetItem.itemSpacingIn : undefined,
@@ -951,10 +953,7 @@ export const exportPngForDownload = async (req: Request, res: Response, next: Ne
          * see `orderSheetWidthIn`. Never the item's own width, which on older
          * orders produced an export a few inches wide with the artwork packed in.
          */
-        const sheetWidthIn = orderSheetWidthIn(gangsheetItem);
-        const sheetHeightIn = typeof gangsheetItem.sheetHeightIn === "number" && Number.isFinite(gangsheetItem.sheetHeightIn)
-          ? gangsheetItem.sheetHeightIn : typeof gangsheetItem.heightIn === "number" && Number.isFinite(gangsheetItem.heightIn)
-          ? gangsheetItem.heightIn : 23.5;
+        const { widthIn: sheetWidthIn, heightIn: sheetHeightIn } = orderSheetPrintFileIn(gangsheetItem);
 
         const fullResItems = artboardItems.map((it: any) => ({
           assetId: String(it.assetId || ""),
