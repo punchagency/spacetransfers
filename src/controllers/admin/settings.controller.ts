@@ -5,6 +5,7 @@ import { User, UserRoles } from "../../models/user.model.js";
 import { Settings } from "../../models/settings.model.js";
 import { DEFAULT_GLOBAL_PRICING, normalizeGlobalPricing } from "../../services/pricing.service.js";
 import { normalizeSlaSettings } from "../../services/partnerCapacity.service.js";
+import { assignWaitingOrders } from "../../services/orderAssignment.service.js";
 import { CustomError } from "./shared.js";
 
 export const getGlobalPricing = async (req: Request, res: Response, next: NextFunction) => {
@@ -217,6 +218,13 @@ export const updatePartnerAssignmentSettings = async (req: Request, res: Respons
     }
 
     await settings.save();
+
+    // Orders placed while assignment was manual are still waiting; hand them out.
+    if (settingValue.rule === "nearest-region") {
+      void assignWaitingOrders()
+        .then((r) => console.log(`[AUTO_ASSIGN] settings saved: ${r.assigned} of ${r.waiting} waiting orders assigned`))
+        .catch((err) => console.warn(`[AUTO_ASSIGN] waiting-order sweep failed: ${err?.message}`));
+    }
 
     res.json({
       assignmentRule: settingValue.rule,

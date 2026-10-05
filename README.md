@@ -85,6 +85,10 @@ All routes are served under `/api`: `/auth`, `/customer`, `/printer`, `/admin`, 
 | `COMPLETED` | Completed | Completed | Completed |
 | `CANCELLED` | Cancelled | Cancelled | Cancelled |
 
+### Assignment
+
+With the rule on **Nearest Region** a paid order is assigned as soon as it is placed. Only partners who are active, open and under their job limit are considered. The order goes to a partner in the customer's region: one in the customer's own state first, otherwise the nearest, then the least loaded, then the best rated. If the region has nobody free, the next region in `REGION_FALLBACKS` is tried and admins are told. If nobody is free anywhere the order stays `PENDING` and admins are alerted. A partner who handed a job back is not offered it again. Orders still waiting for a partner are retried every 5 minutes and whenever the settings are saved, so an order placed under Manual, or when nobody was free, is picked up once it can be. The logic is in `services/orderAssignment.service.ts`.
+
 Partners can only move a job forward, and they cannot cancel an order: a partner who can't do a job hands it back to the queue to be reassigned. `SHIPPED` needs a shipping label, and `COMPLETED` is set only when the carrier confirms delivery, because it makes the job payable. The rules are in `utils/partnerStatusRules.ts`.
 
 ## Money
@@ -107,6 +111,7 @@ Started by `server.ts` in every environment except tests:
 | Job | What it does |
 | --- | --- |
 | Payment check | Every 10 minutes, reports any card payment that has no order to the admins |
+| Waiting orders | Every 5 minutes, offers unassigned orders to automatic assignment; idle while the rule is Manual |
 | Tracking poller | Marks shipped orders completed when the carrier confirms delivery |
 | SLA monitor | Reassigns or escalates late jobs; off until enabled in the admin console |
 | Payout scheduler | Each Friday, puts partners' payable, unpaid jobs into payouts for an admin to review. It never sends money |

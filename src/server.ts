@@ -6,6 +6,7 @@ import { processDueAdminNotificationEmailBatches } from "./services/adminNotific
 import { scheduleFridayPayouts } from "./services/payoutScheduler.service.js";
 import { startTrackingPoller } from "./services/trackingPoller.service.js";
 import { startSlaMonitor } from "./services/slaMonitor.service.js";
+import { startWaitingOrderSweep } from "./services/orderAssignment.service.js";
 import { startPaymentReconciliation } from "./services/paymentReconciliation.service.js";
 
 process.on("unhandledRejection", (reason) => {
@@ -57,6 +58,9 @@ const start = async (): Promise<void> => {
     // Reports any card payment that has no order (checkout closed mid-way, or
     // the order was refused after the charge).
     startPaymentReconciliation();
+
+    // Retries orders still waiting for a partner; idle while assignment is manual.
+    startWaitingOrderSweep();
   }
 };
 

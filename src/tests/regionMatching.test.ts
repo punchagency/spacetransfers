@@ -25,6 +25,7 @@ import {
 } from "../utils/region.js";
 
 import {
+  sameFailureAsLast,
   selectPrinterFromCandidates,
   type PrinterCandidate,
 } from "../services/orderAssignment.service.js";
@@ -479,6 +480,41 @@ describe("Printer selection priority within same-region pool", () => {
     }
   });
 
+  it("A partner in the customer's own state wins over a nearer one in the next state", () => {
+    const candidates: PrinterCandidate[] = [
+      makeCandidate("or-printer", "OR", { distanceMiles: 150 }),
+      makeCandidate("ca-printer", "CA", { distanceMiles: 400 }),
+    ];
+    const result = selectPrinterFromCandidates("California (CA)", candidates);
+
+    assert.equal(result.assigned, true);
+    if (result.assigned) assert.equal(result.selected.printerId, "ca-printer");
+  });
+
+  it("With several partners in the customer's state, the nearest of them wins", () => {
+    const candidates: PrinterCandidate[] = [
+      makeCandidate("ca-far", "CA", { distanceMiles: 380 }),
+      makeCandidate("ca-near", "CA", { distanceMiles: 12 }),
+      makeCandidate("nv-nearest", "NV", { distanceMiles: 5 }),
+    ];
+    const result = selectPrinterFromCandidates("CA", candidates);
+
+    assert.equal(result.assigned, true);
+    if (result.assigned) assert.equal(result.selected.printerId, "ca-near");
+  });
+
+  it("With no partner in the customer's state, the nearest state in the region wins", () => {
+    const from = getLatLngFromState("OR")!;
+    const candidates: PrinterCandidate[] = [
+      makeCandidate("ca-printer", "CA", { distanceMiles: haversineMiles(from, getLatLngFromState("CA")!) }),
+      makeCandidate("wa-printer", "WA", { distanceMiles: haversineMiles(from, getLatLngFromState("WA")!) }),
+    ];
+    const result = selectPrinterFromCandidates("OR", candidates);
+
+    assert.equal(result.assigned, true);
+    if (result.assigned) assert.equal(result.selected.printerId, "wa-printer");
+  });
+
   it("Out-of-region printers are excluded even when closer", () => {
     // CA printer is closer to NY than other Northeast states, but must not be selected
     const candidates: PrinterCandidate[] = [
@@ -611,5 +647,23 @@ describe("Backend bypass prevention", () => {
       assert.equal(result.selected.printerRegion, "South");
       assert.equal(result.candidatesSameRegion, 99);
     }
+  });
+});
+
+describe("A waiting order is retried without repeating itself", () => {
+  const failed = { mode: "AUTO", selectedPrinterId: null, reason: "No available printers" };
+
+  it("the first failure is new", () => {
+    assert.equal(sameFailureAsLast({ assignmentHistory: [] }, "No available printers"), false);
+  });
+
+  it("the same failure again is not recorded or reported twice", () => {
+    assert.equal(sameFailureAsLast({ assignmentHistory: [failed] }, "No available printers"), true);
+  });
+
+  it("a different reason, or a failure after an assignment, is new", () => {
+    assert.equal(sameFailureAsLast({ assignmentHistory: [failed] }, "Another reason"), false);
+    const assigned = { mode: "AUTO", selectedPrinterId: "p1", reason: "No available printers" };
+    assert.equal(sameFailureAsLast({ assignmentHistory: [failed, assigned] }, "No available printers"), false);
   });
 });
