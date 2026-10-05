@@ -8,7 +8,7 @@ const RULES: Array<{ id: AssignmentRule; label: string; desc: string }> = [
   {
     id: "nearest-region",
     label: "Nearest Region",
-    desc: "Auto-assign to the nearest available partner in the customer's region. If none is free, falls back to a neighbouring region — flagged on the order and notified to admins.",
+    desc: "Auto-assign to an available partner in the customer's region: one in the customer's own state first, otherwise the nearest. If none is free, falls back to a neighbouring region — flagged on the order and notified to admins. Orders still waiting for a partner are retried every few minutes.",
   },
   {
     id: "manual",
