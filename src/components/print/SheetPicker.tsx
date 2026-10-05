@@ -7,6 +7,8 @@ export type JobSheet = {
   /** How many of this sheet to print. */
   quantity: number;
   itemCount: number;
+  /** The size of the PNG the export produces: full roll width, as long as the artwork plus margin. */
+  printFile?: { widthIn: number; heightIn: number } | null;
 };
 
 export function SheetPicker({
