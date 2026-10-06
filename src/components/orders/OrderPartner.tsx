@@ -32,6 +32,8 @@ interface OrderPartnerProps {
             partnerCost: number | null;
             rushFee?: number | null;
             profitRealized?: boolean;
+            cancelled?: boolean;
+            partnerPaidOnCancel?: boolean;
             unavailableReason?: string;
             currency: string;
         };
@@ -48,6 +50,8 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
     const currency = order.financials?.currency || 'USD';
     const partnerCost = order.financials?.partnerCost ?? null;
     const isEstimate = order.financials?.profitRealized === false;
+    // Cancelled without paying the partner: nothing is owed for this job.
+    const notPaid = Boolean(order.financials?.cancelled) && !order.financials?.partnerPaidOnCancel;
 
     const fmt = (n: number) =>
         new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(n);
@@ -156,17 +160,19 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
                         */}
                         <span className="text-gray-600">Payout</span>
                         <span
-                            className={`font-medium ${partnerCost === null ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
+                            className={`font-medium ${partnerCost === null || notPaid ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
                             title={
-                                partnerCost === null
+                                notPaid
+                                    ? 'This order was cancelled and the partner is not paid for it.'
+                                    : partnerCost === null
                                     ? order.financials?.unavailableReason
                                     : isEstimate
                                       ? 'Estimated — not yet owed. Partners become payable once the order ships.'
                                       : undefined
                             }
                         >
-                            {partnerCost === null ? '—' : fmt(partnerCost)}
-                            {partnerCost !== null && isEstimate && (
+                            {notPaid ? 'Not paid' : partnerCost === null ? '—' : fmt(partnerCost)}
+                            {!notPaid && partnerCost !== null && isEstimate && (
                                 <span className="ml-1 text-[11px] font-normal text-gray-400">est.</span>
                             )}
                         </span>
