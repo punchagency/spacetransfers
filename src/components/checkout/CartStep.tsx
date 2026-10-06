@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { MdOutlineRemoveShoppingCart } from "react-icons/md";
 import { RiDeleteBin5Line } from "react-icons/ri";
 import GangsheetPreview from "./GangsheetPreview";
@@ -22,8 +23,10 @@ interface CartStepProps {
   cartItems: CartItem[];
   updateQuantity: (id: number, change: number) => void;
   removeItem: (id: number) => void;
-  /** Opens a sheet back on the artboard; edits then update this same line. */
+  /** Opens the line's saved sheet on the artboard. */
   onEditItem?: (item: CartItem) => void;
+  /** Replaces a line with its saved sheet as it is now. */
+  onUpdateItem?: (item: CartItem) => void | Promise<void>;
   /** Empties the cart. The caller confirms first. */
   onClearCart?: () => void;
   /** Clears the board for a separate sheet; what is in the cart stays there. */
@@ -35,9 +38,11 @@ export default function CartStep({
   updateQuantity,
   removeItem,
   onEditItem,
+  onUpdateItem,
   onClearCart,
   onStartNewSheet,
 }: CartStepProps) {
+  const [updatingId, setUpdatingId] = useState<number | null>(null);
   const renderItemImage = (item: CartItem) => {
     if (item.type === "gangsheet") {
       // Prefer an accurate scaled replica built from the artboard items so the
@@ -154,6 +159,23 @@ export default function CartStep({
                     <div className="text-sm text-gray-600">
                       Print: {item.print}
                     </div>
+                    {item.type === "gangsheet" && (item as any).sheetChanged ? (
+                      <div className="mt-2 max-w-sm rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] leading-5 text-amber-900">
+                        You changed this sheet after adding it. Your cart has the earlier version.
+                        {onUpdateItem ? (
+                          <button
+                            onClick={() => {
+                              setUpdatingId(item.id);
+                              void Promise.resolve(onUpdateItem(item)).finally(() => setUpdatingId(null));
+                            }}
+                            disabled={updatingId === item.id}
+                            className="mt-1 block font-semibold underline underline-offset-2 hover:text-amber-950 disabled:opacity-60"
+                          >
+                            {updatingId === item.id ? "Updating…" : "Update to the latest version"}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <div>
                     <div className="text-lg font-semibold text-right">

@@ -95,6 +95,8 @@ const FLAG_FIELDS = [
   "pinned",
 ] as const;
 
+const CART_LINE_FIELDS = ["name", "designId", "designSignature", "price"] as const;
+
 /** Rounds a coordinate so float noise does not read as a change. */
 const q = (value: unknown): number => Math.round((Number(value) || 0) * 1000) / 1000;
 
@@ -118,6 +120,13 @@ export const itemsEquivalent = (a: any, b: any): boolean => {
   for (const field of FLAG_FIELDS) {
     if (Boolean(a[field]) !== Boolean(b[field])) return false;
   }
+  // A cart line is also its sheet's contents, name and price; two lines with
+  // the same id and size can still hold different versions of a sheet.
+  for (const field of CART_LINE_FIELDS) {
+    if ((a[field] ?? null) !== (b[field] ?? null)) return false;
+  }
+  if (Boolean(a.sheetChanged) !== Boolean(b.sheetChanged)) return false;
+  if (assetFingerprint(a.image) !== assetFingerprint(b.image)) return false;
   return true;
 };
 

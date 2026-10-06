@@ -3,6 +3,7 @@ import { useIsMobile } from '../lib/useIsMobile';
 import { CANVAS, CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
 import {
     MdSettings,
+    MdReceiptLong,
     MdClose,
     MdStraighten,
     MdVisibility,
@@ -122,6 +123,7 @@ type SidebarProps = {
     };
     onUpdateSetting: (key: keyof SidebarProps['settings'], value: any) => void;
     onOpenLoadModal: () => void;
+    onOpenOrderHistory: () => void;
     onOpenAccountModal: () => void;
     onOpenAuthModal: (view: "login" | "register") => void;
     onCreateGangSheet: () => void;
@@ -235,6 +237,7 @@ export default function Sidebar({
     settings,
     onUpdateSetting,
     onOpenLoadModal,
+    onOpenOrderHistory,
     onOpenAccountModal,
     onOpenAuthModal,
     onCreateGangSheet,
@@ -539,6 +542,10 @@ export default function Sidebar({
                                         <button onClick={() => { onClose(); onOpenAccountModal(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
                                             <MdPerson size={20} />
                                             <span className="text-[12px] font-medium">Account Settings</span>
+                                        </button>
+                                        <button onClick={() => { onClose(); onOpenOrderHistory(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
+                                            <MdReceiptLong size={20} />
+                                            <span className="text-[12px] font-medium">Order History</span>
                                         </button>
                                         <button onClick={() => { onSignOut(); onClose(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 text-left cursor-pointer transition-colors">
                                             <MdLogout size={20} className="transform rotate-180" />

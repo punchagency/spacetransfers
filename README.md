@@ -10,8 +10,8 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 - **Arrange it.** Drag, resize, rotate, flip, lock, duplicate and group. Auto-nest packs the sheet as short as possible.
 - **Get warned.** Images under 300 DPI and artwork with fades or see-through areas are flagged, because DTF cannot print them as shown.
 - **Edit with AI.** Board commands such as "12 copies" or "make it 4 inches wide" run in the browser. Image edits go to the API.
-- **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery.
-- **Check out.** The cart holds one line per saved sheet. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
+- **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery. The store opens on the sheet they last had open.
+- **Check out.** The cart holds one line per saved sheet, as it was when it was added. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
 - **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
 - **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. A cancelled order shows what was refunded.
 
@@ -66,7 +66,7 @@ src/
 ## Things worth knowing
 
 - **Prices come from the API.** The store shows an estimate until the address is entered, then the server's quote, which is what the card is charged.
-- **One sheet, one cart line.** A cart line is a saved sheet. Editing the sheet updates the line; a different sheet comes only from Start a new sheet or Duplicate.
+- **The cart holds the version that was added.** A cart line belongs to one saved sheet, but keeps the sheet as it was when the customer added it. Later edits are saved to the sheet and reach the cart only through Update Cart; Save as a new sheet turns the edits into a separate sheet and puts the original back to its cart version. A line whose sheet has moved on is marked `sheetChanged` and says so in the cart.
 - **Artwork is uploaded, never embedded.** Sheets and orders hold links to stored images. A sheet whose artwork has not finished uploading cannot be saved or ordered.
 - **Images must load with CORS.** The editor reads pixels for cropping, DPI and transparency checks, so the storage bucket needs a CORS policy for this origin (see the API's `.env.example`).
 - **The store is for customers only.** Partner and admin accounts are signed out here.

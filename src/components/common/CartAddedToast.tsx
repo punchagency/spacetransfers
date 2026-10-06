@@ -1,14 +1,7 @@
 import toast from "react-hot-toast";
 import { MdCheckCircle } from "react-icons/md";
 
-/**
- * Confirmation that a sheet is in the cart, with the one thing worth doing next.
- *
- * It offered "Start a new sheet" too, which right after adding is a step nobody
- * is ready for — that choice now lives in the cart, where starting another sheet
- * is a deliberate act. Carrying on editing needs no button at all: the cart line
- * follows the board.
- */
+/** Confirmation that a sheet is in the cart, with the one thing worth doing next. */
 export const showCartAddedToast = ({
   onViewCart,
   sheetName,
@@ -31,7 +24,7 @@ export const showCartAddedToast = ({
               {sheetName ? `“${sheetName}” is in your cart` : "Sheet added to your cart"}
             </p>
             <p className="mt-0.5 text-[12px] leading-[17px] text-gray-600">
-              It's saved to your sheets too. Changes you make to it update your cart — for a different sheet, use Start a new sheet.
+              Your cart has it exactly as it is now. If you keep editing, choose Update Cart to send the changes to your cart.
             </p>
           </div>
         </div>
