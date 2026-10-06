@@ -34,6 +34,7 @@ import {
   type EditorSettings,
 } from "../lib/utils/editorSettings";
 import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
+import { showCartUpdateNotice } from "./common/CartUpdateNotice";
 import { cartLineKey, cartSignInMessage, dedupeCartByDesign, mergeCarts, readCartOwner, repriceCart, writeCartOwner } from "../lib/utils/cartSync";
 import { computeRenderCopies, sheetContentLengthIn } from "./artboard/lib/utils/layoutHelpers";
 
@@ -1133,11 +1134,11 @@ export default function Editor() {
    * Brings the board's cart line up to date with the board, keeping its
    * quantity and place in the cart.
    */
-  const updateCartSheet = async (options: { silent?: boolean } = {}) => {
+  const updateCartSheet = async (options: { silent?: boolean } = {}): Promise<boolean> => {
     const currentItems = getCurrentItems();
-    if (!cartLine || !currentLoadedDesignId || !currentItems?.length) return;
+    if (!cartLine || !currentLoadedDesignId || !currentItems?.length) return false;
     // Artwork still uploading exists only in this browser; the line waits for it.
-    if (artworkNotUploaded(currentItems)) return;
+    if (artworkNotUploaded(currentItems)) return false;
     const lineId = cartLine.id;
     const fields = boardAsCartLine(currentLoadedDesignId, sheetTitle);
     setCartItems((prev) =>
@@ -1158,8 +1159,8 @@ export default function Editor() {
      * editing settles. The cart's own preview covers it until the customer does
      * something deliberate, which is when a snapshot is worth taking.
      */
-    if (options.silent) return;
-    void snapshotIntoCartLine(lineId);
+    if (!options.silent) void snapshotIntoCartLine(lineId);
+    return true;
   };
 
   const saveCartLineAsSheet = async (line: any): Promise<{ id: string; title: string } | null> => {
@@ -1247,7 +1248,7 @@ export default function Editor() {
    * list — never by changing one that's in the cart.
    */
   const CART_SYNC_DELAY_MS = 1200;
-  const cartSyncRef = useRef<(options?: { silent?: boolean }) => Promise<void>>(async () => {});
+  const cartSyncRef = useRef<(options?: { silent?: boolean }) => Promise<boolean>>(async () => false);
   cartSyncRef.current = updateCartSheet;
   useEffect(() => {
     if (!cartLine) return;
@@ -1261,7 +1262,9 @@ export default function Editor() {
       return;
     }
     const timer = setTimeout(() => {
-      void cartSyncRef.current({ silent: true });
+      void cartSyncRef.current({ silent: true }).then((updated) => {
+        if (updated) showCartUpdateNotice(sheetTitle);
+      });
     }, CART_SYNC_DELAY_MS);
     return () => clearTimeout(timer);
   }, [currentSnapshot, cartLine, sheetTitle, settings.autoNestStickers, settings.spacing, settings.marginSize]);
