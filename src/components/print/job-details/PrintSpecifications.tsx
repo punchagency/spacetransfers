@@ -34,6 +34,8 @@ export const PrintSpecifications = ({ job, specs, sheets = [] }: PrintSpecificat
   ];
   const size = (sh: JobSheet) =>
     sh.widthIn && sh.heightIn ? `${sh.widthIn.toFixed(1)}" × ${sh.heightIn.toFixed(1)}"` : "—";
+  const printFileSize = (sh: JobSheet) =>
+    sh.printFile ? `${sh.printFile.widthIn.toFixed(1)}" × ${sh.printFile.heightIn.toFixed(2)}"` : null;
 
   return (
     <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
@@ -59,9 +61,14 @@ export const PrintSpecifications = ({ job, specs, sheets = [] }: PrintSpecificat
               <span className="text-gray-500 truncate">
                 {sheets.length > 1 ? `Sheet ${sh.index + 1} · ${sh.name}` : "Sheet size"}
               </span>
-              <span className="font-medium text-gray-900 whitespace-nowrap">
+              <span className="font-medium text-gray-900 whitespace-nowrap text-right">
                 {size(sh)}
                 {sh.quantity > 1 ? ` · print ${sh.quantity}` : ""}
+                {printFileSize(sh) ? (
+                  <span className="block font-normal text-[11px] text-gray-500">
+                    Print file {printFileSize(sh)}
+                  </span>
+                ) : null}
               </span>
             </div>
           ))

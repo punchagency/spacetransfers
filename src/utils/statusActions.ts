@@ -32,3 +32,25 @@ export const confirmCopy = (
       };
   }
 };
+
+export type TimelineStepKey = "RECEIVED" | "PRINTING" | "LABEL" | "SHIPPED" | "DELIVERED";
+
+const STATUS_RANK: Record<string, number> = { PENDING: 0, PROCESSING: 1, PRINTING: 2, QUALITY_CHECK: 3 };
+
+/**
+ * The move a timeline step makes from the job's current status, or null when
+ * the step can't be chosen. The same moves the Update Status card offers:
+ * forward only, shipped only once the label is ready, delivered never.
+ */
+export const timelineStepAction = (
+  step: TimelineStepKey,
+  status: string,
+  labelReady: boolean,
+): ConfirmableStep | null => {
+  const rank = STATUS_RANK[String(status).toUpperCase()];
+  if (rank === undefined) return null;
+  if (step === "PRINTING") return rank < STATUS_RANK.PRINTING ? "In Progress - Printing" : null;
+  if (step === "LABEL") return rank < STATUS_RANK.QUALITY_CHECK ? "Print Shipping Label" : null;
+  if (step === "SHIPPED") return rank === STATUS_RANK.QUALITY_CHECK && labelReady ? "Order Shipped" : null;
+  return null;
+};

@@ -17,7 +17,7 @@ import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResuma
 import { GangsheetPreview } from "../components/print/download-gangsheet/GangsheetPreview";
 import { SheetPicker, type JobSheet } from "../components/print/SheetPicker";
 import { ConfirmDialog } from "../components/common/ConfirmDialog";
-import { confirmCopy, type ConfirmableStep } from "../utils/statusActions";
+import { confirmCopy, timelineStepAction, type ConfirmableStep } from "../utils/statusActions";
 
 type Overview = {
   id: string;
@@ -580,6 +580,9 @@ export default function OrderDetailsPage() {
                   timeline={overview.timeline || []}
                   backendStatus={overview.status}
                   assignedAt={overview.assignedAt || null}
+                  stepAction={(step) => timelineStepAction(step, overview.status, Boolean(overview.shipStationLabelUrl))}
+                  onStepClick={setPendingStep}
+                  busy={updatingStatus}
                 />
                 <PrintSpecifications
                   job={{
