@@ -1,9 +1,8 @@
 import { Request, Response, NextFunction } from "express";
-import { computeOrderFinancials } from "../../services/orderFinancials.service.js";
+import { computeOrderFinancials, isOrderProfitSettled } from "../../services/orderFinancials.service.js";
 import { resolveOrderRegion } from "../../utils/region.js";
 import { Order } from "../../models/order.model.js";
 import { User, UserRoles, IUser } from "../../models/user.model.js";
-import { isPartnerEarningRealized } from "../../services/partnerEarnings.service.js";
 import { getPartnerPayRate } from "../../services/pricing.service.js";
 
 export const getAdminDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
@@ -139,7 +138,7 @@ export const getAdminDashboardStats = async (req: Request, res: Response, next: 
         profits: profit === null ? null : Number(profit.toFixed(2)),
         // False until the job ships: partners are not paid before then, and
         // revenue is counted from placement, so both sides are still a forecast.
-        profitsRealized: isPartnerEarningRealized(order),
+        profitsRealized: isOrderProfitSettled(order),
         status: order.status,
         createdAt: order.createdAt,
         updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,

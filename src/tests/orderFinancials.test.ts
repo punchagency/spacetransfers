@@ -59,6 +59,12 @@ describe("order financials", () => {
       RATE,
     );
     assert.equal(paid.profit, -13.85);
+    // The loss on a cancelled order is final, not a forecast.
+    assert.equal(
+      computeOrderFinancials(order({ status: "CANCELLED", payment: { method: "card", processingFee: 1.12, refundedAmount: 28.24 } }), RATE).profitRealized,
+      true,
+    );
+    assert.equal(computeOrderFinancials(order({ status: "PRINTING" }), RATE).profitRealized, false);
     // Cancelled without any payment to refund: nothing gained, nothing lost.
     assert.equal(computeOrderFinancials(order({ status: "CANCELLED", payment: { method: "card" } }), RATE).profit, 0);
   });

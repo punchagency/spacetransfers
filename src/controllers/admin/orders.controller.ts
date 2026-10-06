@@ -3,7 +3,7 @@ import { publishOrderEvent } from "../../services/orderSyncHub.js";
 import { canPayPartnerOnCancel, cancelOrderWithRefund } from "../../services/orderCancellation.service.js";
 import { sendOrderCancelledEmail } from "../../services/orderEmails.service.js";
 import { describeTimelineMessage } from "../../utils/orderStatusLabels.js";
-import { computeOrderFinancials } from "../../services/orderFinancials.service.js";
+import { computeOrderFinancials, isOrderProfitSettled } from "../../services/orderFinancials.service.js";
 import { recordMissingProcessingFee } from "../../services/paymentVerification.service.js";
 import { formatSheetSize, orderChargeLines, orderRefundNote } from "../../utils/orderPresentation.js";
 import { orderSheets, pickOrderSheet, sheetContents, sheetSummaries } from "../../utils/orderSheets.js";
@@ -18,7 +18,7 @@ import { User, UserRoles, IUser } from "../../models/user.model.js";
 import { Design } from "../../models/design.model.js";
 import { notifyAllAdmins } from "../../services/adminNotifications.service.js";
 import { notifyPrinter } from "../../services/printerNotifications.service.js";
-import { canDerivePartnerEarning, isPartnerEarningRealized } from "../../services/partnerEarnings.service.js";
+import { canDerivePartnerEarning } from "../../services/partnerEarnings.service.js";
 import { getPartnerPayRate } from "../../services/pricing.service.js";
 import {
   syncPartnerCapacitySafe,
@@ -202,7 +202,7 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
         customer: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim(),
         total: order.pricing?.total || 0,
         profits: profits === null ? null : Number(profits.toFixed(2)),
-        profitsRealized: isPartnerEarningRealized(order),
+        profitsRealized: isOrderProfitSettled(order),
         status: order.status,
         createdAt: order.createdAt,
         updatedAt: (order as any).updatedAt ? new Date((order as any).updatedAt).toISOString() : null,
@@ -619,7 +619,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         adminProfit: money.profit,
         // False until the job ships: the partner is not paid before then, so
         // the margin is a forecast — same rule the Orders table uses.
-        profitRealized: isPartnerEarningRealized(order),
+        profitRealized: money.profitRealized,
         unavailableReason: costDerivable
           ? undefined
           : "This order has no sheet dimensions, so no partner cost can be worked out.",

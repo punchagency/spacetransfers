@@ -27,7 +27,7 @@ export interface OrderFinancials {
   processingFee: number | null;
   /** Null when there is no partner cost to derive it from. */
   profit: number | null;
-  /** Partners are paid once an order ships; until then profit is a forecast. */
+  /** Partners are paid once an order ships; until then profit is a forecast. A cancelled order's is final. */
   profitRealized: boolean;
   /** Pieces of the partner cost, for the order page. */
   partnerBreakdown: { base: number; rushFee: number } | null;
@@ -40,6 +40,13 @@ export const orderShippingCost = (order: any): { cost: number; source: ShippingC
   if (quote !== null && quote > 0) return { cost: round2(quote), source: "quote" };
   return { cost: round2(num(order?.pricing?.shippingCost) ?? 0), source: "at-cost" };
 };
+
+/**
+ * Whether an order's profit is final. A shipped order's is; so is a cancelled
+ * one's — the refund is done and the card fee is what it cost.
+ */
+export const isOrderProfitSettled = (order: any): boolean =>
+  String(order?.status || "").toUpperCase() === "CANCELLED" || isPartnerEarningRealized(order);
 
 export const computeOrderFinancials = (order: any, partnerPayRate: any): OrderFinancials => {
   const pricing = order?.pricing || {};
@@ -80,7 +87,7 @@ export const computeOrderFinancials = (order: any, partnerPayRate: any): OrderFi
     partnerCost,
     processingFee: processingFee === null ? null : round2(processingFee),
     profit,
-    profitRealized: isPartnerEarningRealized(order),
+    profitRealized: isOrderProfitSettled(order),
     partnerBreakdown: breakdown ? { base: round2(breakdown.base), rushFee: round2(breakdown.rushFee) } : null,
   };
 };
