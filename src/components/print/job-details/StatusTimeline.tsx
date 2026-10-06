@@ -1,5 +1,6 @@
 import { FiBox, FiCheck, FiInbox, FiMapPin, FiPrinter, FiTruck, FiXCircle } from "react-icons/fi";
 import type { PrintJob } from "../../../types/printQueue";
+import type { ConfirmableStep, TimelineStepKey } from "../../../utils/statusActions";
 
 interface StatusTimelineProps {
   job: PrintJob;
@@ -8,6 +9,10 @@ interface StatusTimelineProps {
   backendStatus?: string;
   /** When the job was assigned to this partner. */
   assignedAt?: string | null;
+  /** The move a step makes when clicked, or null when it can't be chosen. */
+  stepAction?: (step: TimelineStepKey) => ConfirmableStep | null;
+  onStepClick?: (action: ConfirmableStep) => void;
+  busy?: boolean;
 }
 
 /*
@@ -26,7 +31,15 @@ const STEPS = [
   { key: "DELIVERED", label: "Delivered", icon: FiMapPin, statuses: ["COMPLETED"] },
 ] as const;
 
-export const StatusTimeline = ({ job, timeline, backendStatus, assignedAt }: StatusTimelineProps) => {
+export const StatusTimeline = ({
+  job,
+  timeline,
+  backendStatus,
+  assignedAt,
+  stepAction,
+  onStepClick,
+  busy = false,
+}: StatusTimelineProps) => {
   const entries = Array.isArray(timeline) ? timeline : [];
   const status = String(backendStatus || entries[entries.length - 1]?.status || "PROCESSING").toUpperCase();
   const cancelled = status === "CANCELLED";
@@ -79,29 +92,58 @@ export const StatusTimeline = ({ job, timeline, backendStatus, assignedAt }: Sta
                 const active = idx === currentIdx && !delivered;
                 const Icon = done ? FiCheck : s.icon;
                 const t = idx <= currentIdx ? reachedAt(idx) : null;
-                return (
-                  <li key={s.key} className="flex min-w-0 flex-1 flex-col items-center" aria-current={active ? "step" : undefined}>
+                const action = onStepClick && stepAction ? stepAction(s.key) : null;
+                const body = (
+                  <>
                     <div
-                      className={`flex h-10 w-10 items-center justify-center rounded-full border ${
+                      className={`flex h-10 w-10 items-center justify-center rounded-full border transition-colors ${
                         done
                           ? "border-blue-600 bg-blue-600 text-white"
                           : active
                             ? "border-blue-600 bg-white text-blue-600 ring-4 ring-blue-50"
-                            : "border-gray-200 bg-white text-gray-400"
+                            : action
+                              ? "border-blue-300 bg-white text-blue-600 group-hover:border-blue-600 group-hover:bg-blue-50"
+                              : "border-gray-200 bg-white text-gray-400"
                       }`}
                     >
                       <Icon className="h-5 w-5" />
                     </div>
                     <div className="mt-2 text-center">
-                      <div className={`text-xs font-semibold sm:text-sm ${idx <= currentIdx ? "text-gray-900" : "text-gray-400"}`}>
+                      <div
+                        className={`text-xs font-semibold sm:text-sm ${
+                          idx <= currentIdx ? "text-gray-900" : action ? "text-blue-700" : "text-gray-400"
+                        }`}
+                      >
                         {s.label}
                       </div>
                       <div className="mt-0.5 text-[10px] text-gray-500 sm:text-xs">{t ? formatTime(t) : "—"}</div>
                     </div>
+                  </>
+                );
+                return (
+                  <li key={s.key} className="flex min-w-0 flex-1 flex-col items-center" aria-current={active ? "step" : undefined}>
+                    {action ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onStepClick?.(action)}
+                        aria-label={`Update status to ${s.label}`}
+                        className="group flex flex-col items-center rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {body}
+                      </button>
+                    ) : (
+                      body
+                    )}
                   </li>
                 );
               })}
             </ol>
+            {onStepClick && stepAction && STEPS.some((s) => stepAction(s.key)) ? (
+              <p className="mt-3 text-center text-[11px] text-gray-500">
+                Select a highlighted step to update the status.
+              </p>
+            ) : null}
           </div>
         )}
       </div>
