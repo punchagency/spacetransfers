@@ -7,6 +7,7 @@ import {
   resolveRenderDpi,
   computeItemVerticalSpansIn,
   computeGangsheetCuts,
+  printFileLengthIn,
 } from "../services/gangsheetExport.service.js";
 
 /**
@@ -142,5 +143,36 @@ describe("print dimensions", () => {
     assert.equal(toPrintPixels(span.topIn - bandTopIn, GANGSHEET_PRINT_DPI), 15000);
     // Horizontal position is untouched by banding.
     assert.equal(toPrintPixels(item.posX, GANGSHEET_PRINT_DPI), 2100);
+  });
+});
+
+describe("print file length", () => {
+  const piece = (posY: number, heightIn: number) => ({
+    assetId: "a", widthIn: 5, heightIn, posX: 0.15, posY, rotation: 0, copies: 1,
+  });
+  const sheet = (items: any[], sheetMarginIn = 0.15) => ({
+    sheetWidthIn: GANGSHEET_SHEET_WIDTH_IN, artboardItems: items, itemSpacingIn: 0.15, sheetMarginIn,
+  });
+
+  it("stops one margin below the artwork, not at the 12in minimum it was billed at", () => {
+    // One 4in piece under the top margin: 0.15 + 4 + 0.15.
+    assert.equal(printFileLengthIn(sheet([piece(0.15, 4)]), 12), 4.3);
+    assert.equal(toPrintPixels(4.3, GANGSHEET_PRINT_DPI), 1290);
+  });
+
+  it("measures to the lowest graphic", () => {
+    assert.equal(printFileLengthIn(sheet([piece(0.15, 4), piece(6, 3)]), 12), 9.15);
+  });
+
+  it("adds the same margin below a sheet longer than the minimum", () => {
+    assert.equal(printFileLengthIn(sheet([piece(0.15, 30)]), 30.15), 30.3);
+  });
+
+  it("adds nothing when the sheet has no margin", () => {
+    assert.equal(printFileLengthIn(sheet([piece(0, 4)], 0), 12), 4);
+  });
+
+  it("keeps the recorded length when nothing is placed", () => {
+    assert.equal(printFileLengthIn(sheet([]), 12), 12);
   });
 });

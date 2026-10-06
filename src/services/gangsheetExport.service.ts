@@ -294,6 +294,38 @@ export const printedSheetLengthIn = (params: PlacementParams): number => {
 };
 
 /**
+ * How long the print file is, in inches: down to the bottom of the lowest
+ * graphic, plus the sheet margin below it. A sheet billed at the minimum length
+ * is not padded out to it — the partner prints the artwork, not the blank film.
+ * A sheet with nothing placed keeps its recorded length.
+ */
+export const printFileLengthIn = (params: PlacementParams, recordedLengthIn: number): number => {
+  const contentIn = printedSheetLengthIn(params);
+  if (!(contentIn > 0)) return recordedLengthIn;
+  const marginIn =
+    typeof params.sheetMarginIn === "number" && params.sheetMarginIn >= 0 ? params.sheetMarginIn : 0;
+  return Math.round((contentIn + marginIn) * 1000) / 1000;
+};
+
+/** The size of the print file for one stored order sheet: its roll width by `printFileLengthIn`. */
+export const orderSheetPrintFileIn = (item: Record<string, any>): { widthIn: number; heightIn: number } => {
+  const widthIn = orderSheetWidthIn(item);
+  const recorded = [item?.sheetHeightIn, item?.heightIn].find((v) => typeof v === "number" && Number.isFinite(v));
+  return {
+    widthIn,
+    heightIn: printFileLengthIn(
+      {
+        sheetWidthIn: widthIn,
+        artboardItems: Array.isArray(item?.artboardItems) ? item.artboardItems : [],
+        itemSpacingIn: typeof item?.itemSpacingIn === "number" ? item.itemSpacingIn : undefined,
+        sheetMarginIn: typeof item?.sheetMarginIn === "number" ? item.sheetMarginIn : undefined,
+      },
+      typeof recorded === "number" ? recorded : GANGSHEET_SHEET_WIDTH_IN,
+    ),
+  };
+};
+
+/**
  * Segments a gang sheet into printable lengths that never bisect a graphic.
  *
  * `targetLengthIn` is a target, not a clipping boundary. A cut is proposed at

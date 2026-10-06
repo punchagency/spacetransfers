@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { partnerTransitionError } from "../../utils/partnerStatusRules.js";
 import { orderSheets, sheetSummaries } from "../../utils/orderSheets.js";
 import { stageDue } from "../../utils/slaStages.js";
+import { orderSheetPrintFileIn } from "../../services/gangsheetExport.service.js";
 import { formatSheetSize } from "../../utils/orderPresentation.js";
 import { resolveApiFile } from "../../utils/publicApiBase.js";
 import { printerStatusLabel, statusChangeMessage, statusesForPrinterLabel } from "../../utils/orderStatusLabels.js";
@@ -328,7 +329,12 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
 
     const items = Array.isArray((job as any).items) ? (job as any).items : [];
     const firstItem: any = (job as any).items?.[0] || {};
-    const sheets = sheetSummaries(items, (v) => resolveApiFile(req, v));
+    // Each sheet with the size of the file its export produces.
+    const storedSheets = orderSheets(items);
+    const sheets = sheetSummaries(items, (v) => resolveApiFile(req, v)).map((summary, i) => ({
+      ...summary,
+      printFile: orderSheetPrintFileIn(storedSheets[i] || {}),
+    }));
     const sheetSize =
       sheets.length > 1
         ? `${sheets.length} sheets`
