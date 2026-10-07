@@ -18,6 +18,23 @@ export interface QuickAction {
 }
 
 /**
+ * Edits that run a large model, or a print-size canvas, in the browser. A phone
+ * cannot do either reliably, so they are offered on laptops and desktops only —
+ * the same rule the toolbar's BG Remover and Enhance buttons follow.
+ */
+export const DESKTOP_ONLY_INTENTS: ReadonlySet<AiIntentId> = new Set<AiIntentId>([
+  "remove-bg",
+  "make-transparent",
+  "to-sticker",
+  "upscale",
+  "enhance",
+]);
+
+/** Whether any step of a typed request is one a phone can't run. */
+export const needsDesktop = (prompt: string, steps: (prompt: string) => string[]): boolean =>
+  steps(prompt).some((step) => DESKTOP_ONLY_INTENTS.has(classifyPrompt(step)));
+
+/**
  * Quick-action chips, in bar order. Chips whose intent maps to a local
  * (already-shipping) capability are listed first so the common cases are
  * one click away and never depend on a generative provider being configured.
