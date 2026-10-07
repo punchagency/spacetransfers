@@ -34,7 +34,7 @@ import {
   type EditorSettings,
 } from "../lib/utils/editorSettings";
 import { getSheetWidthIn, getMinSheetLengthIn, usePricingSettings, billableSheetDimensions, getPricePerSqFt } from "../lib/utils/pricingRates";
-import { showCartUpdateNotice } from "./common/CartUpdateNotice";
+import { readLastSheet, sheetToReopen, writeLastSheet } from "../lib/utils/lastSheet";
 import { cartLineKey, cartSignInMessage, dedupeCartByDesign, mergeCarts, readCartOwner, repriceCart, writeCartOwner } from "../lib/utils/cartSync";
 import { computeRenderCopies, sheetContentLengthIn } from "./artboard/lib/utils/layoutHelpers";
 
@@ -474,6 +474,10 @@ export default function Editor() {
     [artboardData?.items, loadedDesignData?.items],
   );
   const hasUnsavedChanges = currentSnapshot !== baselineSnapshot;
+  const currentLoadedDesignIdRef = useRef(currentLoadedDesignId);
+  currentLoadedDesignIdRef.current = currentLoadedDesignId;
+  const boardItemsRef = useRef<any[]>([]);
+  boardItemsRef.current = getCurrentItems();
 
   const cartLine =
     (currentLoadedDesignId &&
@@ -481,8 +485,16 @@ export default function Editor() {
         (line) => (line?.type || "gangsheet") === "gangsheet" && String(line?.designId ?? "") === currentLoadedDesignId,
       )) ||
     null;
-  /** Whether this board is in the cart. */
-  const cartSheetState: "none" | "current" = cartLine ? "current" : "none";
+  /**
+   * Where this board stands against the cart. The cart holds the version that
+   * was added; later changes are saved to the sheet but reach the cart only when
+   * the customer chooses Update Cart.
+   */
+  const cartSheetState: "none" | "current" | "changed" = !cartLine
+    ? "none"
+    : (cartLine.sheetChanged || hasUnsavedChanges) && cartLine.designSignature !== currentSnapshot
+    ? "changed"
+    : "current";
   /** The sheet's name as shown in the header, the cart and the saved list. */
   const sheetTitle = currentLoadedDesignTitle || draftDesignTitle || UNTITLED_SHEET;
 
@@ -627,6 +639,15 @@ export default function Editor() {
           }),
         });
         if (options.title) setCurrentLoadedDesignTitle(options.title);
+        // The cart keeps the version that was added; note that the sheet has moved on.
+        const savedDesignId = currentLoadedDesignId;
+        setCartItems((prev) =>
+          prev.map((line) =>
+            String(line?.designId ?? "") === savedDesignId && Boolean(line.sheetChanged) !== (line.designSignature !== snapshot)
+              ? { ...line, sheetChanged: line.designSignature !== snapshot }
+              : line,
+          ),
+        );
         savedId = currentLoadedDesignId;
         savedTitle = options.title || currentLoadedDesignTitle || draftDesignTitle || undefined;
         updateSavedDesignSnapshot(currentLoadedDesignId, {
@@ -791,9 +812,9 @@ export default function Editor() {
     );
   };
 
-  const loadGangsheetById = async (id: string) => {
+  const loadGangsheetById = async (id: string, options: { quiet?: boolean } = {}): Promise<boolean> => {
     setIsGangsheetBusy(true);
-    const toastId = toast.loading("Loading gangsheet...");
+    const toastId = options.quiet ? undefined : toast.loading("Loading gangsheet...");
     try {
       const res = await apiFetch(`/customer/designs/${id}`);
       const items = Array.isArray(res?.artboardData?.items) ? res.artboardData.items : [];
@@ -812,7 +833,7 @@ export default function Editor() {
       setCurrentLoadedDesignId(id);
       setBaselineSnapshot(nextSnapshot);
       setCurrentLoadedDesignTitle(res?.title || null);
-      toast.success("Gangsheet loaded", { id: toastId });
+      if (!options.quiet) toast.success("Gangsheet loaded", { id: toastId });
 
       void (async () => {
         const urls = Array.from(
@@ -839,8 +860,10 @@ export default function Editor() {
           );
         }
       })();
+      return true;
     } catch (err: any) {
-      toast.error(err?.message || "Failed to load gangsheet", { id: toastId });
+      if (!options.quiet) toast.error(err?.message || "Failed to load gangsheet", { id: toastId });
+      return false;
     } finally {
       setIsGangsheetBusy(false);
     }
@@ -924,7 +947,7 @@ export default function Editor() {
         primaryLabel: "Save & Load",
         secondaryLabel: "Discard & Load",
       },
-      () => loadGangsheetById(id),
+      async () => void (await loadGangsheetById(id)),
     );
   };
 
@@ -1034,6 +1057,7 @@ export default function Editor() {
       size: `${widthIn.toFixed(1)}" × ${heightIn.toFixed(1)}"`,
       itemSpacingIn: settings.spacing,
       sheetMarginIn: settings.marginSize,
+      sheetChanged: false,
     };
   };
 
@@ -1131,36 +1155,148 @@ export default function Editor() {
   };
 
   /**
-   * Brings the board's cart line up to date with the board, keeping its
-   * quantity and place in the cart.
+   * Update Cart: replaces the cart's version of this sheet with what is on the
+   * board, keeping the line's quantity and place.
    */
-  const updateCartSheet = async (options: { silent?: boolean } = {}): Promise<boolean> => {
+  const updateCartSheet = async () => {
     const currentItems = getCurrentItems();
-    if (!cartLine || !currentLoadedDesignId || !currentItems?.length) return false;
-    // Artwork still uploading exists only in this browser; the line waits for it.
-    if (artworkNotUploaded(currentItems)) return false;
+    if (!cartLine || !currentLoadedDesignId || !currentItems?.length) return;
+    // The sheet is saved first, as when it was added: an order must never hold
+    // artwork that exists only in this browser.
+    const saved = await saveRef.current();
+    if (!saved.ok) {
+      toast.error(saved.reason || "This sheet could not be saved, so your cart wasn't updated. Please try again.");
+      return;
+    }
     const lineId = cartLine.id;
     const fields = boardAsCartLine(currentLoadedDesignId, sheetTitle);
     setCartItems((prev) =>
-      prev.map((line) =>
-        line.id === lineId
-          ? {
-              ...line,
-              ...fields,
-              // Without a snapshot the cart draws the sheet from its items, which
-              // is accurate and free — so the stale one goes rather than staying.
-              image: "/placeholder-gangsheet.png",
-            }
-          : line,
-      ),
+      prev.map((line) => (line.id === lineId ? { ...line, ...fields, image: "/placeholder-gangsheet.png" } : line)),
     );
-    /*
-     * A screenshot costs a full render of the board, and these run every time
-     * editing settles. The cart's own preview covers it until the customer does
-     * something deliberate, which is when a snapshot is worth taking.
-     */
-    if (!options.silent) void snapshotIntoCartLine(lineId);
-    return true;
+    void snapshotIntoCartLine(lineId);
+    toast.success(`Your cart now has the latest “${sheetTitle}”.`, { id: "cart-add" });
+  };
+
+  /**
+   * Save as a new sheet: the board becomes a sheet of its own, and the sheet it
+   * came from goes back to the version in the cart. Nothing in the cart changes.
+   */
+  const saveBoardAsNewSheet = async () => {
+    const line = cartLine;
+    const originalId = currentLoadedDesignId;
+    const items = getCurrentItems();
+    if (!line || !originalId || items.length === 0) return;
+    if (artworkNotUploaded(items)) {
+      toast.error(ARTWORK_PENDING_MESSAGE);
+      return;
+    }
+    setIsGangsheetBusy(true);
+    const toastId = toast.loading("Saving as a new sheet...");
+    try {
+      const { normalizedItems, mappedItems } = mapItemsForSave(items);
+      const { items: payloadItems } = await stripEmbeddedImages({ items: mappedItems });
+      const thumbnail = await captureArtboard().catch(() => undefined);
+      const created = await apiFetch("/customer/designs", {
+        method: "POST",
+        body: JSON.stringify({
+          title: sheetTitle,
+          // Names are unique: the copy takes the next free one.
+          autoName: true,
+          thumbnail,
+          size: {
+            widthIn: headerInfo?.widthIn || getSheetWidthIn(),
+            heightIn: headerInfo?.heightIn || getMinSheetLengthIn(),
+          },
+          pricing: { areaSqFt: headerInfo?.areaSf ?? 0, price: headerInfo?.price ?? 0 },
+          artboardData: { items: payloadItems, ...sheetSettingsForSave(settings) },
+        }),
+      });
+      if (!created?.id) throw new Error("The new sheet could not be saved. Please try again.");
+      const newId = String(created.id);
+      const newTitle = String(created.title || sheetTitle);
+
+      // The board is the new sheet from here; nothing more is written to the original.
+      setCurrentLoadedDesignId(newId);
+      setCurrentLoadedDesignTitle(newTitle);
+      setDraftDesignTitle(null);
+      setBaselineSnapshot(getGangsheetSnapshot(normalizedItems));
+      setSaveState("saved");
+      setSaveError(null);
+
+      let restored = false;
+      try {
+        const lineItems = Array.isArray(line.items) ? line.items : [];
+        const { items: cartPayload } = await stripEmbeddedImages({ items: mapItemsForSave(lineItems).mappedItems });
+        await apiFetch(`/customer/designs/${originalId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            ...(typeof line.image === "string" && /^(data:|https?:)/.test(line.image) ? { thumbnail: line.image } : {}),
+            artboardData: {
+              items: cartPayload,
+              itemSpacingIn: typeof line.itemSpacingIn === "number" ? line.itemSpacingIn : DEFAULT_SHEET_SETTINGS.spacing,
+              sheetMarginIn: typeof line.sheetMarginIn === "number" ? line.sheetMarginIn : DEFAULT_SHEET_SETTINGS.marginSize,
+              autoNest: typeof line.autoNest === "boolean" ? line.autoNest : DEFAULT_SHEET_SETTINGS.autoNestStickers,
+            },
+          }),
+        });
+        setCartItems((prev) => prev.map((l) => (l.id === line.id ? { ...l, sheetChanged: false } : l)));
+        restored = true;
+      } catch {
+        // The original keeps the newer changes; its cart line still says so.
+      }
+      fetchDesigns();
+      toast.success(
+        restored
+          ? `Saved as “${newTitle}”. “${line.name}” is back to the version in your cart.`
+          : `Saved as “${newTitle}”. Your cart is unchanged.`,
+        { id: toastId, duration: 6000 },
+      );
+    } catch (err: any) {
+      toast.error(err?.message || "The new sheet could not be saved. Please try again.", { id: toastId });
+    } finally {
+      setIsGangsheetBusy(false);
+    }
+  };
+
+  /** The saved sheet's current contents as a cart line holds them. */
+  const sheetAsCartFields = async (designId: string, line: any) => {
+    const design = await apiFetch(`/customer/designs/${designId}`);
+    const savedItems = Array.isArray(design?.artboardData?.items) ? design.artboardData.items : [];
+    if (savedItems.length === 0) return null;
+    const items = await withPixelSizes(await designItemsForBoard(savedItems));
+    const sheet = sheetSettingsFromSaved(design?.artboardData);
+    const widthIn = Number(line.widthIn) || getSheetWidthIn();
+    // Priced from its length by the cart's repricing, like any line.
+    const heightIn = billableSheetDimensions(
+      sheetContentLengthIn(items, widthIn, sheet.marginSize, sheet.spacing),
+    ).heightIn;
+    return {
+      name: design?.title || line.name,
+      items,
+      designSignature: getGangsheetSnapshot(items),
+      autoNest: sheet.autoNestStickers,
+      itemSpacingIn: sheet.spacing,
+      sheetMarginIn: sheet.marginSize,
+      heightIn,
+      size: `${widthIn.toFixed(1)}" × ${heightIn.toFixed(1)}"`,
+      image: "/placeholder-gangsheet.png",
+      sheetChanged: false,
+    };
+  };
+
+  /** Update, from the cart: brings a line up to its saved sheet, whether or not that sheet is on the board. */
+  const updateCartLineFromSheet = async (line: any) => {
+    const designId = line?.designId ? String(line.designId) : null;
+    if (!designId) return;
+    if (designId === currentLoadedDesignId) return void (await updateCartSheet());
+    try {
+      const fields = await sheetAsCartFields(designId, line);
+      if (!fields) throw new Error();
+      setCartItems((prev) => prev.map((l) => (l.id === line.id ? { ...l, ...fields } : l)));
+      toast.success(`Your cart now has the latest “${fields.name}”.`, { id: "cart-add" });
+    } catch {
+      toast.error("That sheet couldn't be updated in your cart. Please try again.");
+    }
   };
 
   const saveCartLineAsSheet = async (line: any): Promise<{ id: string; title: string } | null> => {
@@ -1234,40 +1370,9 @@ export default function Editor() {
         primaryLabel: "Save & Open",
         secondaryLabel: "Discard & Open",
       },
-      () => loadGangsheetById(id),
+      async () => void (await loadGangsheetById(id)),
     );
   };
-
-  /*
-   * A sheet in the cart stays in step with the board.
-   *
-   * There is one version of a sheet: the saved one, which is also what's in the
-   * cart. Whatever route opened it, changes on the board land on its cart line a
-   * moment after the board settles (and in the saved sheet, through autosave).
-   * A separate sheet is made with Start a new sheet, or Duplicate in the saved
-   * list — never by changing one that's in the cart.
-   */
-  const CART_SYNC_DELAY_MS = 1200;
-  const cartSyncRef = useRef<(options?: { silent?: boolean }) => Promise<boolean>>(async () => false);
-  cartSyncRef.current = updateCartSheet;
-  useEffect(() => {
-    if (!cartLine) return;
-    if (
-      cartLine.designSignature === currentSnapshot &&
-      cartLine.name === sheetTitle &&
-      cartLine.autoNest === settings.autoNestStickers &&
-      cartLine.itemSpacingIn === settings.spacing &&
-      cartLine.sheetMarginIn === settings.marginSize
-    ) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      void cartSyncRef.current({ silent: true }).then((updated) => {
-        if (updated) showCartUpdateNotice(sheetTitle);
-      });
-    }, CART_SYNC_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [currentSnapshot, cartLine, sheetTitle, settings.autoNestStickers, settings.spacing, settings.marginSize]);
 
   /**
    * Clears the board for a separate sheet, so the next add is a new cart line.
@@ -1289,14 +1394,50 @@ export default function Editor() {
   };
 
   /*
-   * Every sheet in the cart is a saved sheet, and matches it.
+   * The store opens on the sheet the customer last had open. It is already
+   * saved, so this is the same as loading it from the gallery — unless they
+   * have started on the board before it arrives, or left a blank board on purpose.
+   */
+  const [sheetReopenedFor, setSheetReopenedFor] = useState<string | null>(null);
+  const reopenRef = useRef<() => Promise<void>>(async () => {});
+  reopenRef.current = async () => {
+    const userId = String(user?.id);
+    const untouched = () => !currentLoadedDesignIdRef.current && boardItemsRef.current.length === 0;
+    try {
+      const remembered = readLastSheet(userId);
+      let mostRecent: string | null = null;
+      if (remembered === null) {
+        const res = await apiFetch("/customer/designs");
+        mostRecent = Array.isArray(res?.designs) && res.designs[0]?.id ? String(res.designs[0].id) : null;
+      }
+      const id = sheetToReopen(remembered, mostRecent);
+      if (id && untouched()) await loadGangsheetById(id, { quiet: true });
+    } catch {
+      // Nothing to reopen; the board stays blank.
+    } finally {
+      setSheetReopenedFor(userId);
+    }
+  };
+  useEffect(() => {
+    if (!isCustomer || sheetReopenedFor === String(user?.id)) return;
+    void reopenRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCustomer, user?.id, sheetReopenedFor]);
+  useEffect(() => {
+    if (!isCustomer || sheetReopenedFor !== String(user?.id)) return;
+    writeLastSheet(String(user.id), currentLoadedDesignId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLoadedDesignId, isCustomer, user?.id, sheetReopenedFor]);
+
+  /*
+   * Every sheet in the cart is a saved sheet.
    *
    * Carts built before lines were tied to their saved sheet can have two lines
-   * for one sheet, lines for no saved sheet at all, or a line showing an older
-   * version than the saved one. Once the account's cart has loaded this merges
-   * the duplicates, saves the orphans as sheets of their own, and brings each
-   * line in step with its saved sheet (names included). After that, lines
-   * without a sheet (a reorder, say) are saved as they arrive.
+   * for one sheet, or lines for no saved sheet at all. Once the account's cart
+   * has loaded this merges the duplicates and saves the orphans as sheets of
+   * their own. After that, lines without a sheet (a reorder, say) are saved as
+   * they arrive. A line's contents are never changed here: the cart holds the
+   * version that was added.
    */
   const reconcilingRef = useRef(false);
   const reconciledForRef = useRef<string | null>(null);
@@ -1339,42 +1480,13 @@ export default function Editor() {
               savedAny = true;
               updates.set(line.id, { designId: saved.id, name: saved.title });
             } else if (firstPass) {
-              const design = await apiFetch(`/customer/designs/${designId}`);
-              const savedItems = Array.isArray(design?.artboardData?.items) ? design.artboardData.items : [];
-              if (savedItems.length === 0) continue;
-              const items = await withPixelSizes(await designItemsForBoard(savedItems));
-              const sheet = sheetSettingsFromSaved(design?.artboardData);
-              const designSignature = getGangsheetSnapshot(items);
-              const name = design?.title || line.name;
-              const lineComplete = (Array.isArray(line.items) ? line.items : []).every(
-                (it: any) => it?.url && (it?.croppedWidthPx > 0 || it?.nativeWidthPx > 0),
+              // The line keeps the version that was added. Only what the cart
+              // needs to draw and check it is filled in.
+              const lineItems = Array.isArray(line.items) ? line.items : [];
+              const incomplete = lineItems.some(
+                (it: any) => (it?.croppedUrl || it?.url) && !(it?.croppedWidthPx > 0) && !(it?.nativeWidthPx > 0),
               );
-              if (
-                lineComplete &&
-                designSignature === line.designSignature &&
-                name === line.name &&
-                sheet.autoNestStickers === line.autoNest &&
-                sheet.spacing === line.itemSpacingIn &&
-                sheet.marginSize === line.sheetMarginIn
-              ) {
-                continue;
-              }
-              const widthIn = Number(line.widthIn) || getSheetWidthIn();
-              // Priced from its length by the cart's repricing, like any line.
-              const heightIn = billableSheetDimensions(
-                sheetContentLengthIn(items, widthIn, sheet.marginSize, sheet.spacing),
-              ).heightIn;
-              updates.set(line.id, {
-                name,
-                items,
-                designSignature,
-                autoNest: sheet.autoNestStickers,
-                itemSpacingIn: sheet.spacing,
-                sheetMarginIn: sheet.marginSize,
-                heightIn,
-                size: `${widthIn.toFixed(1)}" × ${heightIn.toFixed(1)}"`,
-                image: "/placeholder-gangsheet.png",
-              });
+              if (incomplete) updates.set(line.id, { items: await withPixelSizes(lineItems) });
             }
           } catch {
             // One line failing (offline, say) leaves that line as it was, and
@@ -1442,11 +1554,13 @@ export default function Editor() {
   const addToCartRef = useRef<() => Promise<void> | void>(() => {});
 
   const handleAddGangSheetToCart = async () => {
-    // Already in the cart, and kept in step with the board — so this is the
-    // customer asking to see it.
+    // In the cart as it stands, so this is the customer asking to see it.
     if (cartSheetState === "current") {
-      await cartSyncRef.current({ silent: true });
       setShowCheckoutModal(true);
+      return;
+    }
+    if (cartSheetState === "changed") {
+      await updateCartSheet();
       return;
     }
     const currentItems = getCurrentItems();
@@ -1615,13 +1729,22 @@ export default function Editor() {
      * its own unique name instead of sitting in the cart under the original's
      * name until the background save renamed it.
      */
-    const adding = await Promise.all(
+    const adding = (
+      await Promise.all(
       toAdd.map(async (line: any) => {
         let ready: any = line;
         try {
-          ready = { ...line, items: await withPixelSizes(await designItemsForBoard(line.items || [])) };
+          const items = await withPixelSizes(await designItemsForBoard(line.items || []));
+          ready = { ...line, items, designSignature: getGangsheetSnapshot(items), sheetChanged: false };
         } catch {
           // Keep the stored shape; checkout can still price and place it.
+        }
+        // The same contents are already in the cart (this order reordered before).
+        if (
+          ready.designSignature &&
+          cartItems.some((l: any) => (l?.type || "gangsheet") === "gangsheet" && l?.designSignature === ready.designSignature)
+        ) {
+          return null;
         }
         if (!ready.designId) {
           try {
@@ -1633,13 +1756,35 @@ export default function Editor() {
         }
         return ready;
       }),
-    );
+      )
+    ).filter(Boolean);
     if (adding.some((line: any) => line.designId && !inCart.has(String(line.designId)))) fetchDesigns();
-    setCartItems((prev) => [...prev, ...adding]);
+    /*
+     * A sheet already in the cart at an earlier version: the order being
+     * repeated matches the saved sheet, so the line is brought up to it.
+     */
+    const refreshed = new Map<number, any>();
+    for (const line of printable) {
+      if (!line.designId || !inCart.has(String(line.designId))) continue;
+      const existing = cartItems.find((l: any) => String(l?.designId ?? "") === String(line.designId));
+      if (!existing?.sheetChanged) continue;
+      try {
+        const fields = await sheetAsCartFields(String(line.designId), existing);
+        if (fields) refreshed.set(existing.id, fields);
+      } catch {
+        // Left as it is; the cart still says the sheet has changed.
+      }
+    }
+    setCartItems((prev) => [
+      ...prev.map((l) => (refreshed.has(l.id) ? { ...l, ...refreshed.get(l.id) } : l)),
+      ...adding,
+    ]);
     setShowOrderHistoryModal(false);
     setShowOrderDetailsModal(false);
     setShowCheckoutModal(true);
-    if (adding.length === 0) {
+    if (adding.length === 0 && refreshed.size > 0) {
+      toast.success("Your cart was updated to match this order");
+    } else if (adding.length === 0) {
       toast.success(printable.length === 1 ? "That sheet is already in your cart" : "Those sheets are already in your cart");
     } else {
       toast.success(adding.length === 1 ? "Added the sheet to your cart" : `Added ${adding.length} sheets to your cart`);
@@ -1703,6 +1848,8 @@ export default function Editor() {
           onAddGangSheetToCart={handleAddGangSheetToCart}
           canAddGangSheetToCart={getCurrentItems().length > 0}
           cartSheetState={cartSheetState}
+          onSaveAsNewSheet={saveBoardAsNewSheet}
+          cartActionBusy={isGangsheetBusy}
           /* A guest has no account to save to, and should know it before they
              spend an hour on a sheet. */
           saveState={
@@ -1780,7 +1927,6 @@ export default function Editor() {
               setDraftDesignTitle(newTitle);
               return;
             }
-            // The cart line follows through the cart sync (it compares names).
             await renameSheet(currentLoadedDesignId, newTitle);
           }}
           onSignInClick={() => {
@@ -1910,6 +2056,7 @@ export default function Editor() {
             setShowLoadModal(true);
             setIsSidebarOpen(false);
           }}
+          onOpenOrderHistory={() => setShowOrderHistoryModal(true)}
           onOpenAccountModal={() => {
             setShowAccountModal(true);
             setIsSidebarOpen(false);
@@ -2080,6 +2227,7 @@ export default function Editor() {
           cartItems={cartItems}
           onUpdateCart={setCartItems}
           onEditSheet={editCartSheet}
+          onUpdateSheet={updateCartLineFromSheet}
           onStartNewSheet={startNewSheet}
           onClearCart={() => setCartItems([])}
           onCheckoutSuccess={() => {

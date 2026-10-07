@@ -1,3 +1,4 @@
+import { loadEditorSettings } from "../../../../../lib/utils/editorSettings";
 import type { AiEditProvider, AiEditRequest, AiEditResult, AiIntentId } from "../types";
 import { AiEditAbortedError } from "../types";
 
@@ -304,7 +305,7 @@ export const localProvider: AiEditProvider = {
       // Reserve the tail of the bar for the sticker border pass.
       const ceiling = intent === "to-sticker" ? 80 : 100;
       onProgress?.({ phase, pct: Math.round((p / 100) * ceiling) });
-    });
+    }, { clearEnclosed: loadEditorSettings().bgClearEnclosed });
     throwIfAborted(signal);
 
     if (intent !== "to-sticker") {

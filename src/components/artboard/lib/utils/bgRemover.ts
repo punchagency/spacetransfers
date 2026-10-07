@@ -103,9 +103,117 @@ function detectSolidBackground(
   return null;
 }
 
+/** A background plain enough to remove by colour, without the AI model. */
+export interface PlainBackground {
+  /** Pure white and pure black keep their own, stricter rules. */
+  kind: BgType | "color";
+  r: number;
+  g: number;
+  b: number;
+  /** How far a pixel's channels may sit from the background colour and still be background. */
+  tolerance: number;
+}
+
 /**
- * Removes a solid white or black background while keeping all object
- * detail — including fine particles and soft edges — intact.
+ * Share of the border that must be one colour for the background to count as
+ * plain. Well short of all of it: an auto-cropped image has its artwork
+ * touching every edge. The corners make up the difference — artwork rarely
+ * fills them, a photograph's scenery usually does.
+ */
+const PLAIN_BORDER_SHARE = 0.7;
+const PLAIN_CORNERS = 3;
+/** How far apart border pixels may be and still be "one colour" (a soft gradient or vignette passes). */
+const PLAIN_BORDER_SPREAD = 48;
+
+/**
+ * Finds a plain background of any colour — off-white paper, a grey studio
+ * backdrop, a flat brand colour, a soft gradient — by looking at the image's
+ * border. Pure white and pure black are recognised first, by their corners,
+ * and keep the rules they always had.
+ */
+export function detectPlainBackground(data: Uint8ClampedArray, w: number, h: number): PlainBackground | null {
+  const solid = detectSolidBackground(data, w, h);
+  if (solid === "white") return { kind: "white", r: 255, g: 255, b: 255, tolerance: 30 };
+
+  const strip = Math.max(2, Math.min(8, Math.round(Math.min(w, h) * 0.005)));
+  if (w < strip * 4 || h < strip * 4) return null;
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  let count = 0;
+  const eachBorderPixel = (visit: (i: number) => void) => {
+    for (let y = 0; y < h; y++) {
+      const edgeRow = y < strip || y >= h - strip;
+      for (let x = 0; x < w; x++) {
+        if (edgeRow || x < strip || x >= w - strip) visit((y * w + x) * 4);
+        else x = w - strip - 1; // skip the interior of this row
+      }
+    }
+  };
+  eachBorderPixel((i) => {
+    if (data[i + 3] < 250) return;
+    hist[0][data[i]]++;
+    hist[1][data[i + 1]]++;
+    hist[2][data[i + 2]]++;
+    count++;
+  });
+  if (count === 0) return null;
+  const median = (bins: Uint32Array) => {
+    let seen = 0;
+    for (let v = 0; v < 256; v++) {
+      seen += bins[v];
+      if (seen * 2 >= count) return v;
+    }
+    return 255;
+  };
+  const r = median(hist[0]), g = median(hist[1]), b = median(hist[2]);
+
+  // True black keeps its strict rule. A dark backdrop that is not quite black —
+  // a night sky, a charcoal card — fails that rule on every pixel, so it is
+  // matched by its own colour below instead.
+  if (solid === "black" && Math.max(r, g, b) <= 18 && Math.max(r, g, b) - Math.min(r, g, b) <= 8) {
+    return { kind: "black", r: 0, g: 0, b: 0, tolerance: 18 };
+  }
+
+  const spread = new Uint32Array(256);
+  eachBorderPixel((i) => {
+    if (data[i + 3] < 250) return;
+    spread[Math.max(Math.abs(data[i] - r), Math.abs(data[i + 1] - g), Math.abs(data[i + 2] - b))]++;
+  });
+  let within = 0;
+  for (let d = 0; d <= PLAIN_BORDER_SPREAD; d++) within += spread[d];
+  if (within / count < PLAIN_BORDER_SHARE) return null;
+
+  const block = Math.max(4, Math.min(20, Math.floor(Math.min(w, h) / 8)));
+  let plainCorners = 0;
+  for (const [cx, cy] of [[0, 0], [w - block, 0], [0, h - block], [w - block, h - block]]) {
+    let match = 0;
+    for (let dy = 0; dy < block; dy++) {
+      for (let dx = 0; dx < block; dx++) {
+        const i = ((cy + dy) * w + cx + dx) * 4;
+        if (
+          data[i + 3] >= 250 &&
+          Math.max(Math.abs(data[i] - r), Math.abs(data[i + 1] - g), Math.abs(data[i + 2] - b)) <= PLAIN_BORDER_SPREAD
+        ) match++;
+      }
+    }
+    if (match / (block * block) >= 0.85) plainCorners++;
+  }
+  if (plainCorners < PLAIN_CORNERS) return null;
+
+  // Wide enough to take in the border's own variation, no wider.
+  let seen = 0, p98 = 0;
+  for (let d = 0; d < 256; d++) {
+    seen += spread[d];
+    if (seen >= within * 0.98) { p98 = d; break; }
+  }
+  const dark = Math.max(r, g, b) < 60;
+  // A dark backdrop sits close to dark artwork, so it gets far less room.
+  const tolerance = dark ? Math.min(24, Math.max(12, p98 + 6)) : Math.min(72, Math.max(30, p98 + 14));
+  return { kind: "color", r, g, b, tolerance };
+}
+
+/**
+ * Removes a plain background while keeping all object detail — including
+ * fine particles and soft edges — intact.
  *
  * Strategy:
  * 1. Flood-fill from all four image edges to find the connected background
@@ -123,12 +231,14 @@ function detectSolidBackground(
  * desaturate, lighten, or partially erase the subject: what wasn't background
  * keeps its exact original colour and opacity.
  */
-function removeColorBackground(
+export function removePlainBackground(
   data: Uint8ClampedArray,
   w: number,
   h: number,
-  bgType: BgType,
+  bg: PlainBackground,
+  options: { clearEnclosed?: boolean } = {},
 ): void {
+  const bgType = bg.kind;
   // How close a pixel must be to a WHITE bg to be flood-filled.
   const WHITE_TOL = 30;
 
@@ -161,6 +271,13 @@ function removeColorBackground(
     if (bgType === "white") {
       return r >= 255 - WHITE_TOL && g >= 255 - WHITE_TOL && b >= 255 - WHITE_TOL;
     }
+    if (bgType === "color") {
+      return (
+        Math.abs(r - bg.r) <= bg.tolerance &&
+        Math.abs(g - bg.g) <= bg.tolerance &&
+        Math.abs(b - bg.b) <= bg.tolerance
+      );
+    }
     const maxCh = Math.max(r, g, b);
     const minCh = Math.min(r, g, b);
     return maxCh <= BLACK_TOL && maxCh - minCh <= BLACK_CHROMA_TOL;
@@ -191,6 +308,37 @@ function removeColorBackground(
     if (py < h - 1) push(flat + w);
   }
 
+  // ── Step 1b: background the subject encloses ───────────────────────────
+  // The flood only reaches background touching the image's edge. The insides
+  // of letters and the gaps between lines are the same background, cut off
+  // from it — left alone they print as solid patches. Each enclosed patch is
+  // cleared whole; specks smaller than a few pixels are highlights or noise
+  // inside the artwork and are kept.
+  if (options.clearEnclosed) {
+    const minPatch = Math.max(4, Math.round((w * h) / 2_000_000));
+    const patch: number[] = [];
+    for (let start = 0; start < w * h; start++) {
+      if (visited[start] || !isBg(start)) continue;
+      patch.length = 0;
+      visited[start] = 2;
+      stack.push(start);
+      while (stack.length) {
+        const flat = stack.pop()!;
+        patch.push(flat);
+        const px = flat % w, py = (flat / w) | 0;
+        for (const next of [px > 0 ? flat - 1 : -1, px < w - 1 ? flat + 1 : -1, py > 0 ? flat - w : -1, py < h - 1 ? flat + w : -1]) {
+          if (next >= 0 && !visited[next] && isBg(next)) {
+            visited[next] = 2;
+            stack.push(next);
+          }
+        }
+      }
+      // 1 = remove, 3 = looked at and kept.
+      const mark = patch.length >= minPatch ? 1 : 3;
+      for (const flat of patch) visited[flat] = mark;
+    }
+  }
+
   // ── Step 2: binary mask — background out, foreground untouched ─────────
   // ONLY flood-filled background pixels are modified (alpha → 0). Object
   // pixels (visited === 0) keep their exact original RGB *and* original alpha:
@@ -198,7 +346,7 @@ function removeColorBackground(
   // This is what guarantees a dark/black subject region stays fully opaque and
   // true to colour instead of being bleached.
   for (let i = 0; i < w * h; i++) {
-    if (!visited[i]) continue;
+    if (visited[i] !== 1) continue;
     data[i * 4 + 3] = 0;
   }
 
@@ -207,7 +355,9 @@ function removeColorBackground(
   // old background. They stay opaque (we never fade the subject), so repaint
   // that thin rim with colour sampled from the clean interior — removing the
   // background-coloured halo without touching a single alpha value.
-  decontaminateEdges(data, w, h, bgType);
+  const light = Math.min(bg.r, bg.g, bg.b) > 200;
+  const dark = Math.max(bg.r, bg.g, bg.b) < 40;
+  decontaminateEdges(data, w, h, light ? "white" : dark ? "black" : null);
 }
 
 /**
@@ -311,6 +461,7 @@ function binarizeAlpha(data: Uint8ClampedArray, threshold = 128): void {
 export async function removeBackgroundAI(
   url: string,
   onProgress?: (phase: string, pct: number) => void,
+  options: { clearEnclosed?: boolean } = {},
 ): Promise<BgRemovalResult> {
   const fetchRes = await fetch(url);
   const inputBlob = await fetchRes.blob();
@@ -329,34 +480,43 @@ export async function removeBackgroundAI(
   srcCtx.drawImage(origImg, 0, 0);
   const imageData = srcCtx.getImageData(0, 0, origW, origH);
 
-  const bgType = detectSolidBackground(imageData.data, origW, origH);
+  const plain = detectPlainBackground(imageData.data, origW, origH);
 
-  if (bgType) {
-    // Fast path: plain white / black background — use colour-keying.
-    // This path never crops and never touches isolated particles.
+  if (plain) {
+    // Fast path: a plain background is removed by colour. Exact, instant, and
+    // it keeps fine detail a segmentation model would smooth over.
     onProgress?.("Removing background...", 30);
-    removeColorBackground(imageData.data, origW, origH, bgType);
+    const keyed = new Uint8ClampedArray(imageData.data);
+    removePlainBackground(keyed, origW, origH, plain, { clearEnclosed: options.clearEnclosed !== false });
 
-    if (!hasVisiblePixels(imageData.data)) {
-      throw new Error("No subject detected — the entire image was removed");
+    let cleared = 0;
+    for (let i = 3; i < keyed.length; i += 4) if (keyed[i] === 0 && imageData.data[i] !== 0) cleared++;
+    // A border that only looked plain: almost nothing came away, so this is
+    // a job for the model after all.
+    const worthKeeping = plain.kind !== "color" || cleared / (origW * origH) >= 0.02;
+
+    if (worthKeeping) {
+      if (!hasVisiblePixels(keyed)) {
+        throw new Error("No subject detected — the entire image was removed");
+      }
+      imageData.data.set(keyed);
+      srcCtx.putImageData(imageData, 0, 0);
+
+      const trimmed = trimTransparentCanvas(srcCanvas, srcCtx, origW, origH);
+      if (!trimmed) {
+        throw new Error("No subject detected — the entire image was removed");
+      }
+
+      onProgress?.("Done", 100);
+
+      return {
+        dataUrl: trimmed.dataUrl,
+        widthPx: trimmed.cw,
+        heightPx: trimmed.ch,
+        originalWidthPx: origW,
+        originalHeightPx: origH,
+      };
     }
-
-    srcCtx.putImageData(imageData, 0, 0);
-
-    const trimmed = trimTransparentCanvas(srcCanvas, srcCtx, origW, origH);
-    if (!trimmed) {
-      throw new Error("No subject detected — the entire image was removed");
-    }
-
-    onProgress?.("Done", 100);
-
-    return {
-      dataUrl: trimmed.dataUrl,
-      widthPx: trimmed.cw,
-      heightPx: trimmed.ch,
-      originalWidthPx: origW,
-      originalHeightPx: origH,
-    };
   }
 
   // Slow path: non-solid background — use the AI model.

@@ -664,7 +664,12 @@ function ArtboardItem({
                    for the visible ones, which the browser fetches eagerly
                    regardless, and identical URLs are served from cache. */
                 loading="lazy"
-                className={`object-contain touch-none ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
+                /* Until the artwork arrives the cell shows a placeholder, not
+                   the browser's alt text over an empty box. */
+                onLoad={(e) => {
+                  e.currentTarget.dataset.loaded = "1";
+                }}
+                className={`object-contain touch-none text-transparent [&:not([data-loaded])]:bg-slate-300/50 [&:not([data-loaded])]:animate-pulse ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
                   isSelected && renderCopies > 1
                     ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
                     : ""

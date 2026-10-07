@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useCanHover } from "../lib/useIsMobile";
-import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
+import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingCart, MdCheckCircle, MdSync, MdExpandMore, MdEdit, MdCloudDone, MdCloudUpload, MdErrorOutline, MdCloudOff } from "react-icons/md";
 import { FiLayers } from "react-icons/fi";
 import { usePricingSettings } from "../lib/utils/pricingRates";
 import { DpiStatusChip } from "./common/DpiStatus";
@@ -127,6 +127,8 @@ export default function Header({
   onAddGangSheetToCart,
   canAddGangSheetToCart,
   cartSheetState = "none",
+  onSaveAsNewSheet,
+  cartActionBusy = false,
   onUndo,
   canUndo,
   onRedo,
@@ -162,7 +164,10 @@ export default function Header({
    * Whether this board is in the cart. It has no "needs updating" state: a sheet
    * in the cart is kept in step with the board, so there is nothing to press.
    */
-  cartSheetState?: "none" | "current";
+  cartSheetState?: "none" | "current" | "changed";
+  /** Turns the changed board into a sheet of its own, leaving the cart's version alone. */
+  onSaveAsNewSheet?: () => void;
+  cartActionBusy?: boolean;
   onUndo?: () => void;
   canUndo?: boolean;
   onRedo?: () => void;
@@ -189,6 +194,25 @@ export default function Header({
   const { pricePerSqFt } = usePricingSettings();
   const canHover = useCanHover();
   const [isRenaming, setIsRenaming] = useState(false);
+  const [cartMenuOpen, setCartMenuOpen] = useState(false);
+  const cartMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!cartMenuOpen) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !cartMenuRef.current?.contains(e.target as Node)) {
+        setCartMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [cartMenuOpen]);
+  useEffect(() => {
+    if (cartSheetState !== "changed") setCartMenuOpen(false);
+  }, [cartSheetState]);
   const [renameValue, setRenameValue] = useState("");
 
   useEffect(() => {
@@ -401,6 +425,63 @@ export default function Header({
             Sign In
           </button>
         ) : null}
+        {cartSheetState === "changed" ? (
+          <div ref={cartMenuRef} className="relative inline-flex">
+            <button
+              onClick={onAddGangSheetToCart}
+              disabled={cartActionBusy}
+              title="You've changed this sheet since adding it. Put this version in your cart (C)"
+              className="inline-flex items-center justify-center gap-1.5 min-h-10 sm:min-h-0 px-2.5 sm:px-3 py-1.5 sm:py-0 text-xs font-semibold rounded-l-2xl border border-black bg-black text-white hover:bg-gray-900 cursor-pointer disabled:opacity-60 sm:self-stretch"
+            >
+              <MdSync className="w-4 h-4 sm:hidden" />
+              <span className="hidden sm:inline">Update Cart</span>
+            </button>
+            <button
+              onClick={() => setCartMenuOpen((open) => !open)}
+              disabled={cartActionBusy}
+              aria-label="More cart options"
+              aria-haspopup="menu"
+              aria-expanded={cartMenuOpen}
+              className="inline-flex items-center justify-center min-h-10 sm:min-h-0 px-1.5 rounded-r-2xl border border-l-0 border-black bg-black text-white hover:bg-gray-900 cursor-pointer disabled:opacity-60 sm:self-stretch"
+            >
+              <MdExpandMore className="w-4 h-4" />
+            </button>
+            {cartMenuOpen ? (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-[9999] mt-2 w-64 rounded-xl border border-gray-200 bg-white p-1.5 text-left shadow-lg"
+              >
+                <p className="px-2.5 pb-1.5 pt-1 text-[11px] leading-4 text-gray-500">
+                  Your cart still has this sheet as you added it.
+                </p>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setCartMenuOpen(false);
+                    onAddGangSheetToCart?.();
+                  }}
+                  className="block w-full rounded-lg px-2.5 py-2 text-left hover:bg-gray-50"
+                >
+                  <span className="block text-[13px] font-semibold text-gray-900">Update cart</span>
+                  <span className="block text-[11px] leading-4 text-gray-500">Order the sheet as it is now.</span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setCartMenuOpen(false);
+                    onSaveAsNewSheet?.();
+                  }}
+                  className="block w-full rounded-lg px-2.5 py-2 text-left hover:bg-gray-50"
+                >
+                  <span className="block text-[13px] font-semibold text-gray-900">Save as a new sheet</span>
+                  <span className="block text-[11px] leading-4 text-gray-500">
+                    Keep these changes as a separate sheet. The one in your cart stays as it was.
+                  </span>
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : (
         <button
           onClick={onAddGangSheetToCart}
           disabled={canAddGangSheetToCart === false}
@@ -408,7 +489,7 @@ export default function Header({
             canAddGangSheetToCart === false
               ? "Add items to the artboard before adding to cart"
               : cartSheetState === "current"
-              ? "This sheet is in your cart and updates with it — open the cart (C)"
+              ? "This sheet is in your cart — open the cart (C)"
               : "Add current gangsheet to cart (C)"
           }
           className={`inline-flex items-center justify-center gap-1.5 min-w-10 min-h-10 sm:min-w-0 sm:min-h-0 px-2 sm:px-3 py-1.5 sm:py-0 text-xs font-medium rounded-2xl border transition-colors ${
@@ -424,6 +505,7 @@ export default function Header({
           )}
           <span className="hidden sm:inline">{cartSheetState === "current" ? "In Cart" : "Add to Cart"}</span>
         </button>
+        )}
 
         {/*
           Shown signed out too.

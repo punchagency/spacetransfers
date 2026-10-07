@@ -3,6 +3,7 @@ import { useIsMobile } from '../lib/useIsMobile';
 import { CANVAS, CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
 import {
     MdSettings,
+    MdReceiptLong,
     MdClose,
     MdStraighten,
     MdVisibility,
@@ -119,9 +120,11 @@ type SidebarProps = {
         marginSize: number;
         canvasBg: string;
         autoCropUploads: boolean;
+        bgClearEnclosed: boolean;
     };
     onUpdateSetting: (key: keyof SidebarProps['settings'], value: any) => void;
     onOpenLoadModal: () => void;
+    onOpenOrderHistory: () => void;
     onOpenAccountModal: () => void;
     onOpenAuthModal: (view: "login" | "register") => void;
     onCreateGangSheet: () => void;
@@ -235,6 +238,7 @@ export default function Sidebar({
     settings,
     onUpdateSetting,
     onOpenLoadModal,
+    onOpenOrderHistory,
     onOpenAccountModal,
     onOpenAuthModal,
     onCreateGangSheet,
@@ -422,6 +426,17 @@ export default function Sidebar({
                                     <p className="text-[12px] text-gray-500">Trim empty space around new images. Change any image from its right-click menu.</p>
                                 </div>
 
+                                <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-100 hover:bg-gray-100 transition-colors">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className="text-[12px] font-semibold text-slate-800">Clear Enclosed Background</span>
+                                        <Toggle checked={settings.bgClearEnclosed} onChange={() => onUpdateSetting('bgClearEnclosed', !settings.bgClearEnclosed)} />
+                                    </div>
+                                    <p className="text-[12px] text-gray-500">
+                                        Take a black ring on a white background. On: BG Remover clears the white around the ring
+                                        and the white inside it, leaving just the ring. Off: the white inside the ring stays and prints.
+                                    </p>
+                                </div>
+
                                 {/* Shown on mobile too. The setting applied on a phone
                                     all along — it was only the control that was hidden,
                                     so the spacing could not be changed there. */}
@@ -539,6 +554,10 @@ export default function Sidebar({
                                         <button onClick={() => { onClose(); onOpenAccountModal(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
                                             <MdPerson size={20} />
                                             <span className="text-[12px] font-medium">Account Settings</span>
+                                        </button>
+                                        <button onClick={() => { onClose(); onOpenOrderHistory(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
+                                            <MdReceiptLong size={20} />
+                                            <span className="text-[12px] font-medium">Order History</span>
                                         </button>
                                         <button onClick={() => { onSignOut(); onClose(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-red-500 hover:text-red-700 hover:bg-red-50 text-left cursor-pointer transition-colors">
                                             <MdLogout size={20} className="transform rotate-180" />

@@ -187,3 +187,19 @@ describe("stripEmbeddedData", () => {
     expect(() => stripEmbeddedData(cyclic)).not.toThrow();
   });
 });
+
+describe("cart lines holding different versions of a sheet", () => {
+  const line = { id: 1, widthIn: 23.5, heightIn: 12, name: "Team", designId: "d1", designSignature: "v1", price: 10 };
+
+  it("are not equivalent when the sheet's contents differ", () => {
+    expect(itemListsEquivalent([line], [{ ...line, designSignature: "v2" }])).toBe(false);
+  });
+
+  it("are not equivalent when one is marked as changed since it was added", () => {
+    expect(itemListsEquivalent([line], [{ ...line, sheetChanged: true }])).toBe(false);
+  });
+
+  it("are equivalent when nothing the customer sees differs", () => {
+    expect(itemListsEquivalent([line], [{ ...line, sheetChanged: false }])).toBe(true);
+  });
+});

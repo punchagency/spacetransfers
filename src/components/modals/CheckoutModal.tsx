@@ -37,6 +37,7 @@ interface CheckoutModalProps {
   onUpdateCart?: (items: any[]) => void;
   /** Puts a cart sheet back on the artboard, so edits update that same line. */
   onEditSheet?: (item: any) => void;
+  onUpdateSheet?: (item: any) => void | Promise<void>;
   /** Empties the cart at its owner. Doing it in here alone was lost if this modal closed. */
   onClearCart?: () => void;
   /** Clears the artboard for another sheet, leaving the cart as it is. */
@@ -65,6 +66,7 @@ export default function CheckoutModal({
   cartItems: initialCartItems,
   onUpdateCart,
   onEditSheet,
+  onUpdateSheet,
   onClearCart,
   onStartNewSheet,
   onCheckoutSuccess,
@@ -635,6 +637,7 @@ export default function CheckoutModal({
                       updateQuantity={updateQuantity}
                       removeItem={removeItem}
                       onEditItem={onEditSheet ? (item) => onEditSheet(item) : undefined}
+                      onUpdateItem={onUpdateSheet}
                       onClearCart={() => setConfirmClear(true)}
                       onStartNewSheet={onStartNewSheet ? () => { onClose(); onStartNewSheet(); } : undefined}
                     />

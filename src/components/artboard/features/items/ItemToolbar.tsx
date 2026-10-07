@@ -350,7 +350,7 @@ export default function ItemToolbar({ locked, onGroup, groupAction, onRotate, on
                 </span>
               ) : multi ? (
                 <span className="text-[11px] leading-snug text-gray-600">
-                  Uses AI to erase the background from each selected image that has one, one after another. Images that are already transparent{multiEditable < multiCount ? " and locked ones" : ""} are skipped.
+                  Erases the background from each selected image that has one, one after another. Images that are already transparent{multiEditable < multiCount ? " and locked ones" : ""} are skipped.
                 </span>
               ) : bgJustRemoved ? (
                 /* The box shrinks to the subject — "dimensions are unchanged" said otherwise. */
@@ -367,7 +367,7 @@ export default function ItemToolbar({ locked, onGroup, groupAction, onRotate, on
                 </span>
               ) : (
                 <span className="text-[11px] leading-snug text-gray-600">
-                  Uses AI to detect the subject and erase the surrounding background. Best for photos with a clear foreground.
+                  Makes a plain background transparent, including inside letters and between lines. On photos, uses AI to find the subject and erase what's around it.
                 </span>
               )}
             </div>
