@@ -27,12 +27,18 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
     const [asking, setAsking] = useState(false);
     const [reason, setReason] = useState('');
     const [busy, setBusy] = useState(false);
+    const [reasonMissing, setReasonMissing] = useState(false);
     // Ticked by default: a cancellation is the business's decision, not the partner's fault.
     const [payPartner, setPayPartner] = useState(true);
     const number = formatOrderNumber(displayId, orderId);
     const started = status === 'PRINTING' || status === 'QUALITY_CHECK';
 
     const cancel = async () => {
+        if (!reason.trim()) {
+            setReasonMissing(true);
+            document.getElementById('order-cancel-reason')?.focus();
+            return;
+        }
         setBusy(true);
         try {
             const res = await apiFetch(`/admin/orders/${encodeURIComponent(orderId)}/cancel`, {
@@ -120,19 +126,31 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
                             </div>
                         )}
                         <label htmlFor="order-cancel-reason" className="mt-4 block text-sm font-medium text-gray-700">
-                            Reason (the customer sees this)
+                            Reason <span className="font-normal text-gray-500">(required — the customer sees this)</span>
                         </label>
                         <textarea
                             id="order-cancel-reason"
                             value={reason}
-                            onChange={(e) => setReason(e.target.value)}
+                            onChange={(e) => {
+                                setReason(e.target.value);
+                                setReasonMissing(false);
+                            }}
                             rows={3}
                             placeholder="e.g. The artwork can't be printed as supplied."
-                            className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                            aria-invalid={reasonMissing}
+                            aria-describedby={reasonMissing ? 'order-cancel-reason-error' : undefined}
+                            className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
+                                reasonMissing ? 'border-red-400 focus:border-red-500' : 'border-gray-200 focus:border-blue-500'
+                            }`}
                         />
+                        {reasonMissing && (
+                            <p id="order-cancel-reason-error" className="mt-1 text-sm text-red-600">
+                                Enter a reason to cancel this order.
+                            </p>
+                        )}
                         <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row">
                             <button
-                                onClick={() => { setAsking(false); setReason(''); }}
+                                onClick={() => { setAsking(false); setReason(''); setReasonMissing(false); }}
                                 disabled={busy}
                                 className="flex-1 rounded-xl bg-gray-100 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
                             >
@@ -140,7 +158,7 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
                             </button>
                             <button
                                 onClick={() => void cancel()}
-                                disabled={busy || !reason.trim()}
+                                disabled={busy}
                                 className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                             >
                                 {busy ? 'Cancelling…' : 'Cancel & refund'}
