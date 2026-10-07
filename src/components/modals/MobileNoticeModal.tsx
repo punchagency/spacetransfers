@@ -43,7 +43,7 @@ Building on a phone
           <p className="mt-1.5 text-[13px] leading-relaxed text-gray-600">
 You can build, price and order a gang sheet here: add artwork, drag
             to move, pinch the corners to resize, and check out. Two tools stay
-            on desktop — Enhance resolution and Remove background — because they
+            on desktop — DPI+ and BG Remover — because they
             run a large AI model in the browser.
           </p>
 

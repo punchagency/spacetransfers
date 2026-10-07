@@ -1,3 +1,4 @@
+import { registerSelectedImageSlot } from "../lib/selectedImageSlot";
 import { useEffect, useState } from 'react';
 import { useIsMobile } from '../lib/useIsMobile';
 import { CANVAS, CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
@@ -250,6 +251,7 @@ export default function Sidebar({
 }: SidebarProps) {
     // State for sections
     const [sections, setSections] = useState({
+        selectedImage: true,
         canvasDisplay: true,
         autoNest: true,
         gangSheets: true,
@@ -288,6 +290,25 @@ export default function Sidebar({
 
                 {/* Scrollable Content */}
                 <div className="flex-1 overflow-y-auto px-4 py-2 custom-scrollbar">
+
+                    {/* The selected image's own settings — the same fields as its
+                        right-click panel, which a touch screen has no way to open.
+                        The image renders them into the slot; see `selectedImageSlot`. */}
+                    <div className="border-b border-gray-100 pb-2">
+                        <SectionHeader
+                            title="Selected Image"
+                            expanded={sections.selectedImage}
+                            onToggle={() => toggleSection('selectedImage')}
+                        />
+                        {sections.selectedImage && (
+                            <div className="mb-3">
+                                <div ref={registerSelectedImageSlot} className="selected-image-slot" />
+                                <p className="selected-image-hint text-[12px] leading-relaxed text-gray-500">
+                                    Select one image on the sheet to set its copies, size and position here.
+                                </p>
+                            </div>
+                        )}
+                    </div>
 
                     {/* Canvas Display Section */}
                     <div className="border-b border-gray-100 pb-2">

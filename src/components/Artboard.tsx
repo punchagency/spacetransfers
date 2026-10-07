@@ -12,10 +12,10 @@ import {
   useMaterializeImages,
   useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
-import { snapToGridPoint, isDpiFlagged, shouldWarn, type FadeVerdict } from "./artboard/lib/utils";
+import { snapToGridPoint, isDpiFlagged, shouldWarn } from "./artboard/lib/utils";
 import { isTypingTarget } from "../lib/utils/keyboard";
 import { useCanHover } from "../lib/useIsMobile";
-import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
+import { CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
 import type { AiPanelBridge } from "./artboard/features/ai";
@@ -42,7 +42,8 @@ export default function Artboard({
   canvasBg = DEFAULT_EDITOR_SETTINGS.canvasBg,
   autoCropUploads = DEFAULT_EDITOR_SETTINGS.autoCropUploads,
   shortcutsEnabled = true,
-  highlightLowDpi = false,
+  issueFocus = null,
+  onTransparencyCounts,
   onRequestAutoNest,
   onUpdateSetting,
   onDataChange,
@@ -211,41 +212,65 @@ export default function Artboard({
   const transparencyVerdicts = useTransparencyVerdicts(items);
 
   /**
-   * One verdict per flagged file on the board, for the banner. Counted by file,
-   * not by piece: duplicates of one image share it, and the banner's instruction
-   * is to update the file — two copies of one image are one file to fix.
+   * The pieces whose transparency won't print as shown, in reading order, with
+   * how many of each kind. Counted by piece, like the DPI chip: the chip's
+   * number is also how many stops its click steps through.
    */
-  const flaggedTransparency = useMemo(() => {
-    const flagged = new Map<string, FadeVerdict>();
-    for (const it of items) {
+  const transparencyFlags = useMemo(() => {
+    const ids: number[] = [];
+    let fade = 0;
+    let seeThrough = 0;
+    for (const it of [...items].sort((a, b) => a.posY - b.posY || a.posX - b.posX)) {
       const verdict = transparencyVerdicts.get(it.url);
-      if (verdict && shouldWarn(verdict)) flagged.set(it.url, verdict);
+      if (!verdict || !shouldWarn(verdict)) continue;
+      ids.push(it.id);
+      if (verdict.kind === "translucent" || verdict.kind === "semi-transparent") seeThrough += 1;
+      else fade += 1;
     }
-    return [...flagged.values()];
+    return { ids, fade, seeThrough };
   }, [items, transparencyVerdicts]);
 
+  useEffect(() => {
+    onTransparencyCounts?.({ fade: transparencyFlags.fade, seeThrough: transparencyFlags.seeThrough });
+  }, [transparencyFlags.fade, transparencyFlags.seeThrough, onTransparencyCounts]);
+
   /**
-   * The items the DPI chip is counting.
+   * The items the DPI chip is counting, always outlined on the sheet.
    *
    * Derived with `computeEffectiveDpi` — the same function `useArtboardEffects`
-   * uses to produce the chip's number — so what lights up on the sheet always
-   * matches what the chip says. `ArtboardItem` measures its own DPI from the
-   * loaded `<img>`, which is right for its own amber border but can differ by a
-   * pixel or two mid-load; trusting that here would let a chip reading "5"
-   * highlight four.
-   *
-   * Empty (and cheap) whenever the highlight is off, so the ordinary render
-   * path pays a single boolean check rather than a pass over the board.
+   * uses to produce the chip's number — so what is outlined always matches what
+   * the chip says. `ArtboardItem` measures its own DPI from the loaded `<img>`,
+   * which can differ by a pixel or two mid-load; trusting that here would let a
+   * chip reading "5" outline four.
    */
-  const dpiHighlightIds = useMemo(() => {
-    if (!highlightLowDpi) return null;
-    const flagged = new Set<number>();
-    // Both halves of the chip's count: measurably low, and unmeasurable.
-    for (const it of items) {
-      if (isDpiFlagged(it)) flagged.add(it.id);
-    }
-    return flagged.size > 0 ? flagged : null;
-  }, [highlightLowDpi, items]);
+  const dpiFlags = useMemo(() => {
+    const ids = [...items]
+      .filter(isDpiFlagged)
+      .sort((a, b) => a.posY - b.posY || a.posX - b.posX)
+      .map((it) => it.id);
+    return { ids, set: ids.length > 0 ? new Set(ids) : null };
+  }, [items]);
+
+  /**
+   * Going to an issue: each chip click selects the next affected piece and
+   * brings it into view, wrapping at the end. Selecting it puts its tools —
+   * Enhance, the transparency note — right where the customer is looking.
+   */
+  const [issueTarget, setIssueTarget] = useState<{ id: number; nonce: number } | null>(null);
+  const lastIssueStopRef = useRef<{ dpi: number | null; transparency: number | null }>({ dpi: null, transparency: null });
+  const issueListsRef = useRef({ dpi: dpiFlags.ids, transparency: transparencyFlags.ids });
+  issueListsRef.current = { dpi: dpiFlags.ids, transparency: transparencyFlags.ids };
+  useEffect(() => {
+    if (!issueFocus) return;
+    const ids = issueListsRef.current[issueFocus.kind];
+    if (ids.length === 0) return;
+    const last = lastIssueStopRef.current[issueFocus.kind];
+    const next = ids[(last === null ? 0 : ids.indexOf(last) + 1) % ids.length];
+    lastIssueStopRef.current[issueFocus.kind] = next;
+    setSelectedId(next);
+    setSelectedIds(new Set([next]));
+    setIssueTarget({ id: next, nonce: issueFocus.nonce });
+  }, [issueFocus]);
 
   const itemActions = useItemActions(
     items,
@@ -640,7 +665,6 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
-      <ArtboardWarning flagged={flaggedTransparency} />
       <input
         ref={fileInputRef}
         type="file"
@@ -679,7 +703,8 @@ export default function Artboard({
           batchLoaded={batchLoaded}
           batchTotal={batchTotal}
           queuedCount={queuedCount}
-          dpiHighlightIds={dpiHighlightIds}
+          dpiHighlightIds={dpiFlags.set}
+          issueTarget={issueTarget}
           transparencyVerdicts={transparencyVerdicts}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}

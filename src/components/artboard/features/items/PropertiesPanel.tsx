@@ -153,6 +153,99 @@ function clampPanelPos(x: number, y: number, panelHeightPx: number) {
   return { x: clampedX, y: clampedY };
 }
 
+type ItemPropertyFieldsProps = Omit<PropertiesPanelProps, "initialPos" | "onClose"> & {
+  /** Off in the Settings panel, where the toolbar's Crop switch is already beside the image. */
+  showAutoCrop?: boolean;
+};
+
+/**
+ * One image's own settings: auto crop, copies, size and position. Shown in its
+ * right-click panel and, for the selected image, in the Settings panel.
+ */
+export function ItemPropertyFields({
+  item,
+  onToggleAutoCrop,
+  onSetCopies,
+  onToggleLinked,
+  onSetWidthIn,
+  onSetHeightIn,
+  onSetPosX,
+  onSetPosY,
+  showAutoCrop = true,
+}: ItemPropertyFieldsProps) {
+  return (
+    <>
+      {item.locked && (
+        <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 text-[11px] text-gray-600">
+          🔒 This image is locked. Unlock it from the toolbar to make changes.
+        </div>
+      )}
+      {/* Auto Crop */}
+      {showAutoCrop && (
+        <div
+          className={`px-3 py-2.5 border-b border-gray-200 flex items-center justify-between transition-colors ${
+            item.locked ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50 cursor-pointer"
+          }`}
+          onClick={item.locked ? undefined : onToggleAutoCrop}
+        >
+          <div>
+            <div className="font-medium text-gray-900 text-[12px]">Auto Crop</div>
+            <div className="text-gray-500 text-[10px]">Trim empty space around the artwork</div>
+          </div>
+          <button
+            className={`w-9 h-5 rounded-full flex items-center transition-colors pointer-events-none ${
+              item.autoCrop ? "bg-blue-600" : "bg-gray-300"
+            }`}
+            tabIndex={-1}
+          >
+            <span
+              className={`w-4 h-4 bg-white rounded-full shadow transform transition ${
+                item.autoCrop ? "translate-x-4" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+      )}
+
+      {/* Number of Copies */}
+      <div className="px-3 py-2.5 border-b border-gray-200">
+        <div className="text-[12px] font-medium text-gray-900 mb-2">Number of Copies</div>
+        <CopiesInput value={item.copies} onChange={onSetCopies} disabled={item.locked} />
+      </div>
+
+      {/* Dimensions */}
+      <div className="px-3 py-2.5 border-b border-gray-200">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[12px] font-medium text-gray-900">Dimensions</div>
+          <button
+            className={`text-[12px] font-medium transition-colors hover:underline ${
+              item.linked ? "text-blue-600" : "text-gray-400"
+            }`}
+            onClick={item.locked ? undefined : onToggleLinked}
+            disabled={item.locked}
+            title={item.linked ? "Width and height change together — click to size them separately" : "Click to keep width and height in proportion"}
+          >
+            {item.linked ? "Unlink" : "Link"}
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <DimInput label="Width (in)" value={item.widthIn} onChange={onSetWidthIn} disabled={item.locked} />
+          <DimInput label="Height (in)" value={item.heightIn} onChange={onSetHeightIn} disabled={item.locked} />
+        </div>
+      </div>
+
+      {/* Position */}
+      <div className="px-3 py-2.5">
+        <div className="text-[12px] font-medium text-gray-900 mb-2">Position</div>
+        <div className="grid grid-cols-2 gap-2">
+          <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} min={0} disabled={item.locked} />
+          <DimInput label="Y Long" value={item.posY} onChange={onSetPosY} min={0} disabled={item.locked} />
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function PropertiesPanel({
   item,
   initialPos,
@@ -273,71 +366,16 @@ export default function PropertiesPanel({
         </button>
       </div>
 
-      {item.locked && (
-        <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 text-[11px] text-gray-600">
-          🔒 This image is locked. Unlock it from the toolbar to make changes.
-        </div>
-      )}
-      {/* Auto Crop */}
-      <div
-        className={`px-3 py-2.5 border-b border-gray-200 flex items-center justify-between transition-colors ${
-          item.locked ? "opacity-50 cursor-not-allowed" : "hover:bg-gray-50 cursor-pointer"
-        }`}
-        onClick={item.locked ? undefined : onToggleAutoCrop}
-      >
-        <div>
-          <div className="font-medium text-gray-900 text-[12px]">Auto Crop</div>
-          <div className="text-gray-500 text-[10px]">Trim empty space around the artwork</div>
-        </div>
-        <button
-          className={`w-9 h-5 rounded-full flex items-center transition-colors pointer-events-none ${
-            item.autoCrop ? "bg-blue-600" : "bg-gray-300"
-          }`}
-          tabIndex={-1}
-        >
-          <span
-            className={`w-4 h-4 bg-white rounded-full shadow transform transition ${
-              item.autoCrop ? "translate-x-4" : "translate-x-1"
-            }`}
-          />
-        </button>
-      </div>
-
-      {/* Number of Copies */}
-      <div className="px-3 py-2.5 border-b border-gray-200">
-        <div className="text-[12px] font-medium text-gray-900 mb-2">Number of Copies</div>
-        <CopiesInput value={item.copies} onChange={onSetCopies} disabled={item.locked} />
-      </div>
-
-      {/* Dimensions */}
-      <div className="px-3 py-2.5 border-b border-gray-200">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[12px] font-medium text-gray-900">Dimensions</div>
-          <button
-            className={`text-[12px] font-medium transition-colors hover:underline ${
-              item.linked ? "text-blue-600" : "text-gray-400"
-            }`}
-            onClick={item.locked ? undefined : onToggleLinked}
-            disabled={item.locked}
-            title={item.linked ? "Width and height change together — click to size them separately" : "Click to keep width and height in proportion"}
-          >
-            {item.linked ? "Unlink" : "Link"}
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <DimInput label="Width (in)" value={item.widthIn} onChange={onSetWidthIn} disabled={item.locked} />
-          <DimInput label="Height (in)" value={item.heightIn} onChange={onSetHeightIn} disabled={item.locked} />
-        </div>
-      </div>
-
-      {/* Position */}
-      <div className="px-3 py-2.5">
-        <div className="text-[12px] font-medium text-gray-900 mb-2">Position</div>
-        <div className="grid grid-cols-2 gap-2">
-          <DimInput label="X Wide" value={item.posX} onChange={onSetPosX} min={0} disabled={item.locked} />
-          <DimInput label="Y Long" value={item.posY} onChange={onSetPosY} min={0} disabled={item.locked} />
-        </div>
-      </div>
+      <ItemPropertyFields
+        item={item}
+        onToggleAutoCrop={onToggleAutoCrop}
+        onSetCopies={onSetCopies}
+        onToggleLinked={onToggleLinked}
+        onSetWidthIn={onSetWidthIn}
+        onSetHeightIn={onSetHeightIn}
+        onSetPosX={onSetPosX}
+        onSetPosY={onSetPosY}
+      />
     </div>
   );
 }

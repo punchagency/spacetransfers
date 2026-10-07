@@ -4,6 +4,7 @@ import { MdOutlineShoppingCart, MdMenu, MdPerson, MdUndo, MdRedo, MdAddShoppingC
 import { FiLayers } from "react-icons/fi";
 import { usePricingSettings } from "../lib/utils/pricingRates";
 import { DpiStatusChip } from "./common/DpiStatus";
+import { TransparencyChip } from "./common/TransparencyStatus";
 type HeaderInfo = {
   hasItem: boolean;
   areaSf?: number;
@@ -66,7 +67,10 @@ function SaveStateChip({
   onRetry,
   onSignIn,
   errorMessage,
+  quiet = false,
 }: {
+  /** Icon only while things are fine: on a phone the issue chips need the room, and the sheet's name more so. */
+  quiet?: boolean;
   state: "idle" | "saving" | "saved" | "error" | "guest";
   isSheetSaved: boolean;
   onRetry?: () => void;
@@ -103,7 +107,7 @@ function SaveStateChip({
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-gray-500" title="Saving your gang sheet">
         <MdCloudUpload className="h-3.5 w-3.5 animate-pulse" aria-hidden />
-        Saving…
+        {quiet ? <span className="sr-only">Saving…</span> : "Saving…"}
       </span>
     );
   }
@@ -111,7 +115,7 @@ function SaveStateChip({
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-gray-500" title="Saved to your account — find it under Load gang sheet">
         <MdCloudDone className="h-3.5 w-3.5 text-emerald-600" aria-hidden />
-        Saved
+        {quiet ? <span className="sr-only">Saved</span> : "Saved"}
       </span>
     );
   }
@@ -147,16 +151,17 @@ export default function Header({
   profileAvatarUrl,
   profileName,
   isSidebarOpen,
-  onToggleDpiHighlight,
-  isDpiHighlighting,
+  transparency,
+  onGoToIssue,
 }: {
   info?: HeaderInfo;
   itemCount?: number;
   onMenuClick?: () => void;
   onCartClick?: () => void;
-  /** Reveals the flagged artwork on the sheet. See `DpiStatusChip`. */
-  onToggleDpiHighlight?: () => void;
-  isDpiHighlighting?: boolean;
+  /** Images whose transparency DTF can't print as shown, by kind. */
+  transparency?: { fade: number; seeThrough: number };
+  /** Goes to the next image with that kind of issue on the sheet. */
+  onGoToIssue?: (kind: "dpi" | "transparency") => void;
   cartCount?: number;
   onAddGangSheetToCart?: () => void;
   canAddGangSheetToCart?: boolean;
@@ -359,18 +364,20 @@ export default function Header({
             errorMessage={saveErrorMessage}
           />
           <span className="text-gray-300">|</span>
-          {/* One chip for both conditions. Two separate amber discs could be on
-              screen at once, each with its own red count bubble, which is the
-              clutter this replaces — the split now lives in the tooltip. The
-              chip returns null when there is nothing to report, so the divider
-              below is conditional on the same total. */}
+          {/* One chip per kind of issue, each in the colour its artwork is
+              outlined in on the sheet. A chip renders nothing at zero, so the
+              divider after them is conditional on the same totals. */}
           <DpiStatusChip
             lowDpiCount={info?.lowDpiCount ?? 0}
             unknownDpiCount={info?.unknownDpiCount ?? 0}
-            onToggleHighlight={onToggleDpiHighlight}
-            isHighlighting={isDpiHighlighting}
+            onGoTo={onGoToIssue ? () => onGoToIssue("dpi") : undefined}
           />
-          {(info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) > 0 && (
+          <TransparencyChip
+            fadeCount={transparency?.fade ?? 0}
+            seeThroughCount={transparency?.seeThrough ?? 0}
+            onGoTo={onGoToIssue ? () => onGoToIssue("transparency") : undefined}
+          />
+          {(info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) + (transparency?.fade ?? 0) + (transparency?.seeThrough ?? 0) > 0 && (
             <span className="text-gray-300">|</span>
           )}
           <span
@@ -593,10 +600,17 @@ export default function Header({
         <DpiStatusChip
           lowDpiCount={info?.lowDpiCount ?? 0}
           unknownDpiCount={info?.unknownDpiCount ?? 0}
-          onToggleHighlight={onToggleDpiHighlight}
-          isHighlighting={isDpiHighlighting}
+          onGoTo={onGoToIssue ? () => onGoToIssue("dpi") : undefined}
+          compact
+        />
+        <TransparencyChip
+          fadeCount={transparency?.fade ?? 0}
+          seeThroughCount={transparency?.seeThrough ?? 0}
+          onGoTo={onGoToIssue ? () => onGoToIssue("transparency") : undefined}
+          compact
         />
         <SaveStateChip
+          quiet={(info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) + (transparency?.fade ?? 0) + (transparency?.seeThrough ?? 0) > 0}
           state={saveState}
           isSheetSaved={isSheetSaved}
           onRetry={onRetrySave}

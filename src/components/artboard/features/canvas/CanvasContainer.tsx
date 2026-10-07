@@ -70,6 +70,8 @@ interface CanvasContainerProps {
    * Chrome only — nothing about an item's geometry or content is read from it.
    */
   dpiHighlightIds?: Set<number> | null;
+  /** The piece a top-bar chip has asked to be taken to; a new `nonce` is a new request. */
+  issueTarget?: { id: number; nonce: number } | null;
   /** Transparency verdicts by image URL (`useTransparencyVerdicts`). */
   transparencyVerdicts?: ReadonlyMap<string, FadeVerdict>;
   uploadFileName: string | null;
@@ -136,6 +138,7 @@ export default function CanvasContainer({
   batchTotal = 0,
   queuedCount = 0,
   dpiHighlightIds = null,
+  issueTarget = null,
   transparencyVerdicts,
   uploadFileName,
   onCancelUpload,
@@ -207,49 +210,34 @@ export default function CanvasContainer({
   };
 
   /**
-   * Bring the first flagged item into view when the DPI highlight turns on.
+   * Brings the piece a chip asked for into view.
    *
-   * A sheet can be a hundred feet long, so on a large board every flagged image
-   * may well be scrolled past — an outline nobody can see answers "where is the
-   * bad artwork?" no better than the number on the chip did. This is the
-   * navigation half of the feature; the outline is only the identification half.
+   * A sheet can be a hundred feet long, so the affected image may well be
+   * scrolled past — an outline nobody can see answers "where is it?" no better
+   * than the number on the chip did. Nothing is moved: the viewport scrolls,
+   * item positions are untouched.
    *
-   * Nothing is moved: the *viewport* scrolls, item positions are untouched.
-   *
-   * Fires only on the off→on transition. `dpiHighlightIds` is rebuilt whenever
-   * `items` changes, so without the latch a background upload finishing would
-   * yank the viewport back while the customer was reading somewhere else.
+   * Keyed to the request alone. `items` changes whenever a background upload
+   * finishes, and re-running then would yank the viewport back while the
+   * customer was reading somewhere else.
    */
-  const wasDpiHighlightingRef = useRef(false);
+  const issueScrollRef = useRef({ items, canvasWidth, marginSize, spacing, zoom });
+  issueScrollRef.current = { items, canvasWidth, marginSize, spacing, zoom };
   useEffect(() => {
-    const active = Boolean(dpiHighlightIds && dpiHighlightIds.size > 0);
-    const wasActive = wasDpiHighlightingRef.current;
-    wasDpiHighlightingRef.current = active;
-    if (!active || wasActive) return;
-
+    if (!issueTarget) return;
     const el = scrollRef.current;
-    if (!el) return;
-
-    let firstTopIn = Number.POSITIVE_INFINITY;
-    for (const it of items) {
-      if (!dpiHighlightIds!.has(it.id)) continue;
-      const { topIn } = getItemVerticalExtent(it, canvasWidth, marginSize, spacing);
-      if (topIn < firstTopIn) firstTopIn = topIn;
-    }
-    if (!Number.isFinite(firstTopIn)) return;
-
+    const now = issueScrollRef.current;
+    const item = now.items.find((it) => it.id === issueTarget.id);
+    if (!el || !item) return;
+    const { topIn } = getItemVerticalExtent(item, now.canvasWidth, now.marginSize, now.spacing);
     // `CANVAS.PIXELS_PER_INCH` rather than the `ppi` alias, which is declared
     // further down the component.
-    const targetPx = firstTopIn * CANVAS.PIXELS_PER_INCH * zoom;
-    // Already on screen — leave the viewport alone. Scrolling to something the
-    // customer is already looking at reads as the board jumping for no reason.
-    if (targetPx >= el.scrollTop && targetPx <= el.scrollTop + el.clientHeight) {
-      return;
-    }
-    // A little headroom above the item, so it lands inside the viewport rather
-    // than flush against its top edge.
-    el.scrollTo({ top: Math.max(0, targetPx - 80), behavior: "smooth" });
-  }, [dpiHighlightIds, items, canvasWidth, marginSize, spacing, zoom]);
+    const targetPx = topIn * CANVAS.PIXELS_PER_INCH * now.zoom;
+    // Already comfortably on screen — leave the viewport alone.
+    if (targetPx >= el.scrollTop && targetPx <= el.scrollTop + el.clientHeight * 0.6) return;
+    // Headroom above the item for its toolbar.
+    el.scrollTo({ top: Math.max(0, targetPx - 110), behavior: "smooth" });
+  }, [issueTarget]);
 
   const clampedMenu = useMemo(() => {
     if (!menu) return null;
@@ -651,6 +639,7 @@ export default function CanvasContainer({
                   scrollTop={scrollTop}
                   viewportHeight={viewportHeight}
                   isDpiHighlighted={dpiHighlightIds?.has(it.id) ?? false}
+                  issuePulse={issueTarget?.id === it.id ? issueTarget.nonce : 0}
                   transparency={transparencyVerdicts?.get(it.url)}
                 />
               ))}

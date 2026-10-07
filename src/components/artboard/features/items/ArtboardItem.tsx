@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
 import ItemToolbar from "./ItemToolbar";
-import PropertiesPanel from "./PropertiesPanel";
+import PropertiesPanel, { ItemPropertyFields } from "./PropertiesPanel";
+import { useSelectedImageSlot } from "../../../../lib/selectedImageSlot";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
@@ -47,6 +48,8 @@ interface ArtboardItemProps {
    * about the item's geometry, transform or content.
    */
   isDpiHighlighted?: boolean;
+  /** Non-zero while a chip has just brought the customer to this piece; changes per request. */
+  issuePulse?: number;
   /**
    * The transparency check's verdict for this item's current image, or
    * undefined while it is still being checked (`useTransparencyVerdicts`).
@@ -107,6 +110,7 @@ function ArtboardItem({
   isPrimary,
   selection,
   isDpiHighlighted = false,
+  issuePulse = 0,
   transparency,
   showProperties,
   onSelect,
@@ -445,6 +449,51 @@ function ArtboardItem({
     prevCopiesRef.current = item.copies;
   }, [item.copies]);
 
+  // The same fields, in the Settings panel, while this is the one selected image.
+  const settingsSlot = useSelectedImageSlot();
+  const settingsPortal =
+    isSelected && settingsSlot && (selection?.count ?? 1) === 1
+      ? createPortal(
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <div className="truncate border-b border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-semibold text-gray-900" title={item.name || `Item #${item.id}`}>
+              {item.name || `Item #${item.id}`}
+            </div>
+            {/* Why this image is outlined, in the outline's own colour. */}
+            {fadeMessage && (
+              <div className="border-b border-orange-200 bg-orange-50 px-3 py-2">
+                <p className="text-[11px] font-semibold leading-snug text-orange-700">
+                  {fadeMessage.title}
+                  {fadeConfidence}
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-orange-900">{fadeMessage.body}</p>
+              </div>
+            )}
+            {needsDpiAttention && (
+              <div className="border-b border-amber-200 bg-amber-50 px-3 py-2">
+                <p className="text-[11px] font-semibold leading-snug text-amber-800">
+                  {isDpiUnknown ? "Resolution couldn't be read" : `${effectiveDpi} DPI at this size`}
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-amber-900">
+                  Print needs 300 DPI. Use DPI+ in the image's toolbar, or make it smaller.
+                </p>
+              </div>
+            )}
+            <ItemPropertyFields
+              item={item}
+              showAutoCrop={false}
+              onToggleAutoCrop={onToggleAutoCrop}
+              onSetCopies={onSetCopies}
+              onToggleLinked={onToggleLinked}
+              onSetWidthIn={onSetWidthIn}
+              onSetHeightIn={onSetHeightIn}
+              onSetPosX={onSetPosX}
+              onSetPosY={onSetPosY}
+            />
+          </div>,
+          settingsSlot,
+        )
+      : null;
+
   const propertiesPortal =
     isSelected && showProperties && !isDragging
       ? (() => {
@@ -556,6 +605,8 @@ function ArtboardItem({
                 : undefined
             }
             aiActive={aiOpen}
+            autoCrop={item.autoCrop !== false}
+            onToggleAutoCrop={onToggleAutoCrop}
             selection={selection}
           />,
           portal,
@@ -581,6 +632,7 @@ function ArtboardItem({
         />
       ) : null}
       {propertiesPortal}
+      {settingsPortal}
       {/* Group Layout for Copies — virtual rows, absolute positioned */}
       <div
         className="relative"
@@ -771,82 +823,37 @@ function ArtboardItem({
             />
           </div>
         )}
-        {(isTooSmall || hasFade) && (
+        {isTooSmall && (
           <div className="absolute bottom-1 left-1 z-30 flex gap-1 pointer-events-auto group/warn cursor-default">
-            {isTooSmall && (
-              <span className="w-4 h-4 rounded-full bg-red-500 border border-white flex items-center justify-center text-white text-[9px] font-bold leading-none select-none">
-                !
-              </span>
-            )}
-            {hasFade && (
-              <span className="w-4 h-4 rounded-full bg-orange-500 border border-white flex items-center justify-center leading-none select-none">
-                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                  <line x1="12" y1="9" x2="12" y2="13"/>
-                  <line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-              </span>
-            )}
+            <span className="w-4 h-4 rounded-full bg-red-500 border border-white flex items-center justify-center text-white text-[9px] font-bold leading-none select-none">
+              !
+            </span>
             <div className="absolute bottom-full left-0 mb-1.5 hidden group-hover/warn:flex flex-col gap-1 min-w-[220px] max-w-[280px] rounded-xl border border-gray-200 bg-white shadow-lg px-3 py-2.5 pointer-events-none z-50">
-              {isTooSmall && (
-                <p className="text-[11px] leading-snug text-red-600 font-medium">
-                  Items smaller than 2pt may not print properly.
-                </p>
-              )}
-              {fadeMessage && (
-                <>
-                  <p className="text-[11px] leading-snug text-orange-600 font-semibold">
-                    {fadeMessage.title}
-                    {fadeConfidence}
-                  </p>
-                  <p className="text-[11px] leading-snug text-gray-700">{fadeMessage.body}</p>
-                </>
-              )}
+              <p className="text-[11px] leading-snug text-red-600 font-medium">
+                Items smaller than 2pt may not print properly.
+              </p>
             </div>
           </div>
         )}
       </div>
       {/*
-        DPI highlight.
+        Resolution flag.
 
-        Drawn on the same `polygonPathD` the selection outline uses, so it hugs
-        the occupied cells of a copy-grid exactly rather than boxing the whole
-        rectangle — on an item whose last row is partial, a plain box would
-        outline empty sheet.
-
-        Two strokes: a wide translucent halo that carries at a distance on a
-        zoomed-out sheet, and a crisp line on top that stays legible up close.
-        Both in `#EDAE00`, the amber this codebase already uses for DPI
-        attention, so the highlight reads as "more of what the chip said"
-        rather than a new signal to learn.
-
-        Rendered *before* the selection outline so selecting a highlighted item
-        still shows its normal blue, with the amber halo around it — the two
-        states stack instead of one hiding the other.
+        Always drawn, like the transparency flag below: artwork below print
+        resolution has to be findable on a busy sheet at a glance, including
+        zoomed out. Drawn on the same `polygonPathD` the selection outline
+        uses, so it hugs the occupied cells of a copy-grid exactly. In
+        `#EDAE00`, the amber of the DPI chip, so the two read as one signal.
       */}
       {isDpiHighlighted && (
         <svg
-          className="dpi-highlight-outline absolute top-0 left-0 pointer-events-none"
+          className="absolute top-0 left-0 pointer-events-none"
           style={{ overflow: "visible" }}
           width={groupWidthPx}
           height={totalGroupHeightPx}
           aria-hidden
         >
-          <path
-            d={polygonPathD}
-            fill="none"
-            stroke="#EDAE00"
-            strokeOpacity={0.28}
-            strokeWidth={14}
-            strokeLinejoin="round"
-          />
-          <path
-            d={polygonPathD}
-            fill="none"
-            stroke="#EDAE00"
-            strokeWidth={3}
-            strokeLinejoin="round"
-          />
+          <path d={polygonPathD} fill="none" stroke="#EDAE00" strokeWidth={3} strokeLinejoin="round" />
         </svg>
       )}
       {/*
@@ -866,6 +873,30 @@ function ArtboardItem({
           aria-hidden
         >
           <path d={polygonPathD} fill="none" stroke="#F97316" strokeWidth={3} strokeLinejoin="round" />
+        </svg>
+      )}
+      {/*
+        Arrival pulse: a wide halo, for a few beats, on the piece a chip has
+        just brought the customer to. Keyed to the request so stepping back to
+        the same piece pulses it again.
+      */}
+      {issuePulse > 0 && (hasFade || isDpiHighlighted) && (
+        <svg
+          key={issuePulse}
+          className="dpi-highlight-outline absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path
+            d={polygonPathD}
+            fill="none"
+            stroke={hasFade ? "#F97316" : "#EDAE00"}
+            strokeOpacity={0.3}
+            strokeWidth={16}
+            strokeLinejoin="round"
+          />
         </svg>
       )}
       {(isSelected || isHovered) && (

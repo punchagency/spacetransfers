@@ -350,64 +350,13 @@ export default function Editor() {
   }>();
 
   /**
-   * "Show me which images the DPI chip is counting."
-   *
-   * Lives here rather than in `Artboard` because the control and the artwork
-   * are in different subtrees — the chip is in `Header`, the items are in
-   * `Artboard`, and `Editor` is their only common parent.
-   *
-   * A plain boolean rather than a nonce: toggling off and on again is what
-   * re-runs the scroll-into-view, and that is also the behaviour a customer
-   * expects from a button that visibly reads as pressed.
+   * A top-bar chip asking to be taken to the next image with its kind of issue.
+   * The chips are in `Header`, the images in `Artboard`, and `Editor` is their
+   * only common parent; the counter makes each click a new request.
    */
-  const [isDpiHighlighting, setIsDpiHighlighting] = useState(false);
-
-  const dpiFlaggedCount =
-    (headerInfo?.lowDpiCount ?? 0) + (headerInfo?.unknownDpiCount ?? 0);
-
-  /**
-   * Drop the highlight once there is nothing left to highlight.
-   *
-   * The count falls to zero when the customer enhances the artwork, deletes it,
-   * or scales it down — at which point the chip itself unmounts, taking the
-   * only control that could switch this off with it. Without this the board
-   * would be stuck in a highlight state with no way back.
-   */
-  useEffect(() => {
-    if (dpiFlaggedCount === 0 && isDpiHighlighting) setIsDpiHighlighting(false);
-  }, [dpiFlaggedCount, isDpiHighlighting]);
-
-  /**
-   * Dismissal: Escape, or a pointer press anywhere outside the chip.
-   *
-   * `pointerdown` in the capture phase rather than `click`, so the highlight
-   * clears the instant the customer starts interacting with the board instead
-   * of after they release — otherwise a click that selects an item leaves the
-   * highlight up for the length of the gesture.
-   *
-   * Presses inside the chip are exempt: the chip's own `onClick` owns toggling,
-   * and without the exemption this listener would clear the state on the very
-   * pointerdown that precedes the click meant to set it.
-   */
-  useEffect(() => {
-    if (!isDpiHighlighting) return;
-
-    const onPointerDown = (e: PointerEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target?.closest?.("[data-dpi-chip]")) return;
-      setIsDpiHighlighting(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setIsDpiHighlighting(false);
-    };
-
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [isDpiHighlighting]);
+  const [issueFocus, setIssueFocus] = useState<{ kind: "dpi" | "transparency"; nonce: number } | null>(null);
+  /** Images on the board whose transparency won't print as shown, by kind. */
+  const [transparencyCounts, setTransparencyCounts] = useState({ fade: 0, seeThrough: 0 });
   const [savedDesigns, setSavedDesigns] = useState<
     Array<{
       id: string;
@@ -1795,6 +1744,8 @@ export default function Editor() {
 
   /** True while any dialog owns the screen — see the shortcut handler above. */
   const anyDialogOpen =
+    // Settings holds text fields for the selected image; a stray Backspace there must not delete it.
+    isSidebarOpen ||
     showSaveModal ||
     showLoadModal ||
     showAccountModal ||
@@ -1840,10 +1791,8 @@ export default function Editor() {
           onMenuClick={() => setIsSidebarOpen(true)}
           isSidebarOpen={isSidebarOpen}
           onCartClick={() => setShowCheckoutModal(true)}
-          onToggleDpiHighlight={
-            dpiFlaggedCount > 0 ? () => setIsDpiHighlighting((v) => !v) : undefined
-          }
-          isDpiHighlighting={isDpiHighlighting}
+          transparency={transparencyCounts}
+          onGoToIssue={(kind) => setIssueFocus((prev) => ({ kind, nonce: (prev?.nonce ?? 0) + 1 }))}
           cartCount={cartItems.length}
           onAddGangSheetToCart={handleAddGangSheetToCart}
           canAddGangSheetToCart={getCurrentItems().length > 0}
@@ -2015,7 +1964,8 @@ export default function Editor() {
       <ErrorBoundary name="The design area">
         <Artboard
           onHeaderInfoChange={setHeaderInfo}
-          highlightLowDpi={isDpiHighlighting}
+          issueFocus={issueFocus}
+          onTransparencyCounts={setTransparencyCounts}
           showRulers={settings.showRulers && !isMobile}
           showGrid={settings.showGrid}
           snapToGrid={settings.snapToGrid}
