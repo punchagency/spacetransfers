@@ -11,6 +11,11 @@ export interface EditorSettings {
   canvasBg: string;
   /** Whether new uploads are cropped to their artwork. Existing pieces are untouched. */
   autoCropUploads: boolean;
+  /**
+   * Whether the background remover also clears plain background the artwork
+   * encloses: the insides of letters, gaps between lines.
+   */
+  bgClearEnclosed: boolean;
 }
 
 export type SheetSettings = Pick<EditorSettings, "spacing" | "marginSize" | "autoNestStickers">;
@@ -37,6 +42,7 @@ const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   // The background the sidebar shows as unselected-but-default.
   canvasBg: "#f3f4f6",
   autoCropUploads: true,
+  bgClearEnclosed: true,
 };
 
 export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
@@ -86,6 +92,7 @@ export const loadEditorSettings = (): EditorSettings => {
           snapToGrid: bool(stored.snapToGrid, v.snapToGrid),
           canvasBg: canvasBgOr(stored.canvasBg, v.canvasBg),
           autoCropUploads: bool(stored.autoCropUploads, v.autoCropUploads),
+          bgClearEnclosed: bool(stored.bgClearEnclosed, v.bgClearEnclosed),
         }
       : { ...v };
 
@@ -102,6 +109,7 @@ export const saveEditorSettings = (settings: EditorSettings): void => {
     snapToGrid: settings.snapToGrid,
     canvasBg: settings.canvasBg,
     autoCropUploads: settings.autoCropUploads,
+    bgClearEnclosed: settings.bgClearEnclosed,
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(view));

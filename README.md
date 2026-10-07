@@ -7,6 +7,7 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 ## What customers can do
 
 - **Build a sheet.** Upload PNG, JPG, PDF, SVG, AI, PSD, TIFF, WebP, AVIF, HEIC, GIF or BMP. Everything is converted in the browser and trimmed to its artwork.
+- **Remove backgrounds.** A plain background of any colour is removed exactly, in the browser, by colour — including, by default, inside letters and between lines (the Clear Enclosed Background setting). Anything else goes to an in-browser AI model that cuts out the subject. See `artboard/lib/utils/bgRemover.ts`.
 - **Arrange it.** Drag, resize, rotate, flip, lock, duplicate and group. Auto-nest packs the sheet as short as possible.
 - **Get warned.** Images under 300 DPI and artwork with fades or see-through areas are flagged, because DTF cannot print them as shown.
 - **Edit with AI.** Board commands such as "12 copies" or "make it 4 inches wide" run in the browser. Image edits go to the API.

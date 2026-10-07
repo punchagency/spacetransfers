@@ -1,3 +1,4 @@
+import { loadEditorSettings } from "../../../../lib/utils/editorSettings";
 import { ArtboardItem } from "../../types";
 import { DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import {
@@ -468,7 +469,9 @@ export const useItemActions = (
     return runPixelBatch(
       async (it) => (await readImageInfo(it.url))?.hasBackground ?? true,
       async (item, label, apply) => {
-        const result = await removeBackgroundAI(item.url, (phase, pct) => onProgress?.(label + phase, pct));
+        const result = await removeBackgroundAI(item.url, (phase, pct) => onProgress?.(label + phase, pct), {
+          clearEnclosed: loadEditorSettings().bgClearEnclosed,
+        });
         apply((it) => {
           // The cutout is trimmed to the subject's bounding box, so the box
           // shrinks by the trim ratio while the SUBJECT keeps its exact
