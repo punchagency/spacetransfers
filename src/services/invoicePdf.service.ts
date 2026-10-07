@@ -1,4 +1,6 @@
 import PDFDocument from "pdfkit";
+import { BRAND_MARK_ASPECT, BRAND_MARK_PNG } from "../assets/brandMark.js";
+import { env } from "../config/env.js";
 
 /**
  * Invoice rendering, using pdfkit.
@@ -53,8 +55,20 @@ export interface InvoiceData {
 
 const INK = "#333333";
 const MUTED = "#777777";
-const ACCENT = "#0056b3";
+/** The wordmark's navy, as the store's header sets it. */
+const BRAND = "#0f172a";
 const RULE = "#e5e5e5";
+const TINT = "#f1f5f9";
+
+/** The store's address without the scheme, for the footer; empty for a local address. */
+const storeHost = () => {
+  try {
+    const { host, hostname } = new URL(env.appUrl);
+    return hostname === "localhost" || hostname === "127.0.0.1" ? "" : host;
+  } catch {
+    return "";
+  }
+};
 
 const money = (v: unknown) => {
   const n = Number(v);
@@ -82,16 +96,31 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
   });
 
   // ── Header ────────────────────────────────────────────────────────────────
-  doc.fillColor(ACCENT).fontSize(26).font("Helvetica-Bold").text("Invoice", { align: "center" });
-  doc.moveDown(0.3);
-  doc.fillColor(INK).fontSize(11).font("Helvetica");
-  doc.text(`Order ID: ${data.orderId}`, { align: "center" });
-  doc.text(`Date: ${data.date}`, { align: "center" });
-  doc.moveDown(1.5);
+  // The store's own lockup — wordmark then mascot — on the left; what the
+  // document is, and for which order, on the right.
+  const top = 40;
+  const markH = 54;
+  doc.fillColor(BRAND).font("Helvetica-Bold").fontSize(22);
+  const wordW = doc.widthOfString("spacetransfers");
+  doc.text("spacetransfers", 50, top + 18, { lineBreak: false });
+  doc.image(BRAND_MARK_PNG, 50 + wordW + 6, top, { height: markH, width: markH * BRAND_MARK_ASPECT });
+
+  doc.fillColor(MUTED).font("Helvetica-Bold").fontSize(9);
+  doc.text("INVOICE", 355, top + 8, { width: 200, align: "right", characterSpacing: 1.5 });
+  doc.fillColor(BRAND).font("Helvetica-Bold").fontSize(15);
+  doc.text(data.orderId, 355, top + 21, { width: 200, align: "right" });
+  doc.fillColor(MUTED).font("Helvetica").fontSize(10);
+  doc.text(data.date, 355, top + 40, { width: 200, align: "right" });
+
+  doc.moveTo(50, top + 66).lineTo(555, top + 66).lineWidth(1.5).strokeColor(BRAND).stroke();
+  doc.lineWidth(1);
+  doc.x = 50;
+  doc.y = top + 88;
 
   // ── Shipping address ──────────────────────────────────────────────────────
   const a = data.shippingAddress;
-  doc.fillColor(INK).fontSize(13).font("Helvetica-Bold").text("Shipping Address");
+  doc.fillColor(BRAND).fontSize(12).font("Helvetica-Bold").text("Shipping Address");
+  doc.fillColor(INK);
   doc.moveDown(0.3);
   doc.fontSize(10).font("Helvetica-Bold").text(a.name);
   doc.font("Helvetica");
@@ -101,17 +130,17 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
   doc.moveDown(1.2);
 
   // ── Items table ───────────────────────────────────────────────────────────
-  doc.fontSize(13).font("Helvetica-Bold").text("Order Items");
-  doc.moveDown(0.5);
+  doc.fillColor(BRAND).fontSize(12).font("Helvetica-Bold").text("Order Items", 50);
+  doc.moveDown(0.6);
 
   const header = (y: number) => {
-    doc.fontSize(9).font("Helvetica-Bold").fillColor(INK);
+    doc.rect(44, y - 6, 517, 22).fill(TINT);
+    doc.fontSize(9).font("Helvetica-Bold").fillColor(BRAND);
     doc.text("Item", COLS.name, y, { width: COL_W.name });
     doc.text("Description", COLS.desc, y, { width: COL_W.desc });
     doc.text("Qty", COLS.qty, y, { width: COL_W.qty, align: "right" });
     doc.text("Unit Price", COLS.unit, y, { width: COL_W.unit, align: "right" });
     doc.text("Subtotal", COLS.sub, y, { width: COL_W.sub, align: "right" });
-    doc.moveTo(COLS.name, y + 14).lineTo(555, y + 14).strokeColor(RULE).stroke();
   };
 
   let y = doc.y;
@@ -161,7 +190,7 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
 
   doc.moveTo(COLS.unit - 90, y + 2).lineTo(555, y + 2).strokeColor(RULE).stroke();
   y += 10;
-  doc.fontSize(12).font("Helvetica-Bold");
+  doc.fontSize(12).font("Helvetica-Bold").fillColor(BRAND);
   doc.text("Total:", COLS.unit - 90, y, { width: 160, align: "right" });
   doc.text(`${dollars(data.pricing?.total)} ${data.pricing?.currency || "USD"}`, COLS.sub, y, {
     width: COL_W.sub,
@@ -175,8 +204,14 @@ export const renderInvoicePdf = async (data: InvoiceData): Promise<Buffer> => {
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────
-  doc.fontSize(9).font("Helvetica").fillColor(MUTED);
-  doc.text("Thank you for your business!", 50, doc.page.height - 80, {
+  // Both lines sit above the bottom margin; text below it starts a new page.
+  const footY = doc.page.height - 104;
+  doc.moveTo(50, footY).lineTo(555, footY).strokeColor(RULE).stroke();
+  doc.fontSize(9).font("Helvetica-Bold").fillColor(BRAND);
+  doc.text("Thank you for your order.", 50, footY + 12, { width: doc.page.width - 100, align: "center" });
+  const host = storeHost();
+  doc.font("Helvetica").fillColor(MUTED);
+  doc.text(["spacetransfers", host].filter(Boolean).join("  ·  "), 50, footY + 26, {
     width: doc.page.width - 100,
     align: "center",
   });
