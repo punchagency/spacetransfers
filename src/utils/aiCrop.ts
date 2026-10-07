@@ -126,15 +126,33 @@ export type TrimResult =
   | { unchanged: true; widthPx: number; heightPx: number }
   | { unchanged: false; buffer: Buffer; widthPx: number; heightPx: number };
 
+/** Below this a cropped PNG is kept whatever the upload weighed. */
+const PNG_BLOAT_FLOOR_BYTES = 1_500_000;
+
 export const trimImage = async (input: Buffer): Promise<TrimResult | null> => {
   const box = await findTrimBox(input);
   if (!box) return null;
   if (box.left === 0 && box.top === 0 && box.width === box.fullWidth && box.height === box.fullHeight) {
     return { unchanged: true, widthPx: box.fullWidth, heightPx: box.fullHeight };
   }
-  const { data, info } = await sharp(input, { limitInputPixels: false })
-    .extract({ left: box.left, top: box.top, width: box.width, height: box.height })
-    .png()
-    .toBuffer({ resolveWithObject: true });
+  const cropped = sharp(input, { limitInputPixels: false }).extract({
+    left: box.left,
+    top: box.top,
+    width: box.width,
+    height: box.height,
+  });
+  let { data, info } = await cropped.clone().png().toBuffer({ resolveWithObject: true });
+  /*
+   * Lossless, unless that costs too much. A logo crops to a small PNG; a
+   * photograph crops to one several times the size of the upload it came from,
+   * which is slow to show on the board. A JPEG has no transparency to keep, so
+   * a photo that balloons is saved as a high-quality JPEG instead.
+   */
+  const { format } = await sharp(input, { limitInputPixels: false }).metadata();
+  if (format === "jpeg" && !box.hasTransparency && data.length > Math.max(PNG_BLOAT_FLOOR_BYTES, input.length * 2)) {
+    ({ data, info } = await cropped
+      .jpeg({ quality: 95, chromaSubsampling: "4:4:4", mozjpeg: true })
+      .toBuffer({ resolveWithObject: true }));
+  }
   return { unchanged: false, buffer: data, widthPx: info.width, heightPx: info.height };
 };

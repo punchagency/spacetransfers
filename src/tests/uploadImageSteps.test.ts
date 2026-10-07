@@ -37,6 +37,27 @@ describe("trimImage", () => {
     }
   });
 
+  it("keeps a cropped photograph a JPEG when a PNG would be several times its size", async () => {
+    // Photo-like detail on a plain border: incompressible as a PNG.
+    const w = 1600, h = 1200;
+    const noise = Buffer.alloc(w * h * 3);
+    for (let i = 0; i < noise.length; i++) {
+      const px = Math.floor(i / 3), x = px % w, y = Math.floor(px / w);
+      // Smooth tones with fine grain, as a camera produces.
+      noise[i] = Math.max(0, Math.min(200, Math.round(100 + 80 * Math.sin(x / 37) * Math.cos(y / 53) + ((i * 2654435761) % 61) - 30)));
+    }
+    const photo = await sharp({ create: { width: 2000, height: 1600, channels: 3, background: "#ffffff" } })
+      .composite([{ input: await sharp(noise, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer(), left: 200, top: 200 }])
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    const r = await trimImage(photo);
+    assert.ok(r && !r.unchanged);
+    if (r && !r.unchanged) {
+      assert.equal((await sharp(r.buffer).metadata()).format, "jpeg");
+      assert.ok(Math.abs(r.widthPx - w) <= 4 && Math.abs(r.heightPx - h) <= 4, `got ${r.widthPx}x${r.heightPx}`);
+    }
+  });
+
   it("crops to the visible pixels of a transparent image", async () => {
     const logo = await sharp({ create: { width: 500, height: 500, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
       .composite([{ input: await solid(100, 60).png().toBuffer(), left: 50, top: 70 }])
