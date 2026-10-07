@@ -89,6 +89,12 @@ export const errorHandler = (err: CustomError, req: Request, res: Response, next
     return;
   }
 
+  // An id in the URL that is not an id at all: nothing by that name exists.
+  if (err.name === "CastError" && asAny?.kind === "ObjectId") {
+    res.status(404).json({ message: "Not found" });
+    return;
+  }
+
   console.error(
     `[UNHANDLED] ${req.method} ${req.originalUrl} — ${err.name || "Error"}: ${rawMessage}`,
     err.stack,
