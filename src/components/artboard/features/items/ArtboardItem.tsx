@@ -48,6 +48,8 @@ interface ArtboardItemProps {
    * about the item's geometry, transform or content.
    */
   isDpiHighlighted?: boolean;
+  /** Placed from the customer's file but not uploaded; outlined in red. */
+  isNotUploaded?: boolean;
   /** Non-zero while a chip has just brought the customer to this piece; changes per request. */
   issuePulse?: number;
   /**
@@ -110,6 +112,7 @@ function ArtboardItem({
   isPrimary,
   selection,
   isDpiHighlighted = false,
+  isNotUploaded = false,
   issuePulse = 0,
   transparency,
   showProperties,
@@ -876,11 +879,27 @@ function ArtboardItem({
         </svg>
       )}
       {/*
+        Upload flag. The most pressing of the three, so it is drawn last and
+        wins where an image carries more than one: until it uploads, the image
+        cannot be saved or ordered at all.
+      */}
+      {isNotUploaded && (
+        <svg
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path d={polygonPathD} fill="none" stroke="#DC2626" strokeWidth={3} strokeLinejoin="round" strokeDasharray="8 5" />
+        </svg>
+      )}
+      {/*
         Arrival pulse: a wide halo, for a few beats, on the piece a chip has
         just brought the customer to. Keyed to the request so stepping back to
         the same piece pulses it again.
       */}
-      {issuePulse > 0 && (hasFade || isDpiHighlighted) && (
+      {issuePulse > 0 && (hasFade || isDpiHighlighted || isNotUploaded) && (
         <svg
           key={issuePulse}
           className="dpi-highlight-outline absolute top-0 left-0 pointer-events-none"
@@ -892,7 +911,7 @@ function ArtboardItem({
           <path
             d={polygonPathD}
             fill="none"
-            stroke={hasFade ? "#F97316" : "#EDAE00"}
+            stroke={isNotUploaded ? "#DC2626" : hasFade ? "#F97316" : "#EDAE00"}
             strokeOpacity={0.3}
             strokeWidth={16}
             strokeLinejoin="round"

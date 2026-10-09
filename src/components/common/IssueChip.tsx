@@ -1,6 +1,6 @@
 import { WarningIcon } from "./UnsupportedFilesWarning";
 
-export type IssueTone = "amber" | "orange";
+export type IssueTone = "amber" | "orange" | "red";
 
 /** Class names are spelled out per tone so the build can see every one of them. */
 const TONES: Record<IssueTone, { chip: string; count: string; label: string; card: string; heading: string; line: string; dot: string; rule: string; guidance: string }> = {
@@ -25,6 +25,17 @@ const TONES: Record<IssueTone, { chip: string; count: string; label: string; car
     dot: "bg-[#F97316]",
     rule: "border-[#F97316]/30",
     guidance: "text-[#C2410C]",
+  },
+  red: {
+    chip: "border-[#DC2626]/50 bg-[#FEF2F2] group-hover:border-[#DC2626] group-hover:bg-[#FEE2E2] group-hover:shadow-[0_2px_8px_rgba(220,38,38,0.25)] group-focus-within:border-[#DC2626] group-focus-within:bg-[#FEE2E2] group-focus-within:shadow-[0_2px_8px_rgba(220,38,38,0.25)]",
+    count: "text-[#991B1B]",
+    label: "text-[#B91C1C]",
+    card: "border-[#DC2626] bg-[#FEF2F2]",
+    heading: "text-[#991B1B]",
+    line: "text-[#991B1B]",
+    dot: "bg-[#DC2626]",
+    rule: "border-[#DC2626]/30",
+    guidance: "text-[#B91C1C]",
   },
 };
 

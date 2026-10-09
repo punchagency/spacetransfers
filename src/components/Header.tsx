@@ -5,6 +5,7 @@ import { FiLayers } from "react-icons/fi";
 import { usePricingSettings } from "../lib/utils/pricingRates";
 import { DpiStatusChip } from "./common/DpiStatus";
 import { TransparencyChip } from "./common/TransparencyStatus";
+import { UploadIssueChip } from "./common/UploadStatus";
 type HeaderInfo = {
   hasItem: boolean;
   areaSf?: number;
@@ -71,7 +72,7 @@ function SaveStateChip({
 }: {
   /** Icon only while things are fine: on a phone the issue chips need the room, and the sheet's name more so. */
   quiet?: boolean;
-  state: "idle" | "saving" | "saved" | "error" | "guest";
+  state: "idle" | "saving" | "saved" | "partial" | "error" | "guest";
   isSheetSaved: boolean;
   onRetry?: () => void;
   onSignIn?: () => void;
@@ -100,6 +101,20 @@ function SaveStateChip({
       >
         <MdErrorOutline className="h-3.5 w-3.5" aria-hidden />
         Not saved
+      </button>
+    );
+  }
+  if (state === "partial") {
+    // Icon only: the red chip beside it carries the count and the words, and
+    // two phrases side by side pushed the brand name out of the bar.
+    return (
+      <button
+        onClick={onRetry}
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600 hover:underline"
+        title="Your sheet is saved without the images that didn't upload. Click to send them again."
+      >
+        <MdCloudOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="sr-only">Saved without the images that didn't upload</span>
       </button>
     );
   }
@@ -152,6 +167,7 @@ export default function Header({
   profileName,
   isSidebarOpen,
   transparency,
+  notUploadedCount = 0,
   onGoToIssue,
 }: {
   info?: HeaderInfo;
@@ -161,7 +177,9 @@ export default function Header({
   /** Images whose transparency DTF can't print as shown, by kind. */
   transparency?: { fade: number; seeThrough: number };
   /** Goes to the next image with that kind of issue on the sheet. */
-  onGoToIssue?: (kind: "dpi" | "transparency") => void;
+  onGoToIssue?: (kind: "dpi" | "transparency" | "upload") => void;
+  /** Images on the sheet that did not upload. */
+  notUploadedCount?: number;
   cartCount?: number;
   onAddGangSheetToCart?: () => void;
   canAddGangSheetToCart?: boolean;
@@ -182,7 +200,7 @@ export default function Header({
   canRenameDesign?: boolean;
   onRenameDesign?: (newTitle: string) => void;
   /** Whether the sheet is saved, saving, could not be saved, or cannot be (signed out). */
-  saveState?: "idle" | "saving" | "saved" | "error" | "guest";
+  saveState?: "idle" | "saving" | "saved" | "partial" | "error" | "guest";
   /** True once the sheet has a saved record — "Saved" means something then. */
   isSheetSaved?: boolean;
   /** Retries after a failed save. */
@@ -367,6 +385,7 @@ export default function Header({
           {/* One chip per kind of issue, each in the colour its artwork is
               outlined in on the sheet. A chip renders nothing at zero, so the
               divider after them is conditional on the same totals. */}
+          <UploadIssueChip count={notUploadedCount} onGoTo={onGoToIssue ? () => onGoToIssue("upload") : undefined} />
           <DpiStatusChip
             lowDpiCount={info?.lowDpiCount ?? 0}
             unknownDpiCount={info?.unknownDpiCount ?? 0}
@@ -377,7 +396,7 @@ export default function Header({
             seeThroughCount={transparency?.seeThrough ?? 0}
             onGoTo={onGoToIssue ? () => onGoToIssue("transparency") : undefined}
           />
-          {(info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) + (transparency?.fade ?? 0) + (transparency?.seeThrough ?? 0) > 0 && (
+          {notUploadedCount + (info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) + (transparency?.fade ?? 0) + (transparency?.seeThrough ?? 0) > 0 && (
             <span className="text-gray-300">|</span>
           )}
           <span
@@ -597,6 +616,7 @@ export default function Header({
           </>
         )}
         {nameControl("flex-1")}
+        <UploadIssueChip count={notUploadedCount} onGoTo={onGoToIssue ? () => onGoToIssue("upload") : undefined} compact />
         <DpiStatusChip
           lowDpiCount={info?.lowDpiCount ?? 0}
           unknownDpiCount={info?.unknownDpiCount ?? 0}
@@ -610,7 +630,7 @@ export default function Header({
           compact
         />
         <SaveStateChip
-          quiet={(info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) + (transparency?.fade ?? 0) + (transparency?.seeThrough ?? 0) > 0}
+          quiet={notUploadedCount + (info?.lowDpiCount ?? 0) + (info?.unknownDpiCount ?? 0) + (transparency?.fade ?? 0) + (transparency?.seeThrough ?? 0) > 0}
           state={saveState}
           isSheetSaved={isSheetSaved}
           onRetry={onRetrySave}

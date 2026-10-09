@@ -13,6 +13,9 @@ import {
   useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
 import { snapToGridPoint, isDpiFlagged, shouldWarn } from "./artboard/lib/utils";
+import { isNotUploaded } from "./artboard/lib/utils/uploadRecovery";
+import FailedUploadsPanel from "./artboard/features/canvas/FailedUploadsPanel";
+import { failedUploads } from "../lib/failedUploads";
 import { isTypingTarget } from "../lib/utils/keyboard";
 import { useCanHover } from "../lib/useIsMobile";
 import { CanvasContainer } from "./artboard/features/canvas";
@@ -44,6 +47,7 @@ export default function Artboard({
   shortcutsEnabled = true,
   issueFocus = null,
   onTransparencyCounts,
+  onNotUploadedCount,
   onRequestAutoNest,
   onUpdateSetting,
   onDataChange,
@@ -252,14 +256,50 @@ export default function Artboard({
   }, [items]);
 
   /**
+   * Images placed from the customer's file whose upload never succeeded, in
+   * reading order. They are on the board and can be worked on, but exist only
+   * in this browser until they upload.
+   */
+  const notUploaded = useMemo(
+    () => [...items].filter(isNotUploaded).sort((a, b) => a.posY - b.posY || a.posX - b.posX),
+    [items],
+  );
+  const notUploadedIds = useMemo(() => new Set(notUploaded.map((it) => it.id)), [notUploaded]);
+  useEffect(() => {
+    // An image deleted, or uploaded at last, has nothing left to retry.
+    failedUploads.keepOnly(notUploadedIds);
+    onNotUploadedCount?.(notUploadedIds.size);
+  }, [notUploadedIds, onNotUploadedCount]);
+
+  /**
    * Going to an issue: each chip click selects the next affected piece and
    * brings it into view, wrapping at the end. Selecting it puts its tools —
    * Enhance, the transparency note — right where the customer is looking.
    */
   const [issueTarget, setIssueTarget] = useState<{ id: number; nonce: number } | null>(null);
-  const lastIssueStopRef = useRef<{ dpi: number | null; transparency: number | null }>({ dpi: null, transparency: null });
-  const issueListsRef = useRef({ dpi: dpiFlags.ids, transparency: transparencyFlags.ids });
-  issueListsRef.current = { dpi: dpiFlags.ids, transparency: transparencyFlags.ids };
+  const lastIssueStopRef = useRef<Record<"dpi" | "transparency" | "upload", number | null>>({
+    dpi: null,
+    transparency: null,
+    upload: null,
+  });
+  const uploadIssueIds = notUploaded.map((it) => it.id);
+  const issueListsRef = useRef({ dpi: dpiFlags.ids, transparency: transparencyFlags.ids, upload: uploadIssueIds });
+  issueListsRef.current = { dpi: dpiFlags.ids, transparency: transparencyFlags.ids, upload: uploadIssueIds };
+  const issueNonceRef = useRef(0);
+  /** Selects one piece and brings it into view. */
+  const showItem = (id: number) => {
+    setSelectedId(id);
+    setSelectedIds(new Set([id]));
+    // Above any chip's own counter, so this always reads as a new request.
+    setIssueTarget({ id, nonce: 1_000_000 + (issueNonceRef.current += 1) });
+  };
+  const removeItems = (ids: number[]) => {
+    const gone = new Set(ids);
+    history.commit();
+    setItems((prev) => prev.filter((it) => !gone.has(it.id)));
+    if (selectedId != null && gone.has(selectedId)) setSelectedId(null);
+    setSelectedIds((prev) => new Set([...prev].filter((id) => !gone.has(id))));
+  };
   useEffect(() => {
     if (!issueFocus) return;
     const ids = issueListsRef.current[issueFocus.kind];
@@ -665,6 +705,11 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
+      <FailedUploadsPanel
+        items={notUploaded.map((it) => ({ id: it.id, name: it.name, url: it.url }))}
+        onShow={showItem}
+        onRemove={removeItems}
+      />
       <input
         ref={fileInputRef}
         type="file"
@@ -704,6 +749,7 @@ export default function Artboard({
           batchTotal={batchTotal}
           queuedCount={queuedCount}
           dpiHighlightIds={dpiFlags.set}
+          notUploadedIds={notUploadedIds}
           issueTarget={issueTarget}
           transparencyVerdicts={transparencyVerdicts}
           onCancelUpload={cancelUploads}

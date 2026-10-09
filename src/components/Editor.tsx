@@ -1,3 +1,4 @@
+import { failedUploads, imageCount } from "../lib/failedUploads";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { ErrorBoundary } from "./common/ErrorBoundary";
 import toast from "react-hot-toast";
@@ -354,7 +355,9 @@ export default function Editor() {
    * The chips are in `Header`, the images in `Artboard`, and `Editor` is their
    * only common parent; the counter makes each click a new request.
    */
-  const [issueFocus, setIssueFocus] = useState<{ kind: "dpi" | "transparency"; nonce: number } | null>(null);
+  const [issueFocus, setIssueFocus] = useState<{ kind: "dpi" | "transparency" | "upload"; nonce: number } | null>(null);
+  /** Images on the board that did not upload: on screen, but only in this browser. */
+  const [notUploadedCount, setNotUploadedCount] = useState(0);
   /** Images on the board whose transparency won't print as shown, by kind. */
   const [transparencyCounts, setTransparencyCounts] = useState({ fade: 0, seeThrough: 0 });
   const [savedDesigns, setSavedDesigns] = useState<
@@ -542,8 +545,21 @@ export default function Editor() {
 
   const canAutosave = isLoggedIn && user?.role === "CUSTOMER";
 
-  const ARTWORK_PENDING_MESSAGE =
-    "Your artwork hasn't finished uploading yet, so this sheet can't be saved. Check your connection and try again in a moment.";
+  const notUploadedMessage = (count: number, consequence: string) =>
+    `${imageCount(count)} on this sheet didn't upload, so ${consequence}. Retry ${count === 1 ? "it" : "them"} from the list at the bottom left of the sheet, or remove ${count === 1 ? "it" : "them"}.`;
+
+  /**
+   * True, having said why and shown where, when the board holds images that
+   * did not upload. The cart and a new sheet must be exactly what is on the
+   * board, so they wait; saving does not.
+   */
+  const blockedByUploads = (consequence: string) => {
+    const count = getCurrentItems().filter((it: any) => artworkNotUploaded([it])).length;
+    if (count === 0) return false;
+    toast.error(notUploadedMessage(count, consequence), { id: "not-uploaded", duration: 7000 });
+    setIssueFocus((prev) => ({ kind: "upload", nonce: (prev?.nonce ?? 0) + 1 }));
+    return true;
+  };
 
   /**
    * The one place a sheet is written to the account — autosave, the Save button
@@ -551,7 +567,16 @@ export default function Editor() {
    * "saved" means.
    */
   const saveBoardNow = async (options: SaveOptions = {}): Promise<SaveResult> => {
-    const items = getCurrentItems();
+    const boardItems = getCurrentItems();
+    /*
+     * Images that did not upload are left out, not allowed to block the save.
+     * One failed file used to stop the whole sheet being saved, so an hour of
+     * work on the other forty pieces was a closed tab away from lost. They
+     * stay on the board and in the list; when one uploads the board changes
+     * and it is saved with the rest.
+     */
+    const items = boardItems.filter((it: any) => !artworkNotUploaded([it]));
+    const waiting = boardItems.length - items.length;
     if (!canAutosave) {
       return {
         ok: false,
@@ -560,15 +585,18 @@ export default function Editor() {
           : "Sign in to save your gang sheets.",
       };
     }
-    if (items.length === 0) return { ok: false, reason: "There is nothing on the sheet to save." };
-    if (artworkNotUploaded(items)) {
+    if (boardItems.length === 0) return { ok: false, reason: "There is nothing on the sheet to save." };
+    if (items.length === 0) {
+      const reason = notUploadedMessage(waiting, "there is nothing to save yet");
       setSaveState("error");
-      setSaveError(ARTWORK_PENDING_MESSAGE);
-      return { ok: false, reason: ARTWORK_PENDING_MESSAGE };
+      setSaveError(reason);
+      return { ok: false, reason };
     }
 
-    const { normalizedItems, mappedItems } = mapItemsForSave(items);
-    const snapshot = getGangsheetSnapshot(normalizedItems);
+    const { mappedItems } = mapItemsForSave(items);
+    // Of the whole board: what is on screen is what has been dealt with, so a
+    // sheet saved without its waiting images is not re-saved in a loop.
+    const snapshot = getGangsheetSnapshot(boardItems);
     let savedId: string | undefined;
     let savedTitle: string | undefined;
     setSaveState("saving");
@@ -861,7 +889,19 @@ export default function Editor() {
   const leaveBoard = async (
     prompt: NonNullable<typeof unsavedPrompt>,
     proceed: () => void | Promise<void>,
+    /** Set once the customer has agreed to leave images that didn't upload behind. */
+    leavingUploadsBehind = false,
   ) => {
+    /*
+     * Images that didn't upload are only on this board. They are left out of
+     * the saved sheet, so leaving the board is the moment they are lost — and
+     * the one place to ask, whatever is taking the customer away.
+     */
+    const waiting = getCurrentItems().filter((it: any) => artworkNotUploaded([it])).length;
+    if (waiting > 0 && !leavingUploadsBehind) {
+      setPendingLeave({ count: waiting, proceed: () => leaveBoard(prompt, proceed, true) });
+      return;
+    }
     if (!hasUnsavedChanges) return void (await proceed());
     if (canAutosave) {
       const result = await saveRef.current();
@@ -875,6 +915,9 @@ export default function Editor() {
     }
     openUnsavedPrompt(prompt, proceed);
   };
+
+  /** Leaving the board with images that didn't upload, waiting on the customer's answer. */
+  const [pendingLeave, setPendingLeave] = useState<{ count: number; proceed: () => void | Promise<void> } | null>(null);
 
   const attemptCreateNewGangsheet = () => {
     void leaveBoard(
@@ -909,11 +952,14 @@ export default function Editor() {
         secondaryLabel: "Discard & Clear",
       },
       () => setShowClearArtboardConfirm(true),
+      // Clearing asks "are you sure?" itself; one question is enough.
+      true,
     );
   };
 
   useEffect(() => {
-    const shouldWarn = hasUnsavedChanges;
+    // Images that didn't upload exist only in this tab; closing it loses them.
+    const shouldWarn = hasUnsavedChanges || notUploadedCount > 0;
     const handler = (e: BeforeUnloadEvent) => {
       if (!shouldWarn) return;
       e.preventDefault();
@@ -923,7 +969,7 @@ export default function Editor() {
 
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedChanges, notUploadedCount]);
 
   const formatDesignTime = (iso: string) => {
     const d = new Date(iso);
@@ -1110,6 +1156,7 @@ export default function Editor() {
   const updateCartSheet = async () => {
     const currentItems = getCurrentItems();
     if (!cartLine || !currentLoadedDesignId || !currentItems?.length) return;
+    if (blockedByUploads("your cart can't be updated yet")) return;
     // The sheet is saved first, as when it was added: an order must never hold
     // artwork that exists only in this browser.
     const saved = await saveRef.current();
@@ -1135,10 +1182,7 @@ export default function Editor() {
     const originalId = currentLoadedDesignId;
     const items = getCurrentItems();
     if (!line || !originalId || items.length === 0) return;
-    if (artworkNotUploaded(items)) {
-      toast.error(ARTWORK_PENDING_MESSAGE);
-      return;
-    }
+    if (blockedByUploads("it can't be saved as a new sheet yet")) return;
     setIsGangsheetBusy(true);
     const toastId = toast.loading("Saving as a new sheet...");
     try {
@@ -1512,6 +1556,8 @@ export default function Editor() {
       await updateCartSheet();
       return;
     }
+    // Before the price prompt: no point confirming a sheet that can't go in yet.
+    if (isLoggedIn && blockedByUploads("it can't go in your cart yet")) return;
     const currentItems = getCurrentItems();
     // The same length the header bills and the print export produces.
     const usedHeight =
@@ -1755,6 +1801,7 @@ export default function Editor() {
     showCheckoutModal ||
     showMobileNotice ||
     showClearArtboardConfirm ||
+    Boolean(pendingLeave) ||
     showUnderUtilizedCartConfirm ||
     Boolean(pendingSheetDelete) ||
     Boolean(unsavedPrompt);
@@ -1806,8 +1853,11 @@ export default function Editor() {
               ? isLoggedIn
                 ? "error"
                 : "guest"
+              : notUploadedCount > 0 && saveState === "saved"
+              ? "partial"
               : saveState
           }
+          notUploadedCount={notUploadedCount}
           /* Why it is not saved, for the chip's tooltip — otherwise the only way
              to find out is to click it. */
           saveErrorMessage={
@@ -1817,6 +1867,8 @@ export default function Editor() {
           }
           isSheetSaved={Boolean(currentLoadedDesignId) && !hasUnsavedChanges}
           onRetrySave={() => {
+            // Not saved because of images that didn't upload: sending them is the retry.
+            if (notUploadedCount > 0) return void failedUploads.retry();
             void saveRef.current().then((result) => {
               if (result.ok) toast.success("Gang sheet saved");
               else if (result.reason) toast.error(result.reason);
@@ -1910,6 +1962,29 @@ export default function Editor() {
           onCancel={cancelPendingAction}
         />
       </ErrorBoundary>
+      <ErrorBoundary name="That window" resetKey={Boolean(pendingLeave)} onDismiss={() => setPendingLeave(null)}>
+        <ConfirmModal
+          isOpen={Boolean(pendingLeave)}
+          title={pendingLeave?.count === 1 ? "1 image hasn't uploaded" : `${pendingLeave?.count ?? 0} images haven't uploaded`}
+          message={
+            pendingLeave?.count === 1
+              ? "It is on this sheet but only on this device. If you leave the sheet now, it won't be on the saved sheet and you'll need to add it again."
+              : "They are on this sheet but only on this device. If you leave the sheet now, they won't be on the saved sheet and you'll need to add them again."
+          }
+          confirmLabel={pendingLeave?.count === 1 ? "Leave without it" : "Leave without them"}
+          cancelLabel="Stay and retry"
+          danger
+          onConfirm={() => {
+            const go = pendingLeave?.proceed;
+            setPendingLeave(null);
+            void go?.();
+          }}
+          onCancel={() => {
+            setPendingLeave(null);
+            void failedUploads.retry();
+          }}
+        />
+      </ErrorBoundary>
       <ErrorBoundary name="That window" resetKey={showClearArtboardConfirm} onDismiss={() => setShowClearArtboardConfirm(false)}>
         <ConfirmModal
           isOpen={showClearArtboardConfirm}
@@ -1966,6 +2041,7 @@ export default function Editor() {
           onHeaderInfoChange={setHeaderInfo}
           issueFocus={issueFocus}
           onTransparencyCounts={setTransparencyCounts}
+          onNotUploadedCount={setNotUploadedCount}
           showRulers={settings.showRulers && !isMobile}
           showGrid={settings.showGrid}
           snapToGrid={settings.snapToGrid}
@@ -2187,7 +2263,10 @@ export default function Editor() {
              * sheet itself is not lost — it is saved, and the order is in history.
              */
             setCartItems([]);
-            clearWorkspace();
+            // Unless the board holds images still waiting to upload: that is a
+            // different sheet from the one just bought, and clearing it would
+            // drop them without a word.
+            if (!getCurrentItems().some((it: any) => artworkNotUploaded([it]))) clearWorkspace();
           }}
         />
       </ErrorBoundary>

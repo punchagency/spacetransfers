@@ -7,6 +7,7 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 ## What customers can do
 
 - **Build a sheet.** Upload PNG, JPG, PDF, SVG, AI, PSD, TIFF, WebP, AVIF, HEIC, GIF or BMP. Everything is converted in the browser and trimmed to its artwork. A PDF page that is only a picture is rendered at that picture's real resolution, so a small photo on a large page is flagged as low resolution instead of passing at 300 DPI.
+- **Survive a bad connection.** An upload that fails on the connection is retried by itself. One that still fails stays on the sheet, outlined in red and listed by name with Retry and Remove; it is sent again automatically when the browser comes back online. The sheet is saved without it meanwhile, and can't go in the cart until it uploads. See `lib/failedUploads.ts` and `artboard/lib/utils/uploadRecovery.ts`.
 - **Check the artwork.** Images below 300 DPI are outlined in amber, and images with fades or see-through areas in orange. The top bar counts each kind in a chip of the same colour; clicking a chip steps through the affected images.
 - **Remove backgrounds.** A plain background of any colour is removed exactly, in the browser, by colour — including, by default, inside letters and between lines (the Clear Enclosed Background setting). Anything else goes to an in-browser AI model that cuts out the subject. See `artboard/lib/utils/bgRemover.ts`.
 - **Arrange it.** Drag, resize, rotate, flip, lock, duplicate and group. Auto-nest packs the sheet as short as possible.

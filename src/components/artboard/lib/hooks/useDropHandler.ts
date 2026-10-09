@@ -1,5 +1,7 @@
+import { applyUploadedAsset } from "../utils/uploadRecovery";
+import { failedUploads } from "../../../../lib/failedUploads";
 import { getToken } from "../../../../lib/utils/auth";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { readDPI, loadImageSize, validateImageFile, checkFade } from "../utils";
 import { placeNewItems, arrangeInitialLayout, isSheetFull } from "../utils";
 import { autoCropImage } from "../utils/autoCrop";
@@ -36,6 +38,11 @@ import type { CommitHistory } from "./useHistory";
  *    the file, trims it and checks it before replying).
  */
 const UPLOAD_STALL_MS = 30_000;
+/** Waits before sending a file again after the connection, not the file, failed. */
+const UPLOAD_RETRY_DELAYS_MS = [1500, 4000];
+
+/** An upload error that says whether sending the same file again could work. */
+const uploadError = (message: string, retryable: boolean) => Object.assign(new Error(message), { retryable });
 const UPLOAD_RESPONSE_MS = 120_000;
 
 /**
@@ -285,19 +292,20 @@ export const useDropHandler = (
         if (xhr.status >= 200 && xhr.status < 300) resolve(json);
         // The server's own message when it sent one — it knows why the file was
         // rejected and this is the only place that reason reaches the customer.
-        else reject(new Error(json?.message || `Upload failed (${xhr.status})`));
+        // A 5xx is the server stumbling, worth another go; a 4xx is a refusal.
+        else reject(uploadError(json?.message || `Upload failed (${xhr.status})`, xhr.status >= 500));
       };
 
       xhr.onerror = () => {
         stopWatching();
         release();
-        reject(new Error(`“${file.name}” couldn't be uploaded. Check your connection and try again.`));
+        reject(uploadError(`“${file.name}” couldn't be uploaded. Check your connection and try again.`, true));
       };
 
       xhr.onabort = () => {
         stopWatching();
         release();
-        reject(new Error(giveUpReason ?? "Upload canceled"));
+        reject(giveUpReason ? uploadError(giveUpReason, true) : new Error("Upload canceled"));
       };
 
       const formData = new FormData();
@@ -305,6 +313,86 @@ export const useDropHandler = (
       xhr.send(formData);
     });
   };
+
+  /**
+   * One upload, tried again when the connection — not the file — was the
+   * problem. A dropped connection during a batch is usually back within
+   * seconds, so most failures never need the customer at all.
+   */
+  const uploadWithRetry = async (file: File, token: number, onProgress: (percent: number) => void) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await uploadAssetWithProgress(file, token, onProgress);
+      } catch (err: any) {
+        const canRetry = err?.retryable === true && attempt < UPLOAD_RETRY_DELAYS_MS.length && !isCanceled(token);
+        if (!canRetry) throw err;
+        await sleep(UPLOAD_RETRY_DELAYS_MS[attempt]);
+        if (isCanceled(token)) throw new Error("Upload canceled");
+        onProgress(0);
+      }
+    }
+  };
+
+  /**
+   * Sends images that failed to upload again — the given ones, or all of them.
+   * Each that gets through stops being local-only; each that doesn't keeps its
+   * place in the list with the latest reason.
+   */
+  const retryTokenRef = useRef(0);
+  const retryFailedUploads = async (ids?: number[]) => {
+    const targets = failedUploads.list().filter((e) => !e.retrying && (!ids || ids.includes(e.id)));
+    if (targets.length === 0) return;
+    // Negative, so a retry is never taken for the batch that owns the overlay.
+    const token = (retryTokenRef.current -= 1);
+    targets.forEach((e) => failedUploads.update(e.id, { retrying: true }));
+
+    let cursor = 0;
+    let uploaded = 0;
+    const worker = async () => {
+      while (cursor < targets.length) {
+        const entry = targets[cursor++];
+        try {
+          const asset = await uploadWithRetry(entry.file, token, () => {});
+          setItems((prev) => prev.map((it) => (it.id === entry.id ? applyUploadedAsset(it, asset, entry.placedUrl) : it)));
+          if (asset?.fade && asset?.url) void checkFade(asset.trimmedUrl || asset.url, asset.fade);
+          failedUploads.remove([entry.id]);
+          uploaded += 1;
+        } catch (err: any) {
+          failedUploads.update(entry.id, {
+            retrying: false,
+            reason: err?.message || `“${entry.name}” couldn't be uploaded.`,
+          });
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, targets.length) }, worker));
+    } finally {
+      releaseBatch(token);
+    }
+
+    const left = targets.length - uploaded;
+    if (left === 0) {
+      toast.success(uploaded === 1 ? `“${targets[0].name}” uploaded.` : `All ${uploaded} images uploaded.`, { id: "upload-retry" });
+    } else {
+      toast.error(
+        `${left === 1 ? "1 image" : `${left} images`} still couldn't upload. Check your connection and try again.`,
+        { id: "upload-retry", duration: 6000 },
+      );
+    }
+  };
+  const retryRef = useRef(retryFailedUploads);
+  retryRef.current = retryFailedUploads;
+  useEffect(() => {
+    failedUploads.setRetryHandler((ids) => retryRef.current(ids));
+    // Back online: send them again without being asked.
+    const onOnline = () => void retryRef.current();
+    window.addEventListener("online", onOnline);
+    return () => {
+      failedUploads.setRetryHandler(null);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
 
   /**
    * Turns every file in a drop into the PNG or JPEG the upload path takes.
@@ -731,18 +819,19 @@ export const useDropHandler = (
         ]);
 
         let assetResponse: any = null;
+        let uploadFailure: string | null = null;
         try {
-          assetResponse = await uploadAssetWithProgress(file, token, (pct) => {
+          assetResponse = await uploadWithRetry(file, token, (pct) => {
             fileProgress[idx] = pct / 100;
             publishProgress();
           });
         } catch (err: any) {
           if (isCanceled(token) || err?.message === "Upload canceled") throw err;
           // The server rejected or was unreachable. The local decode already
-          // succeeded, so the artwork can still be placed from the object URL —
-          // but say so, because it will not survive a reload.
+          // succeeded, so the artwork is still placed, from the file itself —
+          // and listed as not uploaded, where it can be sent again.
           console.warn(`[UPLOAD] ${file.name} — ${err?.message}`);
-          toast.error(err?.message || `“${file.name}” couldn't be uploaded.`, { duration: 6000 });
+          uploadFailure = err?.message || `“${file.name}” couldn't be uploaded.`;
           assetResponse = null;
         }
         fileProgress[idx] = 1;
@@ -832,6 +921,11 @@ export const useDropHandler = (
          */
         if (baseItem.url === (trimmedUrl || serverUrl) && assetResponse?.fade) {
           void checkFade(baseItem.url, assetResponse.fade);
+        }
+
+        if (uploadFailure) {
+          baseItem.uploadFailed = true;
+          failedUploads.add({ id: baseItem.id, name: file.name, file, reason: uploadFailure, placedUrl: baseItem.url });
         }
 
         return baseItem;

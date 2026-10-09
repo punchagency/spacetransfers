@@ -62,6 +62,8 @@ export interface ArtboardItem {
   /** Pixel size of `uncroppedUrl`, so the auto-crop toggle keeps a piece's scale both ways. */
   uncroppedWidthPx?: number;
   uncroppedHeightPx?: number;
+  /** Placed from the customer's file, but the upload never succeeded: it exists only in this browser. */
+  uploadFailed?: boolean;
   isDropping?: boolean;
   dpi?: number;
   // Unified flow geometry — when set, copies render at cells within a shared
@@ -136,7 +138,9 @@ export interface ArtboardProps {
    *  color or 'rainbow' = solid/gradient fill. Never affects exports. */
   canvasBg?: string;
   /** A request from a top-bar chip to go to the next image with that kind of issue. */
-  issueFocus?: { kind: "dpi" | "transparency"; nonce: number } | null;
+  issueFocus?: { kind: "dpi" | "transparency" | "upload"; nonce: number } | null;
+  /** Reports how many images on the board have not uploaded. */
+  onNotUploadedCount?: (count: number) => void;
   /** Reports how many images have transparency that won't print as shown, by kind. */
   onTransparencyCounts?: (counts: { fade: number; seeThrough: number }) => void;
 }

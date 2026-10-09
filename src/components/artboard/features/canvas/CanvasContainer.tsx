@@ -70,6 +70,8 @@ interface CanvasContainerProps {
    * Chrome only — nothing about an item's geometry or content is read from it.
    */
   dpiHighlightIds?: Set<number> | null;
+  /** Images that have not uploaded; outlined in red. */
+  notUploadedIds?: ReadonlySet<number>;
   /** The piece a top-bar chip has asked to be taken to; a new `nonce` is a new request. */
   issueTarget?: { id: number; nonce: number } | null;
   /** Transparency verdicts by image URL (`useTransparencyVerdicts`). */
@@ -138,6 +140,7 @@ export default function CanvasContainer({
   batchTotal = 0,
   queuedCount = 0,
   dpiHighlightIds = null,
+  notUploadedIds,
   issueTarget = null,
   transparencyVerdicts,
   uploadFileName,
@@ -639,6 +642,7 @@ export default function CanvasContainer({
                   scrollTop={scrollTop}
                   viewportHeight={viewportHeight}
                   isDpiHighlighted={dpiHighlightIds?.has(it.id) ?? false}
+                  isNotUploaded={notUploadedIds?.has(it.id) ?? false}
                   issuePulse={issueTarget?.id === it.id ? issueTarget.nonce : 0}
                   transparency={transparencyVerdicts?.get(it.url)}
                 />
