@@ -48,7 +48,7 @@ interface CanvasContainerProps {
   onDelete: () => void;
   onCloseProperties: () => void;
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
-  onMeasured?: (id: number, widthPx: number) => void;
+  onMeasured?: (id: number, widthPx: number, heightPx?: number, url?: string) => void;
   onDragStart: (e: React.MouseEvent, id: number) => void;
   onResizeStart: (e: React.MouseEvent, id: number) => void;
   isDraggingItem: boolean;

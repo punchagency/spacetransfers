@@ -600,12 +600,27 @@ export default function Artboard({
    * Stores a piece's measured pixel width when it has none. Not an edit: no
    * undo step, and the sheet's saved/cart comparison ignores this field.
    */
-  const recordMeasuredWidth = useCallback((id: number, widthPx: number) => {
-    setItems((prev) =>
-      prev.some((it) => it.id === id && !it.nativeWidthPx && !it.croppedWidthPx)
-        ? prev.map((it) => (it.id === id && !it.nativeWidthPx && !it.croppedWidthPx ? { ...it, nativeWidthPx: widthPx } : it))
-        : prev,
-    );
+  const recordMeasuredWidth = useCallback((id: number, widthPx: number, heightPx?: number, url?: string) => {
+    setItems((prev) => {
+      const item = prev.find((it) => it.id === id);
+      if (!item) return prev;
+      const needsWidth = !item.nativeWidthPx && !item.croppedWidthPx;
+      // The image's real size, for the DPI check's second axis. Tied to the
+      // image it was read from, so it is never applied to a later one.
+      const needsShape =
+        Boolean(url) && Boolean(heightPx) && item.url === url &&
+        (item.measuredUrl !== url || item.measuredWidthPx !== widthPx || item.measuredHeightPx !== heightPx);
+      if (!needsWidth && !needsShape) return prev;
+      return prev.map((it) =>
+        it.id === id
+          ? {
+              ...it,
+              ...(needsWidth ? { nativeWidthPx: widthPx } : {}),
+              ...(needsShape ? { measuredUrl: url, measuredWidthPx: widthPx, measuredHeightPx: heightPx } : {}),
+            }
+          : it,
+      );
+    });
   }, [setItems]);
 
   const duplicateSelected = () => {

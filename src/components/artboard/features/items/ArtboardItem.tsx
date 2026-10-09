@@ -7,7 +7,7 @@ import { useSelectedImageSlot } from "../../../../lib/selectedImageSlot";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
-import { computeGroupDims, computeRenderCopies } from "../../lib/utils/layoutHelpers";
+import { computeGroupDims, computeRenderCopies, dpiFromPixels } from "../../lib/utils/layoutHelpers";
 import { shouldWarn, transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
 import { readImageInfo } from "../../lib/utils/imageUtils";
 import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
@@ -80,7 +80,7 @@ interface ArtboardItemProps {
   /** Removes the background from every selected image that has one. */
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
   /** Reports the image's measured pixel width, for pieces that arrived without one. */
-  onMeasured?: (id: number, widthPx: number) => void;
+  onMeasured?: (id: number, widthPx: number, heightPx?: number, url?: string) => void;
   /** The whole selection, for the toolbar this piece shows when it is the primary. */
   selection?: SelectionSummary;
   onDragStart: (e: React.MouseEvent) => void;
@@ -156,6 +156,7 @@ function ArtboardItem({
   const [isRemovingBg, setIsRemovingBg] = useState(false);
   const [bgProgress, setBgProgress] = useState<{ phase: string; pct: number } | null>(null);
   const [naturalWidthPx, setNaturalWidthPx] = useState<number | null>(null);
+  const [naturalHeightPx, setNaturalHeightPx] = useState<number | null>(null);
   const [isDpiEnhancing, setIsDpiEnhancing] = useState(false);
   const [dpiProgress, setDpiProgress] = useState<string | null>(null);
   const [dpiEnhanced, setDpiEnhanced] = useState(false);
@@ -188,6 +189,7 @@ function ArtboardItem({
   useEffect(() => {
     setBgStatus('detecting');
     setNaturalWidthPx(null);
+    setNaturalHeightPx(null);
     setDpiEnhanced(false);
     setBgJustRemoved(false);
     let cancelled = false;
@@ -195,11 +197,13 @@ function ArtboardItem({
       if (cancelled) return;
       if (!info) { setBgStatus('has-bg'); return; }
       setNaturalWidthPx(info.widthPx);
+      setNaturalHeightPx(info.heightPx);
       setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
       // A piece reopened from a saved sheet, a restored cart or a reorder has
       // no pixel count (it isn't saved), so the DPI check counted it as
       // "unknown" and flagged the whole sheet. Recorded once measured.
-      if (!item.nativeWidthPx && !item.croppedWidthPx) onMeasured?.(item.id, info.widthPx);
+      // And its real shape, every time: the DPI check needs both axes.
+      onMeasured?.(item.id, info.widthPx, info.heightPx, item.url);
     });
     return () => { cancelled = true; };
   }, [item.url]);
@@ -282,8 +286,10 @@ function ArtboardItem({
     // false low-DPI warnings on rotated non-square art.
     const rotationOdd = ((Math.round(item.rotation / 90) % 2) + 2) % 2 === 1;
     const widthAxisIn = rotationOdd ? item.heightIn : item.widthIn;
+    const heightAxisIn = rotationOdd ? item.widthIn : item.heightIn;
     if (naturalWidthPx !== null && widthAxisIn > 0) {
-      return Math.round(naturalWidthPx / widthAxisIn);
+      // Both axes: a piece stretched on one side is as sharp as its weaker one.
+      return dpiFromPixels(naturalWidthPx, naturalHeightPx, widthAxisIn, heightAxisIn);
     }
     // Bridge the brief window between a url change (crop/BG-remove/upscale)
     // and the new image finishing the background load below — nativeWidthPx
@@ -293,7 +299,7 @@ function ArtboardItem({
       return Math.round(item.nativeWidthPx / widthAxisIn);
     }
     return typeof item.dpi === "number" ? item.dpi : null;
-  }, [naturalWidthPx, item.widthIn, item.heightIn, item.rotation, item.dpi, item.nativeWidthPx]);
+  }, [naturalWidthPx, naturalHeightPx, item.widthIn, item.heightIn, item.rotation, item.dpi, item.nativeWidthPx]);
 
   const isLowDpi = typeof effectiveDpi === "number" && effectiveDpi < 300;
   // No DPI could be determined at all — neither a loaded image's real pixel
@@ -724,7 +730,10 @@ function ArtboardItem({
                 onLoad={(e) => {
                   e.currentTarget.dataset.loaded = "1";
                 }}
-                className={`object-contain touch-none text-transparent [&:not([data-loaded])]:bg-slate-300/50 [&:not([data-loaded])]:animate-pulse ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
+                /* Filled, not letterboxed: the print file stretches an image
+                   to its box, so a piece sized on one side only is shown the
+                   way it will print. In proportion the two are identical. */
+                className={`object-fill touch-none text-transparent [&:not([data-loaded])]:bg-slate-300/50 [&:not([data-loaded])]:animate-pulse ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
                   isSelected && renderCopies > 1
                     ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
                     : ""

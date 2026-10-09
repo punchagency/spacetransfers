@@ -62,6 +62,14 @@ export interface ArtboardItem {
   /** Pixel size of `uncroppedUrl`, so the auto-crop toggle keeps a piece's scale both ways. */
   uncroppedWidthPx?: number;
   uncroppedHeightPx?: number;
+  /**
+   * The image this piece last showed on the board and its real pixel size,
+   * measured from the loaded image. Lets the DPI check see both axes; ignored
+   * once `url` moves on. Not saved with the sheet — it is measured again.
+   */
+  measuredUrl?: string;
+  measuredWidthPx?: number;
+  measuredHeightPx?: number;
   /** Placed from the customer's file, but the upload never succeeded: it exists only in this browser. */
   uploadFailed?: boolean;
   isDropping?: boolean;
