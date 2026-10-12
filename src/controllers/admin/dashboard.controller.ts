@@ -242,6 +242,7 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
       let tax = 0;
       let shipping = 0;
       let cardFees = 0;
+      let refunds = 0;
       let feesMissing = 0;
       let margin = 0;
       let earned = 0;
@@ -262,6 +263,7 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
         tax += f.tax;
         shipping += f.shippingCost;
         cardFees += f.processingFee ?? 0;
+        refunds += f.refunded;
         // Only real Stripe payments have a fee to be missing; pre-Stripe
         // placeholder payments ("mock_txn_…") never did.
         if (f.processingFee === null && /^pi_/.test(String(o.payment?.paymentIntentId || ""))) feesMissing += 1;
@@ -274,7 +276,7 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
         }
       }
 
-      return { revenue, cost, tax, shipping, cardFees, feesMissing, margin, earned, earnedOrders, uncostable };
+      return { revenue, cost, tax, shipping, cardFees, refunds, feesMissing, margin, earned, earnedOrders, uncostable };
     };
 
     const current = totalsFor(orders);
@@ -359,6 +361,7 @@ export const getEarningsSummary = async (req: Request, res: Response, next: Next
           tax: Number(current.tax.toFixed(2)),
           shipping: Number(current.shipping.toFixed(2)),
           cardFees: Number(current.cardFees.toFixed(2)),
+          refunds: Number(current.refunds.toFixed(2)),
           ordersWithoutFee: current.feesMissing,
         },
         margin: {

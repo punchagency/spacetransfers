@@ -50,3 +50,17 @@ export const upload = multer({
   fileFilter,
   limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
 });
+
+const PHOTO_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/** Photos sent with a problem report: images only, and far smaller than artwork. */
+export const uploadPhoto = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    if (PHOTO_TYPES.has(file.mimetype)) return cb(null, true);
+    const error = new Error(`“${file.originalname}” isn't a photo we can take. Please add a JPG or PNG.`) as Error & { statusCode?: number };
+    error.statusCode = 400;
+    cb(error);
+  },
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+});

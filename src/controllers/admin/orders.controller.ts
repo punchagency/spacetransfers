@@ -1,11 +1,12 @@
 import { Request, Response, NextFunction } from "express";
 import { publishOrderEvent } from "../../services/orderSyncHub.js";
 import { canPayPartnerOnCancel, cancelOrderWithRefund } from "../../services/orderCancellation.service.js";
-import { sendOrderCancelledEmail } from "../../services/orderEmails.service.js";
+import { sendOrderCancelledEmail, sendOrderRefundedEmail } from "../../services/orderEmails.service.js";
+import { refundOrderPayment, refundableAmount } from "../../services/orderRefund.service.js";
 import { describeTimelineMessage } from "../../utils/orderStatusLabels.js";
 import { computeOrderFinancials, isOrderProfitSettled } from "../../services/orderFinancials.service.js";
 import { recordMissingProcessingFee } from "../../services/paymentVerification.service.js";
-import { formatSheetSize, orderChargeLines, orderRefundNote } from "../../utils/orderPresentation.js";
+import { formatSheetSize, orderChargeLines, orderInvoiceNote } from "../../utils/orderPresentation.js";
 import { orderSheets, pickOrderSheet, sheetContents, sheetSummaries } from "../../utils/orderSheets.js";
 import { Asset } from "../../models/asset.model.js";
 import { apiFileUrl, resolveApiFile } from "../../utils/publicApiBase.js";
@@ -597,6 +598,16 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         customerPaid: money.customerPaid,
         cancelled: money.cancelled,
         refunded: money.refunded,
+        // What can still be returned to the card, and each refund already made.
+        refundable: refundableAmount(order),
+        refunds: (((order as any).payment?.refunds || []) as any[]).map((r) => ({
+          id: String(r.id || ""),
+          amount: Number(r.amount) || 0,
+          reason: String(r.reason || ""),
+          at: r.at,
+          byName: String(r.byName || ""),
+        })),
+        keptOnCancel: money.keptOnCancel,
         partnerPaidOnCancel: money.partnerPaidOnCancel,
         canPayPartnerOnCancel: canPayPartnerOnCancel(order),
         // What the business does not keep, listed so the profit below adds up.
@@ -633,6 +644,14 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       } : null,
 
       regionInfo: resolveRegionInfo(order, oneUserRegionMap),
+
+      // A free replacement names the order it replaces, and that order names it back.
+      reprintOf: (order as any).reprintOf?.orderId
+        ? { orderId: String((order as any).reprintOf.orderId), displayId: String((order as any).reprintOf.displayId || "") }
+        : null,
+      reprints: (
+        await Order.find({ "reprintOf.orderId": String(order._id) }).select("displayId status createdAt").sort({ createdAt: 1 }).lean()
+      ).map((r: any) => ({ orderId: String(r._id), displayId: String(r.displayId || r._id), status: String(r.status || "") })),
 
       preview: {
         designId,
@@ -855,7 +874,7 @@ export const downloadOrderInvoice = async (req: Request, res: Response, next: Ne
         total: (pricing.total || 0).toFixed(2),
         currency: pricing.currency || "USD"
       },
-      note: orderRefundNote(order) || undefined,
+      note: orderInvoiceNote(order) || undefined,
     };
 
     const pdfBuffer = await renderInvoicePdf(data);
@@ -896,7 +915,10 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
       { id: String(req.user?.id || ""), name: String((admin as any)?.name || (admin as any)?.email || "Admin") },
       reason,
       undefined,
-      { payPartner: req.body?.payPartner === true },
+      {
+        payPartner: req.body?.payPartner === true,
+        refundAmount: req.body?.refundAmount === undefined || req.body?.refundAmount === null ? undefined : Number(req.body.refundAmount),
+      },
     );
 
     const displayId = String((order as any).displayId || orderId);
@@ -924,6 +946,37 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
       ...result,
       customerNotified: Boolean(mail?.sent),
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Refunds part or all of an order's payment without cancelling it. The order
+ * carries on; only the money changes.
+ */
+export const refundOrder = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const orderId = String(req.params.orderId || "");
+    const order = mongoose.Types.ObjectId.isValid(orderId) ? await Order.findById(orderId).lean() : null;
+    if (!order) {
+      const error = new Error("Order not found") as CustomError;
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const admin = await User.findById(req.user?.id).select("name email").lean();
+    const reason = String(req.body?.reason || "").trim();
+    const result = await refundOrderPayment(
+      order,
+      { id: String(req.user?.id || ""), name: String((admin as any)?.name || (admin as any)?.email || "Admin") },
+      { amount: Number(req.body?.amount), reason },
+    );
+
+    publishOrderEvent(orderId, "order.financials.changed", { orderId, updatedAt: new Date() });
+    const mail = await sendOrderRefundedEmail(order, result, reason);
+
+    res.json({ refunded: true, ...result, customerNotified: Boolean(mail?.sent) });
   } catch (error) {
     next(error);
   }

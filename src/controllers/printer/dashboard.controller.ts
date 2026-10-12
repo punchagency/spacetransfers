@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from "express";
+import { OrderIssue } from "../../models/orderIssue.model.js";
+import { partnerIssueFlags } from "../../services/orderIssue.service.js";
 import { orderSheets } from "../../utils/orderSheets.js";
 import { stageDue } from "../../utils/slaStages.js";
 import { printerStatusLabel } from "../../utils/orderStatusLabels.js";
@@ -129,8 +131,14 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     // One shared map — see `utils/orderStatusLabels`.
     const mapStatus = printerStatusLabel;
 
+    const issueFlags = partnerIssueFlags(
+      await OrderIssue.find({ order: { $in: activeAssignedJobs.map((j: any) => j._id) }, partner: printerId, status: "OPEN" }).lean(),
+      String(printerId),
+    );
+
     const assignedJobs = activeAssignedJobs.map((job: any) => ({
       id: String(job._id),
+      issue: issueFlags.get(String(job._id)) || null,
       displayId: job?.displayId ? String(job.displayId) : null,
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
       order: sheetCountLabel(job.items),

@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from "express";
+import { OrderIssue } from "../../models/orderIssue.model.js";
+import { partnerIssueFlags } from "../../services/orderIssue.service.js";
 import { partnerTransitionError } from "../../utils/partnerStatusRules.js";
 import { orderSheets, sheetSummaries } from "../../utils/orderSheets.js";
 import { stageDue } from "../../utils/slaStages.js";
@@ -250,6 +252,11 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
     const pageOrders = hasNextPage ? orders.slice(0, pageSize) : orders;
 
     const sla = (await getAssignmentSettings()).sla;
+    const issueFlags = partnerIssueFlags(
+      await OrderIssue.find({ order: { $in: pageOrders.map((o) => o._id) }, partner: printerId, status: "OPEN" }).lean(),
+      String(printerId),
+    );
+
     const formattedOrders = pageOrders.map((order) => {
       const firstItem = (Array.isArray(order.items) ? order.items[0] : null) || ({} as any);
       const sheets = sheetSummaries(order.items);
@@ -293,6 +300,8 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         isUrgent: order.priority === "URGENT",
         statusDescription: statusDescription(displayStatus),
         thumbnail,
+        // A question from the admin about a problem the customer reported.
+        issue: issueFlags.get(orderId) || null,
       };
     });
 
