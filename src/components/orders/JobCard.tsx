@@ -7,6 +7,7 @@ import {
 } from "react-icons/fi";
 import { jobDue } from "../../utils/jobDue";
 import type { Order } from "../../types/orders";
+import { JobIssueTag } from "../common/JobIssueTag";
 
 interface JobCardProps {
   job: Order;
@@ -146,6 +147,7 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
                 Urgent
               </span>
             )}
+            <JobIssueTag flag={job.issue} />
             <span className="text-gray-500 text-sm font-medium">
               {job.customerName}
             </span>

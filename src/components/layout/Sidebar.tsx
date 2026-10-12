@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../../utils/api";
 import { MdClose } from "react-icons/md";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -109,6 +110,24 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Reported problems waiting on this partner's reply, so one is seen from any page.
+  const [repliesOwed, setRepliesOwed] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      apiFetch("/printer/issues")
+        .then((data) => {
+          if (alive) setRepliesOwed(Number(data?.awaitingReply) || 0);
+        })
+        .catch(() => {});
+    load();
+    const id = window.setInterval(load, 30000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [location.pathname]);
+
   /** Following a link on a phone closes the drawer; on desktop there is nothing to close. */
   const go = (path: string) => {
     navigate(path);
@@ -161,6 +180,15 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
               <img src={iconSrc} alt={label} className="w-[18px] h-[18px]" />
             )}
             <span>{label}</span>
+            {path === "/orders" && repliesOwed > 0 && (
+              <span
+                className="ml-auto rounded-full bg-red-500 px-2 text-xs font-semibold leading-5 text-white"
+                title="Reported problems waiting for your reply"
+                aria-label={`${repliesOwed} reported problem${repliesOwed === 1 ? "" : "s"} waiting for your reply`}
+              >
+                {repliesOwed}
+              </span>
+            )}
           </div>
         ))}
       </nav>

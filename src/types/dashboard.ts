@@ -1,3 +1,4 @@
+import type { JobIssueFlag } from "../utils/jobIssues";
 
 export type DashboardJobStatus =
   | "Urgent"
@@ -18,5 +19,7 @@ export interface DashboardJob {
   dueStage?: "ACCEPT" | "PRINT" | null;
   status: DashboardJobStatus;
   isUrgent?: boolean;
+  /** Set while Space Transfers has an open question about a problem on this job. */
+  issue?: JobIssueFlag | null;
   createdAt?: string | null;
 }

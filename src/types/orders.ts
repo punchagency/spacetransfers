@@ -1,3 +1,5 @@
+import type { JobIssueFlag } from "../utils/jobIssues";
+
 export type OrderStatus =
   | "Pending Review"
   | "In Progress - Printing"
@@ -22,6 +24,8 @@ export interface Order {
   location: string;
   status: OrderStatus;
   statusDescription?: string;
+  /** Set while Space Transfers has an open question about a problem on this job. */
+  issue?: JobIssueFlag | null;
 }
 
 export type OrdersTabLabel =

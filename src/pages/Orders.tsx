@@ -10,6 +10,8 @@ import { ConfirmDialog } from "../components/common/ConfirmDialog";
 import { confirmCopy, type ConfirmableStep } from "../utils/statusActions";
 import type { OrdersTab, OrdersTabLabel, Order } from "../types/orders";
 import { apiFetch } from "../utils/api";
+import { readJobIssueFlag } from "../utils/jobIssues";
+import { OpenIssuesBanner } from "../components/common/OpenIssuesBanner";
 import toast from "react-hot-toast";
 
 const Orders = () => {
@@ -65,6 +67,7 @@ const Orders = () => {
       location: String(o.location || ""),
       status,
       statusDescription: String(o.statusDescription || ""),
+      issue: readJobIssueFlag(o.issue),
     };
   };
 
@@ -306,6 +309,8 @@ const Orders = () => {
           </div>
         </div>
       </div>
+
+      <OpenIssuesBanner />
 
       {/* Jobs List */}
       <div className="space-y-4">

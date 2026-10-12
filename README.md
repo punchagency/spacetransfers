@@ -67,7 +67,7 @@ src/
 | Order Shipped | Waiting on the carrier | None |
 | Completed | Delivered | None |
 
-Every move is forward-only and asks for confirmation. Cancel Job hands the job back to Space Transfers to reassign; it does not cancel the customer's order. A job is marked Completed by the carrier's delivery confirmation, never by hand.
+Every move is forward-only and asks for confirmation. Cancel Job hands the job back to Space Transfers to reassign; it does not cancel the customer's order. When a customer reports a problem and Space Transfers asks about it, the question appears at the top of the job page with a reply box; the partner sees only that conversation, not the customer's messages or photos. Orders with an open question are listed in a banner on Home and on Jobs & Orders whatever their status, tagged "Reply needed" or "Problem reported" in the lists, and counted beside Jobs & Orders in the menu while a reply is owed. A job is marked Completed by the carrier's delivery confirmation, never by hand.
 
 ## Things worth knowing
 
