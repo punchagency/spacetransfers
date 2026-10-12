@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { FiArrowLeft } from 'react-icons/fi';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { apiFetch } from '../../utils/api';
 import { formatOrderNumber } from '../../utils/orderNumber';
 import { formatOrderStatus, orderStatusBadgeClass } from '../../utils/orderStatus';
+import { isFullRefund, parseRefundAmount } from '../../utils/refunds';
 
 interface OrderHeaderProps {
     orderId: string;
@@ -13,6 +14,11 @@ interface OrderHeaderProps {
     status: string;
     /** What the customer paid, shown in the cancel confirmation. */
     amountPaid?: number;
+    /** What is left of the payment to refund; zero when there was no card payment. */
+    refundable?: number;
+    /** The order this one replaces free of charge, and any free replacements made for it. */
+    reprintOf?: { orderId: string; displayId: string } | null;
+    reprints?: { orderId: string; displayId: string }[];
     /** Set when a partner has started the job, so they can be paid for it on cancel. */
     partnerPay?: { partnerName: string; amount: number | null } | null;
     /** Called after the order is cancelled, to reload it. */
@@ -22,7 +28,7 @@ interface OrderHeaderProps {
 /** An order can be cancelled until it ships. */
 const CANCELLABLE = ['PENDING', 'PROCESSING', 'PRINTING', 'QUALITY_CHECK'];
 
-export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay, onCancelled }: OrderHeaderProps) => {
+export const OrderHeader = ({ orderId, displayId, status, amountPaid, refundable = 0, reprintOf, reprints = [], partnerPay, onCancelled }: OrderHeaderProps) => {
     const navigate = useNavigate();
     const [asking, setAsking] = useState(false);
     const [reason, setReason] = useState('');
@@ -30,10 +36,18 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
     const [reasonMissing, setReasonMissing] = useState(false);
     // Ticked by default: a cancellation is the business's decision, not the partner's fault.
     const [payPartner, setPayPartner] = useState(true);
+    const [refundInput, setRefundInput] = useState('');
+    const [refundError, setRefundError] = useState<string | null>(null);
     const number = formatOrderNumber(displayId, orderId);
     const started = status === 'PRINTING' || status === 'QUALITY_CHECK';
 
     const cancel = async () => {
+        const refund = refundable > 0 ? parseRefundAmount(refundInput, refundable, { allowZero: true }) : null;
+        if (refund?.error) {
+            setRefundError(refund.error);
+            document.getElementById('order-cancel-refund')?.focus();
+            return;
+        }
         if (!reason.trim()) {
             setReasonMissing(true);
             document.getElementById('order-cancel-reason')?.focus();
@@ -43,7 +57,11 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
         try {
             const res = await apiFetch(`/admin/orders/${encodeURIComponent(orderId)}/cancel`, {
                 method: 'POST',
-                body: JSON.stringify({ reason: reason.trim(), payPartner: Boolean(partnerPay) && payPartner }),
+                body: JSON.stringify({
+                    reason: reason.trim(),
+                    payPartner: Boolean(partnerPay) && payPartner,
+                    ...(refund && refund.amount !== null ? { refundAmount: refund.amount } : {}),
+                }),
             });
             toast.success(
                 res?.refunded
@@ -82,10 +100,35 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">Order {number}</h1>
                     <p className="text-gray-500">View and manage order details</p>
+                    {reprintOf && (
+                        <p className="mt-1 text-sm text-gray-600">
+                            Free reprint of{' '}
+                            <Link to={`/dashboard/orders/${reprintOf.orderId}`} className="font-medium text-blue-600 hover:underline">
+                                {reprintOf.displayId}
+                            </Link>
+                        </p>
+                    )}
+                    {reprints.length > 0 && (
+                        <p className="mt-1 text-sm text-gray-600">
+                            Reprinted free as{' '}
+                            {reprints.map((r, i) => (
+                                <span key={r.orderId}>
+                                    {i > 0 ? ', ' : ''}
+                                    <Link to={`/dashboard/orders/${r.orderId}`} className="font-medium text-blue-600 hover:underline">
+                                        {r.displayId}
+                                    </Link>
+                                </span>
+                            ))}
+                        </p>
+                    )}
                 </div>
                 {CANCELLABLE.includes(status) && (
                     <button
-                        onClick={() => setAsking(true)}
+                        onClick={() => {
+                            setRefundInput(refundable.toFixed(2));
+                            setRefundError(null);
+                            setAsking(true);
+                        }}
                         className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50"
                     >
                         Cancel &amp; refund
@@ -98,10 +141,64 @@ export const OrderHeader = ({ orderId, displayId, status, amountPaid, partnerPay
                     <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
                         <h3 className="text-lg font-bold text-gray-900">Cancel order {number}?</h3>
                         <p className="mt-1 text-sm text-gray-500">
-                            The customer is refunded
-                            {typeof amountPaid === 'number' ? ` $${amountPaid.toFixed(2)}` : ' in full'} to their card and
-                            told by email. This can't be undone.
+                            {refundable > 0
+                                ? "The customer is refunded to their card and told by email. This can't be undone."
+                                : "There is no card payment left to refund. The customer is told by email. This can't be undone."}
                         </p>
+                        {refundable > 0 && (
+                            <div className="mt-4">
+                                <label htmlFor="order-cancel-refund" className="block text-sm font-medium text-gray-700">
+                                    Refund amount{' '}
+                                    <span className="font-normal text-gray-500">
+                                        (up to ${refundable.toFixed(2)}
+                                        {typeof amountPaid === 'number' && amountPaid - refundable > 0.005 ? ` of $${amountPaid.toFixed(2)} paid` : ''})
+                                    </span>
+                                </label>
+                                <div className="mt-1 flex gap-2">
+                                    <div className="relative flex-1">
+                                        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">$</span>
+                                        <input
+                                            id="order-cancel-refund"
+                                            inputMode="decimal"
+                                            value={refundInput}
+                                            onChange={(e) => {
+                                                setRefundInput(e.target.value);
+                                                setRefundError(null);
+                                            }}
+                                            aria-invalid={Boolean(refundError)}
+                                            className={`w-full rounded-lg border py-2 pl-7 pr-3 text-sm tabular-nums focus:outline-none ${
+                                                refundError ? 'border-red-400 focus:border-red-500' : 'border-gray-200 focus:border-blue-500'
+                                            }`}
+                                        />
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setRefundInput(refundable.toFixed(2));
+                                            setRefundError(null);
+                                        }}
+                                        className="shrink-0 rounded-lg border border-gray-200 px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                                    >
+                                        Full amount
+                                    </button>
+                                </div>
+                                {refundError ? (
+                                    <p className="mt-1 text-sm text-red-600">{refundError}</p>
+                                ) : (
+                                    (() => {
+                                        const typed = parseRefundAmount(refundInput, refundable, { allowZero: true }).amount;
+                                        if (typed === null || isFullRefund(typed, refundable)) return null;
+                                        return (
+                                            <p className="mt-1 text-xs text-amber-700">
+                                                {typed === 0
+                                                    ? 'The order is cancelled and the customer gets nothing back.'
+                                                    : `A part refund: $${(refundable - typed).toFixed(2)} is kept.`}
+                                            </p>
+                                        );
+                                    })()
+                                )}
+                            </div>
+                        )}
                         {started && partnerPay && (
                             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
                                 <p>{partnerPay.partnerName} has already started this job. They'll be told to stop.</p>

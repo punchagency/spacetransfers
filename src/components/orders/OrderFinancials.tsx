@@ -2,16 +2,22 @@ import { useState } from 'react';
 import toast from 'react-hot-toast';
 import { FiDownload } from 'react-icons/fi';
 import { downloadOrderInvoice } from '../../utils/downloads';
+import { RefundDialog } from './RefundDialog';
 
 interface OrderFinancialsProps {
     orderId?: string;
     orderNumber?: string;
+    /** Called after a refund, to reload the order. */
+    onChanged?: () => void;
     order: {
         financials?: {
             customerPaid: number;
             /** True once the order is cancelled; `refunded` is what went back to the customer. */
             cancelled?: boolean;
             refunded?: number;
+            /** What can still be refunded to the card, and the refunds made so far. */
+            refundable?: number;
+            refunds?: { id: string; amount: number; reason: string; at: string; byName: string }[];
             /** The order was cancelled but the partner is still paid for it. */
             partnerPaidOnCancel?: boolean;
             /** Collected for the state; not the business's money. */
@@ -34,8 +40,9 @@ interface OrderFinancialsProps {
     };
 }
 
-export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancialsProps) => {
+export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: OrderFinancialsProps) => {
     const [downloading, setDownloading] = useState(false);
+    const [refunding, setRefunding] = useState(false);
 
     const f = order.financials;
     const currency = f?.currency || order.pricing?.currency || 'USD';
@@ -61,6 +68,10 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
 
     const fmt = (n: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(n);
     const money = (n: number | null) => (n === null ? '—' : fmt(n));
+
+    const refunded = f?.refunded ?? 0;
+    const refundable = f?.refundable ?? 0;
+    const refunds = f?.refunds ?? [];
 
     const isEstimate = !f?.cancelled && f?.profitRealized === false && adminProfit !== null;
 
@@ -112,10 +123,25 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
                         <span className="font-medium text-gray-900">{minus(shippingCost)}</span>
                     </div>
                 )}
-                {cancelled && (
-                    <div className="flex justify-between items-center text-sm">
-                        <span className="text-gray-600">Refunded to customer</span>
-                        <span className="font-medium text-gray-900">{minus(f?.refunded ?? 0)}</span>
+                {(cancelled || refunded > 0) && (
+                    <div className="text-sm">
+                        <div className="flex justify-between items-center">
+                            <span className="text-gray-600">Refunded to customer</span>
+                            <span className="font-medium text-gray-900">{minus(refunded)}</span>
+                        </div>
+                        {refunds.length > 0 && (
+                            <ul className="mt-1.5 space-y-1 border-l-2 border-gray-100 pl-3">
+                                {refunds.map((r) => (
+                                    <li key={r.id} className="text-xs text-gray-500">
+                                        <span className="font-medium text-gray-700">{fmt(r.amount)}</span>
+                                        {' · '}
+                                        {new Date(r.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                        {r.byName ? ` · ${r.byName}` : ''}
+                                        {r.reason ? <span className="block break-words">{r.reason}</span> : null}
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
                     </div>
                 )}
                 {(!cancelled || f?.partnerPaidOnCancel) && (
@@ -174,6 +200,24 @@ export const OrderFinancials = ({ order, orderId, orderNumber }: OrderFinancials
             </div>
 
             <div>
+                {orderId && refundable > 0 && (
+                    <button
+                        onClick={() => setRefunding(true)}
+                        className="mb-3 w-full rounded-lg border border-gray-200 bg-white py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+                    >
+                        {refunded > 0 ? 'Refund more' : 'Refund customer'}
+                    </button>
+                )}
+                {refunding && orderId && (
+                    <RefundDialog
+                        orderId={orderId}
+                        number={orderNumber || orderId}
+                        refundable={refundable}
+                        paid={customerPaid}
+                        onClose={() => setRefunding(false)}
+                        onRefunded={() => onChanged?.()}
+                    />
+                )}
                 <button
                     onClick={handleInvoice}
                     disabled={!orderId || downloading}

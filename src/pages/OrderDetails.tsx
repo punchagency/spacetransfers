@@ -6,6 +6,7 @@ import { OrderSummary } from '../components/orders/OrderSummary';
 import { OrderTimeline } from '../components/orders/OrderTimeline';
 import { OrderFinancials } from '../components/orders/OrderFinancials';
 import { OrderPartner } from '../components/orders/OrderPartner';
+import { OrderIssues } from '../components/orders/OrderIssues';
 import { apiFetch, getApiBaseUrl } from '../utils/api';
 import { getToken } from '../utils/auth';
 import toast from 'react-hot-toast';
@@ -112,6 +113,10 @@ export const OrderDetails = () => {
     };
   }, [id]);
 
+  const reload = () => {
+    apiFetch(`/admin/orders/${id}`).then((data) => setOrder(data)).catch(() => {});
+  };
+
   if (loading) {
     return (
       <DashboardLayout>
@@ -142,19 +147,21 @@ export const OrderDetails = () => {
           displayId={order.displayId}
           status={order.status}
           amountPaid={order.financials?.customerPaid}
+          refundable={order.financials?.refundable ?? 0}
+          reprintOf={order.reprintOf}
+          reprints={order.reprints}
           partnerPay={
             order.financials?.canPayPartnerOnCancel && order.assignedPartner
               ? { partnerName: order.assignedPartner.name || 'The partner', amount: order.financials?.partnerCost ?? null }
               : null
           }
-          onCancelled={() => {
-            apiFetch(`/admin/orders/${id}`).then((data) => setOrder(data)).catch(() => {});
-          }}
+          onCancelled={reload}
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* LEFT COLUMN - Order Summary */}
           <div className="lg:col-span-2 space-y-6">
+            <OrderIssues orderId={id || ''} refundable={order.financials?.refundable} onChanged={reload} />
             <OrderSummary order={order} />
           </div>
 
@@ -162,7 +169,7 @@ export const OrderDetails = () => {
           <div className="lg:col-span-1 space-y-6">
             <OrderTimeline order={order} />
             <OrderPartner order={order} />
-            <OrderFinancials order={order} orderId={id || ''} orderNumber={order.displayId} />
+            <OrderFinancials order={order} orderId={id || ''} orderNumber={order.displayId} onChanged={reload} />
           </div>
         </div>
       </div>

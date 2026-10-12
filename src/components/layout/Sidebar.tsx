@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { FiAlertTriangle } from "react-icons/fi";
+import { apiFetch } from '../../utils/api';
 import { MdClose } from "react-icons/md";
 import {
   AiOutlineBank,
@@ -16,6 +19,7 @@ const nav = [
     iconSrc: "/fulfilment.svg",
     path: "/fulfilment-partners",
   },
+  { label: "Issues", icon: FiAlertTriangle, path: "/issues" },
   { label: "Approvals", icon: AiOutlineCheckCircle, path: "/printer-approvals" },
   { label: "Earnings", icon: AiOutlineDollar, path: "/earnings" },
   { label: "Payouts", icon: AiOutlineBank, path: "/payouts" },
@@ -36,6 +40,24 @@ const bottomNav = [
 export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: () => void }) => {
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Open customer reports, so one waiting is seen from any page.
+  const [openIssues, setOpenIssues] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      apiFetch('/admin/issues/counts')
+        .then((data) => {
+          if (alive) setOpenIssues(Number(data?.open) || 0);
+        })
+        .catch(() => {});
+    load();
+    const id = window.setInterval(load, 30000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [location.pathname]);
 
   /** Following a link on a phone closes the drawer; on desktop there is nothing to close. */
   const go = (path: string) => {
@@ -82,6 +104,14 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
               <img src={iconSrc} alt={label} className="w-[18px] h-[18px]" />
             )}
             <span>{label}</span>
+            {path === '/issues' && openIssues > 0 && (
+              <span
+                className="ml-auto rounded-full bg-red-500 px-2 text-xs font-semibold leading-5 text-white"
+                aria-label={`${openIssues} open`}
+              >
+                {openIssues}
+              </span>
+            )}
           </div>
         ))}
       </nav>
