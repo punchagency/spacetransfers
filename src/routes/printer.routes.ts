@@ -19,6 +19,9 @@ import {
   updatePrinterOrderStatus,
   cancelPrinterOrder,
   getOrderSummary,
+  listJobIssues,
+  listPartnerIssues,
+  replyToJobIssue,
   listEarningsJobs,
   exportEarningsCsv,
   getPrinterProfile,
@@ -62,6 +65,9 @@ router.patch("/orders/:orderId/status", updatePrinterOrderStatus);
 router.post("/orders/:orderId/cancel", cancelPrinterOrder);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.get("/orders", listPrinterOrders);
+router.get("/orders/:orderId/issues", listJobIssues);
+router.get("/issues", listPartnerIssues);
+router.post("/issues/:issueId/messages", replyToJobIssue);
 router.get("/orders/:orderId", getOrderSummary);
 router.get("/earnings/jobs", listEarningsJobs);
 router.get("/earnings/export", exportEarningsCsv);

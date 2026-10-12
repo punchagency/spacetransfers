@@ -39,6 +39,12 @@ import {
   getAdminNotificationSettings,
   updateAdminNotificationSettings,
   cancelOrder,
+  refundOrder,
+  listIssues,
+  getIssueCounts,
+  listIssuesForOrder,
+  postIssueMessage,
+  resolveIssue,
 } from "../controllers/admin/index.js";
 
 const router = express.Router();
@@ -68,6 +74,12 @@ router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/gangsheet/preview", getOrderGangsheetPreview);
 router.post("/orders/:orderId/assign", assignOrder);
 router.post("/orders/:orderId/cancel", cancelOrder);
+router.post("/orders/:orderId/refund", refundOrder);
+router.get("/orders/:orderId/issues", listIssuesForOrder);
+router.get("/issues", listIssues);
+router.get("/issues/counts", getIssueCounts);
+router.post("/issues/:issueId/messages", postIssueMessage);
+router.post("/issues/:issueId/resolve", resolveIssue);
 router.get("/orders/:orderId/invoice", downloadOrderInvoice);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 

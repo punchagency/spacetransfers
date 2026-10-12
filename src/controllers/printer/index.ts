@@ -4,3 +4,4 @@ export * from "./files.controller.js";
 export * from "./earnings.controller.js";
 export * from "./account.controller.js";
 export * from "./notifications.controller.js";
+export * from "./issues.controller.js";

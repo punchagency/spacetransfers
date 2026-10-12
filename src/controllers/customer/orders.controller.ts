@@ -5,9 +5,10 @@ import { verifyCardPayment } from "../../services/paymentVerification.service.js
 import { User } from "../../models/user.model.js";
 import { isValidPhone } from "../../utils/accountFields.js";
 import { Order } from "../../models/order.model.js";
-import { Settings } from "../../models/settings.model.js";
+import { OrderIssue } from "../../models/orderIssue.model.js";
+import { nextOrderDisplayId } from "../../services/orderNumber.service.js";
 import { renderInvoicePdf } from "../../services/invoicePdf.service.js";
-import { customerOrderStatus, formatSheetSize, orderChargeLines, orderRefundNote } from "../../utils/orderPresentation.js";
+import { customerOrderStatus, formatSheetSize, orderChargeLines, orderInvoiceNote, orderRefundNote } from "../../utils/orderPresentation.js";
 import {
   getGlobalPricing,
   computeTotals as computeOrderTotals,
@@ -143,16 +144,6 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     const normalizedCustomer = {
       ...customer,
       region: stateBasedRegion || null
-    };
-
-    const nextOrderDisplayId = async () => {
-      const counter = await Settings.findOneAndUpdate(
-        { key: "order_display_counter" },
-        { $inc: { "value.next": 1 } },
-        { new: true, upsert: true, runValidators: true }
-      ).lean();
-      const seq = Number((counter as any)?.value?.next || 1) - 1;
-      return `DTF-${String(seq).padStart(4, "0")}`;
     };
 
     const enrichedShippingAddress = {
@@ -394,6 +385,21 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       return formatSheetSize(it.sheetWidthIn ?? it.widthIn, it.sheetHeightIn ?? it.heightIn);
     };
 
+    // An open report, or a settled one with a reply not yet read, shows on the row.
+    const issues = await OrderIssue.find({ order: { $in: orders.map((o) => o._id) } })
+      .select("order status customerUnread")
+      .sort({ createdAt: 1 })
+      .lean();
+    const issueByOrder = new Map<string, { status: string; unread: boolean }>();
+    for (const issue of issues) {
+      const key = String(issue.order);
+      const seen = issueByOrder.get(key);
+      issueByOrder.set(key, {
+        status: issue.status === "OPEN" || seen?.status === "OPEN" ? "OPEN" : "RESOLVED",
+        unread: Boolean(issue.customerUnread) || Boolean(seen?.unread),
+      });
+    }
+
     const responseOrders = orders.map((order) => ({
       orderId: order.id,
       // Same order number the customer sees on their invoice and in emails.
@@ -402,7 +408,10 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       date: order.createdAt,
       total: order.pricing?.total ?? null,
       sheetSize: describeSheets(order),
-      trackingNumber: order.trackingNumber || null
+      trackingNumber: order.trackingNumber || null,
+      refundNote: orderRefundNote(order),
+      reprintOf: (order as any).reprintOf?.displayId || null,
+      issue: issueByOrder.get(String(order._id)) || null
     }));
 
     const nextCursor = hasMore ? orders[orders.length - 1].id : null;
@@ -472,6 +481,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       trackingNumber: order.trackingNumber || null,
       carrier: (order as any).carrier || null,
       refundNote: orderRefundNote(order),
+      reprintOf: (order as any).reprintOf?.displayId || null,
       items: formattedItems,
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -543,7 +553,7 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
         total: (pricing.total || 0).toFixed(2),
         currency: pricing.currency || "USD"
       },
-      note: orderRefundNote(order) || undefined,
+      note: orderInvoiceNote(order) || undefined,
     };
 
     const pdfBuffer = await renderInvoicePdf(data);

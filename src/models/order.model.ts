@@ -92,10 +92,12 @@ export interface IOrder extends Document {
     paymentIntentId?: string;
     /** Stripe's fee for this payment, in the order's currency. */
     processingFee?: number;
-    /** Set when the order was cancelled and its payment refunded. */
+    /** The latest refund, the running total refunded, and when. */
     refundId?: string;
     refundedAmount?: number;
     refundedAt?: Date;
+    /** Every refund made against this order's payment, in order. */
+    refunds?: { id: string; amount: number; reason: string; at: Date; byId: string; byName: string }[];
   };
   pricing: {
     subtotal?: number;
@@ -128,6 +130,8 @@ export interface IOrder extends Document {
   assignmentDeadline?: Date | null;
   returnedAt?: Date;
   /** Who cancelled the order, when and why. */
+  /** Set on a free replacement: the order it reprints, and its number. */
+  reprintOf?: { orderId: string; displayId: string };
   cancellation?: {
     reason: string;
     at: Date;
@@ -305,7 +309,11 @@ const orderSchema = new Schema<IOrder>(
       processingFee: { type: Number },
       refundId: { type: String },
       refundedAmount: { type: Number },
-      refundedAt: { type: Date }
+      refundedAt: { type: Date },
+      refunds: {
+        type: [{ _id: false, id: String, amount: Number, reason: String, at: Date, byId: String, byName: String }],
+        default: undefined,
+      },
     },
     pricing: {
       subtotal: { type: Number },
@@ -384,6 +392,7 @@ const orderSchema = new Schema<IOrder>(
     assignedAt: { type: Date, default: null },
     assignmentDeadline: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
+    reprintOf: { type: { _id: false, orderId: String, displayId: String }, default: undefined },
     cancellation: {
       type: { reason: String, at: Date, byId: String, byName: String, partnerPaid: Boolean },
       default: undefined,

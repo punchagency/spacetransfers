@@ -12,8 +12,10 @@ export type ShippingCostSource = "label" | "quote" | "at-cost";
 export interface OrderFinancials {
   customerPaid: number;
   cancelled: boolean;
-  /** Returned to the customer when the order was cancelled. */
+  /** Returned to the customer, on a cancellation or as a refund on an order that stands. */
   refunded: number;
+  /** Part of the payment kept back when the order was cancelled with a part refund. */
+  keptOnCancel: number;
   /** The order was cancelled but the partner is paid for the work they had started. */
   partnerPaidOnCancel: boolean;
   /** Collected for the state; not the business's money. */
@@ -62,23 +64,30 @@ export const computeOrderFinancials = (order: any, partnerPayRate: any): OrderFi
 
   /*
    * A cancelled order is not printed or shipped and its partner is not paid.
-   * What was refunded is gone; what is left is the card fee, which Stripe keeps.
+   * What was refunded is gone; what is left is the card fee, which Stripe keeps,
+   * and whatever of the payment was deliberately kept back. On an order that
+   * stands, a refund comes straight off the profit.
    */
   const cancelled = String(order?.status || "").toUpperCase() === "CANCELLED";
   const refunded = round2(num(order?.payment?.refundedAmount) ?? 0);
 
   const partnerPaidOnCancel = cancelled && order?.cancellation?.partnerPaid === true;
 
+  // Only a card payment was ever really taken; an order without one kept nothing.
+  const cardPaid = /^pi_/.test(String(order?.payment?.paymentIntentId || ""));
+  const keptOnCancel = cancelled && cardPaid ? Math.max(0, round2(customerPaid - refunded)) : 0;
+
   const profit = cancelled
-    ? round2(-(processingFee ?? 0) - (partnerPaidOnCancel ? partnerCost ?? 0 : 0))
+    ? round2(keptOnCancel - (processingFee ?? 0) - (partnerPaidOnCancel ? partnerCost ?? 0 : 0))
     : partnerCost === null
       ? null
-      : round2(customerPaid - tax - shipping.cost - partnerCost - (processingFee ?? 0));
+      : round2(customerPaid - refunded - tax - shipping.cost - partnerCost - (processingFee ?? 0));
 
   return {
     customerPaid,
     cancelled,
     refunded,
+    keptOnCancel,
     partnerPaidOnCancel,
     tax,
     shippingCharged,

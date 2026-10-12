@@ -67,14 +67,38 @@ export const orderChargeLines = (order: any): ChargeLine[] => {
   return lines;
 };
 
-/** "Cancelled. $28.24 refunded on October 2, 2026." for a cancelled order, else null. */
+/**
+ * What happened to the customer's money, in one line, or null when nothing did:
+ * "Cancelled. $28.24 refunded on October 2, 2026.", "$5.00 of $28.24 refunded
+ * on October 2, 2026.", "Refunded in full ($28.24) on October 2, 2026."
+ */
 export const orderRefundNote = (order: any): string | null => {
-  if (String(order?.status || "").toUpperCase() !== "CANCELLED") return null;
+  const cancelled = String(order?.status || "").toUpperCase() === "CANCELLED";
   const amount = Number(order?.payment?.refundedAmount) || 0;
-  if (amount <= 0) return "Cancelled. No payment was taken.";
+  const paid = Number(order?.pricing?.total) || 0;
+  if (amount <= 0) {
+    if (!cancelled) return null;
+    return /^pi_/.test(String(order?.payment?.paymentIntentId || ""))
+      ? "Cancelled. No refund was issued."
+      : "Cancelled. No payment was taken.";
+  }
   const at = order?.payment?.refundedAt ? new Date(order.payment.refundedAt) : null;
   const when = at && !Number.isNaN(at.getTime())
     ? ` on ${at.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`
     : "";
-  return `Cancelled. $${amount.toFixed(2)} refunded${when}.`;
+  const part = paid > 0 && amount < paid - 0.005;
+  if (cancelled) {
+    return part
+      ? `Cancelled. $${amount.toFixed(2)} of $${paid.toFixed(2)} refunded${when}.`
+      : `Cancelled. $${amount.toFixed(2)} refunded${when}.`;
+  }
+  return part
+    ? `$${amount.toFixed(2)} of $${paid.toFixed(2)} refunded${when}.`
+    : `Refunded in full ($${amount.toFixed(2)})${when}.`;
+};
+
+/** The line under an invoice's totals: a free reprint says so, then any refund. */
+export const orderInvoiceNote = (order: any): string | null => {
+  const reprint = order?.reprintOf?.displayId ? `Free reprint of order ${order.reprintOf.displayId}.` : null;
+  return [reprint, orderRefundNote(order)].filter(Boolean).join(" ") || null;
 };

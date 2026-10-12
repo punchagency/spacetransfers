@@ -26,10 +26,14 @@ import {
   getCartQuote,
   getPricingConfig,
   sendGangsheetUtilizationWarning,
-  downloadInvoice
+  downloadInvoice,
+  listOrderIssues,
+  reportOrderIssue,
+  replyToOrderIssue,
+  uploadIssuePhoto,
 } from "../controllers/customer/index.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
-import { upload } from "../middleware/upload.js";
+import { upload, uploadPhoto } from "../middleware/upload.js";
 
 const router = express.Router();
 
@@ -61,6 +65,10 @@ router.post("/orders", createOrder);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
+router.get("/orders/:orderId/issues", listOrderIssues);
+router.post("/orders/:orderId/issues", reportOrderIssue);
+router.post("/issues/:issueId/messages", replyToOrderIssue);
+router.post("/issues/photos", uploadPhoto.single("file"), uploadIssuePhoto);
 router.get("/cart", getCart);
 router.put("/cart", updateCart);
 router.post("/designs", createDesign);

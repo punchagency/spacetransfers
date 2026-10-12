@@ -3,15 +3,21 @@ import assert from "node:assert/strict";
 import { cancelOrderWithRefund, cancellationError, type CancellationDeps } from "../services/orderCancellation.service.js";
 
 const ACTOR = { id: "a1", name: "Admin" };
-const order = (over: any = {}) => ({ _id: "o1", status: "PROCESSING", payment: { method: "card", paymentIntentId: "pi_1" }, ...over });
+const order = (over: any = {}) => ({
+  _id: "o1",
+  status: "PROCESSING",
+  pricing: { total: 28.24 },
+  payment: { method: "card", paymentIntentId: "pi_1" },
+  ...over,
+});
 const deps = (over: Partial<CancellationDeps> = {}) => {
   const saved: any[] = [];
   const refunds: string[] = [];
   const d: CancellationDeps = {
     stripeConfigured: () => true,
-    refund: async (pi) => {
+    refund: async (pi, _orderId, cents) => {
       refunds.push(pi);
-      return { id: "re_1", amount: 28.24 };
+      return { id: "re_1", amount: cents / 100 };
     },
     save: async (_id, update) => {
       saved.push(update);
@@ -65,6 +71,33 @@ describe("cancelling an order", () => {
     const c = deps();
     const notStarted = order({ status: "PROCESSING", assignedPrinter: "p1" });
     assert.equal((await cancelOrderWithRefund(notStarted, ACTOR, "x", c.d, { payPartner: true })).partnerPaid, false);
+  });
+
+  it("refunds only the amount chosen, and says how much was kept", async () => {
+    const { d, saved } = deps();
+    const result = await cancelOrderWithRefund(order(), ACTOR, "Printing had started", d, { refundAmount: 20 });
+    assert.equal(result.refundAmount, 20);
+    assert.equal(saved[0].$set["payment.refundedAmount"], 20);
+    assert.equal(saved[0].$push["payment.refunds"].amount, 20);
+    assert.match(saved[0].$push.statusTimeline.message, /refunded \$20\.00 of \$28\.24/);
+  });
+
+  it("cancels without a refund when the amount chosen is zero", async () => {
+    const { d, saved, refunds } = deps();
+    const result = await cancelOrderWithRefund(order(), ACTOR, "Abuse", d, { refundAmount: 0 });
+    assert.equal(refunds.length, 0);
+    assert.equal(result.refunded, false);
+    assert.match(saved[0].$push.statusTimeline.message, /Cancelled without a refund/);
+  });
+
+  it("refunds what is left when part was refunded earlier, and never more", async () => {
+    const part = order({ payment: { method: "card", paymentIntentId: "pi_1", refundedAmount: 8.24, refunds: [{ id: "re_0", amount: 8.24 }] } });
+    const { d, saved } = deps();
+    const result = await cancelOrderWithRefund(part, ACTOR, "Customer asked", d);
+    assert.equal(result.refundAmount, 20);
+    assert.equal(saved[0].$set["payment.refundedAmount"], 28.24);
+    await assert.rejects(cancelOrderWithRefund(part, ACTOR, "x", deps().d, { refundAmount: 25 }), (e: any) => e.statusCode === 400 && /\$20\.00/.test(e.message));
+    await assert.rejects(cancelOrderWithRefund(part, ACTOR, "x", deps().d, { refundAmount: -1 }), (e: any) => e.statusCode === 400);
   });
 
   it("needs a reason, and refuses shipped orders", async () => {
