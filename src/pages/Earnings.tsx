@@ -21,7 +21,7 @@ type Summary = {
     revenue: Kpi;
     partnerCost: Kpi;
     /** What revenue carries that isn't the business's to keep. */
-    deductions?: { tax: number; shipping: number; cardFees: number; ordersWithoutFee: number };
+    deductions?: { tax: number; shipping: number; cardFees: number; refunds?: number; ordersWithoutFee: number };
     margin: Kpi & { pct: number };
     earned: Kpi & { orderCount: number };
   };
@@ -197,7 +197,13 @@ export const Earnings = () => {
         <p className="text-sm text-gray-500 -mt-2">
           Margin is revenue less tax <span className="text-gray-400">({currency(data.kpis.deductions.tax)}, for the state)</span>,
           shipping <span className="text-gray-400">({currency(data.kpis.deductions.shipping)})</span>, card fees{" "}
-          <span className="text-gray-400">({currency(data.kpis.deductions.cardFees)})</span> and partner cost.
+          <span className="text-gray-400">({currency(data.kpis.deductions.cardFees)})</span>
+          {(data.kpis.deductions.refunds ?? 0) > 0 && (
+            <>
+              , refunds <span className="text-gray-400">({currency(data.kpis.deductions.refunds ?? 0)})</span>
+            </>
+          )}{" "}
+          and partner cost.
           {data.kpis.deductions.ordersWithoutFee > 0 && (
             <>
               {" "}
