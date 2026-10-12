@@ -447,16 +447,6 @@ export default function Sidebar({
                                     <p className="text-[12px] text-gray-500">Trim empty space around new images. Change any image from its right-click menu.</p>
                                 </div>
 
-                                <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-100 hover:bg-gray-100 transition-colors">
-                                    <div className="flex items-center justify-between mb-1">
-                                        <span className="text-[12px] font-semibold text-slate-800">Clear Enclosed Background</span>
-                                        <Toggle checked={settings.bgClearEnclosed} onChange={() => onUpdateSetting('bgClearEnclosed', !settings.bgClearEnclosed)} />
-                                    </div>
-                                    <p className="text-[12px] text-gray-500">
-                                        Take a black ring on a white background. On: BG Remover clears the white around the ring
-                                        and the white inside it, leaving just the ring. Off: the white inside the ring stays and prints.
-                                    </p>
-                                </div>
 
                                 {/* Shown on mobile too. The setting applied on a phone
                                     all along — it was only the control that was hidden,

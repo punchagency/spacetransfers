@@ -21,6 +21,10 @@ import { useCanHover } from "../lib/useIsMobile";
 import { CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
+import type { ReviewOption } from "./artboard/features/ai/AiPreviewDialog";
+import type { BgRemovalResult } from "./artboard/lib/utils/bgRemover";
+import type { PixelBatchResult } from "./artboard/lib/hooks/useItemActions";
+import { loadEditorSettings, saveEditorSettings } from "../lib/utils/editorSettings";
 import type { AiPanelBridge } from "./artboard/features/ai";
 import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
@@ -28,6 +32,17 @@ import type { ArtboardProps } from "./artboard/types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
 import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
 import { autoNestWouldUndoRotation, isSheetFull } from "./artboard/lib/utils";
+
+/** The one choice a background removal has, worded the same wherever it is offered. */
+const clearEnclosedOption = (checked: boolean, viaModel: boolean, onChange: (checked: boolean) => void): ReviewOption => ({
+  label: "Also clear enclosed background",
+  hint: viaModel
+    ? "Doesn't apply here: this background isn't one plain colour, so the AI model cut out the subject."
+    : "Take a black ring on white. On: the white inside the ring is cleared too, leaving just the ring. Off: the white inside the ring stays and prints.",
+  checked,
+  disabled: viaModel,
+  onChange,
+});
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -623,6 +638,47 @@ export default function Artboard({
     });
   }, [setItems]);
 
+  /*
+   * BG Remover on one image is looked at before it lands, like an AI edit: the
+   * cutout is worked out, shown beside the original, and only applied when the
+   * customer says so. Several images at once still go straight onto the sheet —
+   * a review per image would be twenty dialogs — and can be undone in one step.
+   */
+  const [bgReview, setBgReview] = useState<{
+    itemId: number;
+    beforeUrl: string;
+    result: BgRemovalResult;
+    clearEnclosed: boolean;
+    updating: boolean;
+  } | null>(null);
+  const removeBgWithReview = async (onProgress?: (phase: string, pct: number) => void): Promise<PixelBatchResult> => {
+    const only = selectedIds.size <= 1 ? selectedId : null;
+    if (only == null) return itemActions.removeBg(onProgress);
+    const clearEnclosed = loadEditorSettings().bgClearEnclosed;
+    const staged = await itemActions.previewBgRemoval(only, clearEnclosed, onProgress);
+    if (!staged) return { done: 0, skipped: 1, locked: 0, failed: 0 };
+    setBgReview({ ...staged, clearEnclosed, updating: false });
+    return { done: 0, skipped: 0, locked: 0, failed: 0, reviewing: true };
+  };
+  /** The choice is remembered for next time, and is what several-at-once uses. */
+  const rememberClearEnclosed = (value: boolean) => {
+    saveEditorSettings({ ...loadEditorSettings(), bgClearEnclosed: value });
+    onUpdateSetting?.("bgClearEnclosed", value);
+  };
+  const changeBgReviewOption = async (clearEnclosed: boolean) => {
+    const current = bgReview;
+    if (!current || current.updating) return;
+    rememberClearEnclosed(clearEnclosed);
+    setBgReview({ ...current, clearEnclosed, updating: true });
+    try {
+      const staged = await itemActions.previewBgRemoval(current.itemId, clearEnclosed);
+      setBgReview(staged ? { ...staged, clearEnclosed, updating: false } : null);
+    } catch (err: any) {
+      toast.error(err?.message || "The background couldn't be removed that way.");
+      setBgReview({ ...current, updating: false });
+    }
+  };
+
   const duplicateSelected = () => {
     const sourceIds = [
       ...(selectedId == null ? [] : [selectedId]),
@@ -815,7 +871,7 @@ export default function Artboard({
           onDuplicate={duplicateSelected}
           onDelete={deleteSelection}
           onCloseProperties={() => setShowProperties({})}
-          onRemoveBg={itemActions.removeBg}
+          onRemoveBg={removeBgWithReview}
           onMeasured={recordMeasuredWidth}
           onDragStart={handleDragStart}
           onResizeStart={handleResizeStart}
@@ -845,10 +901,46 @@ export default function Artboard({
           so it renders over the whole editor rather than inside the canvas —
           judging a generative result needs the image at a useful size, which is
           the entire reason this is a dialog and not an inline thumbnail. */}
+      {bgReview && (
+        <AiPreviewDialog
+          preview={{
+            beforeUrl: bgReview.beforeUrl,
+            afterUrl: bgReview.result.dataUrl,
+            prompt: "Remove the background",
+            steps: [],
+            result: { url: bgReview.result.dataUrl, widthPx: bgReview.result.widthPx, heightPx: bgReview.result.heightPx, provider: "local" },
+          }}
+          caption={
+            bgReview.result.method === "color"
+              ? "Background removed. Nothing changes on your sheet until you apply it."
+              : "Subject cut out by the AI model. Nothing changes on your sheet until you apply it."
+          }
+          isRunning={bgReview.updating}
+          option={clearEnclosedOption(bgReview.clearEnclosed, bgReview.result.method === "model", (v) => void changeBgReviewOption(v))}
+          onApply={() => {
+            itemActions.applyBgRemoval(bgReview.itemId, bgReview.result);
+            setBgReview(null);
+            toast.success("Background removed");
+          }}
+          onDiscard={() => setBgReview(null)}
+        />
+      )}
       {ai.preview && (
         <AiPreviewDialog
           preview={ai.preview}
           isRunning={ai.isRunning}
+          // Removing a background through the AI panel is the same edit, so it
+          // gets the same choice. Changing it runs the request again.
+          option={
+            ai.preview.intent === "remove-bg" || ai.preview.intent === "make-transparent"
+              ? clearEnclosedOption(loadEditorSettings().bgClearEnclosed, false, (v) => {
+                  const { prompt, request } = ai.preview!;
+                  rememberClearEnclosed(v);
+                  ai.discardPreview();
+                  aiConversation.send(prompt, request);
+                })
+              : undefined
+          }
           onApply={ai.applyPreview}
           onDiscard={ai.discardPreview}
           // Re-sends the original prompt rather than the per-step rewrites: the

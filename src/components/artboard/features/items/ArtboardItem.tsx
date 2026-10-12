@@ -238,6 +238,8 @@ function ArtboardItem({
     setBgProgress({ phase: "Starting...", pct: 0 });
     try {
       const result = await onRemoveBg((phase, pct) => setBgProgress({ phase, pct }));
+      // Shown for review; whether it happened is said when it is applied.
+      if (result.reviewing) return;
       if (result.done > 0 && result.failed === 0) setBgJustRemoved(true);
       reportBatch(result, {
         done: (n) => (n === 1 ? "Background removed" : `Backgrounds removed from ${plural(n)}`),
