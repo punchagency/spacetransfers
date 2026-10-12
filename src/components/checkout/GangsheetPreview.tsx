@@ -216,7 +216,8 @@ export default function GangsheetPreview({
                     height: pct(g.imageH, g.height),
                     maxWidth: "none",
                     maxHeight: "none",
-                    objectFit: "contain",
+                    // As the board and the print file draw it.
+                    objectFit: "fill",
                     transform: `scaleX(${g.flipped ? -1 : 1}) rotate(${g.rotation}deg)`,
                   }}
                 />

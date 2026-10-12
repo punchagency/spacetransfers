@@ -1,5 +1,6 @@
 import toast from "react-hot-toast";
-import { NoticeCard, WarningIcon } from "./UnsupportedFilesWarning";
+import { IssueChip } from "./IssueChip";
+import { NoticeCard } from "./UnsupportedFilesWarning";
 
 /** Below this, at print size, artwork is flagged. Display only — the detection
  *  logic lives in `computeEffectiveDpi` / `useDropHandler` and is unchanged. */
@@ -39,7 +40,7 @@ export const dpiClause = (lowDpiCount: number, unknownDpiCount: number) => {
 export const dpiStatusBody = (lowDpiCount: number, unknownDpiCount: number) =>
   `${dpiClause(lowDpiCount, unknownDpiCount)}. For optimal DTF printing quality, images should be at least ${DPI_TARGET} DPI at print size${
     unknownDpiCount > 0
-      ? " — verify undetermined images and enhance them to be safe."
+      ? " — select undetermined images and use DPI+ to be safe."
       : "."
   }`;
 
@@ -64,8 +65,8 @@ export const dpiStatusLines = (lowDpiCount: number, unknownDpiCount: number) => 
 /** Standing guidance under the tooltip's breakdown. */
 export const dpiStatusGuidance = (unknownDpiCount: number) =>
   unknownDpiCount > 0
-    ? `Aim for ${DPI_TARGET} DPI at print size. Open an undetermined image on the artboard and use Enhance to be safe.`
-    : `Aim for ${DPI_TARGET} DPI at print size. Select an image on the artboard and use Enhance to scale it up.`;
+    ? `Aim for ${DPI_TARGET} DPI at print size. Select an undetermined image on the sheet and use DPI+ in its toolbar to be safe.`
+    : `Aim for ${DPI_TARGET} DPI at print size. Select an image on the sheet and use DPI+ in its toolbar to raise it, or make the image smaller.`;
 
 /**
  * Screen-reader summary for the chip.
@@ -77,141 +78,34 @@ export const dpiStatusAriaLabel = (lowDpiCount: number, unknownDpiCount: number)
   `${dpiStatusTitle(lowDpiCount, unknownDpiCount)}: ${dpiClause(lowDpiCount, unknownDpiCount)}.`;
 
 /**
- * Compact resolution-status chip for the top bar.
- *
- * Replaces two separate indicators — a solid disc with a floating red count
- * bubble, one for low DPI and one for unknown DPI, which could both be on
- * screen at once. Now one pill in the same amber the rest of the advisory
- * system uses (`#FFFBEB` fill, `#F59E0B` border, the shared `WarningIcon`), so
- * a customer who has already learned what that colour means from a dropped
- * file elsewhere in the app recognises it here without re-learning it.
- *
- * The low/unknown split lives in the hover tooltip rather than as two adjacent
- * badges — a single number is what keeps the top bar quiet.
- *
- * Renders nothing when there is nothing to report, so the top bar is unchanged
- * for the common case.
+ * Top-bar count of images below print resolution, in the amber their outline
+ * carries on the sheet. One chip for both conditions — measurably low, and
+ * unmeasurable — with the split in the hover card.
  */
 export const DpiStatusChip = ({
   lowDpiCount = 0,
   unknownDpiCount = 0,
-  onToggleHighlight,
-  isHighlighting = false,
+  onGoTo,
+  compact,
 }: {
   lowDpiCount?: number;
   unknownDpiCount?: number;
-  /**
-   * Reveals the flagged artwork on the sheet. Optional: without it the chip
-   * stays the passive readout it was, rather than rendering a button that
-   * does nothing.
-   */
-  onToggleHighlight?: () => void;
-  isHighlighting?: boolean;
-}) => {
-  const total = lowDpiCount + unknownDpiCount;
-  if (total < 1) return null;
-
-  const lines = dpiStatusLines(lowDpiCount, unknownDpiCount);
-  const interactive = Boolean(onToggleHighlight);
-
-  const label = interactive
-    ? `${dpiStatusAriaLabel(lowDpiCount, unknownDpiCount)} ${
-        isHighlighting ? "Hide" : "Show"
-      } them on the sheet.`
-    : dpiStatusAriaLabel(lowDpiCount, unknownDpiCount);
-
-  return (
-    // `data-dpi-chip` marks the chip's whole subtree for the outside-click
-    // check that dismisses the highlight — without it, the pointerdown that
-    // opens the highlight is itself an "outside click" and closes it again.
-    <span className="relative inline-flex group" data-dpi-chip>
-      <button
-        type="button"
-        // A real button, not a `role="status"` span. The chip does something
-        // now, and the counts are already announced when they arise (the drop
-        // raises a polite toast) — so making this focusable, pressable and
-        // keyboard-operable is worth more than a second live region that
-        // re-reads the same number.
-        onClick={onToggleHighlight}
-        aria-pressed={interactive ? isHighlighting : undefined}
-        aria-label={label}
-        disabled={!interactive}
-        /*
-         * Hover in/out is CSS `:hover` rather than React `onMouseEnter` /
-         * `onMouseLeave` state. Two reasons, both load-bearing: the browser
-         * restores the resting style on its own when the pointer leaves —
-         * including the cases a JS handler misses, like the element unmounting
-         * under the cursor or a tab losing focus mid-hover — and it costs no
-         * re-render, which matters for a control that lives in the top bar of
-         * a board that can be re-rendering hundreds of placements.
-         *
-         * It also makes "hovering triggers nothing" structural: there is no
-         * handler that could grow a side effect later.
-         */
-        className={[
-          "inline-flex items-center gap-1.5 rounded-full border py-[3px] pl-1.5 pr-2",
-          // `transform` and `box-shadow` are compositor properties; the colour
-          // pair costs a cheap repaint on a 20px element.
-          "transition-[background-color,border-color,box-shadow,transform] duration-150 ease-out",
-          "motion-reduce:transition-none motion-reduce:hover:translate-y-0",
-          interactive ? "cursor-pointer" : "cursor-default",
-          // The lift applies in *both* the idle and pressed states. Dropping it
-          // while pressed — as this did — made the chip go inert exactly when a
-          // customer was most likely to reach for it again to switch off.
-          interactive
-            ? "group-hover:-translate-y-px group-hover:shadow-[0_2px_8px_rgba(217,119,6,0.25)] group-focus-within:-translate-y-px group-focus-within:shadow-[0_2px_8px_rgba(217,119,6,0.25)]"
-            : "",
-          isHighlighting
-            ? // Pressed reads as "this filter is on", using the deepest step of
-              // the same amber ramp rather than a new accent colour. Hover goes
-              // one step deeper again, so there is still somewhere to move.
-              "border-[#F59E0B] bg-[#FDE68A] ring-2 ring-[#F59E0B]/30 group-hover:bg-[#FCD34D] group-focus-within:bg-[#FCD34D]"
-            : "border-[#F59E0B]/50 bg-[#FFFBEB] group-hover:border-[#F59E0B] group-hover:bg-[#FEF3C7] group-focus-within:border-[#F59E0B] group-focus-within:bg-[#FEF3C7]",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-      >
-        <WarningIcon size={13} />
-        <span className="text-[11px] font-bold leading-none tabular-nums text-[#92400E]">
-          {total > 99 ? "99+" : total}
-        </span>
-        <span className="text-[9px] font-semibold uppercase leading-none tracking-widest text-[#B45309]">
-          dpi
-        </span>
-      </button>
-
-      {/* Same card family as the notice toast — text-on-amber, hairline
-          #F59E0B border — so the chip, its tooltip and the notice all read as
-          one system rather than three separately-tuned palettes. */}
-      <span className="pointer-events-none absolute left-1/2 top-full z-[9999] mt-2 hidden w-[272px] -translate-x-1/2 flex-col rounded-xl border border-[#F59E0B] bg-[#FFFBEB] px-3.5 py-3 text-left shadow-lg group-hover:flex group-focus-within:flex">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-[#92400E]">
-          Resolution Check
-        </span>
-
-        <span className="mt-2 flex flex-col gap-1.5">
-          {lines.map((line) => (
-            <span key={line} className="flex items-start gap-2">
-              <span className="mt-[5px] h-[5px] w-[5px] shrink-0 rounded-full bg-[#F59E0B]" />
-              <span className="text-[12px] leading-[16px] text-[#92400E]">{line}</span>
-            </span>
-          ))}
-        </span>
-
-        <span className="mt-2.5 border-t border-[#F59E0B]/30 pt-2 text-[11px] leading-[1.5] text-[#B45309]">
-          {dpiStatusGuidance(unknownDpiCount)}
-        </span>
-
-        {interactive && (
-          <span className="mt-2 border-t border-[#F59E0B]/30 pt-2 text-[11px] font-semibold leading-[1.5] text-[#92400E]">
-            {isHighlighting
-              ? "Click to clear the highlight."
-              : `Click to highlight ${total === 1 ? "it" : "them"} on the sheet.`}
-          </span>
-        )}
-      </span>
-    </span>
-  );
-};
+  /** Goes to the next flagged image on the sheet. */
+  onGoTo?: () => void;
+  compact?: boolean;
+}) => (
+  <IssueChip
+    count={lowDpiCount + unknownDpiCount}
+    label="dpi"
+    tone="amber"
+    heading="Resolution Check"
+    lines={dpiStatusLines(lowDpiCount, unknownDpiCount)}
+    guidance={`${dpiStatusGuidance(unknownDpiCount)} Each one is outlined in amber.`}
+    ariaLabel={dpiStatusAriaLabel(lowDpiCount, unknownDpiCount)}
+    onGoTo={onGoTo}
+    compact={compact}
+  />
+);
 
 /**
  * Matches the "files skipped" and "large image" notices, so every advisory

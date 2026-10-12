@@ -105,6 +105,29 @@ export function getItemVerticalExtent(
   return { topIn, bottomIn: topIn + groupHeightInches };
 }
 
+/**
+ * Print resolution from an image's pixels and the inches it is drawn across,
+ * on both axes.
+ *
+ * A piece sized in proportion has the same resolution either way, and the
+ * width alone is used — so a rounding difference in the height can never turn
+ * a 300 DPI image into a "299". A piece stretched on one side (dimensions
+ * unlinked) does not: its pixels are spread thinner along the stretched side,
+ * and that weaker side is what prints soft, so it is the one reported.
+ */
+export const dpiFromPixels = (
+  widthPx: number,
+  heightPx: number | null | undefined,
+  alongWidthIn: number,
+  alongHeightIn: number | null | undefined,
+): number => {
+  const across = widthPx / alongWidthIn;
+  if (!heightPx || !alongHeightIn || !(heightPx > 0) || !(alongHeightIn > 0)) return Math.round(across);
+  const down = heightPx / alongHeightIn;
+  const proportional = Math.abs(across - down) / Math.max(across, down) < 0.02;
+  return Math.round(proportional ? across : Math.min(across, down));
+};
+
 export function computeEffectiveDpi(item: {
   dpi?: number;
   widthIn: number;
@@ -112,8 +135,12 @@ export function computeEffectiveDpi(item: {
   rotation?: number;
   croppedWidthPx?: number;
   nativeWidthPx?: number;
+  url?: string;
+  /** The image the board last measured, and its real pixel size. See `recordMeasured` in Artboard. */
+  measuredUrl?: string;
+  measuredWidthPx?: number;
+  measuredHeightPx?: number;
 }): number | null {
-  const pixelWidth = item.croppedWidthPx || item.nativeWidthPx;
   // Every 90° rotation swaps widthIn/heightIn (see rotateSelected), but the
   // stored pixel width always describes the image's own width axis. At odd
   // rotations that axis is displayed along heightIn, so divide by that —
@@ -121,8 +148,17 @@ export function computeEffectiveDpi(item: {
   // the false low-DPI warnings after rotation).
   const rotationOdd = ((Math.round((item.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
   const widthAxisIn = rotationOdd && typeof item.heightIn === "number" ? item.heightIn : item.widthIn;
+  const heightAxisIn = rotationOdd ? item.widthIn : item.heightIn;
+  // Only a measurement of the image the piece shows now counts.
+  const measured =
+    item.measuredUrl && item.measuredUrl === item.url && (item.measuredWidthPx ?? 0) > 0 && (item.measuredHeightPx ?? 0) > 0
+      ? { w: item.measuredWidthPx!, h: item.measuredHeightPx! }
+      : null;
+  const pixelWidth = item.croppedWidthPx || item.nativeWidthPx || measured?.w;
   if (pixelWidth && widthAxisIn > 0) {
-    return Math.round(pixelWidth / widthAxisIn);
+    // The height in pixels follows from the image's measured shape.
+    const pixelHeight = measured ? pixelWidth * (measured.h / measured.w) : null;
+    return dpiFromPixels(pixelWidth, pixelHeight, widthAxisIn, heightAxisIn);
   }
   return typeof item.dpi === "number" ? item.dpi : null;
 }

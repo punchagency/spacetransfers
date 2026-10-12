@@ -13,7 +13,7 @@ import {
 import { NoticeCard } from "../components/common/UnsupportedFilesWarning";
 import { uploadQueuedText } from "../components/common/UploadQueueNotice";
 import { showLargeImageWarning } from "../components/common/LargeImageWarning";
-import ArtboardWarning from "../components/artboard/features/canvas/ArtboardWarning";
+import { TransparencyChip, transparencyChipLabel, transparencyStatusLines } from "../components/common/TransparencyStatus";
 import {
   isDpiFlagged,
   isLowDpi,
@@ -49,7 +49,7 @@ describe("dpi status copy", () => {
     expect(dpiStatusBody(3, 0)).toBe(
       "(3) images have a resolution below 300 DPI. For optimal DTF printing quality, images should be at least 300 DPI at print size.",
     );
-    expect(dpiStatusBody(0, 1)).toContain("enhance them to be safe.");
+    expect(dpiStatusBody(0, 1)).toContain("use DPI+ to be safe.");
   });
 
   it("splits the tooltip breakdown one line per condition", () => {
@@ -95,51 +95,34 @@ describe("dpi status chip", () => {
   });
 });
 
-describe("dpi chip highlight control", () => {
+describe("dpi chip navigation", () => {
   const counts = { lowDpiCount: 2, unknownDpiCount: 1 };
 
-  it("stays a passive readout when nothing can be highlighted", () => {
+  it("stays a passive readout when there is nowhere to go", () => {
     // No handler means no working control — a pressable-looking chip that does
     // nothing is worse than a plain readout.
     render(<DpiStatusChip {...counts} />);
     expect(screen.getByRole("button")).toBeDisabled();
   });
 
-  it("reveals the flagged artwork when clicked", () => {
-    const onToggleHighlight = vi.fn();
-    render(<DpiStatusChip {...counts} onToggleHighlight={onToggleHighlight} />);
+  it("goes to the next flagged image on every click", () => {
+    const onGoTo = vi.fn();
+    render(<DpiStatusChip {...counts} onGoTo={onGoTo} />);
     fireEvent.click(screen.getByRole("button"));
-    expect(onToggleHighlight).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onGoTo).toHaveBeenCalledTimes(2);
   });
 
-  it("reports its pressed state to assistive tech", () => {
-    const { rerender } = render(
-      <DpiStatusChip {...counts} onToggleHighlight={() => {}} isHighlighting={false} />,
-    );
-    expect(screen.getByRole("button")).toHaveAttribute("aria-pressed", "false");
-
-    rerender(
-      <DpiStatusChip {...counts} onToggleHighlight={() => {}} isHighlighting />,
-    );
-    expect(screen.getByRole("button")).toHaveAttribute("aria-pressed", "true");
+  it("is not a toggle: the outlines are always on", () => {
+    render(<DpiStatusChip {...counts} onGoTo={() => {}} />);
+    expect(screen.getByRole("button")).not.toHaveAttribute("aria-pressed");
   });
 
   it("names the action in its label, not just the counts", () => {
-    // The chip's whole subtree is hover-only apart from the button, so the
-    // label is the only place a screen-reader user learns it does something.
-    render(<DpiStatusChip {...counts} onToggleHighlight={() => {}} />);
-    expect(screen.getByRole("button").getAttribute("aria-label")).toContain(
-      "Show them on the sheet",
-    );
-  });
-
-  it("carries the marker the outside-click dismissal keys off", () => {
-    // Without it the pointerdown that opens the highlight counts as an outside
-    // click and closes it again on the same gesture.
-    const { container } = render(
-      <DpiStatusChip {...counts} onToggleHighlight={() => {}} />,
-    );
-    expect(container.querySelector("[data-dpi-chip]")).toBeTruthy();
+    // The hover card is not announced, so the label is the only place a
+    // screen-reader user learns the chip does something.
+    render(<DpiStatusChip {...counts} onGoTo={() => {}} />);
+    expect(screen.getByRole("button").getAttribute("aria-label")).toContain("Step through them on the sheet");
   });
 });
 
@@ -221,44 +204,38 @@ describe("low dpi notice", () => {
   });
 });
 
-describe("artboard warning banner", () => {
-  const faint = {
-    hasFade: true,
-    confidence: 1,
-    kind: "semi-transparent" as const,
-    reason: "About 12% of the artwork is more than 50% transparent.",
-    source: "heuristic" as const,
-  };
-
+describe("transparency chip", () => {
   it("renders nothing when nothing is flagged", () => {
-    const { container } = render(<ArtboardWarning flagged={[]} />);
+    const { container } = render(<TransparencyChip fadeCount={0} seeThroughCount={0} />);
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("no longer merges resolution into the transparency banner", () => {
-    // Low DPI is a toast now, so a sheet with both conditions shows two
-    // independent notices rather than one merged "Print Issues" sentence.
-    render(<ArtboardWarning flagged={[faint]} />);
-    expect(screen.getByText("Too transparent to print")).toBeTruthy();
-    expect(screen.queryByText("Print Issues Detected")).toBeNull();
+  it("is labelled for the one kind present, or for both", () => {
+    expect(transparencyChipLabel(2, 0)).toBe("fade");
+    expect(transparencyChipLabel(0, 1)).toBe("see-through");
+    expect(transparencyChipLabel(2, 1)).toBe("transparency");
   });
 
-  it("tells the customer to update or replace the file", () => {
-    render(<ArtboardWarning flagged={[faint]} />);
-    const body = screen.getByRole("status").textContent ?? "";
-    expect(body).toContain("About 12% of the artwork is more than 50% transparent.");
-    expect(body).toMatch(/Update the file .* or replace it with a different file/);
+  it("shows one combined count and breaks it down by kind", () => {
+    render(<TransparencyChip fadeCount={2} seeThroughCount={1} onGoTo={() => {}} />);
+    expect(screen.getByRole("button").textContent).toContain("3");
+    expect(transparencyStatusLines(2, 1)).toEqual([
+      "2 images fade into transparency",
+      "1 image has see-through areas",
+    ]);
   });
 
-  it("counts several flagged images", () => {
-    render(<ArtboardWarning flagged={[faint, { ...faint, kind: "fade" }]} />);
-    expect(screen.getByText("Transparency won't print as shown")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("(2) images have fades");
+  it("tells the customer what to do about it", () => {
+    render(<TransparencyChip fadeCount={1} onGoTo={() => {}} />);
+    expect(screen.getByText(/Update the file to make them solid, or replace it/)).toBeTruthy();
   });
 
-  it("is announced politely — a flag did not block the customer's work", () => {
-    render(<ArtboardWarning flagged={[faint]} />);
-    expect(screen.getByRole("status").getAttribute("aria-live")).toBe("polite");
+  it("goes to the affected image when clicked", () => {
+    const onGoTo = vi.fn();
+    render(<TransparencyChip fadeCount={1} onGoTo={onGoTo} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onGoTo).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button").getAttribute("aria-label")).toContain("Go to it on the sheet");
   });
 });
 

@@ -1,4 +1,4 @@
-import { MdRotateRight, MdLock, MdLockOpen, MdContentCopy, MdAutoFixHigh, MdHighQuality, MdCheckCircle } from "react-icons/md";
+import { MdRotateRight, MdLock, MdLockOpen, MdContentCopy, MdAutoFixHigh, MdHighQuality, MdCheckCircle, MdCrop } from "react-icons/md";
 import { LuFlipHorizontal } from "react-icons/lu";
 import { RiDeleteBin5Line } from "react-icons/ri";
 import { MdGroupWork, MdOutlineWorkspaces } from "react-icons/md";
@@ -32,6 +32,9 @@ interface ItemToolbarProps {
   onOpenAi?: () => void;
   /** The AI panel is currently open for this item — keeps the button highlighted. */
   aiActive?: boolean;
+  /** Whether this image is trimmed to its artwork. The same switch as the right-click panel's. */
+  autoCrop?: boolean;
+  onToggleAutoCrop?: () => void;
   /** The whole selection — DPI+ and BG removal act on all of it, AI on one image. */
   selection?: SelectionSummary;
 }
@@ -62,7 +65,7 @@ const UNLOCK_TO_EDIT = "Locked — unlock to edit";
 
 const Sep = () => <span className="w-px h-6 bg-gray-200 flex-shrink-0 mx-0.5" />;
 
-export default function ItemToolbar({ locked, onGroup, groupAction, onRotate, onToggleLock, onFlip, onDuplicate, onDelete, onIncreaseDpi, currentDpi, isDpiUnknown, isDpiEnhancing, dpiProgress, dpiEnhanced, onRemoveBg, bgStatus, isRemovingBg, bgProgress, bgJustRemoved, onOpenAi, aiActive, selection }: ItemToolbarProps) {
+export default function ItemToolbar({ locked, onGroup, groupAction, onRotate, onToggleLock, onFlip, onDuplicate, onDelete, onIncreaseDpi, currentDpi, isDpiUnknown, isDpiEnhancing, dpiProgress, dpiEnhanced, onRemoveBg, bgStatus, isRemovingBg, bgProgress, bgJustRemoved, onOpenAi, aiActive, autoCrop, onToggleAutoCrop, selection }: ItemToolbarProps) {
   const isMobile = useIsMobile();
   // With several images selected, DPI+ and the BG remover work through all of
   // them (skipping locked ones and ones that don't need it), so their state
@@ -197,6 +200,25 @@ export default function ItemToolbar({ locked, onGroup, groupAction, onRotate, on
             <MdContentCopy className="w-5 h-5" />
             <span>Duplicate</span>
           </Btn>
+
+          {/* One image's own setting, so it is offered for a single image only. */}
+          {onToggleAutoCrop && !multi && (
+            <Btn
+              onClick={(e) => { e.stopPropagation(); onToggleAutoCrop(); }}
+              title={
+                locked
+                  ? UNLOCK_TO_EDIT
+                  : autoCrop
+                  ? "Auto crop is on: empty space around the artwork is trimmed. Click to show the whole image."
+                  : "Auto crop is off: the whole image is shown. Click to trim empty space around the artwork."
+              }
+              disabled={locked}
+              className={autoCrop && !locked ? "!text-blue-600" : ""}
+            >
+              <MdCrop className="w-5 h-5" />
+              <span aria-live="polite">{autoCrop ? "Crop On" : "Crop Off"}</span>
+            </Btn>
+          )}
 
           {/* DPI enhance + AI background removal are hidden on phones — both
               load/run heavy in-browser models (a multi-MB WASM AI) that can't

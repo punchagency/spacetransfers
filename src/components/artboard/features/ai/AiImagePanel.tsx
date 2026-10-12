@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from "react-dom";
 import { HiOutlineSparkles } from "react-icons/hi2";
 import { MdArrowUpward, MdClose } from "react-icons/md";
-import { QUICK_ACTIONS, BOARD_QUICK_ACTIONS, PROMPT_SUGGESTIONS, analyzePrompt, INTENT_VERBS, canServeIntent, parseBoardCommands, splitSequence } from "../../lib/ai";
+import toast from "react-hot-toast";
+import { QUICK_ACTIONS, BOARD_QUICK_ACTIONS, PROMPT_SUGGESTIONS, DESKTOP_ONLY_INTENTS, needsDesktop, analyzePrompt, INTENT_VERBS, canServeIntent, parseBoardCommands, splitSequence } from "../../lib/ai";
+import { useIsMobile } from "../../../../lib/useIsMobile";
 import type { AiEditOptions, AiIntentId } from "../../lib/ai";
 import type { AiMessage, AiSendOptions } from "../../lib/hooks/useAiConversation";
 import type { AiEditStatus } from "../../lib/hooks/useAiEdit";
@@ -240,15 +242,30 @@ export default function AiImagePanel({
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [prompt]);
 
+  const isMobile = useIsMobile();
   const submit = useCallback(
     (text: string, sendOptions?: AiSendOptions) => {
       const trimmed = text.trim();
       if (!trimmed || isRunning) return;
+      // Said here rather than attempted: on a phone these stall or crash the tab.
+      if (
+        isMobile &&
+        (sendOptions?.intentOverride
+          ? DESKTOP_ONLY_INTENTS.has(sendOptions.intentOverride)
+          : needsDesktop(trimmed, splitSequence))
+      ) {
+        toast("Removing backgrounds and enhancing resolution need a laptop or desktop. Open this sheet there to do it.", {
+          id: "ai-desktop-only",
+          icon: "ℹ️",
+          duration: 7000,
+        });
+        return;
+      }
       onSend(trimmed, sendOptions);
       setPrompt("");
       requestAnimationFrame(() => inputRef.current?.focus());
     },
-    [isRunning, onSend],
+    [isRunning, onSend, isMobile],
   );
 
   /** A swatch click is a complete instruction — the colour *is* the parameter. */
@@ -311,9 +328,10 @@ export default function AiImagePanel({
     () =>
       SUGGESTION_ORDER.filter((text) => {
         const intent = suggestionIntent(text);
+        if (isMobile && needsDesktop(text, splitSequence)) return false;
         return !intent || !unservable.has(intent);
       }).slice(0, 4),
-    [unservable],
+    [unservable, isMobile],
   );
 
   const pct = status ? Math.max(0, Math.min(100, status.progress.pct)) : 0;
@@ -435,7 +453,7 @@ export default function AiImagePanel({
             </button>
           ))}
           <span aria-hidden className="flex-shrink-0 self-center h-4 w-px bg-gray-200" />
-          {QUICK_ACTIONS.map((action) => (
+          {QUICK_ACTIONS.filter((action) => !isMobile || !DESKTOP_ONLY_INTENTS.has(action.intent)).map((action) => (
             <button
               key={action.intent}
               onClick={() => handleChip({ ...action, intent: action.intent })}

@@ -12,12 +12,19 @@ import {
   useMaterializeImages,
   useTransparencyVerdicts,
 } from "./artboard/lib/hooks";
-import { snapToGridPoint, isDpiFlagged, shouldWarn, type FadeVerdict } from "./artboard/lib/utils";
+import { snapToGridPoint, isDpiFlagged, shouldWarn } from "./artboard/lib/utils";
+import { isNotUploaded } from "./artboard/lib/utils/uploadRecovery";
+import FailedUploadsPanel from "./artboard/features/canvas/FailedUploadsPanel";
+import { failedUploads } from "../lib/failedUploads";
 import { isTypingTarget } from "../lib/utils/keyboard";
 import { useCanHover } from "../lib/useIsMobile";
-import { ArtboardWarning, CanvasContainer } from "./artboard/features/canvas";
+import { CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
 import { AiPreviewDialog } from "./artboard/features/ai";
+import type { ReviewOption } from "./artboard/features/ai/AiPreviewDialog";
+import type { BgRemovalResult } from "./artboard/lib/utils/bgRemover";
+import type { PixelBatchResult } from "./artboard/lib/hooks/useItemActions";
+import { loadEditorSettings, saveEditorSettings } from "../lib/utils/editorSettings";
 import type { AiPanelBridge } from "./artboard/features/ai";
 import type { BoardCommand } from "./artboard/lib/ai";
 import { executeBoardCommands } from "./artboard/lib/ai";
@@ -25,6 +32,17 @@ import type { ArtboardProps } from "./artboard/types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
 import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
 import { autoNestWouldUndoRotation, isSheetFull } from "./artboard/lib/utils";
+
+/** The one choice a background removal has, worded the same wherever it is offered. */
+const clearEnclosedOption = (checked: boolean, viaModel: boolean, onChange: (checked: boolean) => void): ReviewOption => ({
+  label: "Also clear enclosed background",
+  hint: viaModel
+    ? "Doesn't apply here: this background isn't one plain colour, so the AI model cut out the subject."
+    : "Take a black ring on white. On: the white inside the ring is cleared too, leaving just the ring. Off: the white inside the ring stays and prints.",
+  checked,
+  disabled: viaModel,
+  onChange,
+});
 
 export default function Artboard({
   onHeaderInfoChange,
@@ -42,7 +60,9 @@ export default function Artboard({
   canvasBg = DEFAULT_EDITOR_SETTINGS.canvasBg,
   autoCropUploads = DEFAULT_EDITOR_SETTINGS.autoCropUploads,
   shortcutsEnabled = true,
-  highlightLowDpi = false,
+  issueFocus = null,
+  onTransparencyCounts,
+  onNotUploadedCount,
   onRequestAutoNest,
   onUpdateSetting,
   onDataChange,
@@ -211,41 +231,101 @@ export default function Artboard({
   const transparencyVerdicts = useTransparencyVerdicts(items);
 
   /**
-   * One verdict per flagged file on the board, for the banner. Counted by file,
-   * not by piece: duplicates of one image share it, and the banner's instruction
-   * is to update the file — two copies of one image are one file to fix.
+   * The pieces whose transparency won't print as shown, in reading order, with
+   * how many of each kind. Counted by piece, like the DPI chip: the chip's
+   * number is also how many stops its click steps through.
    */
-  const flaggedTransparency = useMemo(() => {
-    const flagged = new Map<string, FadeVerdict>();
-    for (const it of items) {
+  const transparencyFlags = useMemo(() => {
+    const ids: number[] = [];
+    let fade = 0;
+    let seeThrough = 0;
+    for (const it of [...items].sort((a, b) => a.posY - b.posY || a.posX - b.posX)) {
       const verdict = transparencyVerdicts.get(it.url);
-      if (verdict && shouldWarn(verdict)) flagged.set(it.url, verdict);
+      if (!verdict || !shouldWarn(verdict)) continue;
+      ids.push(it.id);
+      if (verdict.kind === "translucent" || verdict.kind === "semi-transparent") seeThrough += 1;
+      else fade += 1;
     }
-    return [...flagged.values()];
+    return { ids, fade, seeThrough };
   }, [items, transparencyVerdicts]);
 
+  useEffect(() => {
+    onTransparencyCounts?.({ fade: transparencyFlags.fade, seeThrough: transparencyFlags.seeThrough });
+  }, [transparencyFlags.fade, transparencyFlags.seeThrough, onTransparencyCounts]);
+
   /**
-   * The items the DPI chip is counting.
+   * The items the DPI chip is counting, always outlined on the sheet.
    *
    * Derived with `computeEffectiveDpi` — the same function `useArtboardEffects`
-   * uses to produce the chip's number — so what lights up on the sheet always
-   * matches what the chip says. `ArtboardItem` measures its own DPI from the
-   * loaded `<img>`, which is right for its own amber border but can differ by a
-   * pixel or two mid-load; trusting that here would let a chip reading "5"
-   * highlight four.
-   *
-   * Empty (and cheap) whenever the highlight is off, so the ordinary render
-   * path pays a single boolean check rather than a pass over the board.
+   * uses to produce the chip's number — so what is outlined always matches what
+   * the chip says. `ArtboardItem` measures its own DPI from the loaded `<img>`,
+   * which can differ by a pixel or two mid-load; trusting that here would let a
+   * chip reading "5" outline four.
    */
-  const dpiHighlightIds = useMemo(() => {
-    if (!highlightLowDpi) return null;
-    const flagged = new Set<number>();
-    // Both halves of the chip's count: measurably low, and unmeasurable.
-    for (const it of items) {
-      if (isDpiFlagged(it)) flagged.add(it.id);
-    }
-    return flagged.size > 0 ? flagged : null;
-  }, [highlightLowDpi, items]);
+  const dpiFlags = useMemo(() => {
+    const ids = [...items]
+      .filter(isDpiFlagged)
+      .sort((a, b) => a.posY - b.posY || a.posX - b.posX)
+      .map((it) => it.id);
+    return { ids, set: ids.length > 0 ? new Set(ids) : null };
+  }, [items]);
+
+  /**
+   * Images placed from the customer's file whose upload never succeeded, in
+   * reading order. They are on the board and can be worked on, but exist only
+   * in this browser until they upload.
+   */
+  const notUploaded = useMemo(
+    () => [...items].filter(isNotUploaded).sort((a, b) => a.posY - b.posY || a.posX - b.posX),
+    [items],
+  );
+  const notUploadedIds = useMemo(() => new Set(notUploaded.map((it) => it.id)), [notUploaded]);
+  useEffect(() => {
+    // An image deleted, or uploaded at last, has nothing left to retry.
+    failedUploads.keepOnly(notUploadedIds);
+    onNotUploadedCount?.(notUploadedIds.size);
+  }, [notUploadedIds, onNotUploadedCount]);
+
+  /**
+   * Going to an issue: each chip click selects the next affected piece and
+   * brings it into view, wrapping at the end. Selecting it puts its tools —
+   * Enhance, the transparency note — right where the customer is looking.
+   */
+  const [issueTarget, setIssueTarget] = useState<{ id: number; nonce: number } | null>(null);
+  const lastIssueStopRef = useRef<Record<"dpi" | "transparency" | "upload", number | null>>({
+    dpi: null,
+    transparency: null,
+    upload: null,
+  });
+  const uploadIssueIds = notUploaded.map((it) => it.id);
+  const issueListsRef = useRef({ dpi: dpiFlags.ids, transparency: transparencyFlags.ids, upload: uploadIssueIds });
+  issueListsRef.current = { dpi: dpiFlags.ids, transparency: transparencyFlags.ids, upload: uploadIssueIds };
+  const issueNonceRef = useRef(0);
+  /** Selects one piece and brings it into view. */
+  const showItem = (id: number) => {
+    setSelectedId(id);
+    setSelectedIds(new Set([id]));
+    // Above any chip's own counter, so this always reads as a new request.
+    setIssueTarget({ id, nonce: 1_000_000 + (issueNonceRef.current += 1) });
+  };
+  const removeItems = (ids: number[]) => {
+    const gone = new Set(ids);
+    history.commit();
+    setItems((prev) => prev.filter((it) => !gone.has(it.id)));
+    if (selectedId != null && gone.has(selectedId)) setSelectedId(null);
+    setSelectedIds((prev) => new Set([...prev].filter((id) => !gone.has(id))));
+  };
+  useEffect(() => {
+    if (!issueFocus) return;
+    const ids = issueListsRef.current[issueFocus.kind];
+    if (ids.length === 0) return;
+    const last = lastIssueStopRef.current[issueFocus.kind];
+    const next = ids[(last === null ? 0 : ids.indexOf(last) + 1) % ids.length];
+    lastIssueStopRef.current[issueFocus.kind] = next;
+    setSelectedId(next);
+    setSelectedIds(new Set([next]));
+    setIssueTarget({ id: next, nonce: issueFocus.nonce });
+  }, [issueFocus]);
 
   const itemActions = useItemActions(
     items,
@@ -535,13 +615,69 @@ export default function Artboard({
    * Stores a piece's measured pixel width when it has none. Not an edit: no
    * undo step, and the sheet's saved/cart comparison ignores this field.
    */
-  const recordMeasuredWidth = useCallback((id: number, widthPx: number) => {
-    setItems((prev) =>
-      prev.some((it) => it.id === id && !it.nativeWidthPx && !it.croppedWidthPx)
-        ? prev.map((it) => (it.id === id && !it.nativeWidthPx && !it.croppedWidthPx ? { ...it, nativeWidthPx: widthPx } : it))
-        : prev,
-    );
+  const recordMeasuredWidth = useCallback((id: number, widthPx: number, heightPx?: number, url?: string) => {
+    setItems((prev) => {
+      const item = prev.find((it) => it.id === id);
+      if (!item) return prev;
+      const needsWidth = !item.nativeWidthPx && !item.croppedWidthPx;
+      // The image's real size, for the DPI check's second axis. Tied to the
+      // image it was read from, so it is never applied to a later one.
+      const needsShape =
+        Boolean(url) && Boolean(heightPx) && item.url === url &&
+        (item.measuredUrl !== url || item.measuredWidthPx !== widthPx || item.measuredHeightPx !== heightPx);
+      if (!needsWidth && !needsShape) return prev;
+      return prev.map((it) =>
+        it.id === id
+          ? {
+              ...it,
+              ...(needsWidth ? { nativeWidthPx: widthPx } : {}),
+              ...(needsShape ? { measuredUrl: url, measuredWidthPx: widthPx, measuredHeightPx: heightPx } : {}),
+            }
+          : it,
+      );
+    });
   }, [setItems]);
+
+  /*
+   * BG Remover on one image is looked at before it lands, like an AI edit: the
+   * cutout is worked out, shown beside the original, and only applied when the
+   * customer says so. Several images at once still go straight onto the sheet —
+   * a review per image would be twenty dialogs — and can be undone in one step.
+   */
+  const [bgReview, setBgReview] = useState<{
+    itemId: number;
+    beforeUrl: string;
+    result: BgRemovalResult;
+    clearEnclosed: boolean;
+    updating: boolean;
+  } | null>(null);
+  const removeBgWithReview = async (onProgress?: (phase: string, pct: number) => void): Promise<PixelBatchResult> => {
+    const only = selectedIds.size <= 1 ? selectedId : null;
+    if (only == null) return itemActions.removeBg(onProgress);
+    const clearEnclosed = loadEditorSettings().bgClearEnclosed;
+    const staged = await itemActions.previewBgRemoval(only, clearEnclosed, onProgress);
+    if (!staged) return { done: 0, skipped: 1, locked: 0, failed: 0 };
+    setBgReview({ ...staged, clearEnclosed, updating: false });
+    return { done: 0, skipped: 0, locked: 0, failed: 0, reviewing: true };
+  };
+  /** The choice is remembered for next time, and is what several-at-once uses. */
+  const rememberClearEnclosed = (value: boolean) => {
+    saveEditorSettings({ ...loadEditorSettings(), bgClearEnclosed: value });
+    onUpdateSetting?.("bgClearEnclosed", value);
+  };
+  const changeBgReviewOption = async (clearEnclosed: boolean) => {
+    const current = bgReview;
+    if (!current || current.updating) return;
+    rememberClearEnclosed(clearEnclosed);
+    setBgReview({ ...current, clearEnclosed, updating: true });
+    try {
+      const staged = await itemActions.previewBgRemoval(current.itemId, clearEnclosed);
+      setBgReview(staged ? { ...staged, clearEnclosed, updating: false } : null);
+    } catch (err: any) {
+      toast.error(err?.message || "The background couldn't be removed that way.");
+      setBgReview({ ...current, updating: false });
+    }
+  };
 
   const duplicateSelected = () => {
     const sourceIds = [
@@ -640,7 +776,11 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
-      <ArtboardWarning flagged={flaggedTransparency} />
+      <FailedUploadsPanel
+        items={notUploaded.map((it) => ({ id: it.id, name: it.name, url: it.url }))}
+        onShow={showItem}
+        onRemove={removeItems}
+      />
       <input
         ref={fileInputRef}
         type="file"
@@ -679,7 +819,9 @@ export default function Artboard({
           batchLoaded={batchLoaded}
           batchTotal={batchTotal}
           queuedCount={queuedCount}
-          dpiHighlightIds={dpiHighlightIds}
+          dpiHighlightIds={dpiFlags.set}
+          notUploadedIds={notUploadedIds}
+          issueTarget={issueTarget}
           transparencyVerdicts={transparencyVerdicts}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}
@@ -729,7 +871,7 @@ export default function Artboard({
           onDuplicate={duplicateSelected}
           onDelete={deleteSelection}
           onCloseProperties={() => setShowProperties({})}
-          onRemoveBg={itemActions.removeBg}
+          onRemoveBg={removeBgWithReview}
           onMeasured={recordMeasuredWidth}
           onDragStart={handleDragStart}
           onResizeStart={handleResizeStart}
@@ -759,10 +901,46 @@ export default function Artboard({
           so it renders over the whole editor rather than inside the canvas —
           judging a generative result needs the image at a useful size, which is
           the entire reason this is a dialog and not an inline thumbnail. */}
+      {bgReview && (
+        <AiPreviewDialog
+          preview={{
+            beforeUrl: bgReview.beforeUrl,
+            afterUrl: bgReview.result.dataUrl,
+            prompt: "Remove the background",
+            steps: [],
+            result: { url: bgReview.result.dataUrl, widthPx: bgReview.result.widthPx, heightPx: bgReview.result.heightPx, provider: "local" },
+          }}
+          caption={
+            bgReview.result.method === "color"
+              ? "Background removed. Nothing changes on your sheet until you apply it."
+              : "Subject cut out by the AI model. Nothing changes on your sheet until you apply it."
+          }
+          isRunning={bgReview.updating}
+          option={clearEnclosedOption(bgReview.clearEnclosed, bgReview.result.method === "model", (v) => void changeBgReviewOption(v))}
+          onApply={() => {
+            itemActions.applyBgRemoval(bgReview.itemId, bgReview.result);
+            setBgReview(null);
+            toast.success("Background removed");
+          }}
+          onDiscard={() => setBgReview(null)}
+        />
+      )}
       {ai.preview && (
         <AiPreviewDialog
           preview={ai.preview}
           isRunning={ai.isRunning}
+          // Removing a background through the AI panel is the same edit, so it
+          // gets the same choice. Changing it runs the request again.
+          option={
+            ai.preview.intent === "remove-bg" || ai.preview.intent === "make-transparent"
+              ? clearEnclosedOption(loadEditorSettings().bgClearEnclosed, false, (v) => {
+                  const { prompt, request } = ai.preview!;
+                  rememberClearEnclosed(v);
+                  ai.discardPreview();
+                  aiConversation.send(prompt, request);
+                })
+              : undefined
+          }
           onApply={ai.applyPreview}
           onDiscard={ai.discardPreview}
           // Re-sends the original prompt rather than the per-step rewrites: the

@@ -1,3 +1,4 @@
+import type { BgRemovalResult } from "../utils/bgRemover";
 import { loadEditorSettings } from "../../../../lib/utils/editorSettings";
 import { ArtboardItem } from "../../types";
 import { DPI, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
@@ -29,6 +30,8 @@ const naturalSizeOf = (url: string) =>
 
 /** What a BG-removal or DPI run over the selection did, for the summary toast. */
 export interface PixelBatchResult {
+  /** Nothing was changed yet: the result is on screen waiting to be applied or discarded. */
+  reviewing?: boolean;
   /** Images changed. */
   done: number;
   /** Images that did not need it (already transparent / already 300 DPI). */
@@ -463,7 +466,43 @@ export const useItemActions = (
     return result;
   };
 
-  /** Removes the background from every selected image that has one. */
+  /**
+   * A cutout applied to its piece. The cutout is trimmed to the subject's
+   * bounding box, so the box shrinks by the trim ratio while the SUBJECT keeps
+   * its exact physical print size and stays centered where it was — nothing
+   * visually jumps or rescales. At odd rotations widthIn/heightIn are swapped
+   * relative to the image's own axes (see rotateSelected), so the trim ratios
+   * are applied along the correct axis.
+   */
+  const withBackgroundRemoved = (it: ArtboardItem, result: BgRemovalResult): ArtboardItem => {
+    const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
+    const scaleW = result.originalWidthPx > 0 ? result.widthPx / result.originalWidthPx : 1;
+    const scaleH = result.originalHeightPx > 0 ? result.heightPx / result.originalHeightPx : 1;
+    const newWidthIn = it.widthIn * (rotOdd ? scaleH : scaleW);
+    const newHeightIn = it.heightIn * (rotOdd ? scaleW : scaleH);
+    return {
+      ...it,
+      // The full-resolution cutout is shown, printed, and becomes the
+      // uncropped source, with its real pixel counts so DPI stays truthful.
+      ...afterPixelEdit(result.dataUrl, result.widthPx, result.heightPx),
+      widthIn: newWidthIn,
+      heightIn: newHeightIn,
+      posX: it.posX + (it.widthIn - newWidthIn) / 2,
+      posY: it.posY + (it.heightIn - newHeightIn) / 2,
+      // originalUrl must stay as the pre-removal Cloudinary URL so the
+      // checkout assetId resolves to the original DB record, not a data URL.
+      originalUrl: it.originalUrl || it.url,
+      originalWidthIn: it.widthIn,
+      originalHeightIn: it.heightIn,
+      autoCrop: true,
+    };
+  };
+
+  /**
+   * Removes the background from every selected image that has one, straight
+   * onto the sheet. Used for several images at once; one image is previewed
+   * first (see `previewBgRemoval`).
+   */
   const removeBg = async (onProgress?: (phase: string, pct: number) => void) => {
     const { removeBackgroundAI } = await import("../utils/bgRemover");
     return runPixelBatch(
@@ -472,38 +511,35 @@ export const useItemActions = (
         const result = await removeBackgroundAI(item.url, (phase, pct) => onProgress?.(label + phase, pct), {
           clearEnclosed: loadEditorSettings().bgClearEnclosed,
         });
-        apply((it) => {
-          // The cutout is trimmed to the subject's bounding box, so the box
-          // shrinks by the trim ratio while the SUBJECT keeps its exact
-          // physical print size and stays centered where it was — nothing
-          // visually jumps or rescales. At odd rotations widthIn/heightIn are
-          // swapped relative to the image's own axes (see rotateSelected), so
-          // the trim ratios are applied along the correct axis.
-          const rotOdd = ((Math.round((it.rotation ?? 0) / 90) % 2) + 2) % 2 === 1;
-          const scaleW = result.originalWidthPx > 0 ? result.widthPx / result.originalWidthPx : 1;
-          const scaleH = result.originalHeightPx > 0 ? result.heightPx / result.originalHeightPx : 1;
-          const newWidthIn = it.widthIn * (rotOdd ? scaleH : scaleW);
-          const newHeightIn = it.heightIn * (rotOdd ? scaleW : scaleH);
-          return {
-            ...it,
-            // The full-resolution cutout is shown, printed, and becomes the
-            // uncropped source, with its real pixel counts so DPI stays truthful.
-            ...afterPixelEdit(result.dataUrl, result.widthPx, result.heightPx),
-            widthIn: newWidthIn,
-            heightIn: newHeightIn,
-            posX: it.posX + (it.widthIn - newWidthIn) / 2,
-            posY: it.posY + (it.heightIn - newHeightIn) / 2,
-            // originalUrl must stay as the pre-removal Cloudinary URL so the
-            // checkout assetId resolves to the original DB record, not a data URL.
-            originalUrl: it.originalUrl || it.url,
-            originalWidthIn: it.widthIn,
-            originalHeightIn: it.heightIn,
-            autoCrop: true,
-          };
-        });
+        apply((it) => withBackgroundRemoved(it, result));
         emit({ type: "removeBg", id: item.id });
       },
     );
+  };
+
+  /**
+   * Works out one image's cutout without touching the sheet, so it can be
+   * looked at first. Null when the image has no background to remove.
+   */
+  const previewBgRemoval = async (
+    id: number,
+    clearEnclosed: boolean,
+    onProgress?: (phase: string, pct: number) => void,
+  ): Promise<{ itemId: number; beforeUrl: string; result: BgRemovalResult } | null> => {
+    const item = items.find((it) => it.id === id);
+    if (!item) return null;
+    if (item.locked) throw new Error(UNLOCK_TO_EDIT);
+    if (!((await readImageInfo(item.url))?.hasBackground ?? true)) return null;
+    const { removeBackgroundAI } = await import("../utils/bgRemover");
+    const result = await removeBackgroundAI(item.url, onProgress, { clearEnclosed });
+    return { itemId: id, beforeUrl: item.url, result };
+  };
+
+  /** Puts a previewed cutout on its piece, as one undo step. */
+  const applyBgRemoval = (id: number, result: BgRemovalResult) => {
+    commit();
+    setItems((prev) => prev.map((it) => (it.id === id ? withBackgroundRemoved(it, result) : it)));
+    emit({ type: "removeBg", id });
   };
 
   /** Deletes everything selected except locked pieces. Returns how many went. */
@@ -588,6 +624,8 @@ export const useItemActions = (
     toggleExpandSelected,
     deleteSelected,
     removeBg,
+    previewBgRemoval,
+    applyBgRemoval,
     increaseDpi,
   };
 };

@@ -5,11 +5,14 @@ import {
   MdInventory,
   MdVisibility,
   MdDownload,
+  MdOutlineReportProblem,
 } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
 import { downloadInvoice } from "../../lib/utils/invoice";
 import toast from "react-hot-toast";
 import { formatOrderNumber } from "../../lib/utils/orderNumber";
+import { canReportIssue, issueButton, type OrderIssueSummary } from "../../lib/utils/orderIssues";
+import OrderIssueModal from "./OrderIssueModal";
 
 interface Order {
   orderId: string;
@@ -20,6 +23,11 @@ interface Order {
   total: number | null;
   sheetSize: string | null;
   trackingNumber: string | null;
+  /** What happened to the money, when any of it was refunded. */
+  refundNote?: string | null;
+  /** The order this one replaces free of charge. */
+  reprintOf?: string | null;
+  issue?: OrderIssueSummary | null;
 }
 
 interface OrderHistoryModalProps {
@@ -44,12 +52,24 @@ export default function OrderHistoryModal({
   const [loadingMore, setLoadingMore] = useState(false);
   // Which order's invoice or reorder is in flight, so a second tap waits.
   const [busy, setBusy] = useState<string | null>(null);
+  const [reporting, setReporting] = useState<{ orderId: string; number: string } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       fetchOrders();
     }
   }, [isOpen]);
+
+  /** Re-reads the orders already shown, so a report made or read shows on its row. */
+  const refreshOrders = async () => {
+    try {
+      const data = await apiFetch(`/customer/orders?limit=${Math.min(100, Math.max(20, orders.length))}`);
+      setOrders(data.orders || []);
+      setNextCursor(data.nextCursor || null);
+    } catch {
+      // The list on screen is still right apart from the badge.
+    }
+  };
 
   const fetchOrders = async () => {
     setIsLoading(true);
@@ -186,6 +206,7 @@ export default function OrderHistoryModal({
             <div className="space-y-4">
               {orders.map((order) => {
                 const styles = getStatusStyles(order.status);
+                const report = issueButton(order.issue);
                 return (
                   <div key={order.orderId} className="rounded-xl bg-gray-50 p-4 border border-gray-100 hover:border-gray-200 transition-colors">
                     <div className="flex items-center justify-between gap-3">
@@ -212,7 +233,7 @@ export default function OrderHistoryModal({
                       <div>
                         <p className="text-gray-500 text-xs">Amount</p>
                         <p className="font-medium text-gray-900">
-                          {order.total ? `$${order.total.toFixed(2)}` : "N/A"}
+                          {order.total ? `$${order.total.toFixed(2)}` : order.reprintOf ? "Free" : "N/A"}
                         </p>
                       </div>
                       <div>
@@ -228,6 +249,12 @@ export default function OrderHistoryModal({
                         <p className="text-gray-500 text-xs">Tracking Number</p>
                         <p className="font-medium text-gray-900 break-all select-all">{order.trackingNumber}</p>
                       </div>
+                    )}
+
+                    {(order.reprintOf || order.refundNote) && (
+                      <p className="mt-3 text-xs text-gray-600">
+                        {[order.reprintOf ? `Free reprint of ${order.reprintOf}.` : null, order.refundNote].filter(Boolean).join(" ")}
+                      </p>
                     )}
 
                     <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -252,6 +279,22 @@ export default function OrderHistoryModal({
                       >
                         {busy === `reorder-${order.orderId}` ? "Adding…" : "Reorder"}
                       </button>
+                      {(order.issue || canReportIssue(order.status)) && (
+                        <button
+                          onClick={() =>
+                            setReporting({ orderId: order.orderId, number: formatOrderNumber(order.displayId, order.orderId) })
+                          }
+                          className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                            report.tone === "reply"
+                              ? "border-blue-600 bg-blue-600 text-white hover:bg-blue-700"
+                              : report.tone === "open"
+                                ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                                : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
+                          }`}
+                        >
+                          <MdOutlineReportProblem className="h-4 w-4" /> {report.label}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -279,6 +322,7 @@ export default function OrderHistoryModal({
           </button>
         </div>
       </div>
+      <OrderIssueModal order={reporting} onClose={() => setReporting(null)} onChanged={refreshOrders} />
     </div>
   );
 }

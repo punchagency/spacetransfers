@@ -6,6 +6,11 @@ export interface BgRemovalResult {
   heightPx: number;
   originalWidthPx: number;
   originalHeightPx: number;
+  /**
+   * How it was removed: by colour (a plain background), or by the model
+   * (anything else). Only the first can clear background the artwork encloses.
+   */
+  method: "color" | "model";
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -515,6 +520,7 @@ export async function removeBackgroundAI(
         heightPx: trimmed.ch,
         originalWidthPx: origW,
         originalHeightPx: origH,
+        method: "color",
       };
     }
   }
@@ -565,5 +571,6 @@ export async function removeBackgroundAI(
     heightPx: trimmed.ch,
     originalWidthPx: origW,
     originalHeightPx: origH,
+    method: "model",
   };
 }

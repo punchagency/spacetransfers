@@ -14,6 +14,11 @@ export interface RasterizedPage {
   heightIn: number;
   /** The resolution it was rendered at, and stamped into the PNG. */
   dpi: number;
+  /**
+   * Set when a picture placed on the page has fewer pixels than print needs at
+   * the size it is placed: its real resolution, in DPI.
+   */
+  lowResImageDpi?: number;
 }
 
 export interface OversizePage {
@@ -81,6 +86,108 @@ export const PRINT_PIXEL_BUDGETS = [PDF_MAX_RASTER_PIXELS, 16_777_216];
 /** The highest print DPI (up to the target) whose render stays within `budget` pixels. */
 export const printDpiWithin = (widthIn: number, heightIn: number, budget: number) =>
   Math.min(PDF_RASTER_DPI, Math.floor(Math.sqrt(budget / (widthIn * heightIn))));
+
+/** What a page's drawing instructions say about the pictures placed on it. */
+export interface PageImageInfo {
+  /** The real resolution of the coarsest picture that matters, or null when there is none. */
+  imageDpi: number | null;
+  /** Whether the page also draws text or shapes, which are sharp at any size. */
+  hasVector: boolean;
+}
+
+/** A picture smaller than this share of the page is a detail, not the artwork. */
+const SIGNIFICANT_IMAGE_SHARE = 0.1;
+
+type Matrix = [number, number, number, number, number, number];
+const multiply = (m: Matrix, n: Matrix): Matrix => [
+  n[0] * m[0] + n[1] * m[2],
+  n[0] * m[1] + n[1] * m[3],
+  n[2] * m[0] + n[3] * m[2],
+  n[2] * m[1] + n[3] * m[3],
+  n[4] * m[0] + n[5] * m[2] + m[4],
+  n[4] * m[1] + n[5] * m[3] + m[5],
+];
+
+/**
+ * Reads a page's drawing instructions for the pictures placed on it.
+ *
+ * A PDF is rendered at print resolution whatever it holds, so a small photo
+ * stretched across a large page comes out with plenty of pixels and none of
+ * the detail. The page itself says how many pixels each picture has and how
+ * large it is drawn; that ratio is the picture's real resolution.
+ */
+export const analysePageImages = (
+  fnArray: ArrayLike<number>,
+  argsArray: ArrayLike<any>,
+  OPS: Record<string, number>,
+  pageWidthPt: number,
+  pageHeightPt: number,
+): PageImageInfo => {
+  const vectorOps = new Set(
+    ["fill", "eoFill", "stroke", "closeStroke", "fillStroke", "eoFillStroke", "closeFillStroke", "closeEOFillStroke",
+      "showText", "showSpacedText", "nextLineShowText", "nextLineSetSpacingShowText", "shadingFill"]
+      .map((name) => OPS[name])
+      .filter((code) => typeof code === "number"),
+  );
+  const imageOps = new Set(
+    ["paintImageXObject", "paintInlineImageXObject", "paintImageXObjectRepeat", "paintJpegXObject"]
+      .map((name) => OPS[name])
+      .filter((code) => typeof code === "number"),
+  );
+  const pageArea = Math.max(1, pageWidthPt * pageHeightPt);
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  let hasVector = false;
+  let imageDpi: number | null = null;
+
+  for (let i = 0; i < fnArray.length; i++) {
+    const fn = fnArray[i];
+    const args = argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() ?? ctm;
+    else if (fn === OPS.transform && Array.isArray(args) && args.length >= 6) ctm = multiply(ctm, args as Matrix);
+    else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      const matrix = Array.isArray(args) ? args[0] : null;
+      if (matrix && matrix.length >= 6) ctm = multiply(ctm, Array.from(matrix) as Matrix);
+    } else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() ?? ctm;
+    else if (vectorOps.has(fn)) hasVector = true;
+    else if (imageOps.has(fn)) {
+      // By id: [id, width, height]. Inline: [{ width, height }].
+      const inline = args?.[0] && typeof args[0] === "object" ? args[0] : null;
+      const widthPx = Number(inline ? inline.width : args?.[1]);
+      const heightPx = Number(inline ? inline.height : args?.[2]);
+      // A picture is drawn into a unit square; the matrix gives its placed size.
+      const widthPt = Math.hypot(ctm[0], ctm[1]);
+      const heightPt = Math.hypot(ctm[2], ctm[3]);
+      if (!(widthPx > 0) || !(heightPx > 0) || !(widthPt > 0) || !(heightPt > 0)) continue;
+      if ((widthPt * heightPt) / pageArea < SIGNIFICANT_IMAGE_SHARE) continue;
+      const dpi = Math.min(widthPx / (widthPt / 72), heightPx / (heightPt / 72));
+      if (imageDpi === null || dpi < imageDpi) imageDpi = dpi;
+    }
+  }
+  return { imageDpi, hasVector };
+};
+
+/** The page's pictures, or "nothing known" when its instructions can't be read. */
+const pageImages = async (page: PdfPage, pdfjs: Pdfjs, widthPt: number, heightPt: number): Promise<PageImageInfo> => {
+  try {
+    const ops = await page.getOperatorList();
+    return analysePageImages(ops.fnArray, ops.argsArray, pdfjs.OPS as unknown as Record<string, number>, widthPt, heightPt);
+  } catch {
+    return { imageDpi: null, hasVector: true };
+  }
+};
+
+/**
+ * The resolution to render a page at. A page that is nothing but a picture is
+ * rendered at that picture's own resolution, so the piece reports the pixels
+ * it really has. Not below the floor every upload keeps its size at.
+ */
+export const pageRenderDpi = (info: PageImageInfo): number =>
+  !info.hasVector && info.imageDpi !== null && info.imageDpi < PDF_RASTER_DPI
+    ? Math.max(PDF_MIN_RASTER_DPI, Math.round(info.imageDpi))
+    : PDF_RASTER_DPI;
 
 /** One render attempt. Null when the browser could not allocate or encode it. */
 const renderPage = async (page: PdfPage, dpi: number): Promise<Blob | null> => {
@@ -161,10 +268,13 @@ export const rasterizePdf = async (
         const widthIn = base.width / 72;
         const heightIn = base.height / 72;
 
+        const images = await pageImages(page, pdfjs, base.width, base.height);
+        const targetDpi = pageRenderDpi(images);
+
         let blob: Blob | null = null;
         let dpi = 0;
         for (const budget of PRINT_PIXEL_BUDGETS) {
-          const candidate = printDpiWithin(widthIn, heightIn, budget);
+          const candidate = Math.min(targetDpi, printDpiWithin(widthIn, heightIn, budget));
           // Too coarse to keep its size, or the same attempt that just failed.
           if (candidate < PDF_MIN_RASTER_DPI || candidate === dpi) continue;
           dpi = candidate;
@@ -191,6 +301,10 @@ export const rasterizePdf = async (
           widthIn,
           heightIn,
           dpi,
+          // A hair under the threshold is rounding, not a blurry picture.
+          ...(images.imageDpi !== null && images.imageDpi < PDF_RASTER_DPI - 10
+            ? { lowResImageDpi: Math.round(images.imageDpi) }
+            : {}),
         });
       } finally {
         page.cleanup();

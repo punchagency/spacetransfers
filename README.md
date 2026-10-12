@@ -6,15 +6,17 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 
 ## What customers can do
 
-- **Build a sheet.** Upload PNG, JPG, PDF, SVG, AI, PSD, TIFF, WebP, AVIF, HEIC, GIF or BMP. Everything is converted in the browser and trimmed to its artwork.
-- **Remove backgrounds.** A plain background of any colour is removed exactly, in the browser, by colour — including, by default, inside letters and between lines (the Clear Enclosed Background setting). Anything else goes to an in-browser AI model that cuts out the subject. See `artboard/lib/utils/bgRemover.ts`.
+- **Build a sheet.** Upload PNG, JPG, PDF, SVG, AI, PSD, TIFF, WebP, AVIF, HEIC, GIF or BMP. Everything is converted in the browser and trimmed to its artwork. A PDF page that is only a picture is rendered at that picture's real resolution, so a small photo on a large page is flagged as low resolution instead of passing at 300 DPI.
+- **Survive a bad connection.** An upload that fails on the connection is retried by itself. One that still fails stays on the sheet, outlined in red and listed by name with Retry and Remove; it is sent again automatically when the browser comes back online. The sheet is saved without it meanwhile, and can't go in the cart until it uploads. See `lib/failedUploads.ts` and `artboard/lib/utils/uploadRecovery.ts`.
+- **Check the artwork.** Images below 300 DPI are outlined in amber, and images with fades or see-through areas in orange. The top bar counts each kind in a chip of the same colour; clicking a chip steps through the affected images.
+- **Remove backgrounds.** A plain background of any colour is removed exactly, in the browser, by colour — including, by default, inside letters and between lines (a choice offered in the review window). Anything else goes to an in-browser AI model that cuts out the subject. One image is shown before and after in a review window and only changes when the customer applies it; several at once are applied directly. See `artboard/lib/utils/bgRemover.ts`.
 - **Arrange it.** Drag, resize, rotate, flip, lock, duplicate and group. Auto-nest packs the sheet as short as possible.
 - **Get warned.** Images under 300 DPI and artwork with fades or see-through areas are flagged, because DTF cannot print them as shown.
 - **Edit with AI.** Board commands such as "12 copies" or "make it 4 inches wide" run in the browser. Image edits go to the API.
 - **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery. The store opens on the sheet they last had open.
 - **Check out.** The cart holds one line per saved sheet, as it was when it was added. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
 - **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
-- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. A cancelled order shows what was refunded.
+- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. Any refund shows on the order. Report a problem on an order sends it to Space Transfers, with up to four photos, and the replies and the outcome appear there and by email.
 
 ## Stack
 

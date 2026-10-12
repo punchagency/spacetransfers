@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  DESKTOP_ONLY_INTENTS,
   INTENT_VERBS,
   LOCAL_ONLY_INTENTS,
   QUICK_ACTIONS,
   analyzePrompt,
   classifyPrompt,
+  needsDesktop,
   parseBoardCommands,
   planLocally,
   splitSequence,
@@ -240,5 +242,26 @@ describe("parseHexColor", () => {
     expect(parseHexColor("not a colour")).toBeNull();
     expect(parseHexColor("#12")).toBeNull();
     expect(parseHexColor("")).toBeNull();
+  });
+});
+
+describe("edits a phone can't run", () => {
+  it("covers background removal and resolution work, not colour or sheet changes", () => {
+    for (const intent of ["remove-bg", "upscale", "enhance", "to-sticker"] as const) {
+      expect(DESKTOP_ONLY_INTENTS.has(intent)).toBe(true);
+    }
+    expect(DESKTOP_ONLY_INTENTS.has("remove-color")).toBe(false);
+    expect(DESKTOP_ONLY_INTENTS.has("change-color")).toBe(false);
+  });
+
+  it("recognises them in what the customer types, in any step", () => {
+    expect(needsDesktop("Remove the background", splitSequence)).toBe(true);
+    expect(needsDesktop("make it red then upscale this image", splitSequence)).toBe(true);
+    expect(needsDesktop("Change the color to red", splitSequence)).toBe(false);
+  });
+
+  it("matches the quick actions that are hidden on a phone", () => {
+    const hidden = QUICK_ACTIONS.filter((a) => DESKTOP_ONLY_INTENTS.has(a.intent)).map((a) => a.label);
+    expect(hidden).toEqual(["Remove background", "Upscale", "Enhance quality", "Convert to sticker"]);
   });
 });

@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
 import ItemToolbar from "./ItemToolbar";
-import PropertiesPanel from "./PropertiesPanel";
+import PropertiesPanel, { ItemPropertyFields } from "./PropertiesPanel";
+import { useSelectedImageSlot } from "../../../../lib/selectedImageSlot";
 import { AiImagePanel } from "../ai";
 import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
-import { computeGroupDims, computeRenderCopies } from "../../lib/utils/layoutHelpers";
+import { computeGroupDims, computeRenderCopies, dpiFromPixels } from "../../lib/utils/layoutHelpers";
 import { shouldWarn, transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
 import { readImageInfo } from "../../lib/utils/imageUtils";
 import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
@@ -47,6 +48,10 @@ interface ArtboardItemProps {
    * about the item's geometry, transform or content.
    */
   isDpiHighlighted?: boolean;
+  /** Placed from the customer's file but not uploaded; outlined in red. */
+  isNotUploaded?: boolean;
+  /** Non-zero while a chip has just brought the customer to this piece; changes per request. */
+  issuePulse?: number;
   /**
    * The transparency check's verdict for this item's current image, or
    * undefined while it is still being checked (`useTransparencyVerdicts`).
@@ -75,7 +80,7 @@ interface ArtboardItemProps {
   /** Removes the background from every selected image that has one. */
   onRemoveBg: (onProgress?: (phase: string, pct: number) => void) => Promise<PixelBatchResult>;
   /** Reports the image's measured pixel width, for pieces that arrived without one. */
-  onMeasured?: (id: number, widthPx: number) => void;
+  onMeasured?: (id: number, widthPx: number, heightPx?: number, url?: string) => void;
   /** The whole selection, for the toolbar this piece shows when it is the primary. */
   selection?: SelectionSummary;
   onDragStart: (e: React.MouseEvent) => void;
@@ -107,6 +112,8 @@ function ArtboardItem({
   isPrimary,
   selection,
   isDpiHighlighted = false,
+  isNotUploaded = false,
+  issuePulse = 0,
   transparency,
   showProperties,
   onSelect,
@@ -149,6 +156,7 @@ function ArtboardItem({
   const [isRemovingBg, setIsRemovingBg] = useState(false);
   const [bgProgress, setBgProgress] = useState<{ phase: string; pct: number } | null>(null);
   const [naturalWidthPx, setNaturalWidthPx] = useState<number | null>(null);
+  const [naturalHeightPx, setNaturalHeightPx] = useState<number | null>(null);
   const [isDpiEnhancing, setIsDpiEnhancing] = useState(false);
   const [dpiProgress, setDpiProgress] = useState<string | null>(null);
   const [dpiEnhanced, setDpiEnhanced] = useState(false);
@@ -181,6 +189,7 @@ function ArtboardItem({
   useEffect(() => {
     setBgStatus('detecting');
     setNaturalWidthPx(null);
+    setNaturalHeightPx(null);
     setDpiEnhanced(false);
     setBgJustRemoved(false);
     let cancelled = false;
@@ -188,11 +197,13 @@ function ArtboardItem({
       if (cancelled) return;
       if (!info) { setBgStatus('has-bg'); return; }
       setNaturalWidthPx(info.widthPx);
+      setNaturalHeightPx(info.heightPx);
       setBgStatus(info.hasBackground ? 'has-bg' : 'no-bg');
       // A piece reopened from a saved sheet, a restored cart or a reorder has
       // no pixel count (it isn't saved), so the DPI check counted it as
       // "unknown" and flagged the whole sheet. Recorded once measured.
-      if (!item.nativeWidthPx && !item.croppedWidthPx) onMeasured?.(item.id, info.widthPx);
+      // And its real shape, every time: the DPI check needs both axes.
+      onMeasured?.(item.id, info.widthPx, info.heightPx, item.url);
     });
     return () => { cancelled = true; };
   }, [item.url]);
@@ -227,6 +238,8 @@ function ArtboardItem({
     setBgProgress({ phase: "Starting...", pct: 0 });
     try {
       const result = await onRemoveBg((phase, pct) => setBgProgress({ phase, pct }));
+      // Shown for review; whether it happened is said when it is applied.
+      if (result.reviewing) return;
       if (result.done > 0 && result.failed === 0) setBgJustRemoved(true);
       reportBatch(result, {
         done: (n) => (n === 1 ? "Background removed" : `Backgrounds removed from ${plural(n)}`),
@@ -275,8 +288,10 @@ function ArtboardItem({
     // false low-DPI warnings on rotated non-square art.
     const rotationOdd = ((Math.round(item.rotation / 90) % 2) + 2) % 2 === 1;
     const widthAxisIn = rotationOdd ? item.heightIn : item.widthIn;
+    const heightAxisIn = rotationOdd ? item.widthIn : item.heightIn;
     if (naturalWidthPx !== null && widthAxisIn > 0) {
-      return Math.round(naturalWidthPx / widthAxisIn);
+      // Both axes: a piece stretched on one side is as sharp as its weaker one.
+      return dpiFromPixels(naturalWidthPx, naturalHeightPx, widthAxisIn, heightAxisIn);
     }
     // Bridge the brief window between a url change (crop/BG-remove/upscale)
     // and the new image finishing the background load below — nativeWidthPx
@@ -286,7 +301,7 @@ function ArtboardItem({
       return Math.round(item.nativeWidthPx / widthAxisIn);
     }
     return typeof item.dpi === "number" ? item.dpi : null;
-  }, [naturalWidthPx, item.widthIn, item.heightIn, item.rotation, item.dpi, item.nativeWidthPx]);
+  }, [naturalWidthPx, naturalHeightPx, item.widthIn, item.heightIn, item.rotation, item.dpi, item.nativeWidthPx]);
 
   const isLowDpi = typeof effectiveDpi === "number" && effectiveDpi < 300;
   // No DPI could be determined at all — neither a loaded image's real pixel
@@ -445,6 +460,51 @@ function ArtboardItem({
     prevCopiesRef.current = item.copies;
   }, [item.copies]);
 
+  // The same fields, in the Settings panel, while this is the one selected image.
+  const settingsSlot = useSelectedImageSlot();
+  const settingsPortal =
+    isSelected && settingsSlot && (selection?.count ?? 1) === 1
+      ? createPortal(
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <div className="truncate border-b border-gray-200 bg-gray-50 px-3 py-2 text-[12px] font-semibold text-gray-900" title={item.name || `Item #${item.id}`}>
+              {item.name || `Item #${item.id}`}
+            </div>
+            {/* Why this image is outlined, in the outline's own colour. */}
+            {fadeMessage && (
+              <div className="border-b border-orange-200 bg-orange-50 px-3 py-2">
+                <p className="text-[11px] font-semibold leading-snug text-orange-700">
+                  {fadeMessage.title}
+                  {fadeConfidence}
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-orange-900">{fadeMessage.body}</p>
+              </div>
+            )}
+            {needsDpiAttention && (
+              <div className="border-b border-amber-200 bg-amber-50 px-3 py-2">
+                <p className="text-[11px] font-semibold leading-snug text-amber-800">
+                  {isDpiUnknown ? "Resolution couldn't be read" : `${effectiveDpi} DPI at this size`}
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-amber-900">
+                  Print needs 300 DPI. Use DPI+ in the image's toolbar, or make it smaller.
+                </p>
+              </div>
+            )}
+            <ItemPropertyFields
+              item={item}
+              showAutoCrop={false}
+              onToggleAutoCrop={onToggleAutoCrop}
+              onSetCopies={onSetCopies}
+              onToggleLinked={onToggleLinked}
+              onSetWidthIn={onSetWidthIn}
+              onSetHeightIn={onSetHeightIn}
+              onSetPosX={onSetPosX}
+              onSetPosY={onSetPosY}
+            />
+          </div>,
+          settingsSlot,
+        )
+      : null;
+
   const propertiesPortal =
     isSelected && showProperties && !isDragging
       ? (() => {
@@ -556,6 +616,8 @@ function ArtboardItem({
                 : undefined
             }
             aiActive={aiOpen}
+            autoCrop={item.autoCrop !== false}
+            onToggleAutoCrop={onToggleAutoCrop}
             selection={selection}
           />,
           portal,
@@ -581,6 +643,7 @@ function ArtboardItem({
         />
       ) : null}
       {propertiesPortal}
+      {settingsPortal}
       {/* Group Layout for Copies — virtual rows, absolute positioned */}
       <div
         className="relative"
@@ -669,7 +732,10 @@ function ArtboardItem({
                 onLoad={(e) => {
                   e.currentTarget.dataset.loaded = "1";
                 }}
-                className={`object-contain touch-none text-transparent [&:not([data-loaded])]:bg-slate-300/50 [&:not([data-loaded])]:animate-pulse ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
+                /* Filled, not letterboxed: the print file stretches an image
+                   to its box, so a piece sized on one side only is shown the
+                   way it will print. In proportion the two are identical. */
+                className={`object-fill touch-none text-transparent [&:not([data-loaded])]:bg-slate-300/50 [&:not([data-loaded])]:animate-pulse ${isLifted ? "cursor-grabbing" : "cursor-grab"} rounded-sm ${
                   isSelected && renderCopies > 1
                     ? `border ${isTooSmall ? "border-red-500" : hasFade ? "border-orange-500" : needsDpiAttention ? "border-[#EDAE00]" : "border-blue-500"}`
                     : ""
@@ -771,82 +837,37 @@ function ArtboardItem({
             />
           </div>
         )}
-        {(isTooSmall || hasFade) && (
+        {isTooSmall && (
           <div className="absolute bottom-1 left-1 z-30 flex gap-1 pointer-events-auto group/warn cursor-default">
-            {isTooSmall && (
-              <span className="w-4 h-4 rounded-full bg-red-500 border border-white flex items-center justify-center text-white text-[9px] font-bold leading-none select-none">
-                !
-              </span>
-            )}
-            {hasFade && (
-              <span className="w-4 h-4 rounded-full bg-orange-500 border border-white flex items-center justify-center leading-none select-none">
-                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                  <line x1="12" y1="9" x2="12" y2="13"/>
-                  <line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-              </span>
-            )}
+            <span className="w-4 h-4 rounded-full bg-red-500 border border-white flex items-center justify-center text-white text-[9px] font-bold leading-none select-none">
+              !
+            </span>
             <div className="absolute bottom-full left-0 mb-1.5 hidden group-hover/warn:flex flex-col gap-1 min-w-[220px] max-w-[280px] rounded-xl border border-gray-200 bg-white shadow-lg px-3 py-2.5 pointer-events-none z-50">
-              {isTooSmall && (
-                <p className="text-[11px] leading-snug text-red-600 font-medium">
-                  Items smaller than 2pt may not print properly.
-                </p>
-              )}
-              {fadeMessage && (
-                <>
-                  <p className="text-[11px] leading-snug text-orange-600 font-semibold">
-                    {fadeMessage.title}
-                    {fadeConfidence}
-                  </p>
-                  <p className="text-[11px] leading-snug text-gray-700">{fadeMessage.body}</p>
-                </>
-              )}
+              <p className="text-[11px] leading-snug text-red-600 font-medium">
+                Items smaller than 2pt may not print properly.
+              </p>
             </div>
           </div>
         )}
       </div>
       {/*
-        DPI highlight.
+        Resolution flag.
 
-        Drawn on the same `polygonPathD` the selection outline uses, so it hugs
-        the occupied cells of a copy-grid exactly rather than boxing the whole
-        rectangle — on an item whose last row is partial, a plain box would
-        outline empty sheet.
-
-        Two strokes: a wide translucent halo that carries at a distance on a
-        zoomed-out sheet, and a crisp line on top that stays legible up close.
-        Both in `#EDAE00`, the amber this codebase already uses for DPI
-        attention, so the highlight reads as "more of what the chip said"
-        rather than a new signal to learn.
-
-        Rendered *before* the selection outline so selecting a highlighted item
-        still shows its normal blue, with the amber halo around it — the two
-        states stack instead of one hiding the other.
+        Always drawn, like the transparency flag below: artwork below print
+        resolution has to be findable on a busy sheet at a glance, including
+        zoomed out. Drawn on the same `polygonPathD` the selection outline
+        uses, so it hugs the occupied cells of a copy-grid exactly. In
+        `#EDAE00`, the amber of the DPI chip, so the two read as one signal.
       */}
       {isDpiHighlighted && (
         <svg
-          className="dpi-highlight-outline absolute top-0 left-0 pointer-events-none"
+          className="absolute top-0 left-0 pointer-events-none"
           style={{ overflow: "visible" }}
           width={groupWidthPx}
           height={totalGroupHeightPx}
           aria-hidden
         >
-          <path
-            d={polygonPathD}
-            fill="none"
-            stroke="#EDAE00"
-            strokeOpacity={0.28}
-            strokeWidth={14}
-            strokeLinejoin="round"
-          />
-          <path
-            d={polygonPathD}
-            fill="none"
-            stroke="#EDAE00"
-            strokeWidth={3}
-            strokeLinejoin="round"
-          />
+          <path d={polygonPathD} fill="none" stroke="#EDAE00" strokeWidth={3} strokeLinejoin="round" />
         </svg>
       )}
       {/*
@@ -866,6 +887,46 @@ function ArtboardItem({
           aria-hidden
         >
           <path d={polygonPathD} fill="none" stroke="#F97316" strokeWidth={3} strokeLinejoin="round" />
+        </svg>
+      )}
+      {/*
+        Upload flag. The most pressing of the three, so it is drawn last and
+        wins where an image carries more than one: until it uploads, the image
+        cannot be saved or ordered at all.
+      */}
+      {isNotUploaded && (
+        <svg
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path d={polygonPathD} fill="none" stroke="#DC2626" strokeWidth={3} strokeLinejoin="round" strokeDasharray="8 5" />
+        </svg>
+      )}
+      {/*
+        Arrival pulse: a wide halo, for a few beats, on the piece a chip has
+        just brought the customer to. Keyed to the request so stepping back to
+        the same piece pulses it again.
+      */}
+      {issuePulse > 0 && (hasFade || isDpiHighlighted || isNotUploaded) && (
+        <svg
+          key={issuePulse}
+          className="dpi-highlight-outline absolute top-0 left-0 pointer-events-none"
+          style={{ overflow: "visible" }}
+          width={groupWidthPx}
+          height={totalGroupHeightPx}
+          aria-hidden
+        >
+          <path
+            d={polygonPathD}
+            fill="none"
+            stroke={isNotUploaded ? "#DC2626" : hasFade ? "#F97316" : "#EDAE00"}
+            strokeOpacity={0.3}
+            strokeWidth={16}
+            strokeLinejoin="round"
+          />
         </svg>
       )}
       {(isSelected || isHovered) && (

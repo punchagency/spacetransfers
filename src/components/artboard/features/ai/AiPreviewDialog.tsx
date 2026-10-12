@@ -17,13 +17,28 @@ import type { AiPreview } from "../../lib/hooks/useAiEdit";
  * useful size.
  */
 
+/** A yes/no choice about how the edit is made, changed without leaving the review. */
+export interface ReviewOption {
+  label: string;
+  hint: string;
+  checked: boolean;
+  /** Set, with the reason in `hint`, when the choice has no effect on this image. */
+  disabled?: boolean;
+  /** Re-runs the edit the other way; the dialog shows the new result when it lands. */
+  onChange: (checked: boolean) => void;
+}
+
 interface AiPreviewDialogProps {
-  preview: AiPreview;
+  /** What to compare. An AI edit passes its whole preview; any other edit passes these fields. */
+  preview: Pick<AiPreview, "beforeUrl" | "afterUrl" | "prompt" | "steps" | "result">;
   onApply: () => void;
   onDiscard: () => void;
-  /** Re-runs the same prompt for a different sample. */
-  onRetry: () => void;
+  /** Re-runs the same prompt for a different sample. Left out for an edit with one right answer. */
+  onRetry?: () => void;
   isRunning: boolean;
+  /** Shown as plain text under the title, in place of the quoted prompt. */
+  caption?: string;
+  option?: ReviewOption;
 }
 
 export default function AiPreviewDialog({
@@ -32,6 +47,8 @@ export default function AiPreviewDialog({
   onDiscard,
   onRetry,
   isRunning,
+  caption,
+  option,
 }: AiPreviewDialogProps) {
   const [entered, setEntered] = useState(false);
 
@@ -96,8 +113,8 @@ export default function AiPreviewDialog({
             <div className="text-[13px] font-semibold text-gray-900">Review the edit</div>
             {/* The prompt is echoed because the panel behind is covered — without
                 it there is nothing on screen saying what was asked for. */}
-            <div className="truncate text-[11px] text-gray-400" title={prompt}>
-              “{prompt}”
+            <div className="truncate text-[11px] text-gray-400" title={caption ?? prompt}>
+              {caption ?? `“${prompt}”`}
             </div>
           </div>
           <button
@@ -116,6 +133,31 @@ export default function AiPreviewDialog({
           <p className="mt-2 text-center text-[10.5px] text-gray-400">
             Drag or click to compare · ← → to nudge
           </p>
+
+          {/* A choice about how the edit is made, here where its effect can be
+              seen — flipping it re-runs the edit and the comparison updates. */}
+          {option && (
+            <label
+              className={`mt-2 flex items-start gap-2.5 rounded-xl border border-gray-200 px-3 py-2.5 ${
+                option.disabled || isRunning ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-gray-50"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={option.checked}
+                disabled={option.disabled || isRunning}
+                onChange={(e) => option.onChange(e.target.checked)}
+                className="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-gray-300"
+              />
+              <span className="min-w-0">
+                <span className="block text-[12px] font-semibold text-gray-900">
+                  {option.label}
+                  {isRunning && <span className="ml-2 font-normal text-gray-400">Updating…</span>}
+                </span>
+                <span className="block text-[11px] leading-snug text-gray-500">{option.hint}</span>
+              </span>
+            </label>
+          )}
 
           {/* Steps, when there was more than one. A chained edit that came back
               wrong is usually wrong at one specific step, and this is what tells
@@ -162,14 +204,16 @@ export default function AiPreviewDialog({
         {/* Actions. Apply is primary and on the right, matching the submit button
             in the panel this replaces. */}
         <div className="mt-3 flex items-center gap-2 border-t border-gray-100 px-4 py-3">
-          <button
-            onClick={onRetry}
-            disabled={isRunning}
-            className="flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 px-3 text-[12px] font-semibold text-gray-600 transition hover:bg-gray-50 hover:text-gray-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <MdRefresh className={`h-4 w-4 ${isRunning ? "animate-spin" : ""}`} />
-            Try again
-          </button>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              disabled={isRunning}
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 px-3 text-[12px] font-semibold text-gray-600 transition hover:bg-gray-50 hover:text-gray-900 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <MdRefresh className={`h-4 w-4 ${isRunning ? "animate-spin" : ""}`} />
+              Try again
+            </button>
+          )}
           <div className="flex-1" />
           <button
             onClick={onDiscard}

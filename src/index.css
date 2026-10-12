@@ -388,15 +388,25 @@ button,
   }
 }
 
+@keyframes issueArrivalFade {
+  to {
+    opacity: 0;
+  }
+}
+
+/* The halo on a piece a chip has just brought the customer to: three beats,
+   then gone. The piece's own outline stays. */
 .dpi-highlight-outline {
-  animation: dpiHighlightPulse 1.1s ease-in-out 3;
+  animation:
+    dpiHighlightPulse 1.1s ease-in-out 3,
+    issueArrivalFade 0.4s ease-out 3.3s forwards;
 }
 
 /* Same convention as .animate-pulse-glow: the highlight still appears and is
    still fully legible, it just arrives without the pulse. */
 @media (prefers-reduced-motion: reduce) {
   .dpi-highlight-outline {
-    animation: none;
+    animation: issueArrivalFade 0.01s linear 3s forwards;
   }
 }
 
@@ -475,4 +485,10 @@ button,
   .queue-badge-out {
     display: none;
   }
+}
+
+/* The Settings panel's hint for "Selected Image" shows only while no image has
+   put its settings in the slot beside it. */
+.selected-image-slot:not(:empty) + .selected-image-hint {
+  display: none;
 }

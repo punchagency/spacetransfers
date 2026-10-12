@@ -377,6 +377,13 @@ export const convertUpload = async (file: File, options: ConvertOptions = {}): P
           const one = result.tooLarge.length === 1;
           notices.push(`${one ? "Page" : "Pages"} ${numbers} of “${file.name}” ${one ? "was" : "were"} skipped — too large to convert at print resolution.`);
         }
+        for (const page of result.pages) {
+          if (!page.lowResImageDpi) continue;
+          const where = result.totalPages > 1 ? `Page ${page.pageNumber} of “${file.name}”` : `“${file.name}”`;
+          notices.push(
+            `${where} holds a picture at about ${page.lowResImageDpi} DPI at this size — print needs 300. It will print soft unless you make it smaller or use DPI+.`,
+          );
+        }
         return { files: result.pages.map((p) => p.file), notices };
       } catch (err) {
         if (err instanceof PdfRasterizeError) throw new UploadConvertError(err.message);
