@@ -16,7 +16,7 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 - **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery. The store opens on the sheet they last had open.
 - **Check out.** The cart holds one line per saved sheet, as it was when it was added. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
 - **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
-- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. A cancelled order shows what was refunded.
+- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. Any refund shows on the order. Report a problem on an order sends it to Space Transfers, with up to four photos, and the replies and the outcome appear there and by email.
 
 ## Stack
 

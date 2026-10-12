@@ -261,11 +261,15 @@ export default function OrderDetailsModal({
                 <MdCreditCard className="h-4 w-4 text-blue-600" /> Payment
               </div>
               <p className="text-gray-700 font-medium">
-                {order.payment?.method === "card" ? "Card" : order.payment?.method || "—"}
-                {order.payment?.cardBrand && order.payment?.cardLast4
-                  ? ` · ${String(order.payment.cardBrand).toUpperCase()} ending in ${order.payment.cardLast4}`
-                  : ""}
+                {order.reprintOf
+                  ? `No charge. Free reprint of ${order.reprintOf}.`
+                  : `${order.payment?.method === "card" ? "Card" : order.payment?.method || "—"}${
+                      order.payment?.cardBrand && order.payment?.cardLast4
+                        ? ` · ${String(order.payment.cardBrand).toUpperCase()} ending in ${order.payment.cardLast4}`
+                        : ""
+                    }`}
               </p>
+              {order.refundNote && order.status !== "Cancelled" && <p className="mt-1 text-gray-500">{order.refundNote}</p>}
             </div>
           </div>
 
