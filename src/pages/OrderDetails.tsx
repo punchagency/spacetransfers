@@ -10,6 +10,7 @@ import { OrderDetails } from "../components/print/job-details/OrderDetails";
 import { PrintSpecifications } from "../components/print/job-details/PrintSpecifications";
 import { ProductionNotes } from "../components/print/job-details/ProductionNotes";
 import { StatusTimeline } from "../components/print/job-details/StatusTimeline";
+import { JobIssues } from "../components/print/job-details/JobIssues";
 import { DownloadAssetsModal } from "../components/print/DownloadAssetsModal";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { DriveSaveModal } from "../components/drive/DriveSaveModal";
@@ -495,6 +496,7 @@ export default function OrderDetailsPage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
           <div className="lg:col-span-2 space-y-6">
+            {overview && <JobIssues orderId={overview.id} />}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
                 {sheets.length > 1 ? `Gangsheet Preview · ${sheets.length} sheets` : "Gangsheet Preview"}

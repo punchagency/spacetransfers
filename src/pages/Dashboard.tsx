@@ -11,6 +11,9 @@ import { StatusBadge } from "../components/common/StatusBadge";
 import { DeadlineCountdown } from "../components/common/DeadlineCountdown";
 import type { DashboardJob } from "../types/dashboard";
 import { apiFetch } from "../utils/api";
+import { readJobIssueFlag } from "../utils/jobIssues";
+import { JobIssueTag } from "../components/common/JobIssueTag";
+import { OpenIssuesBanner } from "../components/common/OpenIssuesBanner";
 import { useProfileStore } from "../state/ProfileStore";
 import toast from "react-hot-toast";
 
@@ -148,6 +151,7 @@ const Dashboard = () => {
         <span className="inline-flex flex-wrap items-center gap-1.5">
           <StatusBadge status={job.status} />
           {job.isUrgent && <StatusBadge status="Urgent" />}
+          <JobIssueTag flag={readJobIssueFlag(job.issue)} />
         </span>
       ),
     },
@@ -217,6 +221,8 @@ const Dashboard = () => {
         </button>
         </div>
       </div>
+
+      <OpenIssuesBanner />
 
       {/* Counts the true total, not the five the list is capped to. */}
       {urgentTotal > 0 && (
