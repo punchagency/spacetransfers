@@ -4,15 +4,36 @@ import { HiOutlineEye, HiOutlineEyeOff } from "react-icons/hi";
 import { apiFetch } from "../../utils/api";
 import { setAuth } from "../../utils/auth";
 import toast from "react-hot-toast";
+import { needsSecondStep, type SecondStepChallenge } from "../../utils/passkeys";
+import { SecondStep } from "../security/SecondStep";
 
 export const AuthForm = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [secondStep, setSecondStep] = useState<SecondStepChallenge | null>(null);
 
   const navigate = useNavigate();
   const location = useLocation();
+
+  const finishSignIn = (response: any) => {
+    if (response?.user?.role !== "ADMIN") {
+      toast.error("Access denied. Admin account required.");
+      setSecondStep(null);
+      return;
+    }
+    setAuth(response.token, response.user);
+    if (typeof response.recoveryCodesLeft === "number") {
+      toast(`Signed in with a recovery code. ${response.recoveryCodesLeft} left.`, { duration: 8000 });
+    } else if (!response.user.mustEnrollPasskey) {
+      toast.success("Welcome back, Admin!");
+    }
+    // Return the operator to whatever the guard intercepted, so a deep link
+    // survives the login round trip.
+    const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
+    navigate(from || "/dashboard", { replace: true });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,17 +53,12 @@ export const AuthForm = () => {
         body: JSON.stringify({ email: email.trim(), password, role: "ADMIN" }),
       });
 
-      if (response?.user?.role !== "ADMIN") {
-        throw new Error("Access denied. Admin account required.");
+      // The password was right; an account with a passkey has one more step.
+      if (needsSecondStep(response)) {
+        setSecondStep(response);
+        return;
       }
-
-      setAuth(response.token, response.user);
-      toast.success("Welcome back, Admin!");
-
-      // Return the operator to whatever the guard intercepted, so a deep link
-      // survives the login round trip.
-      const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
-      navigate(from || "/dashboard", { replace: true });
+      finishSignIn(response);
     } catch (error: any) {
       toast.error(error.message || "Authentication failed");
     } finally {
@@ -65,14 +81,25 @@ export const AuthForm = () => {
           </div>
         </div>
 
-        <div className="text-center space-y-2">
+        {secondStep && (
+          <SecondStep
+            challenge={secondStep}
+            onSignedIn={finishSignIn}
+            onCancel={() => {
+              setSecondStep(null);
+              setPassword("");
+            }}
+          />
+        )}
+
+        <div className={`text-center space-y-2 ${secondStep ? "hidden" : ""}`}>
           <h2 className="text-3xl font-bold text-slate-900">Welcome Back</h2>
           <p className="text-slate-500 text-sm">
             Sign in to access your Admin Portal dashboard
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5 text-left">
+        <form onSubmit={handleSubmit} className={`space-y-5 text-left ${secondStep ? "hidden" : ""}`}>
           <div className="space-y-5">
             <div className="space-y-1.5">
               <label

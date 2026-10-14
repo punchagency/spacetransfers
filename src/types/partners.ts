@@ -48,6 +48,8 @@ export interface PartnerDetailsData {
     postalCode: string | null;
     country: string | null;
   } | null;
+  /** How many passkeys guard the partner's account. */
+  passkeys?: number;
   statusHistory?: Array<{
     from: string | null;
     to: string;

@@ -4,6 +4,7 @@ import { PartnerHeader } from '../components/partners/PartnerHeader';
 import { PartnerOverview } from '../components/partners/PartnerOverview';
 import { PartnerOrders } from '../components/partners/PartnerOrders';
 import { PartnerSettings } from '../components/partners/PartnerSettings';
+import { ResetPasskeys } from '../components/security/ResetPasskeys';
 import { useParams } from 'react-router-dom';
 import { apiFetch } from '../utils/api';
 import { useNotificationsStore } from '../state/NotificationsStore';
@@ -81,6 +82,7 @@ export const PartnerDetails = () => {
                     address: p.address ?? null,
                     businessType: p.businessType ?? null,
                     statusHistory: Array.isArray(p.statusHistory) ? p.statusHistory : [],
+                    passkeys: Number(p.passkeys || 0),
                 });
 
                 setSettings(settingsRes);
@@ -198,6 +200,21 @@ export const PartnerDetails = () => {
                                     )}
                                     {activeTab === 'Orders' && (
                                         <PartnerOrders partnerId={partner.id} orders={orders} onUpdated={setOrders} />
+                                    )}
+                                    {activeTab === 'Settings' && (partner.passkeys ?? 0) > 0 && (
+                                        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-4">
+                                            <div>
+                                                <p className="text-sm font-semibold text-gray-900">Sign-in security</p>
+                                                <p className="text-sm text-gray-500">
+                                                    This partner signs in with a passkey as a second step ({partner.passkeys} on the account).
+                                                </p>
+                                            </div>
+                                            <ResetPasskeys
+                                                userId={partner.id}
+                                                accountLabel={partner.name}
+                                                onReset={() => setPartner((prev) => (prev ? { ...prev, passkeys: 0 } : prev))}
+                                            />
+                                        </div>
                                     )}
                                     {activeTab === 'Settings' && (
                                         <PartnerSettings

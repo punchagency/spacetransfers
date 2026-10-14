@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import toast from "react-hot-toast";
 import { apiFetch } from "../../utils/api";
+import { getUser, setAuth } from "../../utils/auth";
+import { PasskeyManager } from "../security/PasskeyManager";
+import { AdminPasskeyList } from "../security/AdminPasskeyList";
 
 export const ProfileSecurity = () => {
   const [loading, setLoading] = useState(true);
@@ -62,14 +65,17 @@ export const ProfileSecurity = () => {
     if (!canUpdatePassword) return;
     setUpdatingPassword(true);
     try {
-      await apiFetch("/admin/profile/password", {
+      const res = await apiFetch("/admin/profile/password", {
         method: "PATCH",
         body: JSON.stringify({
           currentPassword,
           newPassword,
         }),
       });
-      toast.success("Password updated");
+      // Changing it signs every other device out; this one carries on with a new session.
+      const me = getUser();
+      if (res?.token && me) setAuth(res.token, me);
+      toast.success("Password updated. Other devices have been signed out.");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -89,6 +95,14 @@ export const ProfileSecurity = () => {
         <p className="text-sm text-gray-500 mt-1">
           Manage your account security settings.
         </p>
+      </div>
+
+      <div className="mb-10">
+        <PasskeyManager account={String(getUser()?.email || "")} />
+      </div>
+
+      <div className="mb-10">
+        <AdminPasskeyList />
       </div>
 
       {/* Change Password */}
