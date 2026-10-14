@@ -1,4 +1,5 @@
 import { apiFetch } from "../../../../lib/utils/api";
+import { getToken } from "../../../../lib/utils/auth";
 import { INTENT_VERBS, analyzePrompt, classifyPrompt } from "./intents";
 import type { AiIntentId } from "./types";
 
@@ -140,6 +141,8 @@ export const planEdit = async (
   if (local.reply || local.clarification) return local;
 
   if (plannerIsFresh() && !plannerAvailable!.value) return local;
+  // The planner runs on our servers for signed-in customers; a guest gets the local reading.
+  if (!getToken()) return local;
 
   try {
     const response = await apiFetch("/customer/assets/ai-edit/plan", {

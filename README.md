@@ -73,3 +73,7 @@ src/
 - **Artwork is uploaded, never embedded.** Sheets and orders hold links to stored images. A sheet whose artwork has not finished uploading cannot be saved or ordered.
 - **Images must load with CORS.** The editor reads pixels for cropping, DPI and transparency checks, so the storage bucket needs a CORS policy for this origin (see the API's `.env.example`).
 - **The store is for customers only.** Partner and admin accounts are signed out here.
+
+## Security
+
+Boosting resolution and AI edits need an account; a guest who reaches for one is shown sign-in. Customers can add a passkey as a second sign-in step in Account Settings. The headers and content security policy for production are in `vercel.json`; the store's policy allows `blob:` and `unsafe-eval` scripts because the in-browser background remover needs them.

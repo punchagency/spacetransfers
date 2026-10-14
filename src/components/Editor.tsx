@@ -1,4 +1,5 @@
 import { failedUploads, imageCount } from "../lib/failedUploads";
+import { REQUIRE_ACCOUNT_EVENT } from "../lib/requireAccount";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { ErrorBoundary } from "./common/ErrorBoundary";
 import toast from "react-hot-toast";
@@ -197,6 +198,17 @@ export default function Editor() {
    * until the next sign-in or reload, and the saved cart is left untouched.
    */
   const isCustomer = isLoggedIn && Boolean(user?.id) && user?.role === "CUSTOMER";
+
+  // A guest reached for a tool that needs an account: open sign-in.
+  useEffect(() => {
+    const open = () => {
+      setAuthView("login");
+      setIsSubAccountCreation(false);
+      setShowAuthModal(true);
+    };
+    window.addEventListener(REQUIRE_ACCOUNT_EVENT, open);
+    return () => window.removeEventListener(REQUIRE_ACCOUNT_EVENT, open);
+  }, []);
   useEffect(() => {
     if (!isCustomer) {
       setCartLoadedFor(null);

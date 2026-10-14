@@ -107,7 +107,9 @@ async function apiFetchOnce(endpoint: string, options: ApiFetchOptions) {
     const isAuthAttempt =
       endpoint.startsWith("/auth/login") ||
       endpoint.startsWith("/auth/register") ||
-      endpoint.startsWith("/auth/google");
+      endpoint.startsWith("/auth/google") ||
+      // The passkey step of sign-in: a refused passkey or code, not a dead session.
+      endpoint.startsWith("/auth/2fa");
 
     if (response.status === 401 && !isAuthAttempt) {
       clearAuth();

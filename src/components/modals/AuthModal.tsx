@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
 import { setToken } from "../../lib/utils/auth";
+import { needsSecondStep, type SecondStepChallenge } from "../../lib/utils/passkeys";
+import { SecondStep } from "../security/SecondStep";
 import LegalAcceptance from "./LegalAcceptance";
 import LegalDocumentModal from "./LegalDocumentModal";
 import { buildLegalAcceptancePayload } from "../../lib/legal/documents";
@@ -59,6 +61,7 @@ export default function AuthModal({
    */
   const [confirmPassword, setConfirmPassword] = useState("");
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
+  const [secondStep, setSecondStep] = useState<SecondStepChallenge | null>(null);
 
   // Legal acknowledgements. Never pre-selected, and reset whenever the user
   // leaves the register view so a stale tick can't carry across.
@@ -149,6 +152,11 @@ export default function AuthModal({
             : {}),
         }),
       });
+      // An account with a passkey has one more step, however it signed in.
+      if (needsSecondStep(result)) {
+        setSecondStep(result);
+        return;
+      }
       if (!isCustomerAccount(result.user)) {
         setError(WRONG_APP_MESSAGE);
         return;
@@ -350,6 +358,11 @@ export default function AuthModal({
         return;
       }
 
+      if (needsSecondStep(response)) {
+        setSecondStep(response);
+        return;
+      }
+
       if (!isCustomerAccount(response.user)) {
         setError(WRONG_APP_MESSAGE);
         return;
@@ -395,6 +408,32 @@ export default function AuthModal({
    * be, with nothing explaining the gap.
    */
   const showGoogleOption = mode === "auth" && !isSubAccountCreation && Boolean(GOOGLE_CLIENT_ID);
+
+  const finishSecondStep = (result: any) => {
+    setSecondStep(null);
+    if (!isCustomerAccount(result.user)) {
+      setError(WRONG_APP_MESSAGE);
+      return;
+    }
+    if (result.token) setToken(result.token);
+    if (typeof result.recoveryCodesLeft === "number") {
+      toast(`Signed in with a recovery code. ${result.recoveryCodesLeft} left.`, { duration: 8000 });
+    } else {
+      toast.success("Welcome back!");
+    }
+    onAuthSuccess(result.user);
+    onClose();
+  };
+
+  if (secondStep) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs p-4">
+        <div role="dialog" aria-modal="true" aria-label="Confirm it's you" className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+          <SecondStep challenge={secondStep} onSignedIn={finishSecondStep} onCancel={() => setSecondStep(null)} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

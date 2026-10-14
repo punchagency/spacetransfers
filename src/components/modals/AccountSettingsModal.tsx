@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PasskeyManager } from "../security/PasskeyManager";
 import { MdClose, MdLogout, MdPersonAddAlt } from "react-icons/md";
 import { BsBoxSeam } from "react-icons/bs";
 import { apiFetch } from "../../lib/utils/api";
@@ -327,6 +328,13 @@ export default function AccountSettingsModal({
             </div>
           )}
         </div>
+
+        {/* Sign-in security */}
+        {user?.email && (
+          <div className="mt-5 border-t border-gray-100 px-5 pt-5">
+            <PasskeyManager account={String(user.email)} hasPassword={!user?.isGoogleAccount} />
+          </div>
+        )}
 
         {/* Order History */}
         <div className="mt-4 px-10 ">

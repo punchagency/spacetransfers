@@ -1,4 +1,5 @@
 import { postAssetRef } from "../../../../lib/utils/payloadImages";
+import { requireAccount } from "../../../../lib/requireAccount";
 
 export interface UpscaleResult {
   upscaledUrl: string;
@@ -19,6 +20,7 @@ export const upscaleImageAI = async (
 ): Promise<UpscaleResult> => {
   // Sends a reference, not the image — an upscale is usually requested on an
   // already-edited (data: URL) image, which is exactly the case that 413s.
+  requireAccount("boost resolution");
   const result = await postAssetRef("/customer/assets/upscale", { url, scale }, { timeoutMs: 90_000 });
   if (!result?.upscaledUrl) {
     throw new Error("Upscaling failed — server returned no URL");

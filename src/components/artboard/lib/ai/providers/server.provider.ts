@@ -1,4 +1,5 @@
 import { apiFetch } from "../../../../../lib/utils/api";
+import { requireAccount } from "../../../../../lib/requireAccount";
 import { postAssetRef } from "../../../../../lib/utils/payloadImages";
 import type { AiEditProvider, AiEditRequest, AiEditResult } from "../types";
 import { AiEditAbortedError } from "../types";
@@ -96,6 +97,7 @@ export const serverProvider: AiEditProvider = {
       // Chained AI edits operate on the previous result, which is a data: URL
       // held in state — so this is the endpoint most likely to be handed a full
       // image. `postAssetRef` uploads it once and sends the reference.
+      requireAccount("use AI edits");
       const result = await postAssetRef(
         "/customer/assets/ai-edit",
         { url: imageUrl, prompt, intent, seed },
