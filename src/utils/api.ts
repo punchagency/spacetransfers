@@ -78,7 +78,8 @@ async function apiFetchWithin(endpoint: string, options: RequestInit, timedOut: 
     // dead session — there is no session yet. Clearing storage would be
     // meaningless, and reporting "invalid or expired token" to someone who just
     // mistyped their password explains nothing they can act on.
-    if (response.status === 401 && !endpoint.startsWith("/auth/login")) {
+    // The passkey step of sign-in is likewise a rejected credential, not a dead session.
+    if (response.status === 401 && !endpoint.startsWith("/auth/login") && !endpoint.startsWith("/auth/2fa")) {
       clearAuth();
       throw new Error(data?.message || "Your session has expired. Please sign in again.");
     }

@@ -74,3 +74,7 @@ Every move is forward-only and asks for confirmation. Cancel Job hands the job b
 - **An order can hold several sheets.** The job page has a sheet switcher, and each sheet is exported and printed separately. Files are named `…_sheet1of2.png`.
 - **Print files** are transparent PNGs at 300 DPI. Very long sheets download as a zip of parts.
 - **Earnings** become payable when a job ships. Each Friday payable jobs are put forward as a payout, which Space Transfers reviews and pays; nothing is paid automatically.
+
+## Security
+
+Partners can add a passkey as a second sign-in step in Settings. A suspended account is signed out on its next request. The headers and content security policy for production are in `vercel.json`.

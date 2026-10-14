@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import SettingsHeader from "../components/settings/SettingsHeader";
+import { PasskeyManager } from "../components/security/PasskeyManager";
+import { getUser } from "../utils/auth";
 import NotificationsSection from "../components/settings/NotificationsSection";
 import PayoutSettingsSection from "../components/settings/PayoutSettingsSection";
 import { apiFetch } from "../utils/api";
@@ -68,6 +70,10 @@ const Settings = () => {
                 initialPrefs={settingsData?.notifications?.email ?? null}
               />
             )}
+          </div>
+
+          <div id="security" className="rounded-2xl border border-gray-200 bg-white p-5 sm:p-6">
+            <PasskeyManager account={String(getUser()?.email || "")} />
           </div>
 
           <div id="payout-settings">

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaCheck } from "react-icons/fa";
 import { setAuth } from "../../utils/auth";
+import { needsSecondStep, type SecondStepChallenge } from "../../utils/passkeys";
+import { SecondStep } from "../security/SecondStep";
 import { isValidPhone } from "../../utils/validators";
 import { HiOutlineLocationMarker } from "react-icons/hi";
 import {
@@ -209,6 +211,27 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
     }
   };
 
+  const [secondStep, setSecondStep] = useState<SecondStepChallenge | null>(null);
+
+  const finishSignIn = (response: any) => {
+    if (response?.user?.role !== "PRINTER") {
+      toast.error("Access denied. Printer account required.");
+      setSecondStep(null);
+      return;
+    }
+    // setAuth persists the session AND notifies the route guard, so the
+    // protected area unlocks without any onLogin prop plumbing.
+    setAuth(response.token, response.user);
+    if (typeof response.recoveryCodesLeft === "number") {
+      toast(`Signed in with a recovery code. ${response.recoveryCodesLeft} left.`, { duration: 8000 });
+    } else {
+      toast.success("Welcome back!");
+    }
+    // Return the user to the page they originally asked for (captured by
+    // ProtectedRoute), falling back to the dashboard on a direct login.
+    navigate(redirectTo, { replace: true });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -220,16 +243,12 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           // hold a partner, a customer and an admin account independently.
           body: JSON.stringify({ email, password, role: "PRINTER" }),
         });
-        if (response.user.role !== "PRINTER") {
-          throw new Error("Access denied. Printer account required.");
+        // The password was right; an account with a passkey has one more step.
+        if (needsSecondStep(response)) {
+          setSecondStep(response);
+          return;
         }
-        // setAuth persists the session AND notifies the route guard, so the
-        // protected area unlocks without any onLogin prop plumbing.
-        setAuth(response.token, response.user);
-        toast.success("Welcome back!");
-        // Return the user to the page they originally asked for (captured by
-        // ProtectedRoute), falling back to the dashboard on a direct login.
-        navigate(redirectTo, { replace: true });
+        finishSignIn(response);
       } else {
         if (!fullName || !companyName || !email || !password || !phone || !street || !city || !stateProv || !postalCode || !country) {
           toast.error("Please fill in all fields");
@@ -352,8 +371,21 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           </button>
         </div>
 
+        {secondStep && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6">
+            <SecondStep
+              challenge={secondStep}
+              onSignedIn={finishSignIn}
+              onCancel={() => {
+                setSecondStep(null);
+                setPassword("");
+              }}
+            />
+          </div>
+        )}
+
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-5 text-left">
+        <form onSubmit={handleSubmit} className={`space-y-5 text-left ${secondStep ? "hidden" : ""}`}>
           {!isSignIn && (
             <>
               <div className="space-y-1.5">
