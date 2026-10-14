@@ -112,12 +112,24 @@ async function ssRequest<T>(method: string, path: string, body?: unknown): Promi
   return res.json() as Promise<T>;
 }
 
+export const isShipStationUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname === new URL(SS_BASE).hostname;
+  } catch {
+    return false;
+  }
+};
+
 // Fetches a full ShipStation URL (used by webhook handlers to retrieve resource payloads).
 export async function ssRequestByUrl<T>(fullUrl: string): Promise<T> {
   if (!isShipStationConfigured()) throw new Error("ShipStation credentials not configured");
+  // The address arrives in a webhook body. Our credentials go only to ShipStation.
+  if (!isShipStationUrl(fullUrl)) throw new Error("Refused: not a ShipStation address");
   const creds = Buffer.from(`${env.shipStationApiKey}:${env.shipStationApiSecret}`).toString("base64");
   const res = await fetchWithTimeout(fullUrl, {
     method: "GET",
+    redirect: "error",
     headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/json" },
   }, 30_000, "ShipStation");
   if (!res.ok) {

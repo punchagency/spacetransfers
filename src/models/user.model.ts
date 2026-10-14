@@ -15,6 +15,22 @@ export const UserRoles = {
 export interface IUser extends Document {
   email: string;
   passwordHash: string | null;
+  /** Raised to end every session issued so far. */
+  tokenVersion?: number;
+  /** Passkeys registered as the second step of sign-in. */
+  passkeys?: {
+    id: string;
+    publicKey: string;
+    counter: number;
+    transports?: string[];
+    deviceType?: string;
+    backedUp?: boolean;
+    name: string;
+    createdAt: Date;
+    lastUsedAt?: Date | null;
+  }[];
+  /** One-time codes for signing in when no passkey is to hand; stored hashed. */
+  recoveryCodes?: { hash: string; usedAt?: Date | null }[];
   googleId?: string | null;
   name: string;
   companyName?: string;
@@ -192,6 +208,25 @@ const userSchema = new Schema<IUser>(
       lowercase: true,
       trim: true
     },
+    tokenVersion: { type: Number, default: 0 },
+    passkeys: {
+      type: [
+        {
+          _id: false,
+          id: { type: String, required: true },
+          publicKey: { type: String, required: true },
+          counter: { type: Number, default: 0 },
+          transports: { type: [String], default: undefined },
+          deviceType: String,
+          backedUp: Boolean,
+          name: { type: String, default: "Passkey" },
+          createdAt: { type: Date, default: Date.now },
+          lastUsedAt: { type: Date, default: null },
+        },
+      ],
+      default: undefined,
+    },
+    recoveryCodes: { type: [{ _id: false, hash: { type: String, required: true }, usedAt: { type: Date, default: null } }], default: undefined },
     passwordHash: {
       type: String,
       default: null,

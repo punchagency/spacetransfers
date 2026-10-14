@@ -13,6 +13,7 @@ import {
   loginWithGoogle,
 } from "../services/auth.service.js";
 import { User } from "../models/user.model.js";
+import { hasPasskey, mustEnrollPasskey, startSecondStep } from "../services/passkey.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
 import { recordLoginActivity, extractClientIp, resolveGeo } from "../services/loginActivity.service.js";
 import { createAdminNotification } from "../services/adminNotifications.service.js";
@@ -20,7 +21,7 @@ import { createAdminNotification } from "../services/adminNotifications.service.
 export const me = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = await getCurrentUser((req as any).user.id);
-    res.json(user);
+    res.json({ ...user, hasPasskey: hasPasskey((req as any).user), mustEnrollPasskey: mustEnrollPasskey((req as any).user) });
   } catch (error) {
     next(error);
   }
@@ -67,6 +68,9 @@ export const switchAccount = async (req: Request, res: Response, next: NextFunct
 export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, email, password, role, companyName, phone, region, website, address, legalAcceptance } = req.body;
+    if (typeof email !== "string" || typeof password !== "string" || (role !== undefined && typeof role !== "string")) {
+      return res.status(400).json({ message: "A valid email address and password are required" });
+    }
     const result = await registerUser({
       name, email, password, role, companyName, phone, region, website, address,
       legalAcceptance,
@@ -87,6 +91,16 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     const { email, password, role } = req.body;
     const result = await loginUser({ email, password, role });
     const userId = String(result.user.id);
+
+    // The password was right. An account with a passkey has one more step, and
+    // is not signed in, or recorded as signed in, until it passes.
+    const account = await User.findById(userId);
+    if (account && hasPasskey(account)) {
+      const step = await startSecondStep(account);
+      return res.json({ twoFactorRequired: true, ...step });
+    }
+    (result.user as any).hasPasskey = false;
+    (result.user as any).mustEnrollPasskey = account ? mustEnrollPasskey(account) : false;
 
     // Log the successful sign-in for the Security → Login Activity view.
     const recorded = await recordLoginActivity({ req, userId, status: "success" }).catch(() => null);
@@ -131,14 +145,14 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
     // so the entry can be attributed (and we never leak whether an email exists).
     try {
       const email = req.body?.email;
-      if (email) {
+      if (typeof email === "string" && email) {
         /*
          * Scoped to the role that was being signed into, so a failed partner
          * sign-in is recorded against the partner account rather than whichever
          * account on that address happened to be found first — which would also
          * have alerted the wrong admin.
          */
-        const attemptedRole = req.body?.role;
+        const attemptedRole = typeof req.body?.role === "string" ? req.body.role : undefined;
         const existing = attemptedRole
           ? await User.findOne({ email: String(email).toLowerCase().trim(), role: attemptedRole }).select("_id role")
           : await User.findOne({ email: String(email).toLowerCase().trim() }).select("_id role");
@@ -217,6 +231,11 @@ export const googleAuthController = async (req: Request, res: Response, next: Ne
       ip: extractClientIp(req),
       userAgent: req.get("user-agent") || undefined,
     });
+    const account = await User.findById(result.user.id);
+    if (account && hasPasskey(account)) {
+      const step = await startSecondStep(account);
+      return res.json({ twoFactorRequired: true, ...step });
+    }
     res.json(result);
   } catch (error) {
     next(error);

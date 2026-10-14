@@ -1,16 +1,39 @@
 import jwt, { SignOptions } from "jsonwebtoken";
 import { env } from "../config/env.js";
 
-export const signJwt = (payload: string | object | Buffer): string => {
+export const signJwt = (payload: string | object | Buffer, expiresIn: string = env.jwtExpiresIn): string => {
   return jwt.sign(payload, env.jwtSecret, {
-    expiresIn: env.jwtExpiresIn as SignOptions["expiresIn"]
+    algorithm: "HS256",
+    expiresIn: expiresIn as SignOptions["expiresIn"]
   });
 };
 
 export const verifyJwt = (token: string): any => {
   try {
-    return jwt.verify(token, env.jwtSecret);
+    return jwt.verify(token, env.jwtSecret, { algorithms: ["HS256"] });
   } catch {
     return null;
   }
+};
+
+/** An admin session is short: the console holds pricing, payouts and refunds. */
+const ADMIN_SESSION = "24h";
+
+/**
+ * The token a signed-in session carries. `tv` is the account's token version:
+ * raising it on the account ends every session issued before, which is how a
+ * password change or a passkey reset signs the other devices out.
+ */
+export const signSessionToken = (user: { id?: unknown; _id?: unknown; role: string; tokenVersion?: number }): string =>
+  signJwt(
+    { sub: String(user.id ?? user._id), role: user.role, tv: Number(user.tokenVersion) || 0 },
+    user.role === "ADMIN" ? ADMIN_SESSION : env.jwtExpiresIn,
+  );
+
+/** Whether a verified token is a session for this account as it stands now. */
+export const isLiveSession = (payload: any, user: { tokenVersion?: number; status?: string }): boolean => {
+  // A token minted for one step of sign-in (a passkey challenge) is not a session.
+  if (!payload || payload.typ) return false;
+  if ((Number(payload.tv) || 0) !== (Number(user.tokenVersion) || 0)) return false;
+  return !["Suspended", "Rejected"].includes(String(user.status || ""));
 };

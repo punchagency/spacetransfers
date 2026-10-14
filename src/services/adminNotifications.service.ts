@@ -140,6 +140,10 @@ export const enqueueAdminNotificationEmailBatch = async (adminId: string, notifi
   );
 };
 
+/** Titles and messages carry what customers and partners typed; in an email it must stay text. */
+const escapeHtml = (v: unknown) =>
+  String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
+
 export const buildBatchedAdminEmailHtml = ({
   adminName,
   items
@@ -168,8 +172,8 @@ export const buildBatchedAdminEmailHtml = ({
               </span>
               <span style="color:#6b7280; font-size:12px;">${time}</span>
             </div>
-            <div style="margin-top: 6px; font-weight:700; color:#111827;">${n.title}</div>
-            <div style="margin-top: 2px; color:#374151;">${n.message}</div>
+            <div style="margin-top: 6px; font-weight:700; color:#111827;">${escapeHtml(n.title)}</div>
+            <div style="margin-top: 2px; color:#374151;">${escapeHtml(n.message)}</div>
           </td>
         </tr>
       `;

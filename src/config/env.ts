@@ -147,3 +147,33 @@ export const env: Env = {
   shipStationFromPostalCode: cleanEnvString(process.env.SHIPSTATION_FROM_POSTAL_CODE),
   shipStationFromCountry: cleanEnvString(process.env.SHIPSTATION_FROM_COUNTRY),
 };
+
+/**
+ * Refuses to start with a session secret anyone could guess.
+ *
+ * A missing JWT_SECRET used to fall back to a published default without a
+ * word, which let anyone sign themselves an admin session. Only a developer's
+ * own machine and the test suite may run on the default.
+ */
+const WEAK_SECRETS = new Set(["", "change-me", "changeme", "secret"]);
+const localOnly = env.nodeEnv === "development" || env.nodeEnv === "test";
+const publiclyServed = [env.appUrl, env.printerAppUrl, env.adminAppUrl].some((u) => /^https:\/\//i.test(u));
+if ((!localOnly || publiclyServed) && (WEAK_SECRETS.has(env.jwtSecret) || env.jwtSecret.length < 32)) {
+  throw new Error("JWT_SECRET must be set to a random value of at least 32 characters. The server will not start without it.");
+}
+
+/**
+ * Whether forgot-password hands the reset token back in its response, so the
+ * flow can be exercised without a mailbox. It is account takeover for anyone
+ * who can call the endpoint, so it has to be asked for by name and is never
+ * honoured on a deployment served over https.
+ */
+export const exposeResetTokens =
+  localOnly && !publiclyServed && String(cleanEnvString(process.env.EXPOSE_RESET_TOKENS) ?? "").toLowerCase() === "true";
+
+/**
+ * Whether an admin must have a passkey before the console will serve them.
+ * On unless switched off by name, which is for a developer's machine only.
+ */
+export const adminPasskeyRequired =
+  String(cleanEnvString(process.env.ADMIN_PASSKEY_REQUIRED) ?? "true").toLowerCase() !== "false" || (!localOnly || publiclyServed);

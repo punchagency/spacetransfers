@@ -34,26 +34,29 @@ import {
 } from "../controllers/customer/index.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload, uploadPhoto } from "../middleware/upload.js";
+import { aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
 
 // Asset upload is available to guests (maybeAuthenticate) so unauthenticated
 // users still get server-side DPI/trim metadata and the low-DPI warning fires.
-router.post("/assets", maybeAuthenticate, upload.single("file"), uploadAsset);
-router.post("/assets/trim", maybeAuthenticate, trimAsset);
+router.post("/assets", maybeAuthenticate, assetLimiter, upload.single("file"), uploadAsset);
+router.post("/assets/trim", maybeAuthenticate, assetLimiter, trimAsset);
 // Uploads a canvas-produced image and returns its hosted URL, so artboard items
 // and every later request carry a reference instead of the artwork itself.
 // This is what keeps the cart/order payloads to metadata only.
-router.post("/assets/materialize", maybeAuthenticate, materializeAsset);
+router.post("/assets/materialize", maybeAuthenticate, assetLimiter, materializeAsset);
 // AI fade check for an already-uploaded asset — used after edits that change
 // the alpha channel (background removal, generative repaint).
-router.post("/assets/fade-check", maybeAuthenticate, fadeCheckAsset);
-router.post("/assets/upscale", maybeAuthenticate, upscaleAsset);
+router.post("/assets/fade-check", maybeAuthenticate, assetLimiter, fadeCheckAsset);
+// Boosting resolution and AI edits need an account: both are heavy, and AI edits
+// spend a paid allowance that a guest could otherwise drain.
+router.post("/assets/upscale", authenticate, upscaleLimiter, upscaleAsset);
 router.get("/assets/ai-edit/capabilities", maybeAuthenticate, aiEditCapabilities);
-router.post("/assets/ai-edit", maybeAuthenticate, aiEditAsset);
+router.post("/assets/ai-edit", authenticate, aiEditLimiter, aiEditAsset);
 // Prompt understanding — text only, no image work, so it is cheap enough to
 // call on every submit to decompose multi-step requests before editing starts.
-router.post("/assets/ai-edit/plan", maybeAuthenticate, aiEditPlan);
+router.post("/assets/ai-edit/plan", authenticate, aiEditLimiter, aiEditPlan);
 router.get("/assets", maybeAuthenticate, listAssets);
 // Public pricing rates — the cart is usable before sign-in and must show a
 // total that matches what checkout will charge.

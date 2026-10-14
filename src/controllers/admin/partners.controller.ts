@@ -514,6 +514,8 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
        */
       availabilityStatus: (partner as any).availabilityStatus ?? "open",
       capacityPaused: Boolean((partner as any).capacityPaused),
+      // How many passkeys guard this account; an admin can reset them if they are lost.
+      passkeys: (((partner as any).passkeys || []) as any[]).length,
       statusHistory: [...(((partner as any).statusHistory || []) as any[])]
         .reverse()
         .slice(0, 20)

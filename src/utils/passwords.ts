@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 
-const SALT_ROUNDS = 10;
+// 12 is the current floor for bcrypt; under test it is lowered so the suite stays fast.
+const SALT_ROUNDS = process.env.NODE_ENV === "test" ? 4 : 12;
 
 export const hashPassword = async (plainPassword: string): Promise<string> => {
   const salt = await bcrypt.genSalt(SALT_ROUNDS);

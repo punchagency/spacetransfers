@@ -1,5 +1,6 @@
 import express from "express";
-import { authenticate, requireRoles } from "../middleware/auth.js";
+import { authenticate, requireAdminPasskey, requireRoles } from "../middleware/auth.js";
+import { listAdminPasskeyStatus, resetAccountPasskeys } from "../controllers/passkey.controller.js";
 import { upload } from "../middleware/upload.js";
 import { UserRoles } from "../models/user.model.js";
 import { 
@@ -49,7 +50,10 @@ import {
 
 const router = express.Router();
 
-router.use(authenticate, requireRoles(UserRoles.ADMIN));
+router.use(authenticate, requireRoles(UserRoles.ADMIN), requireAdminPasskey);
+
+router.get("/security/admins", listAdminPasskeyStatus);
+router.post("/users/:userId/reset-passkeys", resetAccountPasskeys);
 
 router.get("/dashboard/stats", getAdminDashboardStats);
 router.get("/pricing/global", getGlobalPricing);

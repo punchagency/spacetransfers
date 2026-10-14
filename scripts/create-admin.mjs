@@ -16,8 +16,12 @@
  *
  *   node scripts/create-admin.mjs "Ada Lovelace" ada@yourcompany.com "their-password"
  *
- * Re-running for an existing email does NOT overwrite the account; it reports
- * what is already there and exits, so this is safe to run twice.
+ * Re-running for an existing admin does NOT overwrite the account; it reports
+ * what is already there and exits, so this is safe to run twice. An address may
+ * also hold a partner or customer account; those are separate and untouched.
+ *
+ * At first sign-in the console asks the new admin to set up a passkey before
+ * anything else, and shows them recovery codes to keep.
  */
 
 import { readFileSync } from "fs";
@@ -77,10 +81,11 @@ const run = async () => {
   // script runs under plain node, with no build step or tsx required.
   const users = mongoose.connection.collection("users");
 
-  const existing = await users.findOne({ email: normalisedEmail });
+  // Accounts are unique per address and role, so only an existing admin blocks this.
+  const existing = await users.findOne({ email: normalisedEmail, role: "ADMIN" });
   if (existing) {
     console.error(
-      `\n✗ ${normalisedEmail} already exists (role: ${existing.role}, status: ${existing.status}).\n` +
+      `\n✗ ${normalisedEmail} is already an admin (status: ${existing.status}).\n` +
         `  Nothing was changed. Use a different email, or reset the password from the console.\n`,
     );
     await mongoose.disconnect();
@@ -88,7 +93,7 @@ const run = async () => {
   }
 
   const now = new Date();
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, 12);
 
   await users.insertOne({
     name: String(name).trim(),
@@ -102,6 +107,7 @@ const run = async () => {
     isSubAccount: false,
     parentAccount: null,
     rating: 5,
+    tokenVersion: 0,
     // Mirrors the defaults the Mongoose schema would apply, since a raw insert
     // bypasses it. Without these the console reads undefined preferences.
     settings: {
@@ -120,6 +126,7 @@ const run = async () => {
       `  Name      ${name}\n` +
       `  Email     ${normalisedEmail}\n` +
       `  Password  ${password}\n\n` +
+      `  At first sign-in they set up a passkey, and keep the recovery codes it shows.\n` +
       (providedPassword
         ? `  Have them change it under Settings → Security after first sign-in.\n`
         : `  This password is shown once and is not stored anywhere else.\n` +

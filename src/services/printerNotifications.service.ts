@@ -11,15 +11,19 @@ import { sendEmail } from "./email.service.js";
  */
 export type EmailSettingsKey = "newJobs" | "orderUpdates" | "payoutAlerts" | "accountUpdates";
 
-function buildNotificationEmailHtml(title: string, message: string): string {
+/** Titles and messages can carry a customer's name or words; in an email they must stay text. */
+const escapeHtml = (v: unknown) =>
+  String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
+
+export function buildNotificationEmailHtml(title: string, message: string): string {
   return `
     <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827; max-width: 520px; margin: 0 auto;">
       <div style="background: #1d4ed8; padding: 20px 24px; border-radius: 12px 12px 0 0;">
         <span style="color: #ffffff; font-size: 16px; font-weight: 700;">Space Transfers</span>
       </div>
       <div style="background: #ffffff; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px;">
-        <h2 style="margin: 0 0 12px 0; font-size: 16px; color: #111827;">${title}</h2>
-        <p style="margin: 0 0 20px 0; font-size: 14px; color: #374151;">${message}</p>
+        <h2 style="margin: 0 0 12px 0; font-size: 16px; color: #111827;">${escapeHtml(title)}</h2>
+        <p style="margin: 0 0 20px 0; font-size: 14px; color: #374151;">${escapeHtml(message)}</p>
         <p style="margin: 0; font-size: 12px; color: #9ca3af;">
           You received this email because you have this notification type enabled in your Space Transfers printer settings.
           To stop these emails, update your notification preferences in Settings.

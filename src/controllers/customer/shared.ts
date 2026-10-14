@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from "../../utils/fetchWithTimeout.js";
+import { fetchStoredArtwork } from "../../services/storage.service.js";
 import fs from "fs";
 import path from "path";
 import { assertBufferWithinBounds, decodeDataUrl, MAX_IMAGE_BYTES } from "../../utils/imageBounds.js";
@@ -44,7 +44,7 @@ export async function fetchImageBuffer(url: string): Promise<Buffer> {
       { statusCode: 400, code: "IMAGE_NOT_UPLOADED" },
     );
   }
-  const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
+  const r = await fetchStoredArtwork(url, 90_000, "Loading the image");
   if (!r.ok) throw Object.assign(new Error("Asset not found"), { statusCode: 404 });
 
   // Trust the advertised length when present, so an oversized remote asset is

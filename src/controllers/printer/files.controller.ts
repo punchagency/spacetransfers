@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { fetchStoredArtwork, isStoredArtworkUrl } from "../../services/storage.service.js";
 import { pickOrderSheet } from "../../utils/orderSheets.js";
 import { apiFileUrl } from "../../utils/publicApiBase.js";
 import { fetchWithTimeout } from "../../utils/fetchWithTimeout.js";
@@ -363,8 +364,8 @@ export const downloadJobAssetBundle = async (req: Request, res: Response, next: 
         }
 
         // Fallback to remote fetch if not local, still streaming - "eliminate redundant file generation"
-        if (/^https?:\/\//i.test(url)) {
-          const r = await fetchWithTimeout(url, {}, 90_000, "Loading the artwork");
+        if (isStoredArtworkUrl(url)) {
+          const r = await fetchStoredArtwork(url, 90_000, "Loading the artwork");
           if (r.ok) {
             const contentLength = r.headers.get("content-length");
             if (contentLength === "0") {

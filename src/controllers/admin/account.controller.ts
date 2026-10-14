@@ -1,4 +1,6 @@
 import { Request, Response, NextFunction } from "express";
+import { hashPassword } from "../../utils/passwords.js";
+import { signSessionToken } from "../../utils/jwt.js";
 import mongoose from "mongoose";
 import sharp from "sharp";
 import bcrypt from "bcryptjs";
@@ -218,7 +220,7 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
       throw error;
     }
 
-    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN }).select("passwordHash settings updatedAt");
+    const admin = await User.findOne({ _id: adminId, role: UserRoles.ADMIN }).select("passwordHash settings updatedAt role tokenVersion");
     if (!admin) {
       const error = new Error("Admin not found") as CustomError;
       error.statusCode = 404;
@@ -250,7 +252,9 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
       throw error;
     }
 
-    admin.passwordHash = await bcrypt.hash(newPassword, 10);
+    admin.passwordHash = await hashPassword(newPassword);
+    // Every other device signed in with the old password is signed out.
+    (admin as any).tokenVersion = (Number((admin as any).tokenVersion) || 0) + 1;
     if (!admin.settings) {
       admin.settings = {
         pricing: { baseRatePerSqFt: 2.5, tiered: [], surcharges: { rushPct: 10, specialInkFlat: 5 } },
@@ -272,7 +276,8 @@ export const updateAdminPassword = async (req: Request, res: Response, next: Nex
       meta: { type: "password_changed", changedAt: new Date() }
     }).catch(() => {});
 
-    res.status(200).json({ updated: true });
+    // The session that made the change carries on, on a token of the new version.
+    res.status(200).json({ updated: true, token: signSessionToken(admin as any) });
   } catch (error) {
     next(error);
   }

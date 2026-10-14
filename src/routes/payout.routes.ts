@@ -1,5 +1,5 @@
 import express from "express";
-import { authenticate, requireRoles } from "../middleware/auth.js";
+import { authenticate, requireAdminPasskey, requireRoles } from "../middleware/auth.js";
 import { UserRoles } from "../models/user.model.js";
 import {
   createStripeConnectAccount,
@@ -68,72 +68,84 @@ router.get(
   "/admin/list",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminListPayouts
 );
 router.get(
   "/admin/stats",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminGetPayoutStats
 );
 router.get(
   "/admin/printers",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminListPrinterPayoutStatus
 );
 router.get(
   "/admin/printers/:printerId/eligible",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminGetPrinterEligibleJobs
 );
 router.post(
   "/admin/create",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminCreatePayout
 );
 router.get(
   "/admin/:payoutId/jobs",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminGetPayoutJobs
 );
 router.post(
   "/admin/:payoutId/approve",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminApprovePayout
 );
 router.post(
   "/admin/:payoutId/reject",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminRejectPayout
 );
 router.post(
   "/admin/:payoutId/process",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminProcessPayout
 );
 router.post(
   "/admin/retry/:payoutId",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminRetryPayout
 );
 router.patch(
   "/admin/printers/:printerId/toggle",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminTogglePrinterPayouts
 );
 router.get(
   "/admin/export",
   authenticate,
   requireRoles(UserRoles.ADMIN),
+  requireAdminPasskey,
   adminExportPayouts
 );
 

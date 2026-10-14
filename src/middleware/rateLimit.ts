@@ -1,4 +1,5 @@
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import type { Request } from "express";
 import { env } from "../config/env.js";
 
 /**
@@ -82,4 +83,70 @@ export const publicReadLimiter = rateLimit({
   legacyHeaders: false,
   skip,
   message: { message: "Too many requests. Please try again shortly." },
+});
+
+/** One bucket per signed-in account, else per address. */
+const callerKey = (req: Request): string => {
+  const id = (req as any).user?.id;
+  return id ? `u:${id}` : `ip:${ipKeyGenerator(req.ip || "")}`;
+};
+const signedIn = (req: Request): boolean => Boolean((req as any).user?.id);
+
+/**
+ * Uploads and the image checks that follow each one. Guests may design before
+ * signing in, so they are allowed, but each of these stores a file or runs
+ * image processing: the ceiling is far above a real session (a 100-image
+ * batch is about 400 requests) and far below a flood.
+ */
+export const assetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: (req) => (signedIn(req) ? 3000 : 600),
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "You're uploading faster than we can keep up with. Please wait a few minutes and try again." },
+});
+
+/** AI edits spend a paid allowance, so they belong to an account and are counted per account. */
+export const aiEditLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 60,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "You've reached this hour's limit for AI edits. Please try again later." },
+});
+
+/** Upscaling multiplies an image up to eightfold in memory. */
+export const upscaleLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 120,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "You've reached this hour's limit for resolution boosts. Please try again later." },
+});
+
+/** Address lookups go to an outside service on our account. */
+export const geocodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many address checks. Please try again shortly." },
+});
+
+/** The passkey step of sign-in and recovery codes: a secret is being checked. */
+export const twoFactorLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(15),
 });

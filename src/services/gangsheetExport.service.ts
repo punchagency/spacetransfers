@@ -1,4 +1,5 @@
 import fs from "fs";
+import { isStoredArtworkUrl } from "./storage.service.js";
 import path from "path";
 import crypto from "node:crypto";
 import sharp from "sharp";
@@ -106,11 +107,12 @@ const loadImageBuffer = async (url: string) => {
     return null;
   }
 
-  if (/^https?:\/\//i.test(url)) {
+  // Only artwork we stored: this address came from an order, which a customer wrote.
+  if (isStoredArtworkUrl(url)) {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 20_000);
     try {
-      const res = await fetch(url, { signal: ac.signal });
+      const res = await fetch(url, { signal: ac.signal, redirect: "error" });
       if (!res.ok) throw new Error(`failed_to_fetch_asset:${res.status}`);
       const ab = await res.arrayBuffer();
       return Buffer.from(ab);
