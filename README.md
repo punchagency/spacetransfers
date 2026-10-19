@@ -47,6 +47,8 @@ The API will not start without `MONGO_URI` and `JWT_SECRET`. Everything else deg
 | ShipStation keys | Shipping falls back to flat rates; labels cannot be bought |
 | Resend key | Emails are skipped and logged |
 | Gemini key | AI image edits are unavailable; board commands still work |
+| `SENTRY_DSN` | Errors are logged but not reported |
+| `BACKUP_ENABLED` | No nightly backups |
 
 `SHIPSTATION_LABELS_ENABLED` must stay `false` outside production. ShipStation has no sandbox, so a label bought in testing is a real purchase.
 
@@ -56,7 +58,7 @@ The API will not start without `MONGO_URI` and `JWT_SECRET`. Everything else deg
 src/
   server.ts        Starts the API and the background jobs
   app.ts           Express app: CORS, body limits, routes, error handling
-  config/          Environment and legal document versions
+  config/          Environment, and the first wording of the legal documents
   routes/          URL to handler mapping, one file per audience
   controllers/     Request handlers
     customer/        assets, aiEdit, designs, cart, orders
@@ -67,11 +69,12 @@ src/
   models/          Mongoose schemas
   middleware/      Authentication, rate limits, uploads
   utils/           Small pure helpers
+  tools/           Command-line tools run from the build (backups)
   tests/           Unit tests
 scripts/           One-off operational scripts
 ```
 
-All routes are served under `/api`: `/auth`, `/customer`, `/printer`, `/admin`, `/payouts`, `/geocode`, `/webhooks`, `/health`.
+All routes are served under `/api`: `/auth`, `/customer`, `/printer`, `/admin`, `/payouts`, `/geocode`, `/webhooks`, `/public`, `/health`.
 
 ## How an order moves
 
@@ -128,6 +131,7 @@ Started by `server.ts` in every environment except tests:
 | SLA monitor | Reassigns or escalates late jobs; off until enabled in the admin console |
 | Payout scheduler | Each Friday, puts partners' payable, unpaid jobs into payouts for an admin to review. It never sends money |
 | Notification email batches | Sends queued admin notification emails |
+| Backups | At 03:00 UTC, when `BACKUP_ENABLED=true`, writes an encrypted copy of every collection to R2 and keeps the last 30 |
 
 ## Scripts
 
@@ -137,3 +141,25 @@ Started by `server.ts` in every environment except tests:
 | `node scripts/setup-shipstation-webhooks.mjs` | Registers the ShipStation tracking webhook |
 | `node scripts/test-shipstation-integration.mjs` | Checks the ShipStation credentials |
 | `node scripts/migrate-design-thumbnails.mjs` | One-off move of old design thumbnails into R2 |
+| `node dist/tools/backup.js backup` | Takes a backup now |
+| `node dist/tools/backup.js list` | Lists the stored backups |
+| `node dist/tools/backup.js drill` | Restores the latest backup into a scratch database, compares it with the live one, and drops it. Run it after setting up backups and from time to time |
+| `node dist/tools/backup.js restore <date> <database>` | Restores a backup into the named database. It refuses the live one, so restore beside it and switch over |
+
+## Legal documents
+
+The Terms of Service, Privacy Policy and Content Policy are stored in the database and edited by admins in the admin console. On first start each one is seeded from `config/legalSeed.ts`. Every publish creates a new version named by its date and needs a note saying what changed. Earlier versions are kept and stay readable.
+
+The store and the partner portal read the published versions from `/api/public/legal`. A sign-up records the versions the person agreed to and is refused if those are no longer current. People who signed up earlier keep the versions they accepted. Nobody is asked to accept again.
+
+## Backups
+
+A backup is gzipped, then encrypted with AES-256-GCM under `BACKUP_ENCRYPTION_KEY`, and stored under `backups/<date>/` in `BACKUP_R2_BUCKET` (by default `R2_BUCKET`). Generate the key with `openssl rand -base64 32` and keep a copy outside the server. Without the key the backups cannot be read. In production, use a private bucket of their own.
+
+## Customers' data
+
+Account Settings in the store lets a customer download everything held about them (`GET /customer/account/export`) and close their account (`POST /customer/account/delete`). Closing needs their password, or their typed email address if they sign in with Google. It is refused while any of their orders is still being made or delivered or a problem report is open, and for a sub-account, which its main account removes. Closing deletes the sign-in, saved sheets, uploads and sign-in history. It also deletes stored files that no order uses. Orders are kept for the business's records and marked `accountDeletedAt`.
+
+## Partners closing their account
+
+A partner closes their account from Settings in the partner portal (`GET`/`POST /printer/account/close`). It is refused while a job is in progress, a customer report on one of their jobs is open, or money is still owed to them (jobs not yet paid out, or a payout not yet settled). Closing needs their password. The record is kept, because jobs and payouts point at it and payout records are needed for accounting and tax. Their status becomes Closed, every session ends, and their password, passkeys, phone, website, logo, certifications, notifications and sign-in history are removed. Admins are notified. A closed partner can't sign in, reset a password or be given work, and can re-apply with the same email, which puts them back in the approvals queue.

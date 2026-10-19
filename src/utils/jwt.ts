@@ -30,10 +30,13 @@ export const signSessionToken = (user: { id?: unknown; _id?: unknown; role: stri
     user.role === "ADMIN" ? ADMIN_SESSION : env.jwtExpiresIn,
   );
 
+/** Account states that cannot sign in or keep a session. */
+export const SIGN_IN_BLOCKED_STATUSES = ["Suspended", "Rejected", "Closed"];
+
 /** Whether a verified token is a session for this account as it stands now. */
 export const isLiveSession = (payload: any, user: { tokenVersion?: number; status?: string }): boolean => {
   // A token minted for one step of sign-in (a passkey challenge) is not a session.
   if (!payload || payload.typ) return false;
   if ((Number(payload.tv) || 0) !== (Number(user.tokenVersion) || 0)) return false;
-  return !["Suspended", "Rejected"].includes(String(user.status || ""));
+  return !SIGN_IN_BLOCKED_STATUSES.includes(String(user.status || ""));
 };

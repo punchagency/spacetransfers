@@ -277,6 +277,12 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       error.statusCode = 404;
       throw error;
     }
+    // Someone who can't sign in can't see the job, let alone print it.
+    if (!["Active", "Under Review"].includes(String(partner.status))) {
+      const error = new Error(`This partner's account is ${String(partner.status).toLowerCase()}, so they can't take jobs.`) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
 
     // Region check — warn on cross-region unless admin explicitly passes force:true.
     const customerRegion = normalizeRegion(getRegionFromState(order.shippingAddress?.state || "")) || null;

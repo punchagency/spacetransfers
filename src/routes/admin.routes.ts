@@ -1,6 +1,14 @@
 import express from "express";
 import { authenticate, requireAdminPasskey, requireRoles } from "../middleware/auth.js";
 import { listAdminPasskeyStatus, resetAccountPasskeys } from "../controllers/passkey.controller.js";
+import {
+  adminDiscardLegalDraft,
+  adminGetLegalDocument,
+  adminGetLegalVersion,
+  adminListLegalDocuments,
+  adminPublishLegalDocument,
+  adminSaveLegalDraft,
+} from "../controllers/legal.controller.js";
 import { upload } from "../middleware/upload.js";
 import { UserRoles } from "../models/user.model.js";
 import { 
@@ -53,6 +61,12 @@ const router = express.Router();
 router.use(authenticate, requireRoles(UserRoles.ADMIN), requireAdminPasskey);
 
 router.get("/security/admins", listAdminPasskeyStatus);
+router.get("/legal", adminListLegalDocuments);
+router.get("/legal/:docId", adminGetLegalDocument);
+router.put("/legal/:docId/draft", adminSaveLegalDraft);
+router.delete("/legal/:docId/draft", adminDiscardLegalDraft);
+router.post("/legal/:docId/publish", adminPublishLegalDocument);
+router.get("/legal/:docId/versions/:version", adminGetLegalVersion);
 router.post("/users/:userId/reset-passkeys", resetAccountPasskeys);
 
 router.get("/dashboard/stats", getAdminDashboardStats);

@@ -31,10 +31,12 @@ import {
   reportOrderIssue,
   replyToOrderIssue,
   uploadIssuePhoto,
+  exportAccountData,
+  deleteAccount,
 } from "../controllers/customer/index.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload, uploadPhoto } from "../middleware/upload.js";
-import { aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
+import { accountCloseLimiter, aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
 
@@ -73,6 +75,8 @@ router.post("/orders/:orderId/issues", reportOrderIssue);
 router.post("/issues/:issueId/messages", replyToOrderIssue);
 router.post("/issues/photos", uploadPhoto.single("file"), uploadIssuePhoto);
 router.get("/cart", getCart);
+router.get("/account/export", exportAccountData);
+router.post("/account/delete", accountCloseLimiter, deleteAccount);
 router.put("/cart", updateCart);
 router.post("/designs", createDesign);
 router.get("/designs", listDesigns);

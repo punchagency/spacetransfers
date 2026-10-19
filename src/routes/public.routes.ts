@@ -1,5 +1,6 @@
 import express from "express";
 import { getPublicStats } from "../controllers/public.controller.js";
+import { getLegalDocument, listLegalDocuments } from "../controllers/legal.controller.js";
 import { publicReadLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
@@ -14,5 +15,9 @@ const router = express.Router();
  * from a missing middleware argument.
  */
 router.get("/stats", publicReadLimiter, getPublicStats);
+
+// The Terms, Privacy Policy and Content Policy, as currently published.
+router.get("/legal", publicReadLimiter, listLegalDocuments);
+router.get("/legal/:docId", publicReadLimiter, getLegalDocument);
 
 export default router;

@@ -14,6 +14,26 @@ import { isValidPhone } from "../../utils/accountFields.js";
 import { computePartnerPerformance } from "../../services/partnerPerformance.service.js";
 import sharp from "sharp";
 import { CustomError } from "./shared.js";
+import { closePartnerAccount, partnerClosureCheck } from "../../services/accountData.service.js";
+
+/** Whether the signed-in partner can close their account now, and if not, why. */
+export const getAccountClosure = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { blocker, activeJobs, openIssues, owed } = await partnerClosureCheck(String(req.user?.id));
+    res.json({ canClose: !blocker, blocker, activeJobs, openIssues, owed });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** Closes the signed-in partner's account. */
+export const closeAccount = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await closePartnerAccount(String(req.user?.id), { password: req.body?.password, email: req.body?.email }));
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const uploadProfileAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {

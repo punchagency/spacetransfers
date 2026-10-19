@@ -267,7 +267,8 @@ const userSchema = new Schema<IUser>(
        * Collapsing the two left declined applicants sitting in the partners
        * table looking exactly like a working partner paused for cause.
        */
-      enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected"],
+      // "Closed" is a partner who closed their own account; the record stays for payouts and tax.
+      enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected", "Closed"],
       default: "Active"
     },
 

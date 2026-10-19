@@ -7,6 +7,8 @@ import { scheduleFridayPayouts } from "./services/payoutScheduler.service.js";
 import { startTrackingPoller } from "./services/trackingPoller.service.js";
 import { startSlaMonitor } from "./services/slaMonitor.service.js";
 import { startWaitingOrderSweep } from "./services/orderAssignment.service.js";
+import { startBackupSchedule } from "./services/backup.service.js";
+import { initMonitoring, reportServerError } from "./services/monitoring.service.js";
 import { startPaymentReconciliation } from "./services/paymentReconciliation.service.js";
 
 process.on("unhandledRejection", (reason) => {
@@ -18,6 +20,8 @@ process.on("uncaughtException", (error) => {
 });
 
 const start = async (): Promise<void> => {
+  await initMonitoring();
+  process.on("unhandledRejection", (reason) => reportServerError(reason, { route: "unhandledRejection" }));
   const server = http.createServer(app);
 
   server.listen(env.port, () => {
@@ -61,6 +65,7 @@ const start = async (): Promise<void> => {
 
     // Retries orders still waiting for a partner; idle while assignment is manual.
     startWaitingOrderSweep();
+    startBackupSchedule();
   }
 };
 

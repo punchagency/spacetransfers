@@ -150,3 +150,13 @@ export const twoFactorLimiter = rateLimit({
   skip,
   message: message(15),
 });
+
+/** Closing an account checks the password again, so a stolen session can't be used to guess it. */
+export const accountCloseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(15),
+});

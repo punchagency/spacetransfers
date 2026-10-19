@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { env } from "../config/env.js";
 import sharp from "sharp";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
@@ -223,4 +223,32 @@ export const storeArtwork = async (
   }
 
   return { url: publicUrlForKey(key), publicId: key };
+};
+
+/** The storage key of a file we stored, or null for anything else. */
+export const storedKeyFor = (url: string): string | null => {
+  const base = env.r2PublicBaseUrl?.replace(/\/+$/, "");
+  if (!base || !String(url || "").startsWith(base + "/")) return null;
+  return String(url).slice(base.length + 1).split("?")[0] || null;
+};
+
+/** Removes stored files, and the thumbnail kept beside each. Returns how many were removed. */
+export const deleteStoredFiles = async (urls: string[]): Promise<number> => {
+  if (!isR2Configured()) return 0;
+  const keys = new Set<string>();
+  for (const url of urls) {
+    const key = storedKeyFor(url);
+    if (!key) continue;
+    keys.add(key);
+    keys.add(thumbKeyFor(key));
+  }
+  let removed = 0;
+  const all = [...keys];
+  for (let i = 0; i < all.length; i += 1000) {
+    const result = await r2().send(
+      new DeleteObjectsCommand({ Bucket: env.r2Bucket!, Delete: { Objects: all.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true } }),
+    );
+    removed += Math.min(1000, all.length - i) - (result.Errors?.length || 0);
+  }
+  return removed;
 };

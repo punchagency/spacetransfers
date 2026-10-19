@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import { User } from "../models/user.model.js";
-import { signSessionToken } from "../utils/jwt.js";
+import { signSessionToken, SIGN_IN_BLOCKED_STATUSES } from "../utils/jwt.js";
 import { verifyPassword } from "../utils/passwords.js";
 import {
   clearPasskeys,
@@ -44,7 +44,7 @@ export const signedInResponse = (user: any) => ({
 const accountForStep = async (stepToken: unknown) => {
   const step = readStep(stepToken, "2fa");
   const user = await User.findById(step.userId);
-  if (!user || ["Suspended", "Rejected"].includes(String(user.status))) throw fail("This sign-in step has expired. Please start again.", 401);
+  if (!user || SIGN_IN_BLOCKED_STATUSES.includes(String(user.status))) throw fail("This sign-in step has expired. Please start again.", 401);
   return { user, challenge: step.challenge };
 };
 
