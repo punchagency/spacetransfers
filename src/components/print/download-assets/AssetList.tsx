@@ -72,7 +72,7 @@ export const AssetList = ({
       case "png":
       case "jpg":    return <FiImage className="w-4 h-4 text-blue-400" />;
       case "xlsx":   return <FiLayers className="w-4 h-4 text-green-400" />;
-      default:       return <FiFileText className="w-4 h-4 text-gray-400" />;
+      default:       return <FiFileText className="w-4 h-4 text-gray-500" />;
     }
   };
 
@@ -141,7 +141,7 @@ export const AssetList = ({
   if (count === 0 && !isLoadingMore) {
     return (
       <div
-        className="flex items-center justify-center text-sm text-gray-400"
+        className="flex items-center justify-center text-sm text-gray-500"
         style={{ height: CONTAINER_HEIGHT }}
       >
         No assets found
@@ -202,7 +202,7 @@ export const AssetList = ({
                 </h4>
                 <p
                   className={`text-xs truncate leading-tight ${
-                    isSelected ? "text-blue-600" : "text-gray-400"
+                    isSelected ? "text-blue-600" : "text-gray-500"
                   }`}
                 >
                   {asset.size}

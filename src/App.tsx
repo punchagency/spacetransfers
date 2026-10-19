@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { NotFoundPage } from "./pages/NotFoundPage";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import AuthPage from "./pages/AuthPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
@@ -57,9 +58,8 @@ function App() {
           </Route>
         </Route>
 
-        {/* Unknown path: aim at the dashboard; the guard redirects on to /auth
-            when there's no session, so a stray URL can't log a user out. */}
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
       </ErrorBoundary>
     </BrowserRouter>

@@ -258,7 +258,7 @@ export const ShippingLabelModal = ({
 
             {overview?.trackingNumber && (
               <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1 text-xs">
-                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Tracking</div>
+                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Tracking</div>
                 <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
                 {overview.carrier && <div className="text-gray-500">{overview.carrier.toUpperCase()}</div>}
                 {overview.trackingUrl && (
@@ -315,7 +315,7 @@ export const ShippingLabelModal = ({
             {confirming ? "Confirming…" : "Confirm — Package Ready for Pickup"}
           </button>
 
-          <div className="text-[11px] text-gray-400 text-center leading-relaxed">
+          <div className="text-[11px] text-gray-500 text-center leading-relaxed">
             Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
           </div>
         </div>

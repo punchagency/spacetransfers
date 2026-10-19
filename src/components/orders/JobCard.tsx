@@ -20,15 +20,15 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
   const getStatusBadgeStyles = (status: string) => {
     switch (status) {
       case "Pending Review":
-        return "bg-orange-50 text-orange-600 border border-orange-100";
+        return "bg-orange-50 text-orange-700 border border-orange-100";
       case "In Progress - Printing":
         return "bg-blue-50 text-blue-600 border border-blue-100";
       case "Print Shipping Label":
         return "bg-purple-50 text-purple-600 border border-purple-100";
       case "Order Shipped":
-        return "bg-green-50 text-green-600 border border-green-100";
+        return "bg-green-50 text-green-700 border border-green-100";
       case "Completed":
-        return "bg-green-50 text-green-600 border border-green-100";
+        return "bg-green-50 text-green-700 border border-green-100";
       case "Cancelled":
         return "bg-red-50 text-red-500 border border-red-100";
       default:
@@ -45,7 +45,7 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
               e.stopPropagation();
               onPrimaryAction?.(job.id, job.status);
             }}
-            className="w-full sm:w-auto px-3.5 py-2 bg-[#3C83F6] text-white rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-[#2F74E6] transition-colors"
+            className="w-full sm:w-auto px-3.5 py-2 bg-blue-600 text-white rounded-2xl text-sm font-medium whitespace-nowrap hover:bg-blue-700 transition-colors"
           >
             Accept & Start
           </button>
@@ -143,7 +143,7 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
           <div className="flex flex-col items-start gap-1 pt-1">
             <span className="font-bold text-gray-900">{job.displayId || job.id}</span>
             {job.isUrgent && (
-              <span className="bg-red-50 text-red-600 text-[10px] font-bold px-1.5 py-0.5 rounded-xl border border-red-100 uppercase tracking-wide">
+              <span className="bg-red-50 text-red-700 text-[10px] font-bold px-1.5 py-0.5 rounded-xl border border-red-100 uppercase tracking-wide">
                 Urgent
               </span>
             )}
@@ -178,7 +178,7 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
             </div>
             <div
               className={`font-medium whitespace-nowrap ${
-                isOverdue ? "text-red-600" : isDueSoon ? "text-orange-600" : hasDue ? "text-gray-900" : "text-gray-400"
+                isOverdue ? "text-red-600" : isDueSoon ? "text-orange-700" : hasDue ? "text-gray-900" : "text-gray-500"
               }`}
             >
               {dueText}

@@ -332,12 +332,12 @@ const Orders = () => {
         ) : filteredOrders.length === 0 ? (
           <div className="bg-white border border-gray-200 rounded-xl p-14 flex flex-col items-center gap-3 text-center">
             <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
-              <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-6 h-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
               </svg>
             </div>
             <p className="text-gray-900 font-semibold">No jobs found</p>
-            <p className="text-gray-400 text-sm">
+            <p className="text-gray-500 text-sm">
               {query ? `No results for "${query}"` : activeTab === "All Jobs" ? "You have no jobs yet." : `No ${activeTab.toLowerCase()} jobs at the moment.`}
             </p>
           </div>
@@ -413,7 +413,7 @@ const Orders = () => {
           </p>
           <div>
             <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
-              Reason <span className="text-gray-400 font-normal normal-case tracking-normal">(optional)</span>
+              Reason <span className="text-gray-500 font-normal normal-case tracking-normal">(optional)</span>
             </label>
             <textarea
               ref={cancelReasonRef}

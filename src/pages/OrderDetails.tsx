@@ -483,7 +483,7 @@ export default function OrderDetailsPage() {
           <div className="flex items-center gap-3 text-sm text-gray-500">
             <span>{overview?.customer?.name || "—"}</span>
             {overview?.customer?.region && <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">{overview.customer.region}</span>}
-            {overview?.priority === "URGENT" && <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-xs font-bold border border-red-100">Urgent</span>}
+            {overview?.priority === "URGENT" && <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs font-bold border border-red-100">Urgent</span>}
           </div>
           </div>
         </div>
@@ -640,7 +640,7 @@ export default function OrderDetailsPage() {
                     </div>
                     {overview.trackingNumber && (
                       <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1.5">
-                        <div className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Tracking Number</div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide font-semibold">Tracking Number</div>
                         <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
                         {overview.carrier && <div className="text-xs text-gray-500">Carrier: {overview.carrier.toUpperCase()}</div>}
                         {overview.trackingUrl && (
@@ -688,7 +688,7 @@ export default function OrderDetailsPage() {
 
                     {overview.trackingNumber && (
                       <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1">
-                        <div className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Tracking</div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide font-semibold">Tracking</div>
                         <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
                         {overview.carrier && <div className="text-xs text-gray-500">{overview.carrier.toUpperCase()}</div>}
                       </div>
@@ -729,7 +729,7 @@ export default function OrderDetailsPage() {
                       {updatingStatus ? "Confirming…" : "Confirm — Package Ready for Pickup"}
                     </button>
 
-                    <div className="text-[11px] text-gray-400 text-center leading-relaxed">
+                    <div className="text-[11px] text-gray-500 text-center leading-relaxed">
                       Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
                     </div>
                   </div>
@@ -771,11 +771,11 @@ export default function OrderDetailsPage() {
                           }}
                           className="w-4 h-4"
                         />
-                        <div className={`text-sm font-semibold ${isPast ? "text-gray-400" : "text-gray-800"}`}>
+                        <div className={`text-sm font-semibold ${isPast ? "text-gray-500" : "text-gray-800"}`}>
                           {o.label}
                         </div>
                         {isPast && (
-                          <span className="ml-auto text-[10px] font-medium text-gray-400 uppercase tracking-wide">Locked</span>
+                          <span className="ml-auto text-[10px] font-medium text-gray-500 uppercase tracking-wide">Locked</span>
                         )}
                       </label>
                     );
@@ -845,7 +845,7 @@ export default function OrderDetailsPage() {
                             {formatMoney(earningsBreakdown.total, currency)}
                           </div>
                         </div>
-                        <p className="mt-2 text-[11px] text-gray-400">
+                        <p className="mt-2 text-[11px] text-gray-500">
                           {earningsBreakdown.realized
                             ? overview.status === "CANCELLED"
                               ? "This job was cancelled, but you're still paid for it. It joins your next payout."

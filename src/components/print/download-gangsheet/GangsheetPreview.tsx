@@ -66,7 +66,7 @@ const GangsheetPreviewComponent = ({
 
       <div className="w-full flex justify-center">
         <div className="w-full max-w-[520px]">
-          <div ref={viewportRef} className="relative w-full aspect-square border border-gray-200 rounded-xl bg-gray-50 overflow-auto">
+          <div ref={viewportRef} tabIndex={0} role="region" aria-label="Sheet preview, scrollable" className="relative w-full aspect-square border border-gray-200 rounded-xl bg-gray-50 overflow-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
             <div className="relative bg-white" style={innerStyle}>
               <div
                 className="absolute inset-0 opacity-20"

@@ -379,7 +379,7 @@ export const DownloadAssetsModal = ({
           {/* Background load progress bar */}
           {loadingMore && knownTotal > 0 && (
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px] text-gray-400">
+              <div className="flex justify-between text-[11px] text-gray-500">
                 <span>Loading assets in background…</span>
                 <span>
                   {loadedCount.toLocaleString()} / {knownTotal.toLocaleString()}

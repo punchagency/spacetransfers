@@ -34,7 +34,7 @@ export const Pagination = ({ currentPage, totalPages, onPageChange }: Pagination
             <button
                 onClick={handlePrevious}
                 disabled={currentPage === 1}
-                className={`p-2 hover:text-gray-600 ${currentPage === 1 ? "text-gray-300 cursor-not-allowed" : "text-gray-400 cursor-pointer"
+                className={`p-2 hover:text-gray-600 ${currentPage === 1 ? "text-gray-300 cursor-not-allowed" : "text-gray-500 cursor-pointer"
                     }`}
             >
                 <span className="sr-only">Previous</span>
@@ -59,7 +59,7 @@ export const Pagination = ({ currentPage, totalPages, onPageChange }: Pagination
             <button
                 onClick={handleNext}
                 disabled={currentPage === totalPages}
-                className={`p-2 hover:text-gray-600 ${currentPage === totalPages ? "text-gray-300 cursor-not-allowed" : "text-gray-400 cursor-pointer"
+                className={`p-2 hover:text-gray-600 ${currentPage === totalPages ? "text-gray-300 cursor-not-allowed" : "text-gray-500 cursor-pointer"
                     }`}
             >
                 <span className="sr-only">Next</span>

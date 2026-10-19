@@ -13,6 +13,7 @@ It talks to the API in `space-transfer-server`. Customers use `space-transfers`,
 - **Availability.** Pause and resume new work.
 - **Earnings & Payouts.** What each job pays and what has been paid out.
 - **Profile and Settings.** Business details, notification preferences and password.
+- **Close the account.** Settings → Close your account, once no job is in progress, no customer report on their jobs is open and nothing is still owed to them. It asks for the password and signs them out everywhere. Their business name, email, address, jobs and payouts are kept for accounting; they can re-apply later with the same email.
 
 ## Stack
 
@@ -41,6 +42,8 @@ The API must be running; see `space-transfer-server`.
 | --- | --- |
 | `VITE_API_URL` | The API, including `/api` |
 | `VITE_GOOGLE_CLIENT_ID` | Google OAuth client for "Download to Google Drive" |
+| `VITE_STORE_URL` | The customer store, where the legal documents are published. Unset, a `printer.<domain>` address assumes `store.<domain>` |
+| `VITE_SENTRY_DSN` | Error reporting; nothing is reported when empty |
 
 Every `VITE_*` value is compiled into the public bundle. Never put a secret in one; a client secret does not belong in this app. `.env` is gitignored.
 

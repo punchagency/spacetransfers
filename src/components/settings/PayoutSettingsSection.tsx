@@ -172,7 +172,7 @@ const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus 
               </span>
             </div>
             <div className="flex items-start gap-2 text-xs text-gray-500 mt-2">
-              <FiInfo className="w-3.5 h-3.5 mt-0.5 text-gray-400 flex-shrink-0" />
+              <FiInfo className="w-3.5 h-3.5 mt-0.5 text-gray-500 flex-shrink-0" />
               <span>
                 Only Stripe Connect (bank transfer) is supported. Manual payout requests are not available —
                 all payouts are fully automated.

@@ -31,7 +31,7 @@ export const ProductionNotes = ({ jobId, initialNotes }: { jobId: string; initia
         Production Notes
       </h3>
       {/* Saved on the order and read only here — not by the customer or the admin. */}
-      <p className="text-[11px] text-gray-400 mb-3">Only you can see these notes.</p>
+      <p className="text-[11px] text-gray-500 mb-3">Only you can see these notes.</p>
       <div className="mb-3">
         <textarea
           value={notes}

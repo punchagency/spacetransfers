@@ -19,9 +19,10 @@ export const UserAvatar = ({
   return (
     <div
       className={`flex items-center justify-center bg-gray-100 ${className}`}
+      role="img"
       aria-label={alt}
     >
-      <FiUser className={`text-gray-400 ${iconClassName}`} />
+      <FiUser className={`text-gray-500 ${iconClassName}`} />
     </div>
   );
 };

@@ -4,6 +4,7 @@ import { PasskeyManager } from "../components/security/PasskeyManager";
 import { getUser } from "../utils/auth";
 import NotificationsSection from "../components/settings/NotificationsSection";
 import PayoutSettingsSection from "../components/settings/PayoutSettingsSection";
+import CloseAccountSection from "../components/settings/CloseAccountSection";
 import { apiFetch } from "../utils/api";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 
@@ -82,6 +83,10 @@ const Settings = () => {
             ) : (
               <PayoutSettingsSection initialStatus={payoutStatus} />
             )}
+          </div>
+
+          <div id="close-account" className="rounded-2xl border border-gray-200 bg-white p-5 sm:p-6">
+            <CloseAccountSection />
           </div>
         </div>
       )}

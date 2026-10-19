@@ -79,7 +79,7 @@ const CapacityFooter = () => {
         <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Active jobs</span>
         <span className={`text-sm font-bold ${atCapacity ? "text-amber-600" : "text-gray-900"}`}>
           {activeJobs}
-          {maxJobs != null && <span className="text-gray-400 font-semibold"> / {maxJobs}</span>}
+          {maxJobs != null && <span className="text-gray-500 font-semibold"> / {maxJobs}</span>}
         </span>
       </div>
 
@@ -93,7 +93,7 @@ const CapacityFooter = () => {
         </div>
       )}
 
-      <p className="mt-2 text-[11px] text-gray-400 leading-snug">
+      <p className="mt-2 text-[11px] text-gray-500 leading-snug">
         {status === "paused"
           ? capacityPaused
             ? "At capacity — you'll reopen automatically once a job finishes"
@@ -134,6 +134,10 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
     onClose?.();
   };
 
+  const isCurrent = (path: string) =>
+    location.pathname === path ||
+    (path === "/orders" && (location.pathname.startsWith("/orders") || location.pathname.startsWith("/dashboard/orders")));
+
   return (
     <aside
       className={`w-65 max-w-[85vw] bg-white border-r border-gray-200 h-full flex flex-col py-2
@@ -155,19 +159,14 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
 
       <nav className="space-y-2 border-b mb-6 border-gray-200 px-3">
         {nav.map(({ label, icon: Icon, iconSrc, path }, index) => (
-          <div
+          <button
+            type="button"
             key={label}
             onClick={() => go(path)}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer text-sm
+            aria-current={isCurrent(path) ? "page" : undefined}
+            className={`flex w-full items-center gap-3 px-4 py-3 rounded-xl cursor-pointer text-sm text-left focus-visible:outline-2 focus-visible:outline-blue-600
               ${
-                location.pathname === path ||
-                (path === "/orders" &&
-                  (location.pathname.startsWith("/orders") ||
-                    location.pathname.startsWith("/dashboard/orders"))) ||
-                (path === "/fulfilment-partners" &&
-                  location.pathname.startsWith(
-                    "/dashboard/fulfilment-partners",
-                  ))
+                isCurrent(path)
                   ? "bg-blue-50 text-blue-600 border-l-4 border-blue-600"
                   : "text-gray-600 hover:bg-gray-50"
               }
@@ -189,16 +188,18 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
                 {repliesOwed}
               </span>
             )}
-          </div>
+          </button>
         ))}
       </nav>
 
       <div className="space-y-2 px-3">
         {bottomNav.map(({ label, icon: Icon, path }) => (
-          <div
+          <button
+            type="button"
             key={label}
             onClick={() => go(path)}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm cursor-pointer
+            aria-current={location.pathname === path ? "page" : undefined}
+            className={`flex w-full items-center gap-3 px-4 py-3 rounded-xl text-sm cursor-pointer text-left focus-visible:outline-2 focus-visible:outline-blue-600
               ${
                 location.pathname === path
                   ? "bg-blue-50 text-blue-600 border-l-4 border-blue-600"
@@ -208,7 +209,7 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
           >
             <Icon size={18} />
             <span>{label}</span>
-          </div>
+          </button>
         ))}
       </div>
 
