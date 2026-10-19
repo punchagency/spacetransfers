@@ -29,6 +29,7 @@ interface PendingPrinter {
    * without this a second application looks exactly like a first one.
    */
   priorRejection: { at: string; reason: string | null; by: string | null } | null;
+  priorClosure?: { at: string | null } | null;
 }
 
 export const PrinterApprovals = () => {
@@ -129,12 +130,12 @@ export const PrinterApprovals = () => {
             <div className="p-8 text-center text-gray-500">Loading pending printers...</div>
           ) : loadError ? (
             <div className="p-12 text-center">
-              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-50 text-red-600 mb-4">
+              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-50 text-red-700 mb-4">
                 <FiAlertTriangle size={24} />
               </div>
               <h3 className="text-lg font-medium text-gray-900">Could not load the approval queue</h3>
               <p className="text-gray-500 mt-1">{loadError}</p>
-              <p className="text-gray-400 text-sm mt-1">
+              <p className="text-gray-500 text-sm mt-1">
                 There may be printers waiting — this is not an empty queue.
               </p>
               <button
@@ -146,7 +147,7 @@ export const PrinterApprovals = () => {
             </div>
           ) : pendingPrinters.length === 0 ? (
             <div className="p-12 text-center">
-              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-green-50 text-green-600 mb-4">
+              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-green-50 text-green-700 mb-4">
                 <FiCheck size={24} />
               </div>
               <h3 className="text-lg font-medium text-gray-900">All caught up!</h3>
@@ -203,6 +204,12 @@ export const PrinterApprovals = () => {
                               : ''}
                             {printer.priorRejection.by ? ` by ${printer.priorRejection.by}` : ''}
                             {printer.priorRejection.reason ? `: "${printer.priorRejection.reason}"` : ''}
+                          </div>
+                        )}
+                        {printer.priorClosure && (
+                          <div className="mt-1 text-[11px] text-gray-600">
+                            Was a partner before and closed their account
+                            {printer.priorClosure.at ? ` on ${new Date(printer.priorClosure.at).toLocaleDateString()}` : ''}
                           </div>
                         )}
                         {printer.sameAddressPartners?.length > 0 && (
@@ -275,7 +282,7 @@ export const PrinterApprovals = () => {
                 placeholder="e.g. Could not verify the business address"
                 className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               />
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-xs text-gray-500 mt-1">
                 Written to the applicant, so keep it something you are happy for them
                 to read.
               </p>

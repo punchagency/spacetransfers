@@ -429,7 +429,7 @@ export const OrderIssues = ({
     return (
         <div ref={ref} id="issues" className="scroll-mt-40 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
-                <FiAlertTriangle className={`h-5 w-5 ${open > 0 ? 'text-amber-500' : 'text-gray-400'}`} />
+                <FiAlertTriangle className={`h-5 w-5 ${open > 0 ? 'text-amber-500' : 'text-gray-500'}`} />
                 <h2 className="text-lg font-semibold text-gray-900">Reported problems</h2>
                 {open > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">{open} open</span>}
             </div>

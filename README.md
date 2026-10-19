@@ -10,11 +10,12 @@ It talks to the API in `space-transfer-server`. Customers use `space-transfers`,
 - **Orders.** Every order with its region, partner, status, amount and profit. An order's page shows the customer, each sheet's contents and preview, the timeline, the assigned partner and the financials, and downloads the customer's invoice. Until an order ships it can be cancelled from its page, which refunds the customer in full unless a smaller amount is entered. Any card-paid order can also be refunded in part or in full without cancelling it, from the financials card. If a partner has already started the job, the dialog offers to pay them for it anyway.
 - **Sign-in security.** Every admin needs a passkey: an account without one is held at a setup screen, and the server refuses it too. Profile → Security manages your own passkeys and recovery codes, lists every admin account with whether it has one, and lets you reset a colleague's if they are locked out. A partner's can be reset from their Settings tab. Changing your password signs your other devices out. Security headers for production are in `vercel.json`.
 - **Issues.** Problems customers report with their orders, the ones waiting on a reply first, with the open count in the menu. A report opens on its order, where the admin sees the customer's photos, writes to the customer and, separately, to the partner, and resolves it with a refund of a chosen amount, a free reprint, or a closing message.
-- **Fulfilment Partners.** The partner list, each partner's details and performance, and manual order assignment.
-- **Approvals.** Approve or reject partners who signed up in the printer portal.
+- **Fulfilment Partners.** The partner list, each partner's details and performance, and manual order assignment. A partner who closed their own account shows as Closed. They can't be switched back on or given jobs, and a job can only be assigned to an Active or Under Review partner.
+- **Approvals.** Approve or reject partners who signed up in the printer portal. A returning applicant who closed their account before is marked as such.
 - **Earnings.** Revenue, partner cost, margin and what has been earned, with revenue by region.
 - **Payouts.** What each partner is owed for shipped jobs. Create a payout, review its jobs, approve or reject it, then pay it through Stripe Connect. Nothing is paid without an admin approving and then paying it. Payouts can be paused per partner and exported as CSV.
 - **Settings.** Retail price, sheet size, shipping rates, tax, the rush fee, partner pay, the assignment rule, partner job limits and the SLA.
+- **Legal documents.** The Terms of Service, Privacy Policy and Content Policy, edited with a live preview. Save a draft, discard it, or publish it with a note saying what changed. Publishing makes the draft the current version for the store, the partner portal and new sign-ups. Version history shows every earlier wording, and any of them can be used as the starting point for a new draft. The first full drafts of the Terms and Privacy Policy are waiting there for legal review. Fill in the [bracketed] details before publishing.
 - **Notifications.** Live alerts for new orders, partner sign-ups and problems such as a payment with no order.
 
 ## Stack
@@ -43,6 +44,8 @@ The API must be running; see `space-transfer-server`.
 | Variable | Purpose |
 | --- | --- |
 | `VITE_API_URL` | The API, including `/api` |
+| `VITE_STORE_URL` | The customer store, where legal documents are published. Unset, an `admin.<domain>` address assumes `store.<domain>` |
+| `VITE_SENTRY_DSN` | Error reporting; nothing is reported when empty |
 
 Every `VITE_*` value is compiled into the public bundle. `.env` is gitignored.
 

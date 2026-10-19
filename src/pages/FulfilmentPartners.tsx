@@ -201,7 +201,6 @@ export const FulfilmentPartners = () => {
             </button>
             <button
               onClick={() => setIsAddModalOpen(true)}
-              aria-label="Add new fulfilment partner"
               className="flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-sm w-full sm:w-auto"
             >
               <FiPlus />
@@ -220,6 +219,7 @@ export const FulfilmentPartners = () => {
           />
 
           <SelectInput
+            aria-label="Filter by status"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             containerClassName="w-full md:w-48"
@@ -229,9 +229,11 @@ export const FulfilmentPartners = () => {
             <option>Pending</option>
             <option>Suspended</option>
             <option>Rejected</option>
+            <option>Closed</option>
           </SelectInput> 
 
           <SelectInput
+            aria-label="Filter by region"
             value={regionFilter}
             onChange={(e) => setRegionFilter(e.target.value)}
             containerClassName="w-full md:w-48"

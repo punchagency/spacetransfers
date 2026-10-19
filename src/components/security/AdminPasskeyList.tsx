@@ -38,7 +38,7 @@ export function AdminPasskeyList() {
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-gray-900">
                 {admin.name || admin.email}
-                {admin.id === me && <span className="ml-2 text-xs font-normal text-gray-400">you</span>}
+                {admin.id === me && <span className="ml-2 text-xs font-normal text-gray-500">you</span>}
               </p>
               <p className="truncate text-xs text-gray-500">
                 {admin.email}

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { FiLogOut, FiUser, FiChevronDown } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { clearAuth, getUserSnapshot, subscribeToAuth } from '../../utils/auth';
+import { confirmLeave } from '../../utils/leaveGuard';
 
 export const UserMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -31,6 +32,7 @@ export const UserMenu = () => {
   }, []);
 
   const handleLogout = () => {
+    if (!confirmLeave()) return;
     try {
       // clearAuth notifies the route guard, which redirects on its own — no
       // full page reload, so in-flight React state isn't thrown away and the
@@ -63,7 +65,7 @@ export const UserMenu = () => {
           <div className="text-[11px] text-gray-500">{user.email}</div>
         </div>
         <FiChevronDown
-          className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${
+          className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${
             isOpen ? 'rotate-180' : ''
           }`}
         />
@@ -83,8 +85,9 @@ export const UserMenu = () => {
 
           <button
             onClick={() => {
-              navigate('/profile');
               setIsOpen(false);
+              if (!confirmLeave()) return;
+              navigate('/profile');
             }}
             className="w-full flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 transition-colors"
             role="menuitem"

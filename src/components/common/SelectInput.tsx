@@ -21,7 +21,7 @@ export const SelectInput = ({
         {children}
       </select>
       <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-        <FiChevronDown className="text-gray-400" />
+        <FiChevronDown className="text-gray-500" />
       </div>
     </div>
   );

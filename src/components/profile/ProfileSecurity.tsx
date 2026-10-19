@@ -110,7 +110,7 @@ export const ProfileSecurity = () => {
         <div>
           <h3 className="text-base font-bold text-gray-900">Change Password</h3>
           {lastPasswordChange && (
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="text-xs text-gray-500 mt-1">
               Last password change:{" "}
               {lastPasswordChange.toLocaleDateString("en-US", {
                 month: "short",
@@ -137,7 +137,7 @@ export const ProfileSecurity = () => {
               type="button"
               aria-label="Toggle current password visibility"
               onClick={() => setShowCurrent((v) => !v)}
-              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-600 transition-colors"
             >
               {showCurrent ? <FiEyeOff className="w-4 h-4" /> : <FiEye className="w-4 h-4" />}
             </button>
@@ -160,7 +160,7 @@ export const ProfileSecurity = () => {
               type="button"
               aria-label="Toggle new password visibility"
               onClick={() => setShowNew((v) => !v)}
-              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-600 transition-colors"
             >
               {showNew ? <FiEyeOff className="w-4 h-4" /> : <FiEye className="w-4 h-4" />}
             </button>
@@ -183,7 +183,7 @@ export const ProfileSecurity = () => {
               type="button"
               aria-label="Toggle confirm password visibility"
               onClick={() => setShowConfirm((v) => !v)}
-              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-600 transition-colors"
             >
               {showConfirm ? <FiEyeOff className="w-4 h-4" /> : <FiEye className="w-4 h-4" />}
             </button>

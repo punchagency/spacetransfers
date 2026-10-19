@@ -182,7 +182,7 @@ export const PartnerSettings = ({
                                 placeholder="Leave blank to ship under HQ"
                                 className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-xl text-sm font-medium outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                             />
-                            <p className="text-[13px] text-gray-400 font-medium">
+                            <p className="text-[13px] text-gray-500 font-medium">
                                 The number in the warehouse&rsquo;s ShipStation URL. Without it this
                                 partner&rsquo;s orders are reported under head office — labels still ship
                                 from their own address either way.
@@ -198,10 +198,20 @@ export const PartnerSettings = ({
 
                     <div className="space-y-8">
                         {/* Activate/Deactivate */}
+                        {partnerStatus === 'Closed' || partnerStatus === 'Rejected' ? (
+                            <div className="space-y-0.5">
+                                <p className="text-sm font-bold text-gray-900">Account status</p>
+                                <p className="text-[13px] text-gray-500 font-medium">
+                                    {partnerStatus === 'Closed'
+                                        ? 'This partner closed their account, so it can\u2019t be reactivated here. They can re-apply from the partner sign-up page with the same email.'
+                                        : 'This application was rejected, so it can\u2019t be activated here. They can re-apply from the partner sign-up page.'}
+                                </p>
+                            </div>
+                        ) : (
                         <div className="flex items-center justify-between">
                             <div className="space-y-0.5">
                                 <label className="text-sm font-bold text-gray-900">Activate/Deactivate Partner</label>
-                                <p className="text-[13px] text-gray-400 font-medium">Control whether this partner can receive orders</p>
+                                <p className="text-[13px] text-gray-500 font-medium">Control whether this partner can receive orders</p>
                                 {/*
                                   * Called out because this one toggle does not
                                   * wait for Save Settings — it suspends or
@@ -217,6 +227,7 @@ export const PartnerSettings = ({
                                 </p>
                             </div>
                             <Toggle
+                                label="Partner account active"
                                 enabled={isPartnerActive}
                                 setEnabled={(v) => {
                                     if (!v) {
@@ -230,6 +241,7 @@ export const PartnerSettings = ({
                                 }}
                             />
                         </div>
+                        )}
 
                         {/*
                           "Email: Order Assigned" and "Email: Job Updates" were
@@ -279,7 +291,7 @@ export const PartnerSettings = ({
                                 placeholder="e.g. Repeated late fulfilment on assigned jobs"
                                 className="mt-1.5 w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                             />
-                            <p className="text-xs text-gray-400 mt-1">
+                            <p className="text-xs text-gray-500 mt-1">
                                 Written to the partner, so keep it something you are happy for
                                 them to read.
                             </p>

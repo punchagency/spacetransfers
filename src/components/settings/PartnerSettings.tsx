@@ -205,6 +205,7 @@ export const PartnerSettings = () => {
               <input
                 type="number"
                 min="1"
+                aria-label="Maximum active jobs per partner"
                 value={maxJobsValue}
                 onChange={(e) => {
                   setMaxJobsValue(e.target.value);
@@ -280,6 +281,7 @@ export const PartnerSettings = () => {
                         type="number"
                         min="1"
                         step="1"
+                        aria-label="Not started, hours allowed for normal orders"
                         value={sla.acceptNormal}
                         onChange={(e) => setSla((s) => ({ ...s, acceptNormal: e.target.value }))}
                         disabled={loading || !slaEnabled}
@@ -294,6 +296,7 @@ export const PartnerSettings = () => {
                         type="number"
                         min="1"
                         step="1"
+                        aria-label="Not started, hours allowed for urgent orders"
                         value={sla.acceptUrgent}
                         onChange={(e) => setSla((s) => ({ ...s, acceptUrgent: e.target.value }))}
                         disabled={loading || !slaEnabled}
@@ -315,6 +318,7 @@ export const PartnerSettings = () => {
                         type="number"
                         min="1"
                         step="1"
+                        aria-label="Printing, hours allowed for normal orders"
                         value={sla.printNormal}
                         onChange={(e) => setSla((s) => ({ ...s, printNormal: e.target.value }))}
                         disabled={loading || !slaEnabled}
@@ -329,6 +333,7 @@ export const PartnerSettings = () => {
                         type="number"
                         min="1"
                         step="1"
+                        aria-label="Printing, hours allowed for urgent orders"
                         value={sla.printUrgent}
                         onChange={(e) => setSla((s) => ({ ...s, printUrgent: e.target.value }))}
                         disabled={loading || !slaEnabled}
@@ -351,6 +356,7 @@ export const PartnerSettings = () => {
               type="number"
               min="0"
               step="1"
+              aria-label="Reassignment limit"
               value={sla.maxReassignments}
               onChange={(e) => setSla((s) => ({ ...s, maxReassignments: e.target.value }))}
               disabled={loading || !slaEnabled}

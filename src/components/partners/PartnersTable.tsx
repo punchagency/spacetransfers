@@ -6,17 +6,18 @@ import type { Partner } from "../../types/partners";
 const getStatusStyles = (status: Partner["status"]) => {
     switch (status) {
         case "Active":
-            return "bg-green-50 text-green-600";
+            return "bg-green-50 text-green-700";
         case "Pending":
             return "bg-amber-50 text-amber-600";
         case "Under Review":
             return "bg-amber-50 text-amber-600";
         case "Suspended":
-            return "bg-red-50 text-red-600";
+            return "bg-red-50 text-red-700";
         // Grey, not red: a rejected application is closed and needs nothing from
         // anyone. Red is for a partner who was working and has been stopped.
         case "Rejected":
-            return "bg-gray-100 text-gray-500";
+        case "Closed":
+            return "bg-gray-100 text-gray-600";
         default:
             return "bg-gray-50 text-gray-600";
     }
@@ -38,7 +39,7 @@ export const PartnersTable = ({
             render: (partner: Partner) => (
                 <div className="flex flex-col">
                     <span className="font-semibold text-gray-900">{partner.name}</span>
-                    <span className="text-xs text-gray-400">{partner.email}</span>
+                    <span className="text-xs text-gray-500">{partner.email}</span>
                 </div>
             )
         },
@@ -49,7 +50,7 @@ export const PartnersTable = ({
                     {partner.regions.map((region) => (
                         <span
                             key={region}
-                            className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded-md text-[11px] font-medium"
+                            className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded-md text-[11px] font-medium"
                         >
                             {region}
                         </span>
@@ -96,7 +97,7 @@ export const PartnersTable = ({
              * still looked clickable. The row is the control.
              */
             render: () => (
-                <span className="text-gray-400 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
+                <span className="text-gray-500 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
                     View
                 </span>
             )

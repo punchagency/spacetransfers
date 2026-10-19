@@ -241,7 +241,7 @@ export const Payouts = () => {
                 <div key={c.label} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{c.label}</p>
                   <p className="mt-1 text-2xl font-bold text-gray-900 tabular-nums">{c.value}</p>
-                  <p className="mt-1 text-xs text-gray-400">{c.note}</p>
+                  <p className="mt-1 text-xs text-gray-500">{c.note}</p>
                 </div>
               ))}
             </div>
@@ -286,7 +286,7 @@ export const Payouts = () => {
                           </td>
                           <td className="px-5 py-3 tabular-nums text-gray-700">{currency(p.totalPaid)}</td>
                           <td className="px-5 py-3">
-                            <Toggle enabled={p.payoutsEnabled} setEnabled={(next) => void togglePayouts(p, next)} />
+                            <Toggle label={`Payouts for ${p.name || "this partner"}`} enabled={p.payoutsEnabled} setEnabled={(next) => void togglePayouts(p, next)} />
                           </td>
                           <td className="px-5 py-3 text-right">
                             <button

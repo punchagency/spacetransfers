@@ -59,7 +59,7 @@ export const PartnerOrders = ({
         <div className="space-y-6 animate-in fade-in duration-300">
             <div className="flex flex-col md:flex-row gap-4 items-center">
                 <div className="relative flex-1 w-full">
-                    <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
                     <input
                         type="text"
                         placeholder="Search by order ID, customer or status"
@@ -71,6 +71,7 @@ export const PartnerOrders = ({
                 <div className="flex gap-4 w-full md:w-auto">
                     <div className="relative flex-1 md:w-48">
                         <select
+                            aria-label="Filter by status"
                             value={statusFilter}
                             onChange={(e) => setStatusFilter(e.target.value)}
                             className="w-full pl-4 pr-10 py-2 border border-gray-100 bg-gray-50/50 rounded-lg text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:bg-white focus:border-blue-500 transition-all"
@@ -84,7 +85,7 @@ export const PartnerOrders = ({
                             <option>Completed</option>
                             <option>Cancelled</option>
                         </select>
-                        <FiChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                        <FiChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
                     </div>
                 </div>
             </div>
@@ -111,7 +112,7 @@ export const PartnerOrders = ({
                                 </tr>
                             ) : filtered.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="px-6 py-10 text-center text-sm text-gray-400 italic">
+                                    <td colSpan={6} className="px-6 py-10 text-center text-sm text-gray-500 italic">
                                         No orders found
                                     </td>
                                 </tr>
@@ -134,7 +135,7 @@ export const PartnerOrders = ({
                                         <td className="px-6 py-4 text-center">
                                             <button
                                                 onClick={() => navigate(`/dashboard/orders/${order.id}`)}
-                                                className="text-gray-400 font-medium hover:text-blue-600 transition-colors"
+                                                className="text-gray-500 font-medium hover:text-blue-600 transition-colors"
                                             >
                                                 View
                                             </button>

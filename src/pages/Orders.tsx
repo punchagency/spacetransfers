@@ -75,7 +75,7 @@ export const Orders = () => {
         {/* Search */}
         <div className="relative max-w-sm">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-            <FiSearch className="text-gray-400" />
+            <FiSearch className="text-gray-500" />
           </div>
           <input
             type="text"

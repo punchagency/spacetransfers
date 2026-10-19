@@ -1,3 +1,4 @@
+import { reportError } from "../../lib/monitoring";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -29,6 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    reportError(error, { componentStack: errorInfo.componentStack, boundary: (this.props as any).name });
     console.error("[ErrorBoundary] page crashed:", error, errorInfo);
   }
 

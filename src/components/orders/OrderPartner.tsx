@@ -61,7 +61,7 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
             <div className="flex items-start justify-between mb-6 gap-3">
                 <h2 className="text-lg font-semibold text-gray-900">Print Partner</h2>
                 {isUrgent && (
-                    <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-200 shrink-0">
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-700 border border-red-200 shrink-0">
                         <FiZap className="w-3 h-3" /> Urgent
                     </span>
                 )}
@@ -71,7 +71,7 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
                 <div>
                     <p className="text-sm text-gray-600">Priority</p>
                     {isUrgent && rushFee !== null && rushFee > 0 && (
-                        <p className="text-xs text-gray-400 mt-0.5">
+                        <p className="text-xs text-gray-500 mt-0.5">
                             Adds {fmt(rushFee)} to the partner&rsquo;s payout
                         </p>
                     )}
@@ -128,7 +128,7 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
                             <span>
                                 {region.printerRegion}
                                 {region.customerRegion && region.customerRegion !== region.printerRegion && (
-                                    <span className="text-gray-400"> · customer in {region.customerRegion}</span>
+                                    <span className="text-gray-500"> · customer in {region.customerRegion}</span>
                                 )}
                             </span>
                         </div>
@@ -160,7 +160,7 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
                         */}
                         <span className="text-gray-600">Payout</span>
                         <span
-                            className={`font-medium ${partnerCost === null || notPaid ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
+                            className={`font-medium ${partnerCost === null || notPaid ? 'text-gray-500 cursor-help' : 'text-gray-900'}`}
                             title={
                                 notPaid
                                     ? 'This order was cancelled and the partner is not paid for it.'
@@ -173,7 +173,7 @@ export const OrderPartner = ({ order }: OrderPartnerProps) => {
                         >
                             {notPaid ? 'Not paid' : partnerCost === null ? '—' : fmt(partnerCost)}
                             {!notPaid && partnerCost !== null && isEstimate && (
-                                <span className="ml-1 text-[11px] font-normal text-gray-400">est.</span>
+                                <span className="ml-1 text-[11px] font-normal text-gray-500">est.</span>
                             )}
                         </span>
                     </div>

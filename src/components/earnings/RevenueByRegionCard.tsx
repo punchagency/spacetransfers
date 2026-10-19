@@ -18,7 +18,7 @@ export const RevenueByRegionCard = ({ rows }: { rows: RevenueByRegionRow[] }) =>
 
       {data.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-sm text-gray-400">No revenue in this period</p>
+          <p className="text-sm text-gray-500">No revenue in this period</p>
         </div>
       ) : (
         <>

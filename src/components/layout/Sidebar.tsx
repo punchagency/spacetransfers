@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { FiAlertTriangle } from "react-icons/fi";
+import { FiAlertTriangle, FiFileText } from "react-icons/fi";
 import { apiFetch } from '../../utils/api';
+import { confirmLeave } from '../../utils/leaveGuard';
 import { MdClose } from "react-icons/md";
 import {
   AiOutlineBank,
@@ -26,6 +27,7 @@ const nav = [
 ];
 
 const bottomNav = [
+  { label: "Legal documents", icon: FiFileText, path: "/legal" },
   { label: "Profile", icon: AiOutlineUser, path: "/profile" },
   { label: "Settings", icon: AiOutlineSetting, path: "/settings" },
 ];
@@ -59,8 +61,14 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
     };
   }, [location.pathname]);
 
+  const isCurrent = (path: string) =>
+    location.pathname === path ||
+    (path === '/orders' && location.pathname.startsWith('/dashboard/orders')) ||
+    (path === '/fulfilment-partners' && location.pathname.startsWith('/dashboard/fulfilment-partners'));
+
   /** Following a link on a phone closes the drawer; on desktop there is nothing to close. */
   const go = (path: string) => {
+    if (!confirmLeave()) return;
     navigate(path);
     onClose?.();
   };
@@ -85,13 +93,13 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
 
       <nav className="space-y-2 border-b mb-6 border-gray-200 px-3">
         {nav.map(({ label, icon: Icon, iconSrc, path }, index) => (
-          <div
+          <button
+            type="button"
             key={label}
             onClick={() => go(path)}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer text-sm
-              ${location.pathname === path ||
-                (path === '/orders' && location.pathname.startsWith('/dashboard/orders')) ||
-                (path === '/fulfilment-partners' && location.pathname.startsWith('/dashboard/fulfilment-partners'))
+            aria-current={isCurrent(path) ? "page" : undefined}
+            className={`flex w-full items-center gap-3 px-4 py-3 rounded-xl cursor-pointer text-sm text-left focus-visible:outline-2 focus-visible:outline-blue-600
+              ${isCurrent(path)
                 ? "bg-blue-50 text-blue-600 border-l-4 border-blue-600"
                 : "text-gray-600 hover:bg-gray-50"
               }
@@ -112,17 +120,19 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
                 {openIssues}
               </span>
             )}
-          </div>
+          </button>
         ))}
       </nav>
 
       <div className="  space-y-2 px-3">
         {bottomNav.map(({ label, icon: Icon, path }) => (
-          <div
+          <button
+            type="button"
             key={label}
             onClick={() => go(path)}
-            className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm cursor-pointer
-              ${location.pathname === path
+            aria-current={location.pathname === path || location.pathname.startsWith(path + "/") ? "page" : undefined}
+            className={`flex w-full items-center gap-3 px-4 py-3 rounded-xl text-sm cursor-pointer text-left focus-visible:outline-2 focus-visible:outline-blue-600
+              ${location.pathname === path || location.pathname.startsWith(path + "/")
                 ? "bg-blue-50 text-blue-600 border-l-4 border-blue-600"
                 : "text-gray-600 hover:bg-gray-50"
               }
@@ -130,7 +140,7 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
           >
             <Icon size={18} />
             <span>{label}</span>
-          </div>
+          </button>
         ))}
       </div>
     </aside>

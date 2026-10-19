@@ -329,7 +329,7 @@ export const AssignOrdersModal = ({
           <button
             onClick={close}
             aria-label="Close assignment modal"
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-400 hover:text-gray-600"
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-500 hover:text-gray-600"
             disabled={assigning}
           >
             <FiX className="w-5 h-5" />
@@ -410,7 +410,7 @@ export const AssignOrdersModal = ({
                     </tr>
                   ) : filteredOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-10 text-center text-sm text-gray-400 italic">No unassigned orders found</td>
+                      <td colSpan={6} className="px-6 py-10 text-center text-sm text-gray-500 italic">No unassigned orders found</td>
                     </tr>
                   ) : (
                     filteredOrders.map((o) => {
@@ -439,7 +439,7 @@ export const AssignOrdersModal = ({
                             {formatOrderStatus(o.status)}
                             {o.isUrgent && (
                               <span
-                                className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-200"
+                                className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-700 border border-red-200"
                                 title="Already urgent — the partner is paid a rush surcharge"
                               >
                                 Urgent

@@ -179,7 +179,7 @@ export const Earnings = () => {
         <div className="bg-white rounded-xl border border-red-200 shadow-sm p-6">
           <p className="text-sm font-medium text-gray-900">Could not load earnings</p>
           <p className="text-sm text-gray-500 mt-1">{loadError}</p>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="text-sm text-gray-500 mt-1">
             These figures are unavailable, not zero.
           </p>
           <button
@@ -195,12 +195,12 @@ export const Earnings = () => {
 
       {!loadError && data?.kpis.deductions && (
         <p className="text-sm text-gray-500 -mt-2">
-          Margin is revenue less tax <span className="text-gray-400">({currency(data.kpis.deductions.tax)}, for the state)</span>,
-          shipping <span className="text-gray-400">({currency(data.kpis.deductions.shipping)})</span>, card fees{" "}
-          <span className="text-gray-400">({currency(data.kpis.deductions.cardFees)})</span>
+          Margin is revenue less tax <span className="text-gray-500">({currency(data.kpis.deductions.tax)}, for the state)</span>,
+          shipping <span className="text-gray-500">({currency(data.kpis.deductions.shipping)})</span>, card fees{" "}
+          <span className="text-gray-500">({currency(data.kpis.deductions.cardFees)})</span>
           {(data.kpis.deductions.refunds ?? 0) > 0 && (
             <>
-              , refunds <span className="text-gray-400">({currency(data.kpis.deductions.refunds ?? 0)})</span>
+              , refunds <span className="text-gray-500">({currency(data.kpis.deductions.refunds ?? 0)})</span>
             </>
           )}{" "}
           and partner cost.
