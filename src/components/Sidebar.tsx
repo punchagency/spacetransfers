@@ -20,9 +20,14 @@ import {
 } from 'react-icons/md';
 
 // Toggle Component
-const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
+const Toggle = ({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) => (
     <button
-        onClick={onChange}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        // The row around it toggles too; one click must not count twice.
+        onClick={(e) => { e.stopPropagation(); onChange(); }}
         className={`w-9 h-5 rounded-full relative transition-colors duration-200 ease-in-out cursor-pointer ${checked ? 'bg-slate-900' : 'bg-gray-200'}`}
     >
         <div className={`absolute top-1 left-1 bg-white w-3 h-3 rounded-full shadow transition-transform duration-200 ease-in-out ${checked ? 'translate-x-4' : 'translate-x-0'}`} />
@@ -66,7 +71,7 @@ const IconRow = ({
             </div>
             {action}
         </div>
-        {hint && <p className="mt-1 ml-6 text-[11px] text-gray-400">{hint}</p>}
+        {hint && <p className="mt-1 ml-6 text-[11px] text-gray-500">{hint}</p>}
     </div>
 );
 
@@ -283,7 +288,7 @@ export default function Sidebar({
                         <MdSettings size={18} />
                         <span className="text-[14px] font-semibold">Settings</span>
                     </div>
-                    <button onClick={onClose} className="text-gray-500 hover:text-gray-800 transition-colors cursor-pointer">
+                    <button onClick={onClose} aria-label="Close settings" className="text-gray-500 hover:text-gray-800 transition-colors cursor-pointer">
                         <MdClose size={18} />
                     </button>
                 </div>
@@ -331,7 +336,7 @@ export default function Sidebar({
                                     icon={MdGridOn}
                                     label="Show Grid"
                                     onClick={() => onUpdateSetting('showGrid', !settings.showGrid)}
-                                    action={<Toggle checked={settings.showGrid} onChange={() => onUpdateSetting('showGrid', !settings.showGrid)} />}
+                                    action={<Toggle label="Show Grid" checked={settings.showGrid} onChange={() => onUpdateSetting('showGrid', !settings.showGrid)} />}
                                     hint={hasArtwork ? undefined : "Appears on the sheet once you add artwork"}
                                 />
                                 {!isMobile && (
@@ -339,14 +344,14 @@ export default function Sidebar({
                                         icon={MdStraighten}
                                         label="Show Rulers"
                                         onClick={() => onUpdateSetting('showRulers', !settings.showRulers)}
-                                        action={<Toggle checked={settings.showRulers} onChange={() => onUpdateSetting('showRulers', !settings.showRulers)} />}
+                                        action={<Toggle label="Show Rulers" checked={settings.showRulers} onChange={() => onUpdateSetting('showRulers', !settings.showRulers)} />}
                                     />
                                 )}
                                 <IconRow
                                     icon={MdVisibility}
                                     label="Show Margins"
                                     onClick={() => onUpdateSetting('showMargins', !settings.showMargins)}
-                                    action={<Toggle checked={settings.showMargins} onChange={() => onUpdateSetting('showMargins', !settings.showMargins)} />}
+                                    action={<Toggle label="Show Margins" checked={settings.showMargins} onChange={() => onUpdateSetting('showMargins', !settings.showMargins)} />}
                                     /*
                                      * The guide is drawn on the sheet, and there is no sheet
                                      * until artwork exists — the empty board shows an upload
@@ -359,21 +364,23 @@ export default function Sidebar({
                                     icon={MdGridView}
                                     label="Snap to Grid"
                                     onClick={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)}
-                                    action={<Toggle checked={settings.snapToGrid} onChange={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)} />}
+                                    action={<Toggle label="Snap to Grid" checked={settings.snapToGrid} onChange={() => onUpdateSetting('snapToGrid', !settings.snapToGrid)} />}
                                 />
 
                                 {/* Preview Background */}
                                 <div className="pt-2 pb-1">
                                     <p className="text-[11px] font-semibold text-gray-500 mb-2 tracking-wide uppercase">Preview Background</p>
-                                    <div className="flex gap-[3px]">
+                                    <div className="grid grid-cols-7 gap-1">
                                         {BG_SWATCHES.map((swatch) => {
                                             const selected = settings.canvasBg === swatch.id;
                                             return (
                                                 <button
                                                     key={swatch.id}
                                                     title={swatch.label}
+                                                    aria-label={`Preview background: ${swatch.label}`}
+                                                    aria-pressed={selected}
                                                     onClick={() => onUpdateSetting('canvasBg', swatch.id)}
-                                                    className={`h-5 flex-1 min-w-0 rounded-[3px] cursor-pointer transition-all duration-100 focus:outline-none ${selected
+                                                    className={`h-6 min-w-[24px] flex-1 rounded-[3px] cursor-pointer transition-all duration-100 focus:outline-none ${selected
                                                             ? 'ring-2 ring-blue-500 ring-offset-[2px] brightness-110'
                                                             : 'hover:ring-1 hover:ring-gray-400 hover:ring-offset-[1px] hover:brightness-105'
                                                         }`}
@@ -395,6 +402,7 @@ export default function Sidebar({
                                         </div>
                                         <div className="relative">
                                             <select
+                                                aria-label="Margin size"
                                                 value={settings.marginSize}
                                                 onChange={(e) => onUpdateSetting('marginSize', parseFloat(e.target.value))}
                                                 className="bg-gray-100 text-[12px] py-1.5 pl-3 pr-8 rounded-md border-none focus:outline-none focus:ring-1 focus:ring-black cursor-pointer appearance-none text-gray-700 font-medium w-40"
@@ -431,7 +439,7 @@ export default function Sidebar({
                                 <div className="bg-gray-50 rounded-lg p-3 border border-gray-100 hover:bg-gray-100 transition-colors">
                                     <div className="flex items-center justify-between mb-1">
                                         <span className="text-[12px] font-semibold text-slate-800">Auto-Nest </span>
-                                        <Toggle checked={settings.autoNestStickers} onChange={() => onUpdateSetting('autoNestStickers', !settings.autoNestStickers)} />
+                                        <Toggle label="Auto-Nest" checked={settings.autoNestStickers} onChange={() => onUpdateSetting('autoNestStickers', !settings.autoNestStickers)} />
                                     </div>
                                     <p className="text-[12px] text-gray-500">Arrange efficiently and fill leftover gaps</p>
                                 </div>
@@ -442,7 +450,7 @@ export default function Sidebar({
                                 <div className="mt-3 bg-gray-50 rounded-lg p-3 border border-gray-100 hover:bg-gray-100 transition-colors">
                                     <div className="flex items-center justify-between mb-1">
                                         <span className="text-[12px] font-semibold text-slate-800">Auto Crop Uploads</span>
-                                        <Toggle checked={settings.autoCropUploads} onChange={() => onUpdateSetting('autoCropUploads', !settings.autoCropUploads)} />
+                                        <Toggle label="Auto Crop Uploads" checked={settings.autoCropUploads} onChange={() => onUpdateSetting('autoCropUploads', !settings.autoCropUploads)} />
                                     </div>
                                     <p className="text-[12px] text-gray-500">Trim empty space around new images. Change any image from its right-click menu.</p>
                                 </div>

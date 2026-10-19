@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",
+    "@sentry/browser": "^9.47.2",
     "@simplewebauthn/browser": "^13.3.0",
     "@stripe/react-stripe-js": "^3.9.0",
     "@stripe/stripe-js": "^7.5.0",

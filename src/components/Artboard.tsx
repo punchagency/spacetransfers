@@ -17,6 +17,8 @@ import { isNotUploaded } from "./artboard/lib/utils/uploadRecovery";
 import FailedUploadsPanel from "./artboard/features/canvas/FailedUploadsPanel";
 import { failedUploads } from "../lib/failedUploads";
 import { isTypingTarget } from "../lib/utils/keyboard";
+import { nudgeFor, nudgedPosition, resizedWidth } from "../lib/utils/keyboardNudge";
+import { GRID } from "../config/artboard.config";
 import { useCanHover } from "../lib/useIsMobile";
 import { CanvasContainer } from "./artboard/features/canvas";
 import { ZoomControls } from "./artboard/features/zoom";
@@ -369,6 +371,50 @@ export default function Artboard({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [deleteSelection, shortcutsEnabled, selectedId, selectedIds]);
+
+  /*
+   * Arrow keys move the selected artwork and plus/minus resize it, so a sheet
+   * can be laid out without a mouse. Each change is announced for screen
+   * readers. Only when the keyboard is on the sheet itself: a key pressed in a
+   * panel or a dialog belongs to it.
+   */
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (!shortcutsEnabled || isTypingTarget(e.target) || selectedId == null) return;
+      const target = e.target as HTMLElement | null;
+      if (target && target !== document.body && !target.closest("[data-item-id]")) return;
+      const action = nudgeFor(e.key, e.shiftKey);
+      if (!action) return;
+      const item = items.find((it) => it.id === selectedId);
+      if (!item) return;
+      e.preventDefault();
+      if (item.locked) {
+        setAnnouncement(`${item.name || "This image"} is locked.`);
+        return;
+      }
+      if (action.kind === "move") {
+        const to = nudgedPosition(item[action.axis], action.by, snapToGrid ? GRID.MINOR_IN : null);
+        const landed = action.axis === "posX" ? itemActions.setPosX(to) : itemActions.setPosY(to);
+        setAnnouncement(
+          landed == null
+            ? "It can't move any further that way."
+            : `${action.axis === "posX" ? "Across" : "Down"} ${landed.toFixed(2)} inches`,
+        );
+      } else {
+        const width = resizedWidth(item.widthIn, action.factor, Math.max(0.25, canvasWidth - 2 * marginSize));
+        const size = itemActions.scaleSelected(width);
+        setAnnouncement(
+          size
+            ? `${size.widthIn.toFixed(2)} by ${size.heightIn.toFixed(2)} inches`
+            : `It can't get any ${action.factor > 1 ? "larger" : "smaller"}.`,
+        );
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [items, selectedId, shortcutsEnabled, itemActions, canvasWidth, marginSize, snapToGrid]);
 
   const {
     handleResizeStart,
@@ -776,6 +822,13 @@ export default function Artboard({
       className="flex-1 relative bg-gray-50 overflow-hidden flex flex-col artboard-capture-area"
       style={{ userSelect: isResizing || isDraggingItem ? "none" : "auto" }}
     >
+      <p id="artboard-keys-help" className="sr-only">
+        Arrow keys move the selected artwork a tenth of an inch, or an inch with Shift. Plus and minus resize it. Delete removes it. Escape
+        deselects.
+      </p>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
       <FailedUploadsPanel
         items={notUploaded.map((it) => ({ id: it.id, name: it.name, url: it.url }))}
         onShow={showItem}

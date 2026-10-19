@@ -26,11 +26,11 @@ export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
           >
             Browse files
           </button>      
-          <div className="mt-5 text-[11px] tracking-wide text-slate-400">
+          <div className="mt-5 text-[11px] tracking-wide text-slate-500">
             {UPLOAD_FORMAT_LABELS.join(" • ")}
           </div>
         </div>
-        <div className="mt-3 flex items-center justify-center gap-6 text-[11px] text-slate-400">
+        <div className="mt-3 flex items-center justify-center gap-6 text-[11px] text-slate-500">
   
         </div>
       </div>

@@ -1,5 +1,5 @@
-import { LEGAL_DOCUMENTS } from "../../lib/legal/documents";
-import { LEGAL_CONTENT, type LegalContent } from "../../lib/legal/content";
+import { useEffect } from "react";
+import { LEGAL_DOCUMENTS, fetchLegalVersions, type LegalKey } from "../../lib/legal/documents";
 
 /**
  * The two mandatory acknowledgements shown during sign-up.
@@ -37,7 +37,7 @@ interface LegalAcceptanceProps {
   showErrors: boolean;
   disabled?: boolean;
   /** The auth dialog owns the reader so it can hide while a document is open. */
-  onOpenDocument: (document: LegalContent) => void;
+  onOpenDocument: (docId: string) => void;
 }
 
 export default function LegalAcceptance({
@@ -49,6 +49,11 @@ export default function LegalAcceptance({
   disabled,
   onOpenDocument,
 }: LegalAcceptanceProps) {
+  // Asked for as the form opens, so signing up does not wait on it.
+  useEffect(() => {
+    fetchLegalVersions().catch(() => {});
+  }, []);
+
   const termsError = showErrors && !termsAccepted;
   const contentError = showErrors && !contentResponsibilityAccepted;
 
@@ -62,7 +67,7 @@ export default function LegalAcceptance({
     docKey,
     label,
   }: {
-    docKey: keyof typeof LEGAL_CONTENT;
+    docKey: LegalKey;
     label?: string;
   }) => (
     <button
@@ -72,7 +77,7 @@ export default function LegalAcceptance({
         // would also toggle the associated checkbox.
         e.preventDefault();
         e.stopPropagation();
-        onOpenDocument(LEGAL_CONTENT[docKey]);
+        onOpenDocument(LEGAL_DOCUMENTS[docKey].id);
       }}
       className="font-medium text-blue-600 underline underline-offset-2 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 rounded-sm"
     >

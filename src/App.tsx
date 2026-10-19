@@ -1,11 +1,27 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Toaster } from "react-hot-toast";
 import IntroAnimation from "./components/IntroAnimation";
-import Editor from "./components/Editor";
+/*
+ * The editor is most of the store's code. Loaded on its own, so the legal
+ * pages and the 404 page arrive without it, and the builder fetches it while
+ * the intro plays.
+ */
+const loadEditor = () => import("./components/Editor");
+const Editor = lazy(loadEditor);
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { hydratePricePerSqFt, watchPricingSettings } from "./lib/utils/pricingRates";
+import { resolveRoute } from "./lib/route";
+import LegalPage from "./pages/LegalPage";
+import NotFoundPage from "./pages/NotFoundPage";
 
 export default function App() {
+  const route = resolveRoute(window.location.pathname);
+  if (route.kind === "legal") return <LegalPage docId={route.docId} />;
+  if (route.kind === "notFound") return <NotFoundPage />;
+  return <Builder />;
+}
+
+function Builder() {
   const [showHome, setShowHome] = useState(() => {
     try {
       return Boolean(new URLSearchParams(window.location.search).get("resetToken"));
@@ -18,6 +34,7 @@ export default function App() {
   // compiled in. Done once here, at the root, because the editor prices a sheet
   // as soon as the first item lands on the board.
   useEffect(() => {
+    void loadEditor();
     hydratePricePerSqFt();
     // Picks up an admin changing the rate or the sheet minimum without needing
     // the customer to reload.
@@ -37,7 +54,9 @@ export default function App() {
         {!showHome ? (
           <IntroAnimation onComplete={() => setShowHome(true)} />
         ) : (
-          <Editor />
+          <Suspense fallback={<div className="min-h-dvh bg-[#f5f7fb]" aria-busy="true" />}>
+            <Editor />
+          </Suspense>
         )}
       </ErrorBoundary>
     </>

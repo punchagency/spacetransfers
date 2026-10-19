@@ -25,12 +25,40 @@ const siteUrlPlugin = () => {
   const siteUrl = (process.env.VITE_SITE_URL || '').trim().replace(/\/+$/, '');
   return {
     name: 'space-transfers-site-url',
-    transformIndexHtml: (html) => html.split('%SITE%').join(siteUrl),
+    // A canonical address must be absolute; without the site's address there is none to give.
+    transformIndexHtml: (html) =>
+      (siteUrl ? html : html.replace(/\s*<!--[^>]*canonical[^>]*-->\s*<link rel="canonical"[^>]*>/, '').replace(/\s*<link rel="canonical"[^>]*>/, ''))
+        .split('%SITE%')
+        .join(siteUrl),
+  };
+};
+
+/**
+ * robots.txt and sitemap.xml, written at build time for the same reason: a
+ * sitemap must list absolute addresses. Without VITE_SITE_URL there is no
+ * sitemap, and robots.txt says nothing about one.
+ */
+const LEGAL_PATHS = ['/legal/terms', '/legal/privacy', '/legal/content-policy'];
+const crawlerFilesPlugin = () => {
+  const siteUrl = (process.env.VITE_SITE_URL || '').trim().replace(/\/+$/, '');
+  return {
+    name: 'space-transfers-crawler-files',
+    generateBundle() {
+      const robots = ['User-agent: *', 'Allow: /', ...(siteUrl ? ['', `Sitemap: ${siteUrl}/sitemap.xml`] : []), ''].join('\n');
+      this.emitFile({ type: 'asset', fileName: 'robots.txt', source: robots });
+      if (!siteUrl) return;
+      const urls = ['/', ...LEGAL_PATHS].map((p) => `  <url><loc>${siteUrl}${p}</loc></url>`).join('\n');
+      this.emitFile({
+        type: 'asset',
+        fileName: 'sitemap.xml',
+        source: `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
+      });
+    },
   };
 };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), siteUrlPlugin()],
+  plugins: [react(), tailwindcss(), siteUrlPlugin(), crawlerFilesPlugin()],
   test: {
     globals: true,
     environment: 'jsdom',

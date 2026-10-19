@@ -6,8 +6,7 @@ import { needsSecondStep, type SecondStepChallenge } from "../../lib/utils/passk
 import { SecondStep } from "../security/SecondStep";
 import LegalAcceptance from "./LegalAcceptance";
 import LegalDocumentModal from "./LegalDocumentModal";
-import { buildLegalAcceptancePayload } from "../../lib/legal/documents";
-import type { LegalContent } from "../../lib/legal/content";
+import { buildLegalAcceptancePayload, fetchLegalVersions } from "../../lib/legal/documents";
 import toast from "react-hot-toast";
 
 interface AuthModalProps {
@@ -73,7 +72,7 @@ export default function AuthModal({
   // Legal documents replace the sign-up dialog while they are being read.
   // Keeping this state here (rather than inside LegalAcceptance) prevents two
   // modal backdrops from being visible at once.
-  const [activeLegalDocument, setActiveLegalDocument] = useState<LegalContent | null>(null);
+  const [activeLegalDocument, setActiveLegalDocument] = useState<string | null>(null);
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
   // Stable ref so GIS callback always calls the latest handler
   const credentialHandlerRef = useRef<((r: { credential: string }) => void) | null>(null);
@@ -147,6 +146,7 @@ export default function AuthModal({
                 legalAcceptance: buildLegalAcceptancePayload(
                   termsAccepted,
                   contentResponsibilityAccepted,
+                  await fetchLegalVersions(),
                 ),
               }
             : {}),
@@ -341,6 +341,7 @@ export default function AuthModal({
                   legalAcceptance: buildLegalAcceptancePayload(
                     termsAccepted,
                     contentResponsibilityAccepted,
+                    await fetchLegalVersions(),
                   ),
                 }
               : {}),
@@ -396,7 +397,7 @@ export default function AuthModal({
   if (activeLegalDocument) {
     return (
       <LegalDocumentModal
-        doc={activeLegalDocument}
+        docId={activeLegalDocument}
         onClose={() => setActiveLegalDocument(null)}
       />
     );
@@ -470,7 +471,8 @@ export default function AuthModal({
           </p>
           <button
             onClick={onClose}
-            className="absolute -right-2 -top-2 p-2 text-gray-400 hover:text-gray-600 transition-colors"
+            aria-label="Close"
+            className="absolute -right-2 -top-2 p-2 text-gray-500 hover:text-gray-600 transition-colors"
           >
             <MdClose className="h-5 w-5" />
           </button>

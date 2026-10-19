@@ -366,18 +366,19 @@ export const useItemActions = (
     });
   };
 
-  const moveSelected = (axis: "posX" | "posY", n: number) => {
-    if (selectedId == null || blockedByLock()) return;
+  /** Moves the selection; returns where it ended up, or null when it could not move. */
+  const moveSelected = (axis: "posX" | "posY", n: number): number | null => {
+    if (selectedId == null || blockedByLock()) return null;
     const id = selectedId;
     const item = items.find((it) => it.id === id);
-    if (!item) return;
+    if (!item) return null;
     const fp = getItemFootprint(item, canvasWidth, marginSize, spacing);
     const raw = snapToGrid ? snapToGridPoint(n) : n;
     const value =
       axis === "posX"
         ? Math.min(Math.max(raw, marginSize), Math.max(marginSize, canvasWidth - marginSize - fp.w))
         : Math.min(Math.max(raw, marginSize), Math.max(marginSize, MAX_SHEET_HEIGHT_IN - fp.h));
-    if (Math.abs(value - item[axis]) < 1e-6) return;
+    if (Math.abs(value - item[axis]) < 1e-6) return null;
 
     // A grouped piece takes its group with it: members keep their places.
     const moving = item.groupId ? items.filter((it) => it.groupId === item.groupId) : [item];
@@ -394,7 +395,7 @@ export const useItemActions = (
     );
     if (!valid) {
       toast.error("That position overlaps other artwork. Try a clear spot.");
-      return;
+      return null;
     }
 
     commit(`${axis === "posX" ? "setPosX" : "setPosY"}-${id}`);
@@ -406,6 +407,19 @@ export const useItemActions = (
       }),
     );
     emit({ type: axis === "posX" ? "setPosX" : "setPosY", id, payload: { value } });
+    return value;
+  };
+
+  /** Resizes the selection by a factor, keeping its proportions, as one step to undo. */
+  const scaleSelected = (widthIn: number): { widthIn: number; heightIn: number } | null => {
+    if (selectedId == null || blockedByLock()) return null;
+    const item = items.find((it) => it.id === selectedId);
+    if (!item || item.widthIn <= 0 || Math.abs(widthIn - item.widthIn) < 0.005) return null;
+    const heightIn = Math.round(item.heightIn * (widthIn / item.widthIn) * 100) / 100;
+    commit(`scale-${selectedId}`);
+    setItems((prev) => prev.map((it) => (it.id === selectedId ? { ...it, widthIn, heightIn, gravityActive: true } : it)));
+    emit({ type: "setWidthIn", id: selectedId, payload: { value: widthIn } });
+    return { widthIn, heightIn };
   };
 
   const setPosX = (n: number) => moveSelected("posX", n);
@@ -620,6 +634,7 @@ export const useItemActions = (
     setWidthIn,
     setHeightIn,
     setPosX,
+    scaleSelected,
     setPosY,
     toggleExpandSelected,
     deleteSelected,
