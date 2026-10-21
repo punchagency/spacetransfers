@@ -129,7 +129,7 @@ const ResolveDialog = ({ issue, onClose, onResolved }: { issue: AdminIssue; onCl
     const [pickedDesigns, setPickedDesigns] = useState<Record<string, number>>({});
     const marked = new Set((issue.affectedDesigns || []).map((d) => designKey(d.sheet, d.design)));
     useEffect(() => {
-        if (mode !== 'designs' || designSheets) return;
+        if (outcome !== 'REPRINT' || mode !== 'designs' || designSheets) return;
         apiFetch(`/admin/orders/${issue.orderId}/designs`)
             .then((res) => {
                 const loaded: SheetDesigns[] = res?.sheets || [];
@@ -141,7 +141,7 @@ const ResolveDialog = ({ issue, onClose, onResolved }: { issue: AdminIssue; onCl
             })
             .catch((e) => setDesignsError(e?.message || "The order's designs couldn't be loaded."));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [mode, designSheets, issue.orderId]);
+    }, [outcome, mode, designSheets, issue.orderId]);
     const chosenDesigns = Object.entries(pickedDesigns)
         .filter(([, copies]) => copies > 0)
         .map(([key, copies]) => {

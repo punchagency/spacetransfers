@@ -1,9 +1,27 @@
 import { useState } from 'react';
 
+/** A design's small stored copy, falling back to the full image when it has none. */
+const Art = ({ thumb, full, className }: { thumb?: string | null; full: string | null; className: string }) => {
+    const [src, setSrc] = useState(thumb || full);
+    if (!src) return null;
+    return (
+        <img
+            src={src}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            draggable={false}
+            onError={() => full && src !== full && setSrc(full)}
+            className={className}
+        />
+    );
+};
+
 export interface SheetDesign {
     index: number;
     name: string;
     imageUrl: string | null;
+  thumbUrl?: string | null;
     copies: number;
     imageW: number;
     imageH: number;
@@ -99,7 +117,7 @@ export const DesignPicker = ({
                                     transform: `rotate(${d.rotation}deg)${d.flipped ? ' scaleX(-1)' : ''}`,
                                 }}
                             >
-                                {d.imageUrl && <img src={d.imageUrl} alt="" loading="lazy" decoding="async" draggable={false} className="h-full w-full object-fill" />}
+                                <Art thumb={d.thumbUrl} full={d.imageUrl} className="h-full w-full object-fill" />
                             </div>
                         ));
                     })}
@@ -124,7 +142,7 @@ export const DesignPicker = ({
                             />
                             <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
                                 <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
-                                    {d.imageUrl && <img src={d.imageUrl} alt="" loading="lazy" className="max-h-full max-w-full object-contain" />}
+                                    <Art thumb={d.thumbUrl} full={d.imageUrl} className="max-h-full max-w-full object-contain" />
                                 </span>
                                 <span className="min-w-0">
                                     <span className="block truncate text-sm font-medium text-gray-900">{d.name}</span>
