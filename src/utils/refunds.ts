@@ -62,6 +62,12 @@ export interface AdminIssue {
     orderStatus: string;
     orderTotal: number;
     refundable: number;
+    /** The order's sheets, which a reprint can be made of. */
+    sheets?: ReprintSheet[];
+    /** Designs the customer marked as affected, by sheet and place on it. */
+    affectedDesigns?: { sheet: number; design: number }[];
+    /** The partner who printed the order, who gets any reprint. */
+    reprintPartner?: { id: string; name: string; available: boolean } | null;
     createdAt: string;
     updatedAt: string;
     messages: AdminIssueMessage[];
@@ -93,4 +99,26 @@ export const unansweredOn = (issue: Pick<AdminIssue, 'messages'>, channel: Issue
         count = m.author === 'ADMIN' ? 0 : count + 1;
     }
     return count;
+};
+
+export interface ReprintSheet {
+    index: number;
+    name: string;
+    widthIn: number | null;
+    heightIn: number | null;
+    quantity: number;
+    previewImage: string | null;
+}
+
+/** What to send for a reprint: null for the whole order, or the chosen sheets. */
+export const reprintSelection = (
+    sheets: ReprintSheet[],
+    whole: boolean,
+    picked: Record<number, number>,
+): { items: { index: number; quantity: number }[] | null; error: string | null } => {
+    if (whole) return { items: null, error: null };
+    const items = sheets
+        .filter((s) => (picked[s.index] ?? 0) > 0)
+        .map((s) => ({ index: s.index, quantity: Math.min(s.quantity, Math.max(1, Math.round(picked[s.index]))) }));
+    return items.length ? { items, error: null } : { items: null, error: 'Choose at least one sheet to reprint.' };
 };

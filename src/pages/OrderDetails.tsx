@@ -10,6 +10,7 @@ import { OrderIssues } from '../components/orders/OrderIssues';
 import { apiFetch, getApiBaseUrl } from '../utils/api';
 import { getToken } from '../utils/auth';
 import toast from 'react-hot-toast';
+import { OrderCancellationRequest } from '../components/orders/OrderCancellationRequest';
 
 export const OrderDetails = () => {
   const { id } = useParams<{ id: string }>();
@@ -161,6 +162,7 @@ export const OrderDetails = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* LEFT COLUMN - Order Summary */}
           <div className="lg:col-span-2 space-y-6">
+            <OrderCancellationRequest request={order.cancellationRequest} />
             <OrderIssues orderId={id || ''} refundable={order.financials?.refundable} onChanged={reload} />
             <OrderSummary order={order} />
           </div>
