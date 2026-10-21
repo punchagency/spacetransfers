@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import { Asset } from "../models/asset.model.js";
 import { GROUP_GAP_IN, computeRotatedBounds, orderSheetWidthIn, resolvePlacement } from "./gangsheetExport.service.js";
+import { publicUrlForKey, storedKeyFor, thumbKeyFor } from "./storage.service.js";
 
 /**
  * The designs on an order's sheets, as people pick them: drawn where they
@@ -23,6 +24,8 @@ export interface SheetDesign {
   index: number;
   name: string;
   imageUrl: string | null;
+  /** The small copy stored beside an upload, for drawing the sheet; the full image when there is none. */
+  thumbUrl: string | null;
   copies: number;
   /** The image before it is turned, and how it is turned and flipped when printed. */
   imageW: number;
@@ -43,6 +46,12 @@ export interface SheetDesignsView {
   heightIn: number;
   designs: SheetDesign[];
 }
+
+/** The 200px thumbnail every stored upload has beside it, or null for anything stored elsewhere. */
+export const thumbOf = (url: string | null): string | null => {
+  const key = url ? storedKeyFor(url) : null;
+  return key ? publicUrlForKey(thumbKeyFor(key)) : null;
+};
 
 /** Every design on one sheet, laid out as it prints. */
 export const describeSheet = (
@@ -70,6 +79,7 @@ export const describeSheet = (
       index: i,
       name: names.get(asset) || `Design ${i + 1}`,
       imageUrl: imageOf(it),
+      thumbUrl: thumbOf(imageOf(it)),
       copies: p.copies,
       imageW: p.imageW,
       imageH: p.imageH,

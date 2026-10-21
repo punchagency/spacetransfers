@@ -60,7 +60,6 @@ export const selectReprintItems = (original: any, selection?: unknown) => {
   });
 };
 
-/** What the replacement is made of. Kept apart from saving it so it can be checked. */
 /**
  * Sheets holding only the chosen designs, one per original sheet that had any,
  * each packed short so the film and the partner's pay match the work.
@@ -86,6 +85,7 @@ export const selectReprintDesigns = (original: any, picks: unknown) => {
     });
 };
 
+/** What the replacement is made of. Kept apart from saving it so it can be checked. */
 export const buildReprintOrder = (
   original: any,
   actor: { id: string; name: string },

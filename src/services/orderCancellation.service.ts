@@ -44,7 +44,8 @@ const defaultDeps: CancellationDeps = {
     return { id: refund.id, amount: Math.round(refund.amount) / 100 };
   },
   save: async (orderId, update) => {
-    await Order.updateOne({ _id: orderId }, update);
+    // A repeated request finds it already cancelled and records nothing twice.
+    await Order.updateOne({ _id: orderId, status: { $ne: "CANCELLED" } }, update);
   },
 };
 

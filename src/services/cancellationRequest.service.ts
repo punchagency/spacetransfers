@@ -173,7 +173,8 @@ export const withdrawCancellation = async (orderId: string, userId: string) => {
   if (!current) throw fail("Order not found", 404);
   const now = new Date();
   const order: any = await Order.findOneAndUpdate(
-    { _id: orderId, user: userId, "cancellationRequest.status": "PENDING" },
+    // Unanswered only: once the partner has started accepting, it is too late to withdraw.
+    { _id: orderId, user: userId, "cancellationRequest.status": "PENDING", "cancellationRequest.respondedAt": null },
     {
       $set: { "cancellationRequest.status": "WITHDRAWN", "cancellationRequest.respondedAt": now },
       $push: { statusTimeline: { status: current.status, time: now, message: "The customer withdrew their request to cancel", actorRole: "CUSTOMER", actorId: userId } },
@@ -210,14 +211,27 @@ export const respondToCancellation = async (orderId: string, printerId: string, 
   const number = numberOf(order);
 
   if (accept) {
-    const asked = order.cancellationRequest.reason;
-    const result = await cancelOrderWithRefund(
-      order,
-      { id: printerId, name: partnerName },
-      `Cancelled at the customer's request${asked ? `: ${asked}` : ""}`,
-      undefined,
-      { actorRole: "PRINTER" },
+    // Claimed first, so a withdrawal or a second click in the meantime can't also act on it.
+    const claimed = await Order.findOneAndUpdate(
+      { _id: orderId, assignedPrinter: printerId, "cancellationRequest.status": "PENDING", "cancellationRequest.respondedAt": null },
+      { $set: { "cancellationRequest.respondedAt": new Date() } },
     );
+    if (!claimed) throw fail("This request has just been answered or withdrawn. Refresh to see where it stands.", 409);
+    const asked = order.cancellationRequest.reason;
+    let result;
+    try {
+      result = await cancelOrderWithRefund(
+        order,
+        { id: printerId, name: partnerName },
+        `Cancelled at the customer's request${asked ? `: ${asked}` : ""}`,
+        undefined,
+        { actorRole: "PRINTER" },
+      );
+    } catch (err) {
+      // Nothing was cancelled, so the request is open again.
+      await Order.updateOne({ _id: orderId, "cancellationRequest.status": "PENDING" }, { $set: { "cancellationRequest.respondedAt": null } }).catch(() => {});
+      throw err;
+    }
     syncPartnerCapacitySafe(printerId);
     publishOrderEvent(orderId, "order.status.changed", { orderId, status: "CANCELLED", updatedAt: new Date() });
     notifyAllAdmins({
@@ -233,7 +247,7 @@ export const respondToCancellation = async (orderId: string, printerId: string, 
 
   const now = new Date();
   const updated: any = await Order.findOneAndUpdate(
-    { _id: orderId, assignedPrinter: printerId, "cancellationRequest.status": "PENDING" },
+    { _id: orderId, assignedPrinter: printerId, "cancellationRequest.status": "PENDING", "cancellationRequest.respondedAt": null },
     {
       $set: {
         "cancellationRequest.status": "DECLINED",
