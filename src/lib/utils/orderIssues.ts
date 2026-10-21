@@ -18,6 +18,8 @@ export interface IssueMessage {
 }
 
 export interface OrderIssue {
+  /** Designs the customer marked as affected. */
+  affectedDesigns?: { sheet: number; design: number }[];
   id: string;
   orderId: string;
   displayId: string;

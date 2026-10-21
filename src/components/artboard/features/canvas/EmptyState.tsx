@@ -22,7 +22,7 @@ export default function EmptyState({ onBrowse }: { onBrowse: () => void }) {
           </div>
           <button
             onClick={onBrowse}
-            className="mx-auto mt-6 rounded-lg border border-slate-200 bg-white px-5 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-50"
+            className="mx-auto mt-6 rounded-lg bg-slate-900 px-5 py-2.5 text-[13px] font-semibold text-white shadow-[0_2px_10px_rgba(15,23,42,0.25)] transition-colors hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
           >
             Browse files
           </button>      

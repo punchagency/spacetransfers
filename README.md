@@ -18,7 +18,9 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 - **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
 - **Use the keyboard.** Tab reaches each image on the sheet. The arrow keys move it 0.1 in, or 1 in with Shift. `+` and `-` resize it. Each change is announced to screen readers, and locked images don't move.
 - **Own their data.** Account Settings → Your data downloads a copy of everything held about the account. It also closes the account once no order is still on its way and no problem report is open. Past orders are kept. A linked account can download its data, but only its main account can remove it.
+- **Mark what went wrong.** Reporting a problem can include the affected designs, tapped on a drawing of the sheet as it printed.
 - **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. Any refund shows on the order. Report a problem on an order sends it to Space Transfers, with up to four photos, and the replies and the outcome appear there and by email.
+- **Cancel an order.** Until it ships. Before a print partner has it, Cancel order cancels it and refunds in full straight away. After that, the partner is asked: they accept, which cancels and refunds it, or decline with a reason the customer is shown and emailed. While waiting, Keep my order takes the request back.
 
 ## Stack
 
