@@ -18,6 +18,7 @@ import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResuma
 import { GangsheetPreview } from "../components/print/download-gangsheet/GangsheetPreview";
 import { SheetPicker, type JobSheet } from "../components/print/SheetPicker";
 import { ConfirmDialog } from "../components/common/ConfirmDialog";
+import { CancellationRequestPanel, type PartnerCancellationRequest } from "../components/orders/CancellationRequestPanel";
 import { confirmCopy, timelineStepAction, type ConfirmableStep } from "../utils/statusActions";
 
 type Overview = {
@@ -27,6 +28,9 @@ type Overview = {
   shipStationError?: string | null;
   orderId: string;
   displayId?: string | null;
+  /** The order this one reprints for free, when it is one. */
+  reprintOf?: { displayId: string; orderId: string | null; partnerPaid?: boolean } | null;
+  cancellationRequest?: PartnerCancellationRequest | null;
   status: string;
   /** The partner-facing label, decided server-side by `printerStatusLabel`. */
   statusLabel?: string | null;
@@ -330,6 +334,14 @@ export default function OrderDetailsPage() {
   }, [overview]);
 
   const [pendingStep, setPendingStep] = useState<ConfirmableStep | null>(null);
+  /** Opens a step's confirmation, unless the customer's request to cancel is waiting for an answer. */
+  const askStep = (step: ConfirmableStep) => {
+    if (overview?.cancellationRequest?.status === "PENDING") {
+      toast.error("The customer has asked to cancel this order. Accept or decline their request first.");
+      return;
+    }
+    setPendingStep(step);
+  };
 
   const [labelRetryAt, setLabelRetryAt] = useState<number | null>(null);
   const retryingLabel = labelRetryAt !== null && Date.now() - labelRetryAt < 8000;
@@ -484,6 +496,28 @@ export default function OrderDetailsPage() {
             <span>{overview?.customer?.name || "—"}</span>
             {overview?.customer?.region && <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">{overview.customer.region}</span>}
             {overview?.priority === "URGENT" && <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs font-bold border border-red-100">Urgent</span>}
+            {overview?.reprintOf &&
+              (overview.reprintOf.orderId ? (
+                <Link
+                  to={`/orders/${overview.reprintOf.orderId}`}
+                  className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 text-xs font-bold border border-blue-200 hover:bg-blue-100"
+                  title="A free reprint of an order you printed. Open the original."
+                >
+                  Reprint of {overview.reprintOf.displayId}
+                </Link>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 text-xs font-bold border border-blue-200">
+                  Reprint of {overview.reprintOf.displayId}
+                </span>
+              ))}
+            {overview?.reprintOf?.partnerPaid === false && (
+              <span
+                className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-bold border border-gray-200"
+                title="Space Transfers chose not to pay for this reprint, as the original was a printing fault."
+              >
+                Unpaid reprint
+              </span>
+            )}
           </div>
           </div>
         </div>
@@ -496,6 +530,18 @@ export default function OrderDetailsPage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
           <div className="lg:col-span-2 space-y-6">
+            {overview && (
+              <CancellationRequestPanel
+                orderId={overview.id}
+                displayId={displayId}
+                request={overview.cancellationRequest}
+                onAnswered={() => {
+                  apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/overview`)
+                    .then((ov) => ov && setOverview(ov))
+                    .catch(() => {});
+                }}
+              />
+            )}
             {overview && <JobIssues orderId={overview.id} />}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
@@ -583,7 +629,7 @@ export default function OrderDetailsPage() {
                   backendStatus={overview.status}
                   assignedAt={overview.assignedAt || null}
                   stepAction={(step) => timelineStepAction(step, overview.status, Boolean(overview.shipStationLabelUrl))}
-                  onStepClick={setPendingStep}
+                  onStepClick={askStep}
                   busy={updatingStatus}
                 />
                 <PrintSpecifications
@@ -720,7 +766,7 @@ export default function OrderDetailsPage() {
 
                     <button
                       disabled={updatingStatus}
-                      onClick={() => setPendingStep("Order Shipped")}
+                      onClick={() => askStep("Order Shipped")}
                       className="flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors disabled:opacity-60"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -767,7 +813,7 @@ export default function OrderDetailsPage() {
                           disabled={updatingStatus || isPast}
                           onChange={() => {
                             if (isPast || isCurrent) return;
-                            if (o.key === "In Progress - Printing" || o.key === "Print Shipping Label") setPendingStep(o.key);
+                            if (o.key === "In Progress - Printing" || o.key === "Print Shipping Label") askStep(o.key);
                           }}
                           className="w-4 h-4"
                         />

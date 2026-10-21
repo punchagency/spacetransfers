@@ -21,5 +21,9 @@ export interface DashboardJob {
   isUrgent?: boolean;
   /** Set while Space Transfers has an open question about a problem on this job. */
   issue?: JobIssueFlag | null;
+  /** The customer asked to cancel and is waiting for an answer. */
+  cancelRequested?: boolean;
+  /** The order this job reprints for free, when it is one. */
+  reprintOf?: string | null;
   createdAt?: string | null;
 }

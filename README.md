@@ -10,6 +10,7 @@ It talks to the API in `space-transfer-server`. Customers use `space-transfers`,
 - **Home.** Active jobs, urgent jobs and what is due next.
 - **Jobs & Orders.** Every assigned job by stage, with the next deadline: accept by, then print by.
 - **Work a job.** Accept and start it, preview each sheet, export the print file, download the customer's original images, request the shipping label and confirm pickup.
+- **Answer a cancellation request.** When a customer asks to cancel, the job is tagged Cancel requested and put on hold until the partner answers. Accept cancels the order and refunds the customer, and the job isn't paid. Decline keeps it going, and the customer is shown the reason. Free reprints are tagged with the order they replace, and marked Unpaid reprint when Space Transfers chose not to pay for one.
 - **Availability.** Pause and resume new work.
 - **Earnings & Payouts.** What each job pays and what has been paid out.
 - **Profile and Settings.** Business details, notification preferences and password.

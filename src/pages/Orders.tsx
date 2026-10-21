@@ -68,6 +68,8 @@ const Orders = () => {
       status,
       statusDescription: String(o.statusDescription || ""),
       issue: readJobIssueFlag(o.issue),
+      reprintOf: typeof o.reprintOf === "string" && o.reprintOf ? o.reprintOf : null,
+      cancelRequested: o.cancelRequested === true,
     };
   };
 

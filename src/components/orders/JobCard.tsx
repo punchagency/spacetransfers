@@ -148,6 +148,22 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
               </span>
             )}
             <JobIssueTag flag={job.issue} />
+            {job.cancelRequested && (
+              <span
+                title="The customer asked to cancel. Open the job to accept or decline."
+                className="whitespace-nowrap rounded-xl border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900"
+              >
+                Cancel requested
+              </span>
+            )}
+            {job.reprintOf && (
+              <span
+                title={`A free reprint of order ${job.reprintOf}`}
+                className="whitespace-nowrap rounded-xl border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-800"
+              >
+                Reprint of {job.reprintOf}
+              </span>
+            )}
             <span className="text-gray-500 text-sm font-medium">
               {job.customerName}
             </span>
@@ -211,8 +227,21 @@ export const JobCard = ({ job, onPrimaryAction, onSecondaryAction, onCancel }: J
           </span>
 
           <div className="flex items-center gap-2 flex-wrap justify-end mt-1">
-            {renderActionButton(job.status)}
-            {!["Print Shipping Label", "Order Shipped", "Completed", "Cancelled"].includes(job.status) && (
+            {job.cancelRequested ? (
+              /* The job is on hold until the partner answers, so that is the only action. */
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSecondaryAction?.(job.id);
+                }}
+                className="w-full sm:w-auto px-3.5 py-2 bg-amber-500 text-gray-900 rounded-2xl text-sm font-semibold whitespace-nowrap hover:bg-amber-400 transition-colors"
+              >
+                Answer cancel request
+              </button>
+            ) : (
+              renderActionButton(job.status)
+            )}
+            {!job.cancelRequested && !["Print Shipping Label", "Order Shipped", "Completed", "Cancelled"].includes(job.status) && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();

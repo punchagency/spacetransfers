@@ -26,6 +26,10 @@ export interface Order {
   statusDescription?: string;
   /** Set while Space Transfers has an open question about a problem on this job. */
   issue?: JobIssueFlag | null;
+  /** The order this job reprints for free, when it is one. */
+  reprintOf?: string | null;
+  /** The customer asked to cancel and is waiting for an answer. */
+  cancelRequested?: boolean;
 }
 
 export type OrdersTabLabel =

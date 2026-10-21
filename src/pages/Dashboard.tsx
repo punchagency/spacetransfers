@@ -152,6 +152,16 @@ const Dashboard = () => {
           <StatusBadge status={job.status} />
           {job.isUrgent && <StatusBadge status="Urgent" />}
           <JobIssueTag flag={readJobIssueFlag(job.issue)} />
+          {job.cancelRequested && (
+            <span className="whitespace-nowrap rounded-xl border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+              Cancel requested
+            </span>
+          )}
+          {job.reprintOf && (
+            <span className="whitespace-nowrap rounded-xl border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-800">
+              Reprint of {job.reprintOf}
+            </span>
+          )}
         </span>
       ),
     },
