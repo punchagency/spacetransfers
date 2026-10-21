@@ -69,6 +69,8 @@ export const cancelOrderWithRefund = async (
     payPartner?: boolean;
     /** Dollars to refund. Left out: everything not yet refunded. Zero: cancel without a refund. */
     refundAmount?: number;
+    /** Who cancelled it, for the timeline. Admins unless said otherwise. */
+    actorRole?: "ADMIN" | "PRINTER" | "CUSTOMER";
   } = {},
 ): Promise<CancellationResult> => {
   const refusal = cancellationError(order?.status);
@@ -118,6 +120,12 @@ export const cancelOrderWithRefund = async (
     updatedAt: now,
     cancellation: { reason: why, at: now, byId: actor.id, byName: actor.name, partnerPaid },
   };
+  // A customer's request to cancel is settled by the cancellation, whoever made it.
+  if (order?.cancellationRequest?.status === "PENDING") {
+    set["cancellationRequest.status"] = "ACCEPTED";
+    set["cancellationRequest.respondedAt"] = now;
+    set["cancellationRequest.respondedByName"] = actor.name;
+  }
   const push: Record<string, unknown> = {};
   const paidTotal = Number(order?.pricing?.total) || 0;
   let keptBack = 0;
@@ -143,7 +151,7 @@ export const cancelOrderWithRefund = async (
               ? `Cancelled without a refund: ${why}`
               : `Cancelled, no refund needed: ${why}`) +
           (partnerPaid ? " The partner is still paid for this job." : ""),
-        actorRole: "ADMIN",
+        actorRole: options.actorRole || "ADMIN",
         actorId: actor.id,
         actorName: actor.name,
       },

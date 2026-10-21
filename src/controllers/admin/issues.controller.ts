@@ -5,11 +5,13 @@ import { OrderIssue } from "../../models/orderIssue.model.js";
 import { User } from "../../models/user.model.js";
 import { cleanIssueText, issueForAdmin, resolutionMessage } from "../../services/orderIssue.service.js";
 import { refundOrderPayment, refundableAmount } from "../../services/orderRefund.service.js";
-import { createReprintOrder } from "../../services/orderReprint.service.js";
+import { createReprintOrder, reprintPartnerOf, type ReprintResult } from "../../services/orderReprint.service.js";
 import { notifyPrinter } from "../../services/printerNotifications.service.js";
 import { publishOrderEvent } from "../../services/orderSyncHub.js";
 import { sendIssueReplyEmail, sendIssueResolvedEmail } from "../../services/orderEmails.service.js";
 import { CustomError } from "./shared.js";
+import { resolveApiFile } from "../../utils/publicApiBase.js";
+import { describeOrderDesigns } from "../../services/sheetDesigns.service.js";
 
 const fail = (message: string, statusCode: number) => Object.assign(new Error(message) as CustomError, { statusCode });
 
@@ -26,10 +28,13 @@ const findIssue = async (req: Request) => {
 };
 
 /** Who is on each side of a report, for the admin's list and thread headings. */
-const withPeople = async (issues: any[]) => {
+const withPeople = async (issues: any[], req: Request) => {
   const orders = await Order.find({ _id: { $in: issues.map((i) => i.order) } })
-    .select("customer status pricing.total payment assignedPrinter")
+    .select("customer status pricing.total payment assignedPrinter items.name items.widthIn items.heightIn items.sheetWidthIn items.sheetHeightIn items.quantity items.previewImage")
     .lean();
+  const printerIds = Array.from(new Set(orders.map((o: any) => (o.assignedPrinter ? String(o.assignedPrinter) : "")).filter(Boolean)));
+  const printers = printerIds.length ? await User.find({ _id: { $in: printerIds }, role: "PRINTER" }).select("name companyName status").lean() : [];
+  const printerById = new Map(printers.map((p: any) => [String(p._id), p]));
   const orderById = new Map(orders.map((o: any) => [String(o._id), o]));
   const partnerIds = Array.from(new Set(issues.map((i) => (i.partner ? String(i.partner) : "")).filter(Boolean)));
   const partners = partnerIds.length ? await User.find({ _id: { $in: partnerIds } }).select("name companyName").lean() : [];
@@ -45,6 +50,17 @@ const withPeople = async (issues: any[]) => {
       orderStatus: String(order?.status || ""),
       orderTotal: Number(order?.pricing?.total) || 0,
       refundable: order ? refundableAmount(order) : 0,
+      /** The sheets a reprint can be made of, in order. */
+      sheets: (order?.items || []).map((it: any, index: number) => ({
+        index,
+        name: String(it.name || `Sheet ${index + 1}`),
+        widthIn: Number(it.sheetWidthIn || it.widthIn) || null,
+        heightIn: Number(it.sheetHeightIn || it.heightIn) || null,
+        quantity: Math.max(1, Number(it.quantity) || 1),
+        previewImage: resolveApiFile(req, it.previewImage),
+      })),
+      /** Who a reprint goes to: the partner who printed the order. */
+      reprintPartner: reprintPartnerOf(order?.assignedPrinter ? printerById.get(String(order.assignedPrinter)) : null),
     };
   });
 };
@@ -59,7 +75,7 @@ export const listIssues = async (req: Request, res: Response, next: NextFunction
       OrderIssue.countDocuments({ status: "OPEN" }),
       OrderIssue.countDocuments({ status: "OPEN", needsAdmin: true }),
     ]);
-    res.json({ issues: await withPeople(issues), counts: { open, waiting } });
+    res.json({ issues: await withPeople(issues, req), counts: { open, waiting } });
   } catch (error) {
     next(error);
   }
@@ -83,7 +99,7 @@ export const listIssuesForOrder = async (req: Request, res: Response, next: Next
   try {
     const orderId = String(req.params.orderId || "");
     const issues = mongoose.Types.ObjectId.isValid(orderId) ? await OrderIssue.find({ order: orderId }).sort({ createdAt: -1 }).lean() : [];
-    res.json({ issues: await withPeople(issues) });
+    res.json({ issues: await withPeople(issues, req) });
   } catch (error) {
     next(error);
   }
@@ -127,7 +143,7 @@ export const postIssueMessage = async (req: Request, res: Response, next: NextFu
       }).catch(() => {});
     }
 
-    const [payload] = await withPeople([issue.toObject()]);
+    const [payload] = await withPeople([issue.toObject()], req);
     res.json({ issue: payload, customerNotified });
   } catch (error) {
     next(error);
@@ -153,13 +169,17 @@ export const resolveIssue = async (req: Request, res: Response, next: NextFuncti
     const actor = await actorOf(req);
 
     let refundAmount: number | undefined;
-    let reprint: { orderId: string; displayId: string } | undefined;
+    let reprint: ReprintResult | undefined;
     if (outcome === "REFUND") {
       const result = await refundOrderPayment(order, actor, { amount: Number(req.body?.refundAmount), reason: note });
       refundAmount = result.amount;
       publishOrderEvent(String(order._id), "order.financials.changed", { orderId: String(order._id), updatedAt: new Date() });
     } else if (outcome === "REPRINT") {
-      reprint = await createReprintOrder(order, actor, note);
+      if (typeof req.body?.payPartner !== "boolean") throw fail("Choose whether the partner is paid for this reprint.", 400);
+      reprint = await createReprintOrder(order, actor, note, req.body?.reprintItems ?? undefined, {
+        designs: req.body?.reprintDesigns ?? undefined,
+        payPartner: req.body.payPartner,
+      });
     }
 
     const now = new Date();
@@ -187,8 +207,20 @@ export const resolveIssue = async (req: Request, res: Response, next: NextFuncti
 
     const mail = await sendIssueResolvedEmail(order, { kind: outcome, note, refundAmount, reprintDisplayId: reprint?.displayId });
 
-    const [payload] = await withPeople([issue.toObject()]);
+    const [payload] = await withPeople([issue.toObject()], req);
     res.json({ issue: payload, reprint: reprint || null, customerNotified: Boolean(mail?.sent) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The designs on an order's sheets, drawn where they print, for choosing what to reprint. */
+export const getOrderDesignsForAdmin = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const orderId = String(req.params.orderId || "");
+    const order = mongoose.Types.ObjectId.isValid(orderId) ? await Order.findById(orderId).select("items").lean() : null;
+    if (!order) throw fail("Order not found", 404);
+    res.json({ sheets: await describeOrderDesigns(order, (v) => resolveApiFile(req, v)) });
   } catch (error) {
     next(error);
   }

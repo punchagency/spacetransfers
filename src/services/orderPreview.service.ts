@@ -1,6 +1,27 @@
 import { Order } from "../models/order.model.js";
 import { exportGangsheetPng24, orderSheetWidthIn } from "./gangsheetExport.service.js";
 
+/**
+ * A sheet's preview is only ever looked at, never printed from, so it is drawn
+ * small and compressed: about 1,200 pixels across a 23.5in roll. At print
+ * resolution these reached 40 MB each and loaded on every order list.
+ */
+export const PREVIEW_DPI = 50;
+
+/** Bigger than any preview drawn now should be. */
+export const PREVIEW_MAX_BYTES = 3 * 1024 * 1024;
+
+/**
+ * A stored preview drawn bigger than previews are drawn now: above the preview
+ * DPI by its file name, or simply too heavy. Very long sheets were already
+ * capped below that DPI but saved lossless, which only the size shows.
+ */
+export const needsRedraw = (relative: unknown, bytes: number | null = null): boolean => {
+  if (typeof relative !== "string" || !/^\/uploads\/exports\//.test(relative)) return false;
+  const dpi = Number(/_(\d+)dpi_/.exec(relative)?.[1]);
+  return !Number.isFinite(dpi) || dpi > PREVIEW_DPI || (bytes ?? 0) > PREVIEW_MAX_BYTES;
+};
+
 export const renderOrderSheetPreviews = async (
   orderId: string,
   items: any[],
@@ -35,9 +56,10 @@ export const renderOrderSheetPreviews = async (
           nestRotation: it.nestRotation,
           flowCols: it.flowCols,
         })),
-        dpi: 600,
+        dpi: PREVIEW_DPI,
         cropToContent: true,
         format: "webp",
+        useLossyPreview: true,
       });
       // Stored as a path, not a URL: the host is added when it is read (see
       // resolveApiFile), so the record survives a change of domain.

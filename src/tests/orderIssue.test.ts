@@ -13,7 +13,7 @@ import {
   partnerOwesReply,
   resolutionMessage,
 } from "../services/orderIssue.service.js";
-import { buildReprintOrder, reprintError } from "../services/orderReprint.service.js";
+import { buildReprintOrder, reprintError, reprintPartnerOf, selectReprintItems } from "../services/orderReprint.service.js";
 import { computeOrderFinancials } from "../services/orderFinancials.service.js";
 import { orderInvoiceNote } from "../utils/orderPresentation.js";
 
@@ -191,6 +191,31 @@ describe("a free reprint", () => {
     assert.equal(f.shippingCost, 6.5);
     assert.ok(f.partnerCost! > 0);
     assert.equal(f.profit, Math.round(-(f.partnerCost! + 6.5) * 100) / 100);
+  });
+
+  it("can be only some of the sheets, each at most as many times as ordered", () => {
+    const two = {
+      ...original,
+      items: [
+        { _id: "a", name: "Front", widthIn: 22, heightIn: 12, quantity: 3, unitPrice: 10, subtotal: 30 },
+        { _id: "b", name: "Back", widthIn: 22, heightIn: 24, quantity: 1, unitPrice: 20, subtotal: 20 },
+      ],
+    };
+    const part = buildReprintOrder(two, ACTOR, "", at, [{ index: 0, quantity: 2 }]);
+    assert.deepEqual(part.items, [{ name: "Front", widthIn: 22, heightIn: 12, quantity: 2, unitPrice: 10, subtotal: 20 }]);
+    assert.equal(part.statusTimeline[0].message, "Free reprint of part of DTF-0300");
+    assert.equal(buildReprintOrder(two, ACTOR, "", at, [{ index: 1, quantity: 1 }, { index: 0, quantity: 3 }]).statusTimeline[0].message, "Free reprint of DTF-0300");
+    assert.equal(selectReprintItems(two).length, 2);
+    for (const bad of [[], [{ index: 5, quantity: 1 }], [{ index: 0, quantity: 4 }], [{ index: 0, quantity: 0 }], [{ index: 0, quantity: 1.5 }], [{ index: 0, quantity: 1 }, { index: 0, quantity: 1 }], "all"]) {
+      assert.throws(() => selectReprintItems(two, bad), (e: any) => e.statusCode === 400, JSON.stringify(bad));
+    }
+  });
+
+  it("goes to the original's partner only while they can take work", () => {
+    assert.equal(reprintPartnerOf({ _id: "p1", companyName: "Inkworks", status: "Active" })!.available, true);
+    assert.equal(reprintPartnerOf({ _id: "p1", companyName: "Inkworks", status: "Under Review" })!.available, true);
+    for (const status of ["Suspended", "Closed", "Pending", "Rejected"]) assert.equal(reprintPartnerOf({ _id: "p1", name: "X", status })!.available, false, status);
+    assert.equal(reprintPartnerOf(null), null);
   });
 
   it("says so on its invoice, and needs sheets to reprint", () => {

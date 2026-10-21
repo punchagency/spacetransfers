@@ -27,8 +27,11 @@ import {
   getPricingConfig,
   sendGangsheetUtilizationWarning,
   downloadInvoice,
+  cancelMyOrder,
+  withdrawMyCancellation,
   listOrderIssues,
   reportOrderIssue,
+  getOrderDesigns,
   replyToOrderIssue,
   uploadIssuePhoto,
   exportAccountData,
@@ -70,8 +73,11 @@ router.post("/orders", createOrder);
 router.get("/orders", listOrders);
 router.get("/orders/:orderId", getOrderById);
 router.get("/orders/:orderId/invoice", downloadInvoice);
+router.post("/orders/:orderId/cancel", cancelMyOrder);
+router.post("/orders/:orderId/cancel/withdraw", withdrawMyCancellation);
 router.get("/orders/:orderId/issues", listOrderIssues);
 router.post("/orders/:orderId/issues", reportOrderIssue);
+router.get("/orders/:orderId/designs", getOrderDesigns);
 router.post("/issues/:issueId/messages", replyToOrderIssue);
 router.post("/issues/photos", uploadPhoto.single("file"), uploadIssuePhoto);
 router.get("/cart", getCart);

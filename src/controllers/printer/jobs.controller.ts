@@ -25,6 +25,7 @@ import { autoAssignOrder } from "../../services/orderAssignment.service.js";
 import { syncPartnerCapacitySafe, getAssignmentSettings, ACTIVE_ORDER_STATUSES } from "../../services/partnerCapacity.service.js";
 import { triggerShipStationWorkflow } from "../../services/shipstation.service.js";
 import { CustomError, isObjectIdString, splitAssetRefs } from "./shared.js";
+import { cancellationBlocksPartner, respondToCancellation } from "../../services/cancellationRequest.service.js";
 
 const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
 
@@ -287,6 +288,10 @@ export const listPrinterOrders = async (req: Request, res: Response, next: NextF
         id: orderId,
         actualId: orderId,
         displayId: (order as any)?.displayId ? String((order as any).displayId) : null,
+        /** The order this job reprints for free, when it is one. */
+        reprintOf: (order as any)?.reprintOf?.displayId ? String((order as any).reprintOf.displayId) : null,
+        /** The customer has asked to cancel and is waiting for this partner's answer. */
+        cancelRequested: (order as any)?.cancellationRequest?.status === "PENDING",
         customerName: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "—",
         sheetSize,
         filmType: firstItem.type === "gangsheet" ? "DTF" : "Unknown",
@@ -410,7 +415,26 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       id: String((job as any)._id),
       orderId: (job as any)?.displayId ? String((job as any).displayId) : String((job as any)._id),
       displayId: (job as any)?.displayId ? String((job as any).displayId) : null,
+      reprintOf: (job as any)?.reprintOf?.displayId
+        ? {
+            displayId: String((job as any).reprintOf.displayId),
+            /** False when Space Transfers chose not to pay for this reprint. */
+            partnerPaid: (job as any).reprintOf.partnerPaid !== false,
+            // Linked only when the original was this partner's, so the link opens.
+            orderId: (await Order.exists({ _id: (job as any).reprintOf.orderId, assignedPrinter: (job as any).assignedPrinter }))
+              ? String((job as any).reprintOf.orderId)
+              : null,
+          }
+        : null,
       status: String((job as any).status),
+      cancellationRequest: (job as any)?.cancellationRequest && (job as any).cancellationRequest.status !== "WITHDRAWN"
+        ? {
+            status: String((job as any).cancellationRequest.status),
+            reason: (job as any).cancellationRequest.reason || null,
+            requestedAt: (job as any).cancellationRequest.requestedAt || null,
+            declineReason: (job as any).cancellationRequest.declineReason || null,
+          }
+        : null,
       /*
        * The label, decided here. The page carried its OWN fourth copy of the
        * status vocabulary which disagreed with the shared map twice — it called
@@ -618,7 +642,7 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     const current = String((job as any).status || "").toUpperCase();
     const next = normalized;
 
-    const refusal = partnerTransitionError(current, next, Boolean((job as any).shipStationLabelUrl));
+    const refusal = (next !== current && cancellationBlocksPartner(job)) || partnerTransitionError(current, next, Boolean((job as any).shipStationLabelUrl));
     if (refusal) {
       const error = new Error(refusal) as CustomError;
       error.statusCode = 409;
@@ -726,7 +750,7 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
     const job = await Order.findOne({
       _id: new mongoose.Types.ObjectId(id),
       assignedPrinter: new mongoose.Types.ObjectId(String(printerId)),
-    }).select("status displayId statusTimeline assignmentHistory customer");
+    }).select("status displayId statusTimeline assignmentHistory customer cancellationRequest");
 
     if (!job) {
       const error = new Error("Order not found or not assigned to this printer") as CustomError;
@@ -742,6 +766,13 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
     }
     if (current === "COMPLETED") {
       const error = new Error("Cannot cancel a completed order") as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+    // Handing it back would leave the customer's question with nobody to answer it.
+    const pendingRequest = cancellationBlocksPartner(job);
+    if (pendingRequest) {
+      const error = new Error(pendingRequest) as CustomError;
       error.statusCode = 409;
       throw error;
     }
@@ -904,6 +935,15 @@ export const getOrderSummary = async (req: Request, res: Response, next: NextFun
       customer: `${order.customer.firstName} ${order.customer.lastName}`,
       createdAt: order.createdAt
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The partner's answer to a customer asking to cancel. */
+export const answerCancellationRequest = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await respondToCancellation(String(req.params.orderId || ""), String(req.user?.id || ""), req.body?.decision, req.body?.reason));
   } catch (error) {
     next(error);
   }

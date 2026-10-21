@@ -98,6 +98,12 @@ Partners can only move a job forward, and they cannot cancel an order: a partner
 
 A partner's PNG export is the full roll width the order was built on (23.5in, 7,050px at 300 DPI) and as long as the artwork: down to the lowest graphic plus the sheet margin. A sheet billed at the minimum length is not padded out to it. Sheets longer than 100in are split into parts between graphics. See `printFileLengthIn` in `services/gangsheetExport.service.ts`.
 
+## Reprints and cancellations
+
+A report resolved with a reprint creates a free order. It holds the whole order, the sheets and quantities the admin chose (`reprintItems: [{ index, quantity }]`), or individual designs (`reprintDesigns: [{ sheet, design, copies }]`). Chosen designs are packed onto a new, shorter sheet, one per original sheet, with the export's own placement maths (`services/sheetDesigns.service.ts`), and the sheet gets a fresh preview. The admin must also say whether the partner is paid (`payPartner`). An unpaid reprint (`reprintOf.partnerPaid: false`) counts $0 in every earnings, payout and profit figure; older reprints with no choice recorded are paid. `GET /customer/orders/:id/designs` and `GET /admin/orders/:id/designs` return each sheet's designs with where every copy prints. A customer reporting a problem can mark the affected designs (`affectedDesigns`), which the admin's picker starts with. It is assigned before it is first saved to the partner who printed the original, bypassing matching, the manual-assignment setting and their job limit. If that partner isn't Active or Under Review, it goes through normal assignment and the admins are told why.
+
+A customer cancels with `POST /customer/orders/:id/cancel`. An order with no partner yet is cancelled and refunded at once. Otherwise a cancellation request is recorded on the order and the partner answers with `POST /printer/orders/:id/cancellation` (`accept`, or `decline` with a reason). While the request is open the partner can't move the job on or hand it back. An order that ships anyway, or that an admin cancels, settles the request. `POST /customer/orders/:id/cancel/withdraw` takes it back.
+
 ## Money
 
 - **Pricing** is always computed on the server (`services/pricing.service.ts`). A sheet is billed as roll width times its length, with a minimum length. Express shipping adds a rush fee. Rates are set in the admin console.
@@ -131,6 +137,7 @@ Started by `server.ts` in every environment except tests:
 | SLA monitor | Reassigns or escalates late jobs; off until enabled in the admin console |
 | Payout scheduler | Each Friday, puts partners' payable, unpaid jobs into payouts for an admin to review. It never sends money |
 | Notification email batches | Sends queued admin notification emails |
+| Unanswered cancellations | Every 30 minutes, tells the admins about any customer cancellation request a partner has left for 12 hours, and reminds the partner, once |
 | Backups | At 03:00 UTC, when `BACKUP_ENABLED=true`, writes an encrypted copy of every collection to R2 and keeps the last 30 |
 
 ## Scripts
@@ -143,6 +150,7 @@ Started by `server.ts` in every environment except tests:
 | `node scripts/migrate-design-thumbnails.mjs` | One-off move of old design thumbnails into R2 |
 | `node dist/tools/backup.js backup` | Takes a backup now |
 | `node dist/tools/backup.js list` | Lists the stored backups |
+| `node dist/tools/previews.js report` / `rerender --apply` | Order sheet previews are drawn small (50 DPI, lossy WebP). Run once after deploying this change to re-draw older full-resolution ones (they reached 40 MB each); old files are removed once nothing points at them |
 | `node dist/tools/backup.js drill` | Restores the latest backup into a scratch database, compares it with the live one, and drops it. Run it after setting up backups and from time to time |
 | `node dist/tools/backup.js restore <date> <database>` | Restores a backup into the named database. It refuses the live one, so restore beside it and switch over |
 

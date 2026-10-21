@@ -8,6 +8,7 @@ import { startTrackingPoller } from "./services/trackingPoller.service.js";
 import { startSlaMonitor } from "./services/slaMonitor.service.js";
 import { startWaitingOrderSweep } from "./services/orderAssignment.service.js";
 import { startBackupSchedule } from "./services/backup.service.js";
+import { startCancellationEscalation } from "./services/cancellationRequest.service.js";
 import { initMonitoring, reportServerError } from "./services/monitoring.service.js";
 import { startPaymentReconciliation } from "./services/paymentReconciliation.service.js";
 
@@ -66,6 +67,7 @@ const start = async (): Promise<void> => {
     // Retries orders still waiting for a partner; idle while assignment is manual.
     startWaitingOrderSweep();
     startBackupSchedule();
+    startCancellationEscalation();
   }
 };
 

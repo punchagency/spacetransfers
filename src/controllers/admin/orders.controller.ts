@@ -19,7 +19,7 @@ import { User, UserRoles, IUser } from "../../models/user.model.js";
 import { Design } from "../../models/design.model.js";
 import { notifyAllAdmins } from "../../services/adminNotifications.service.js";
 import { notifyPrinter } from "../../services/printerNotifications.service.js";
-import { canDerivePartnerEarning } from "../../services/partnerEarnings.service.js";
+import { canDerivePartnerEarning, getOrderPartnerCostBreakdown } from "../../services/partnerEarnings.service.js";
 import { getPartnerPayRate } from "../../services/pricing.service.js";
 import {
   syncPartnerCapacitySafe,
@@ -29,7 +29,6 @@ import {
   isAtCapacity,
 } from "../../services/partnerCapacity.service.js";
 import { exportGangsheetPng24, orderSheetWidthIn } from "../../services/gangsheetExport.service.js";
-import { computePartnerCostBreakdown } from "../../utils/partnerPricingCost.js";
 import { computeAssignmentDeadlineFor } from "../../utils/assignmentDeadline.js";
 import { CustomError } from "./shared.js";
 
@@ -458,12 +457,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       fileUrl: resolveApiFile(req, (item as any).previewImage) || undefined,
     }));
 
-    const breakdown = computePartnerCostBreakdown({
-      items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: await getPartnerPayRate(),
-      priority: (order as any).priority,
-      adjustments: (order as any)?.pricing?.adjustments || []
-    });
+    const breakdown = getOrderPartnerCostBreakdown(order, await getPartnerPayRate());
     /**
      * Null when there is nothing to derive a cost from — the fourth surface
      * that needed this. An order whose items carry no sheet dimensions has an
@@ -652,6 +646,16 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       regionInfo: resolveRegionInfo(order, oneUserRegionMap),
 
       // A free replacement names the order it replaces, and that order names it back.
+      cancellationRequest: (order as any).cancellationRequest && (order as any).cancellationRequest.status !== "WITHDRAWN"
+        ? {
+            status: String((order as any).cancellationRequest.status),
+            reason: (order as any).cancellationRequest.reason || null,
+            requestedAt: (order as any).cancellationRequest.requestedAt || null,
+            respondedAt: (order as any).cancellationRequest.respondedAt || null,
+            respondedByName: (order as any).cancellationRequest.respondedByName || null,
+            declineReason: (order as any).cancellationRequest.declineReason || null,
+          }
+        : null,
       reprintOf: (order as any).reprintOf?.orderId
         ? { orderId: String((order as any).reprintOf.orderId), displayId: String((order as any).reprintOf.displayId || "") }
         : null,

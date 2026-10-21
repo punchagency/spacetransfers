@@ -41,7 +41,7 @@ export const GANGSHEET_PRINT_DPI = 300;
 
 const SHEET_DEFAULT_WIDTH_IN = GANGSHEET_SHEET_WIDTH_IN;
 const SHEET_DEFAULT_HEIGHT_IN = 23.5;
-const GROUP_GAP_IN = 0.06;
+export const GROUP_GAP_IN = 0.06;
 const CROP_PADDING_IN = 0.08;
 
 const isObjectIdString = (v: string) => /^[0-9a-fA-F]{24}$/.test(String(v || ""));
@@ -151,7 +151,7 @@ const computeCacheKey = (payload: {
   return crypto.createHash("sha1").update(raw).digest("hex");
 };
 
-const computeRotatedBounds = (wIn: number, hIn: number, rotationDeg: number) => {
+export const computeRotatedBounds = (wIn: number, hIn: number, rotationDeg: number) => {
   const r = ((Number(rotationDeg) || 0) * Math.PI) / 180;
   const c = Math.cos(r);
   const s = Math.sin(r);

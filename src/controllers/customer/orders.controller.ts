@@ -27,6 +27,7 @@ import { geocodeAddress } from "../../utils/geocoding.js";
 import { assertPersistable } from "../../utils/documentSize.js";
 import { notifyAllAdmins } from "../../services/adminNotifications.service.js";
 import { CustomError } from "./shared.js";
+import { customerCancellation, requestCancellation, withdrawCancellation } from "../../services/cancellationRequest.service.js";
 
 export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
   /**
@@ -411,7 +412,8 @@ export const listOrders = async (req: Request, res: Response, next: NextFunction
       trackingNumber: order.trackingNumber || null,
       refundNote: orderRefundNote(order),
       reprintOf: (order as any).reprintOf?.displayId || null,
-      issue: issueByOrder.get(String(order._id)) || null
+      issue: issueByOrder.get(String(order._id)) || null,
+      cancellation: customerCancellation(order)
     }));
 
     const nextCursor = hasMore ? orders[orders.length - 1].id : null;
@@ -482,6 +484,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       carrier: (order as any).carrier || null,
       refundNote: orderRefundNote(order),
       reprintOf: (order as any).reprintOf?.displayId || null,
+      cancellation: customerCancellation(order),
       items: formattedItems,
       shippingAddress: {
         name: `${order.customer?.firstName || ""} ${order.customer?.lastName || ""}`.trim() || "Valued Customer",
@@ -563,6 +566,24 @@ export const downloadInvoice = async (req: Request, res: Response, next: NextFun
     res.setHeader("Content-Length", String(pdfBuffer.length));
     res.send(pdfBuffer);
 
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The customer cancels their order, or asks the partner printing it to. */
+export const cancelMyOrder = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await requestCancellation(String(req.params.orderId || ""), String(req.user?.id || ""), req.body?.reason));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The customer takes back a request the partner hasn't answered yet. */
+export const withdrawMyCancellation = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await withdrawCancellation(String(req.params.orderId || ""), String(req.user?.id || "")));
   } catch (error) {
     next(error);
   }

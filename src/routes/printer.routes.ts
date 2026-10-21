@@ -29,6 +29,7 @@ import {
   getPrinterSettings,
   updatePrinterSettings,
   getAccountClosure,
+  answerCancellationRequest,
   closeAccount,
   uploadProfileAsset,
   requestEmailVerification,
@@ -68,6 +69,7 @@ router.get("/exports/:exportId/file", downloadGangsheetExport);
 router.get("/orders/summary", getPrinterOrdersSummary);
 router.patch("/orders/:orderId/status", updatePrinterOrderStatus);
 router.post("/orders/:orderId/cancel", cancelPrinterOrder);
+router.post("/orders/:orderId/cancellation", answerCancellationRequest);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId/issues", listJobIssues);

@@ -131,7 +131,8 @@ export interface IOrder extends Document {
   returnedAt?: Date;
   /** Who cancelled the order, when and why. */
   /** Set on a free replacement: the order it reprints, and its number. */
-  reprintOf?: { orderId: string; displayId: string };
+  /** `partnerPaid` false: the admin chose not to pay the partner for this reprint. */
+  reprintOf?: { orderId: string; displayId: string; partnerPaid?: boolean };
   cancellation?: {
     reason: string;
     at: Date;
@@ -139,6 +140,21 @@ export interface IOrder extends Document {
     byName?: string;
     /** True when the admin chose to pay the partner for work already started. */
     partnerPaid?: boolean;
+  };
+  /**
+   * A customer asking to cancel an order their partner has already taken on.
+   * The partner accepts it, which cancels and refunds the order, or declines
+   * with a reason the customer is shown.
+   */
+  cancellationRequest?: {
+    status: "PENDING" | "ACCEPTED" | "DECLINED" | "WITHDRAWN";
+    reason?: string | null;
+    requestedAt: Date;
+    respondedAt?: Date | null;
+    respondedByName?: string | null;
+    declineReason?: string | null;
+    /** When admins were told it had gone unanswered. */
+    escalatedAt?: Date | null;
   };
   cancelledByPrinterId?: mongoose.Types.ObjectId;
   cancelledByPrinterName?: string;
@@ -392,7 +408,20 @@ const orderSchema = new Schema<IOrder>(
     assignedAt: { type: Date, default: null },
     assignmentDeadline: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
-    reprintOf: { type: { _id: false, orderId: String, displayId: String }, default: undefined },
+    reprintOf: { type: { _id: false, orderId: String, displayId: String, partnerPaid: Boolean }, default: undefined },
+    cancellationRequest: {
+      type: {
+        _id: false,
+        status: { type: String, enum: ["PENDING", "ACCEPTED", "DECLINED", "WITHDRAWN"], required: true },
+        reason: { type: String, default: null },
+        requestedAt: { type: Date, required: true },
+        respondedAt: { type: Date, default: null },
+        respondedByName: { type: String, default: null },
+        declineReason: { type: String, default: null },
+        escalatedAt: { type: Date, default: null },
+      },
+      default: undefined,
+    },
     cancellation: {
       type: { reason: String, at: Date, byId: String, byName: String, partnerPaid: Boolean },
       default: undefined,

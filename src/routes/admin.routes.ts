@@ -54,6 +54,7 @@ import {
   listIssuesForOrder,
   postIssueMessage,
   resolveIssue,
+  getOrderDesignsForAdmin,
 } from "../controllers/admin/index.js";
 
 const router = express.Router();
@@ -98,6 +99,7 @@ router.get("/issues", listIssues);
 router.get("/issues/counts", getIssueCounts);
 router.post("/issues/:issueId/messages", postIssueMessage);
 router.post("/issues/:issueId/resolve", resolveIssue);
+router.get("/orders/:orderId/designs", getOrderDesignsForAdmin);
 router.get("/orders/:orderId/invoice", downloadOrderInvoice);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 

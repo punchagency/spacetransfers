@@ -7,6 +7,7 @@ import { Order } from "../models/order.model.js";
 import { ssRequestByUrl, isShipStationConfigured } from "../services/shipstation.service.js";
 import { publishOrderEvent } from "../services/orderSyncHub.js";
 import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { closeRequestOnShipment } from "../services/cancellationRequest.service.js";
 
 // ── ShipStation webhook payload ───────────────────────────────────────────────
 //
@@ -114,6 +115,7 @@ async function handleShipNotify(resourceUrl: string): Promise<void> {
       { _id: new mongoose.Types.ObjectId(orderId) },
       { $set: updateFields, $push: { statusTimeline: timelineEntry } }
     );
+    if (!alreadyShipped) await closeRequestOnShipment(orderId).catch(() => {});
 
     if (!alreadyShipped) {
       publishOrderEvent(orderId, "order.status.changed", {
@@ -191,6 +193,7 @@ async function handleOrderNotify(resourceUrl: string): Promise<void> {
       { _id: new mongoose.Types.ObjectId(orderId), status: (order as any).status },
       { $set: updateFields, $push: { statusTimeline: timelineEntry } }
     );
+    await closeRequestOnShipment(orderId).catch(() => {});
 
     publishOrderEvent(orderId, "order.status.changed", {
       orderId,
