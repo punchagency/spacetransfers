@@ -1,10 +1,28 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../../lib/utils/api";
 
+/** A design's small stored copy, falling back to the full image when it has none. */
+const Art = ({ thumb, full, className }: { thumb?: string | null; full: string | null; className: string }) => {
+  const [src, setSrc] = useState(thumb || full);
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      draggable={false}
+      onError={() => full && src !== full && setSrc(full)}
+      className={className}
+    />
+  );
+};
+
 interface SheetDesign {
   index: number;
   name: string;
   imageUrl: string | null;
+  thumbUrl?: string | null;
   copies: number;
   imageW: number;
   imageH: number;
@@ -104,7 +122,7 @@ export default function DesignMarker({
                   transform: `rotate(${d.rotation}deg)${d.flipped ? " scaleX(-1)" : ""}`,
                 }}
               >
-                {d.imageUrl && <img src={d.imageUrl} alt="" loading="lazy" decoding="async" draggable={false} className="h-full w-full object-fill" />}
+                <Art thumb={d.thumbUrl} full={d.imageUrl} className="h-full w-full object-fill" />
               </div>
             ));
           })}
@@ -124,7 +142,7 @@ export default function DesignMarker({
                   className="h-4 w-4 shrink-0 accent-slate-900"
                 />
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-200 bg-gray-50">
-                  {d.imageUrl && <img src={d.imageUrl} alt="" loading="lazy" className="max-h-full max-w-full object-contain" />}
+                  <Art thumb={d.thumbUrl} full={d.imageUrl} className="max-h-full max-w-full object-contain" />
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate text-sm text-gray-900">{d.name}</span>
