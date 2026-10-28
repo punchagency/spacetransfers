@@ -202,7 +202,7 @@ export const AvailabilityStatusBadge = () => {
         <div className="avail-dropdown absolute right-0 mt-2 w-60 rounded-2xl border border-gray-200 bg-white shadow-2xl z-50 overflow-hidden origin-top-right
           max-md:fixed max-md:inset-x-2 max-md:top-[calc(env(safe-area-inset-top,0px)+60px)] max-md:mt-0 max-md:w-auto">
           <div className="px-4 py-2.5 border-b border-gray-100">
-            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Availability</span>
+            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Availability</span>
           </div>
 
           <div className="p-1.5 space-y-0.5">
@@ -233,7 +233,7 @@ export const AvailabilityStatusBadge = () => {
                     <div className={`text-sm font-semibold leading-tight transition-colors duration-300 ${oc.check}`}>
                       {opt.label}
                     </div>
-                    <div className="text-[11px] text-gray-400 mt-0.5 leading-tight">
+                    <div className="text-[11px] text-gray-500 mt-0.5 leading-tight">
                       {disabled ? "Locked — at maximum job capacity" : opt.description}
                     </div>
                   </div>
@@ -266,7 +266,7 @@ export const AvailabilityStatusBadge = () => {
                 you can't switch back to Open until one of your active jobs finishes.
               </p>
             ) : (
-              <p className="text-[10px] text-gray-400 leading-relaxed">
+              <p className="text-[10px] text-gray-500 leading-relaxed">
                 Paused removes you from auto-assignment. Existing jobs are unaffected.
               </p>
             )}

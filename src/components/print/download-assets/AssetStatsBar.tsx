@@ -46,7 +46,7 @@ export const AssetStatsBar = ({
           <span className="text-xl font-bold text-gray-900">
             {loadedAssets.toLocaleString()}
             {!allLoaded && totalAssets > loadedAssets && (
-              <span className="text-sm font-normal text-gray-400">
+              <span className="text-sm font-normal text-gray-500">
                 {" "}/ {totalAssets.toLocaleString()}
               </span>
             )}

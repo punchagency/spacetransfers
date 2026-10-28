@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { FaCheck } from "react-icons/fa";
 import { setAuth } from "../../utils/auth";
+import { needsSecondStep, type SecondStepChallenge } from "../../utils/passkeys";
+import { SecondStep } from "../security/SecondStep";
 import { isValidPhone } from "../../utils/validators";
 import { HiOutlineLocationMarker } from "react-icons/hi";
 import {
@@ -13,7 +15,7 @@ import {
 import { BsArrowRight } from "react-icons/bs";
 import type { AuthFormProps } from "../../types/auth";
 import { apiFetch, getApiBaseUrl } from "../../utils/api";
-import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload } from "../../utils/legal";
+import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload, fetchLegalVersions, legalUrl } from "../../utils/legal";
 import toast from "react-hot-toast";
 import { SpaceLoader } from "../common/SpaceLoader";
 
@@ -209,6 +211,27 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
     }
   };
 
+  const [secondStep, setSecondStep] = useState<SecondStepChallenge | null>(null);
+
+  const finishSignIn = (response: any) => {
+    if (response?.user?.role !== "PRINTER") {
+      toast.error("Access denied. Printer account required.");
+      setSecondStep(null);
+      return;
+    }
+    // setAuth persists the session AND notifies the route guard, so the
+    // protected area unlocks without any onLogin prop plumbing.
+    setAuth(response.token, response.user);
+    if (typeof response.recoveryCodesLeft === "number") {
+      toast(`Signed in with a recovery code. ${response.recoveryCodesLeft} left.`, { duration: 8000 });
+    } else {
+      toast.success("Welcome back!");
+    }
+    // Return the user to the page they originally asked for (captured by
+    // ProtectedRoute), falling back to the dashboard on a direct login.
+    navigate(redirectTo, { replace: true });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -220,16 +243,12 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           // hold a partner, a customer and an admin account independently.
           body: JSON.stringify({ email, password, role: "PRINTER" }),
         });
-        if (response.user.role !== "PRINTER") {
-          throw new Error("Access denied. Printer account required.");
+        // The password was right; an account with a passkey has one more step.
+        if (needsSecondStep(response)) {
+          setSecondStep(response);
+          return;
         }
-        // setAuth persists the session AND notifies the route guard, so the
-        // protected area unlocks without any onLogin prop plumbing.
-        setAuth(response.token, response.user);
-        toast.success("Welcome back!");
-        // Return the user to the page they originally asked for (captured by
-        // ProtectedRoute), falling back to the dashboard on a direct login.
-        navigate(redirectTo, { replace: true });
+        finishSignIn(response);
       } else {
         if (!fullName || !companyName || !email || !password || !phone || !street || !city || !stateProv || !postalCode || !country) {
           toast.error("Please fill in all fields");
@@ -296,6 +315,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
             legalAcceptance: buildLegalAcceptancePayload(
               termsAccepted,
               contentResponsibilityAccepted,
+              await fetchLegalVersions(),
             ),
           }),
         });
@@ -337,7 +357,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           <button
             onClick={() => { setIsSignIn(true); setTermsAccepted(false); resetForm(); }}
             className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
-              isSignIn ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              isSignIn ? "bg-white text-blue-700 shadow-sm" : "text-slate-600 hover:text-slate-800"
             }`}
           >
             Sign In
@@ -345,15 +365,28 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           <button
             onClick={() => { setIsSignIn(false); setTermsAccepted(false); resetForm(); }}
             className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
-              !isSignIn ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              !isSignIn ? "bg-white text-blue-700 shadow-sm" : "text-slate-600 hover:text-slate-800"
             }`}
           >
             Sign Up
           </button>
         </div>
 
+        {secondStep && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6">
+            <SecondStep
+              challenge={secondStep}
+              onSignedIn={finishSignIn}
+              onCancel={() => {
+                setSecondStep(null);
+                setPassword("");
+              }}
+            />
+          </div>
+        )}
+
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-5 text-left">
+        <form onSubmit={handleSubmit} className={`space-y-5 text-left ${secondStep ? "hidden" : ""}`}>
           {!isSignIn && (
             <>
               <div className="space-y-1.5">
@@ -527,7 +560,8 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-500 hover:text-slate-700 cursor-pointer"
               >
                 {showPassword ? <HiOutlineEyeOff className="text-lg" /> : <HiOutlineEye className="text-lg" />}
               </button>
@@ -581,6 +615,9 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 <button
                   type="button"
                   onClick={() => setTermsAccepted((v) => !v)}
+                  role="checkbox"
+                  aria-checked={termsAccepted}
+                  aria-labelledby="signup-terms"
                   className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
                     termsAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
                   }`}
@@ -588,13 +625,14 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                   {termsAccepted && <FaCheck className="text-white text-[9px]" />}
                 </button>
                 <label
+                  id="signup-terms"
                   onClick={() => setTermsAccepted((v) => !v)}
                   className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
                 >
                   I have read and agree to the{" "}
-                  <a href={LEGAL_DOCUMENTS.terms.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.terms.title}</a>{" "}
+                  <a href={legalUrl(LEGAL_DOCUMENTS.terms)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.terms.title}</a>{" "}
                   and{" "}
-                  <a href={LEGAL_DOCUMENTS.privacy.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.privacy.title}</a>
+                  <a href={legalUrl(LEGAL_DOCUMENTS.privacy)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.privacy.title}</a>
                 </label>
               </div>
 
@@ -602,6 +640,9 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                 <button
                   type="button"
                   onClick={() => setContentResponsibilityAccepted((v) => !v)}
+                  role="checkbox"
+                  aria-checked={contentResponsibilityAccepted}
+                  aria-labelledby="signup-content"
                   className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
                     contentResponsibilityAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
                   }`}
@@ -609,11 +650,12 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
                   {contentResponsibilityAccepted && <FaCheck className="text-white text-[9px]" />}
                 </button>
                 <label
+                  id="signup-content"
                   onClick={() => setContentResponsibilityAccepted((v) => !v)}
                   className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
                 >
                   I accept the{" "}
-                  <a href={LEGAL_DOCUMENTS.contentPolicy.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.contentPolicy.title}</a>{" "}
+                  <a href={legalUrl(LEGAL_DOCUMENTS.contentPolicy)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.contentPolicy.title}</a>{" "}
                   and am solely responsible for the content uploaded through this account
                 </label>
               </div>

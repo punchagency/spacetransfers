@@ -67,7 +67,7 @@ export const AuthBanner = ({ isSignIn }: AuthBannerProps) => {
           <h1 className="text-5xl font-bold leading-tight">
             {isSignIn ? "Welcome back  " : "Join Our Network"}
           </h1>
-          <p className="text-xl text-blue-100 font-light">
+          <p className="text-xl text-white font-light">
             {isSignIn
               ? "Login to get started"
               : "Start your DTF fulfillment journey"}
@@ -80,15 +80,15 @@ export const AuthBanner = ({ isSignIn }: AuthBannerProps) => {
         <div className="border-t border-white/20 pt-8 flex justify-between items-center text-center">
           <div className="text-left">
             <h3 className="text-3xl font-bold">{show(stats?.activePartners)}</h3>
-            <p className="text-sm text-blue-200 mt-1">Active Partners</p>
+            <p className="text-sm text-blue-50 mt-1">Active Partners</p>
           </div>
           <div className="text-left">
             <h3 className="text-3xl font-bold">{show(stats?.ordersFulfilled)}</h3>
-            <p className="text-sm text-blue-200 mt-1">Orders Fulfilled</p>
+            <p className="text-sm text-blue-50 mt-1">Orders Fulfilled</p>
           </div>
           <div className="text-left">
             <h3 className="text-3xl font-bold">5.0</h3>
-            <p className="text-sm text-blue-200 mt-1">Average Rating</p>
+            <p className="text-sm text-blue-50 mt-1">Average Rating</p>
           </div>
         </div>
       </div>

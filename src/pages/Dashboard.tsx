@@ -39,8 +39,8 @@ type Range = (typeof RANGES)[number]["value"];
 // Map API card labels to icons and accent colours, matching Earnings card style.
 const CARD_META: Record<string, { icon: React.ElementType; color: string }> = {
   "Earnings":         { icon: TbCurrencyDollar,        color: "bg-blue-50 text-blue-600"   },
-  "Jobs Completed":   { icon: FiCheckCircle,           color: "bg-green-50 text-green-600" },
-  "Pending Orders":   { icon: MdOutlinePendingActions, color: "bg-orange-50 text-orange-600" },
+  "Jobs Completed":   { icon: FiCheckCircle,           color: "bg-green-50 text-green-700" },
+  "Pending Orders":   { icon: MdOutlinePendingActions, color: "bg-orange-50 text-orange-700" },
   // "Total Earned", not "Total Revenue" — revenue is what the company takes;
   // this is the partner's own page and their own money.
   "Total Earned":     { icon: HiArrowTrendingUp,       color: "bg-purple-50 text-purple-600" },
@@ -140,7 +140,7 @@ const Dashboard = () => {
             <DeadlineCountdown iso={job.deadline} />
           </span>
         ) : (
-          <span className="text-gray-400" title="Nothing is due from you on this job right now.">None</span>
+          <span className="text-gray-500" title="Nothing is due from you on this job right now.">None</span>
         ),
     },
     {
@@ -152,6 +152,16 @@ const Dashboard = () => {
           <StatusBadge status={job.status} />
           {job.isUrgent && <StatusBadge status="Urgent" />}
           <JobIssueTag flag={readJobIssueFlag(job.issue)} />
+          {job.cancelRequested && (
+            <span className="whitespace-nowrap rounded-xl border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">
+              Cancel requested
+            </span>
+          )}
+          {job.reprintOf && (
+            <span className="whitespace-nowrap rounded-xl border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-800">
+              Reprint of {job.reprintOf}
+            </span>
+          )}
         </span>
       ),
     },
@@ -165,7 +175,7 @@ const Dashboard = () => {
        */
       render: () => (
         <div className="flex justify-center">
-          <FiEye className="w-4 h-4 text-gray-400 group-hover:text-gray-600" aria-hidden />
+          <FiEye className="w-4 h-4 text-gray-500 group-hover:text-gray-600" aria-hidden />
         </div>
       ),
     },
@@ -263,12 +273,12 @@ const Dashboard = () => {
                   <div>
                     <span className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">{card.value}</span>
                     {card.note && (
-                      <p className="text-xs mt-1 text-gray-400">
+                      <p className="text-xs mt-1 text-gray-500">
                         {card.note}
                         {/* Set apart so the period control is never ambiguous:
                             two of these four are current-state, not period figures. */}
                         {!card.scoped && (
-                          <span className="ml-1 text-gray-300">· not filtered by period</span>
+                          <span className="ml-1 text-gray-500">· not filtered by period</span>
                         )}
                       </p>
                     )}

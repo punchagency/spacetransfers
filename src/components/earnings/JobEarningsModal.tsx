@@ -84,7 +84,7 @@ export const JobEarningsModal = ({
             <p className="text-sm font-bold text-gray-900">
               {job.completedAt
                 ? new Date(job.completedAt).toLocaleDateString()
-                : <span className="text-gray-400 font-medium">Not completed yet</span>}
+                : <span className="text-gray-500 font-medium">Not completed yet</span>}
             </p>
           </div>
           <div>

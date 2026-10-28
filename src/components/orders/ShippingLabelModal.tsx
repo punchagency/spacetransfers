@@ -3,18 +3,19 @@ import { Modal } from "../common/Modal";
 import { SpaceLoader } from "../common/SpaceLoader";
 import { apiFetch } from "../../utils/api";
 import toast from "react-hot-toast";
+import { AddressCheckNote, type AddressCheck } from "../print/job-details/AddressCheckNote";
 
 interface Overview {
   id: string;
   status: string;
   customer: { name: string };
-  shippingAddress: { street: string; city: string; state: string; postalCode: string } | null;
+  shippingAddress: { street: string; city: string; state: string; postalCode: string; check?: AddressCheck | null } | null;
   trackingNumber?: string | null;
   carrier?: string | null;
   trackingUrl?: string | null;
-  shipStationTriggeredAt?: string | null;
-  shipStationLabelUrl?: string | null;
-  shipStationError?: string | null;
+  labelRequestedAt?: string | null;
+  labelUrl?: string | null;
+  labelError?: string | null;
 }
 
 type Phase = "triggering" | "generating" | "ready" | "error" | "timeout";
@@ -66,11 +67,11 @@ export const ShippingLabelModal = ({
         if (!aliveRef.current) return;
         setOverview(ov || null);
 
-        if (ov?.shipStationLabelUrl) {
+        if (ov?.labelUrl) {
           setPhase("ready");
           window.clearTimeout(timeoutId);
-        } else if (ov?.shipStationError) {
-          setErrorMsg(ov.shipStationError);
+        } else if (ov?.labelError) {
+          setErrorMsg(ov.labelError);
           setPhase("error");
           window.clearTimeout(timeoutId);
         } else {
@@ -102,10 +103,10 @@ export const ShippingLabelModal = ({
         const r = await apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`);
         if (!aliveRef.current) return;
         if (r) setOverview(r);
-        if (r?.shipStationLabelUrl) {
+        if (r?.labelUrl) {
           setPhase("ready");
-        } else if (r?.shipStationError) {
-          setErrorMsg(r.shipStationError);
+        } else if (r?.labelError) {
+          setErrorMsg(r.labelError);
           setPhase("error");
         }
       } catch { /* will retry */ }
@@ -115,8 +116,8 @@ export const ShippingLabelModal = ({
   }, [jobId, phase]);
 
   // ── Label actions ────────────────────────────────────────────────────────────
-  const rawLabelUrl = overview?.shipStationLabelUrl ?? null;
-  // "generated" is a sentinel meaning ShipStation created the label but returned no PDF URL
+  const rawLabelUrl = overview?.labelUrl ?? null;
+  // "generated" is left by an old label that came back with no printable copy.
   const labelUrl = rawLabelUrl && rawLabelUrl !== "generated" ? rawLabelUrl : null;
   const hasPreview = Boolean(labelUrl);
 
@@ -168,7 +169,7 @@ export const ShippingLabelModal = ({
           <SpaceLoader size={28} layout="inline" />
           <div className="text-sm font-semibold text-gray-800">Generating shipping label…</div>
           <div className="text-xs text-gray-500 max-w-xs">
-            ShipStation is creating your label. This usually takes under 10 seconds.
+            Your label is being created. This usually takes under 10 seconds.
           </div>
         </div>
       )}
@@ -211,7 +212,7 @@ export const ShippingLabelModal = ({
           </div>
           <div className="text-sm font-semibold text-gray-900">Taking longer than expected</div>
           <div className="text-xs text-gray-500 max-w-xs leading-relaxed">
-            The label is still being generated. This may indicate ShipStation is not configured or is experiencing delays.
+            The label is still being created. The shipping service may be slow right now, or not set up yet.
             Check the order details page to see the label once it's ready.
           </div>
           <button onClick={onClose} className="mt-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition-colors">
@@ -254,11 +255,12 @@ export const ShippingLabelModal = ({
                   {overview.shippingAddress.city}, {overview.shippingAddress.state} {overview.shippingAddress.postalCode}
                 </div>
               )}
+              <AddressCheckNote check={overview?.shippingAddress?.check} />
             </div>
 
             {overview?.trackingNumber && (
               <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1 text-xs">
-                <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Tracking</div>
+                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">Tracking</div>
                 <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
                 {overview.carrier && <div className="text-gray-500">{overview.carrier.toUpperCase()}</div>}
                 {overview.trackingUrl && (
@@ -315,7 +317,7 @@ export const ShippingLabelModal = ({
             {confirming ? "Confirming…" : "Confirm — Package Ready for Pickup"}
           </button>
 
-          <div className="text-[11px] text-gray-400 text-center leading-relaxed">
+          <div className="text-[11px] text-gray-500 text-center leading-relaxed">
             Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
           </div>
         </div>

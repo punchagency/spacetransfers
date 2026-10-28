@@ -1,4 +1,5 @@
 import { FiUser, FiMail, FiPhone, FiMapPin } from "react-icons/fi";
+import { AddressCheckNote, type AddressCheck } from "./AddressCheckNote";
 
 interface CustomerInformationProps {
   customer: {
@@ -14,6 +15,7 @@ interface CustomerInformationProps {
         state?: string;
         postalCode?: string;
         country?: string;
+        check?: AddressCheck | null;
       }
     | null;
 }
@@ -26,7 +28,7 @@ export const CustomerInformation = ({ customer, shippingAddress }: CustomerInfor
       </h3>
       <div className="space-y-3">
         <div className="flex gap-2.5">
-          <div className="w-4 h-4 text-gray-400 mt-0.5">
+          <div className="w-4 h-4 text-gray-500 mt-0.5">
             <FiUser className="w-3.5 h-3.5" />
           </div>
           <div>
@@ -37,7 +39,7 @@ export const CustomerInformation = ({ customer, shippingAddress }: CustomerInfor
           </div>
         </div>
         <div className="flex gap-2.5">
-          <div className="w-4 h-4 text-gray-400 mt-0.5">
+          <div className="w-4 h-4 text-gray-500 mt-0.5">
             <FiMail className="w-3.5 h-3.5" />
           </div>
           <div>
@@ -48,7 +50,7 @@ export const CustomerInformation = ({ customer, shippingAddress }: CustomerInfor
           </div>
         </div>
         <div className="flex gap-2.5">
-          <div className="w-4 h-4 text-gray-400 mt-0.5">
+          <div className="w-4 h-4 text-gray-500 mt-0.5">
             <FiPhone className="w-3.5 h-3.5" />
           </div>
           <div>
@@ -59,7 +61,7 @@ export const CustomerInformation = ({ customer, shippingAddress }: CustomerInfor
           </div>
         </div>
         <div className="flex gap-2.5">
-          <div className="w-4 h-4 text-gray-400 mt-0.5">
+          <div className="w-4 h-4 text-gray-500 mt-0.5">
             <FiMapPin className="w-3.5 h-3.5" />
           </div>
           <div>
@@ -73,6 +75,7 @@ export const CustomerInformation = ({ customer, shippingAddress }: CustomerInfor
                     {shippingAddress.postalCode || ""}
                   </div>
                   <div>{shippingAddress.country || "N/A"}</div>
+                  <AddressCheckNote check={shippingAddress.check} />
                 </>
               ) : (
                 "N/A"

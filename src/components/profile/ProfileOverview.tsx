@@ -226,7 +226,7 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
                 {errors.phone ? (
                   <p className="mt-1 text-[11px] text-red-600">{errors.phone}</p>
                 ) : (
-                  <p className="mt-1 text-[11px] text-gray-400">
+                  <p className="mt-1 text-[11px] text-gray-500">
                     Printed on the shipping labels for your jobs
                   </p>
                 )}
@@ -237,7 +237,7 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
           </div>
         </div>
         {editingPersonal && (
-          <p className="mt-4 text-[11px] text-gray-400">
+          <p className="mt-4 text-[11px] text-gray-500">
             Your email address cannot be changed here — it identifies your account and is
             already verified against it.
           </p>
@@ -398,10 +398,10 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
                     : `${(profile.performance.averageProductionHours / 24).toFixed(1)} days`}
                 </span>
               ) : (
-                <span className="text-sm font-medium text-gray-400">No shipped jobs yet</span>
+                <span className="text-sm font-medium text-gray-500">No shipped jobs yet</span>
               )}
             </div>
-            <div className="mt-1 text-[11px] text-gray-400">
+            <div className="mt-1 text-[11px] text-gray-500">
               From when a job is assigned to when you ship it
             </div>
           </div>
@@ -415,10 +415,10 @@ export const ProfileOverview = ({ profile, onUpdate }: ProfileOverviewProps) => 
                   {profile.performance.onTimeDeliveryRate}%
                 </span>
               ) : (
-                <span className="text-sm font-medium text-gray-400">No shipped jobs yet</span>
+                <span className="text-sm font-medium text-gray-500">No shipped jobs yet</span>
               )}
             </div>
-            <div className="mt-1 text-[11px] text-gray-400">
+            <div className="mt-1 text-[11px] text-gray-500">
               {profile.performance?.sampleSize
                 ? `Across ${profile.performance.sampleSize} shipped job${profile.performance.sampleSize === 1 ? "" : "s"}`
                 : "Shipped by the deadline you were given"}

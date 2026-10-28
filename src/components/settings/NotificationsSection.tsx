@@ -100,6 +100,7 @@ const NotificationsSection = ({ initialPrefs }: NotificationsSectionProps) => {
                 <p className="text-xs text-gray-500 mt-0.5">{description}</p>
               </div>
               <Toggle
+                label={label}
                 enabled={prefs[key]}
                 setEnabled={(v) => setPrefs((prev) => ({ ...prev, [key]: v }))}
               />
@@ -108,7 +109,7 @@ const NotificationsSection = ({ initialPrefs }: NotificationsSectionProps) => {
         </div>
       </div>
 
-      <p className="mt-4 text-xs text-gray-400">
+      <p className="mt-4 text-xs text-gray-500">
         Turning off a notification suppresses both the in-app alert and the corresponding email for that event.
       </p>
     </section>

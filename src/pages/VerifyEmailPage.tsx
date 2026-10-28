@@ -99,7 +99,7 @@ const VerifyEmailPage = () => {
         </p>
 
         {state === "success" && (
-          <p className="text-xs text-gray-400 mb-6">
+          <p className="text-xs text-gray-500 mb-6">
             Redirecting to your profile in {countdown}s…
           </p>
         )}

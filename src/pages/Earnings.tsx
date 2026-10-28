@@ -201,8 +201,8 @@ const Earnings = () => {
 
   const colorMap: Record<string, string> = {
     blue:   "bg-blue-50 text-blue-600",
-    green:  "bg-green-50 text-green-600",
-    orange: "bg-orange-50 text-orange-600",
+    green:  "bg-green-50 text-green-700",
+    orange: "bg-orange-50 text-orange-700",
     purple: "bg-purple-50 text-purple-600",
   };
 
@@ -230,7 +230,7 @@ const Earnings = () => {
           {job.completedAt ? (
             new Date(job.completedAt).toLocaleDateString()
           ) : (
-            <span className="text-gray-400">{job.orderStatus || "Not yet"}</span>
+            <span className="text-gray-500">{job.orderStatus || "Not yet"}</span>
           )}
         </span>
       ),
@@ -339,7 +339,7 @@ const Earnings = () => {
                   </p>
                 </div>
                 {!summary.stripeOnboarded && (
-                  <span className="flex items-center gap-1 text-xs font-semibold text-orange-600 bg-orange-50 px-2 py-1 rounded-full border border-orange-200 whitespace-nowrap">
+                  <span className="flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 px-2 py-1 rounded-full border border-orange-200 whitespace-nowrap">
                     <FiAlertCircle className="w-3.5 h-3.5" />
                     Connect your account
                   </span>
@@ -390,8 +390,8 @@ const Earnings = () => {
                   onClick={() => setTimeFilter(filter)}
                   className={`px-4 md:px-6 py-2 text-sm font-semibold rounded-lg whitespace-nowrap transition-all cursor-pointer ${
                     timeFilter === filter
-                      ? "bg-[#3B82F6] text-white shadow-sm"
-                      : "text-gray-500 hover:text-gray-900"
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-gray-600 hover:text-gray-900"
                   }`}
                 >
                   {filter}
@@ -403,7 +403,7 @@ const Earnings = () => {
 
             <div className="relative flex-1 md:mr-2">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <FiSearch className="h-5 w-5 text-gray-400" />
+                <FiSearch className="h-5 w-5 text-gray-500" />
               </div>
               <input
                 type="text"

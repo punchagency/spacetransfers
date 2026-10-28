@@ -250,7 +250,7 @@ export const ProfileBusinessInfo = ({ profile, onUpdate }: ProfileBusinessInfoPr
                   {profile.website}
                 </a>
               ) : (
-                <span className="text-gray-400">Not provided</span>
+                <span className="text-gray-500">Not provided</span>
               )
             }
             input={
@@ -269,7 +269,7 @@ export const ProfileBusinessInfo = ({ profile, onUpdate }: ProfileBusinessInfoPr
             icon={<FiBriefcase className="w-4 h-4" />}
             editing={isEditing}
             displayValue={profile.businessDetails?.businessType || (
-              <span className="text-gray-400">Not provided</span>
+              <span className="text-gray-500">Not provided</span>
             )}
             input={
               <select
@@ -405,7 +405,7 @@ const Field = ({ label, icon, required, editing, error, displayValue, input }: F
       </>
     ) : (
       <div className="mt-1 flex items-center gap-2 text-sm font-medium text-gray-900">
-        {icon && <span className="text-gray-400">{icon}</span>}
+        {icon && <span className="text-gray-500">{icon}</span>}
         <span className="truncate">{displayValue}</span>
       </div>
     )}
@@ -522,7 +522,7 @@ const CertificationEditCard = ({
       </div>
       <div>
         <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-          Expiry Date <span className="text-gray-400 normal-case font-normal">(optional)</span>
+          Expiry Date <span className="text-gray-500 normal-case font-normal">(optional)</span>
         </label>
         <input
           type="date"
@@ -543,7 +543,7 @@ const CertificationEditCard = ({
             <FiFileText className="w-3.5 h-3.5" /> View attached document
           </button>
         ) : (
-          <span className="text-gray-400">No document attached</span>
+          <span className="text-gray-500">No document attached</span>
         )}
       </div>
       <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer">
@@ -640,7 +640,7 @@ const DocumentPreviewModal = ({ url, onClose }: DocumentPreviewModalProps) => {
         {/* Preview area */}
         <div className="rounded-xl overflow-hidden bg-gray-50 border border-gray-100 flex items-center justify-center" style={{ height: "60vh" }}>
           {loading && (
-            <div className="flex flex-col items-center gap-3 text-gray-400">
+            <div className="flex flex-col items-center gap-3 text-gray-500">
               <div className="w-8 h-8 border-2 border-gray-200 border-t-blue-500 rounded-full animate-spin" />
               <span className="text-xs">Loading document…</span>
             </div>

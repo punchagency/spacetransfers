@@ -103,7 +103,7 @@ export const StatusTimeline = ({
                             ? "border-blue-600 bg-white text-blue-600 ring-4 ring-blue-50"
                             : action
                               ? "border-blue-300 bg-white text-blue-600 group-hover:border-blue-600 group-hover:bg-blue-50"
-                              : "border-gray-200 bg-white text-gray-400"
+                              : "border-gray-200 bg-white text-gray-500"
                       }`}
                     >
                       <Icon className="h-5 w-5" />
@@ -111,7 +111,7 @@ export const StatusTimeline = ({
                     <div className="mt-2 text-center">
                       <div
                         className={`text-xs font-semibold sm:text-sm ${
-                          idx <= currentIdx ? "text-gray-900" : action ? "text-blue-700" : "text-gray-400"
+                          idx <= currentIdx ? "text-gray-900" : action ? "text-blue-700" : "text-gray-500"
                         }`}
                       >
                         {s.label}

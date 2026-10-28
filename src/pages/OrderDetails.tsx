@@ -11,6 +11,7 @@ import { PrintSpecifications } from "../components/print/job-details/PrintSpecif
 import { ProductionNotes } from "../components/print/job-details/ProductionNotes";
 import { StatusTimeline } from "../components/print/job-details/StatusTimeline";
 import { JobIssues } from "../components/print/job-details/JobIssues";
+import { AddressCheckNote } from "../components/print/job-details/AddressCheckNote";
 import { DownloadAssetsModal } from "../components/print/DownloadAssetsModal";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { DriveSaveModal } from "../components/drive/DriveSaveModal";
@@ -18,15 +19,19 @@ import { createResumableUploadSession, getDriveFileWebViewLink, uploadBlobResuma
 import { GangsheetPreview } from "../components/print/download-gangsheet/GangsheetPreview";
 import { SheetPicker, type JobSheet } from "../components/print/SheetPicker";
 import { ConfirmDialog } from "../components/common/ConfirmDialog";
+import { CancellationRequestPanel, type PartnerCancellationRequest } from "../components/orders/CancellationRequestPanel";
 import { confirmCopy, timelineStepAction, type ConfirmableStep } from "../utils/statusActions";
 
 type Overview = {
   id: string;
   sheets?: JobSheet[];
   /** Why the last label attempt failed; cleared when a label is made. */
-  shipStationError?: string | null;
+  labelError?: string | null;
   orderId: string;
   displayId?: string | null;
+  /** The order this one reprints for free, when it is one. */
+  reprintOf?: { displayId: string; orderId: string | null; partnerPaid?: boolean } | null;
+  cancellationRequest?: PartnerCancellationRequest | null;
   status: string;
   /** The partner-facing label, decided server-side by `printerStatusLabel`. */
   statusLabel?: string | null;
@@ -57,8 +62,9 @@ type Overview = {
   trackingNumber?: string | null;
   carrier?: string | null;
   trackingUrl?: string | null;
-  shipStationTriggeredAt?: string | null;
-  shipStationLabelUrl?: string | null;
+  labelService?: string | null;
+  labelRequestedAt?: string | null;
+  labelUrl?: string | null;
 };
 
 const formatMoney = (amount: number | null | undefined, currency: string) => {
@@ -210,21 +216,21 @@ export default function OrderDetailsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetIndex]);
 
-  // Poll every 3 s while ShipStation is generating the label (QUALITY_CHECK, no labelUrl yet).
+  // Poll every 3 s while the label is being made (QUALITY_CHECK, no labelUrl yet).
   useEffect(() => {
     if (!jobId) return;
-    if (overview?.status !== "QUALITY_CHECK" || overview?.shipStationLabelUrl) return;
+    if (overview?.status !== "QUALITY_CHECK" || overview?.labelUrl) return;
     const id = setInterval(async () => {
       try {
         const refreshed = await apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`);
         if (refreshed) setOverview(refreshed);
-        if (refreshed?.shipStationLabelUrl || refreshed?.status !== "QUALITY_CHECK") {
+        if (refreshed?.labelUrl || refreshed?.status !== "QUALITY_CHECK") {
           clearInterval(id);
         }
       } catch { /* ignore — will retry */ }
     }, 3000);
     return () => clearInterval(id);
-  }, [jobId, overview?.status, overview?.shipStationLabelUrl]);
+  }, [jobId, overview?.status, overview?.labelUrl]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -330,6 +336,14 @@ export default function OrderDetailsPage() {
   }, [overview]);
 
   const [pendingStep, setPendingStep] = useState<ConfirmableStep | null>(null);
+  /** Opens a step's confirmation, unless the customer's request to cancel is waiting for an answer. */
+  const askStep = (step: ConfirmableStep) => {
+    if (overview?.cancellationRequest?.status === "PENDING") {
+      toast.error("The customer has asked to cancel this order. Accept or decline their request first.");
+      return;
+    }
+    setPendingStep(step);
+  };
 
   const [labelRetryAt, setLabelRetryAt] = useState<number | null>(null);
   const retryingLabel = labelRetryAt !== null && Date.now() - labelRetryAt < 8000;
@@ -483,7 +497,29 @@ export default function OrderDetailsPage() {
           <div className="flex items-center gap-3 text-sm text-gray-500">
             <span>{overview?.customer?.name || "—"}</span>
             {overview?.customer?.region && <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs font-medium">{overview.customer.region}</span>}
-            {overview?.priority === "URGENT" && <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-xs font-bold border border-red-100">Urgent</span>}
+            {overview?.priority === "URGENT" && <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 text-xs font-bold border border-red-100">Urgent</span>}
+            {overview?.reprintOf &&
+              (overview.reprintOf.orderId ? (
+                <Link
+                  to={`/orders/${overview.reprintOf.orderId}`}
+                  className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 text-xs font-bold border border-blue-200 hover:bg-blue-100"
+                  title="A free reprint of an order you printed. Open the original."
+                >
+                  Reprint of {overview.reprintOf.displayId}
+                </Link>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 text-xs font-bold border border-blue-200">
+                  Reprint of {overview.reprintOf.displayId}
+                </span>
+              ))}
+            {overview?.reprintOf?.partnerPaid === false && (
+              <span
+                className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-bold border border-gray-200"
+                title="Space Transfers chose not to pay for this reprint, as the original was a printing fault."
+              >
+                Unpaid reprint
+              </span>
+            )}
           </div>
           </div>
         </div>
@@ -496,6 +532,18 @@ export default function OrderDetailsPage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
           <div className="lg:col-span-2 space-y-6">
+            {overview && (
+              <CancellationRequestPanel
+                orderId={overview.id}
+                displayId={displayId}
+                request={overview.cancellationRequest}
+                onAnswered={() => {
+                  apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/overview`)
+                    .then((ov) => ov && setOverview(ov))
+                    .catch(() => {});
+                }}
+              />
+            )}
             {overview && <JobIssues orderId={overview.id} />}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
@@ -534,20 +582,22 @@ export default function OrderDetailsPage() {
                       "Export PNG"
                     )}
                   </button>
-                  <button
-                    disabled={savingToDrive || pngExportProgress !== null}
-                    onClick={() => setDriveModalOpen(true)}
-                    className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-60"
-                  >
-                    {savingToDrive ? (
-                      <span className="inline-flex items-center gap-2">
-                        <SpaceLoader size={18} layout="inline" />
-                        Saving…
-                      </span>
-                    ) : (
-                      "Download to Google Drive"
-                    )}
-                  </button>
+                  {driveClientId && (
+                    <button
+                      disabled={savingToDrive || pngExportProgress !== null}
+                      onClick={() => setDriveModalOpen(true)}
+                      className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-60"
+                    >
+                      {savingToDrive ? (
+                        <span className="inline-flex items-center gap-2">
+                          <SpaceLoader size={18} layout="inline" />
+                          Saving…
+                        </span>
+                      ) : (
+                        "Download to Google Drive"
+                      )}
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowAssets(true)}
                     className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors"
@@ -582,8 +632,8 @@ export default function OrderDetailsPage() {
                   timeline={overview.timeline || []}
                   backendStatus={overview.status}
                   assignedAt={overview.assignedAt || null}
-                  stepAction={(step) => timelineStepAction(step, overview.status, Boolean(overview.shipStationLabelUrl))}
-                  onStepClick={setPendingStep}
+                  stepAction={(step) => timelineStepAction(step, overview.status, Boolean(overview.labelUrl))}
+                  onStepClick={askStep}
                   busy={updatingStatus}
                 />
                 <PrintSpecifications
@@ -640,7 +690,7 @@ export default function OrderDetailsPage() {
                     </div>
                     {overview.trackingNumber && (
                       <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1.5">
-                        <div className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Tracking Number</div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide font-semibold">Tracking Number</div>
                         <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
                         {overview.carrier && <div className="text-xs text-gray-500">Carrier: {overview.carrier.toUpperCase()}</div>}
                         {overview.trackingUrl && (
@@ -649,9 +699,9 @@ export default function OrderDetailsPage() {
                       </div>
                     )}
                     <div className="text-xs text-gray-500 leading-relaxed">The status will automatically update to Delivered once the carrier confirms delivery.</div>
-                    {overview.shipStationLabelUrl && (
+                    {overview.labelUrl && (
                       <a
-                        href={overview.shipStationLabelUrl}
+                        href={overview.labelUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
@@ -663,7 +713,7 @@ export default function OrderDetailsPage() {
                       </a>
                     )}
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationLabelUrl ? (
+                ) : overview?.status === "QUALITY_CHECK" && overview?.labelUrl ? (
                   // Label is ready — printer reviews and confirms
                   <div className="flex flex-col gap-3">
                     <div className="flex items-center gap-2 text-green-700 text-sm font-semibold">
@@ -684,24 +734,26 @@ export default function OrderDetailsPage() {
                           {overview.shippingAddress.city}, {overview.shippingAddress.state} {overview.shippingAddress.postalCode}
                         </div>
                       )}
+                      <AddressCheckNote check={overview.shippingAddress?.check} />
                     </div>
 
                     {overview.trackingNumber && (
                       <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1">
-                        <div className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Tracking</div>
+                        <div className="text-[10px] text-gray-500 uppercase tracking-wide font-semibold">Tracking</div>
                         <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
-                        {overview.carrier && <div className="text-xs text-gray-500">{overview.carrier.toUpperCase()}</div>}
+                        {overview.carrier && (
+                          <div className="text-xs text-gray-500">
+                            {overview.carrier.toUpperCase()}
+                            {overview.labelService ? ` · ${overview.labelService}` : ""}
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/*
-                      "generated" means ShipStation made the label but sent back no
-                      printable copy. Linking to it opened a page that doesn't exist;
-                      the label modal already treats it this way.
-                    */}
-                    {overview.shipStationLabelUrl !== "generated" ? (
+                    {/* "generated" is left by an old label that came back with no printable copy. */}
+                    {overview.labelUrl !== "generated" ? (
                       <a
-                        href={overview.shipStationLabelUrl}
+                        href={overview.labelUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
@@ -713,14 +765,14 @@ export default function OrderDetailsPage() {
                       </a>
                     ) : (
                       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
-                        The label was created, but ShipStation didn't send back a printable copy.
+                        The label was created, but no printable copy came back.
                         Contact Space Transfers for the label before you hand the package over.
                       </div>
                     )}
 
                     <button
                       disabled={updatingStatus}
-                      onClick={() => setPendingStep("Order Shipped")}
+                      onClick={() => askStep("Order Shipped")}
                       className="flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 transition-colors disabled:opacity-60"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -729,19 +781,19 @@ export default function OrderDetailsPage() {
                       {updatingStatus ? "Confirming…" : "Confirm — Package Ready for Pickup"}
                     </button>
 
-                    <div className="text-[11px] text-gray-400 text-center leading-relaxed">
+                    <div className="text-[11px] text-gray-500 text-center leading-relaxed">
                       Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
                     </div>
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && (overview?.shipStationTriggeredAt || retryingLabel) ? (
+                ) : overview?.status === "QUALITY_CHECK" && (overview?.labelRequestedAt || retryingLabel) ? (
                   <div className="flex flex-col items-center gap-3 py-4 text-center">
                     <SpaceLoader size={28} layout="inline" />
                     <div className="text-sm font-semibold text-gray-800">Generating shipping label…</div>
-                    <div className="text-xs text-gray-500">ShipStation is creating your label. This usually takes a few seconds.</div>
+                    <div className="text-xs text-gray-500">This usually takes a few seconds.</div>
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationError ? (
+                ) : overview?.status === "QUALITY_CHECK" && overview?.labelError ? (
                   <LabelFailed
-                    error={overview.shipStationError}
+                    error={overview.labelError}
                     busy={updatingStatus}
                     onRetry={() => void retryLabel()}
                   />
@@ -767,15 +819,15 @@ export default function OrderDetailsPage() {
                           disabled={updatingStatus || isPast}
                           onChange={() => {
                             if (isPast || isCurrent) return;
-                            if (o.key === "In Progress - Printing" || o.key === "Print Shipping Label") setPendingStep(o.key);
+                            if (o.key === "In Progress - Printing" || o.key === "Print Shipping Label") askStep(o.key);
                           }}
                           className="w-4 h-4"
                         />
-                        <div className={`text-sm font-semibold ${isPast ? "text-gray-400" : "text-gray-800"}`}>
+                        <div className={`text-sm font-semibold ${isPast ? "text-gray-500" : "text-gray-800"}`}>
                           {o.label}
                         </div>
                         {isPast && (
-                          <span className="ml-auto text-[10px] font-medium text-gray-400 uppercase tracking-wide">Locked</span>
+                          <span className="ml-auto text-[10px] font-medium text-gray-500 uppercase tracking-wide">Locked</span>
                         )}
                       </label>
                     );
@@ -845,7 +897,7 @@ export default function OrderDetailsPage() {
                             {formatMoney(earningsBreakdown.total, currency)}
                           </div>
                         </div>
-                        <p className="mt-2 text-[11px] text-gray-400">
+                        <p className="mt-2 text-[11px] text-gray-500">
                           {earningsBreakdown.realized
                             ? overview.status === "CANCELLED"
                               ? "This job was cancelled, but you're still paid for it. It joins your next payout."

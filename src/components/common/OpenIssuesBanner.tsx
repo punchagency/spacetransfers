@@ -66,7 +66,7 @@ export function OpenIssuesBanner() {
                     </span>
                     {issue.lastMessage && <span className="mt-0.5 block truncate text-sm text-gray-500">{issue.lastMessage}</span>}
                   </span>
-                  <FiChevronRight className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+                  <FiChevronRight className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
                 </button>
               </li>
             ))}
