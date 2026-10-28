@@ -9,7 +9,7 @@ It talks to the API in `space-transfer-server`. Customers use `space-transfers`,
 - **Sign up.** A new partner registers with a business address and waits for an admin to approve the account.
 - **Home.** Active jobs, urgent jobs and what is due next.
 - **Jobs & Orders.** Every assigned job by stage, with the next deadline: accept by, then print by.
-- **Work a job.** Accept and start it, preview each sheet, export the print file, download the customer's original images, request the shipping label and confirm pickup.
+- **Work a job.** Accept and start it, preview each sheet, export the print file, download the customer's original images, request the shipping label and confirm pickup. The label is bought through EasyPost from the partner's business address, which is also where returns go, so a partner without one can't get labels. An address the customer kept after the carrier questioned it is flagged on the job and in the label dialog.
 - **Answer a cancellation request.** When a customer asks to cancel, the job is tagged Cancel requested and put on hold until the partner answers. Accept cancels the order and refunds the customer, and the job isn't paid. Decline keeps it going, and the customer is shown the reason. Free reprints are tagged with the order they replace, and marked Unpaid reprint when Space Transfers chose not to pay for one.
 - **Availability.** Pause and resume new work.
 - **Earnings & Payouts.** What each job pays and what has been paid out.
@@ -42,9 +42,11 @@ The API must be running; see `space-transfer-server`.
 | Variable | Purpose |
 | --- | --- |
 | `VITE_API_URL` | The API, including `/api` |
-| `VITE_GOOGLE_CLIENT_ID` | Google OAuth client for "Download to Google Drive" |
+| `VITE_GOOGLE_CLIENT_ID` | Google OAuth client for "Download to Google Drive"; the Drive buttons are hidden when empty |
 | `VITE_STORE_URL` | The customer store, where the legal documents are published. Unset, a `printer.<domain>` address assumes `store.<domain>` |
 | `VITE_SENTRY_DSN` | Error reporting; nothing is reported when empty |
+| `VITE_SENTRY_ENVIRONMENT` | How Sentry labels this deployment's errors: `staging` on the demo, `production` on Render. Unset, the build mode |
+| `SENTRY_AUTH_TOKEN` | Build only, never in the bundle: a Sentry organization token. With it, the build uploads its source maps so errors show the real file and line, then deletes them from the output. Without it the build is unchanged |
 
 Every `VITE_*` value is compiled into the public bundle. Never put a secret in one; a client secret does not belong in this app. `.env` is gitignored.
 
@@ -77,8 +79,8 @@ Every move is forward-only and asks for confirmation. Cancel Job hands the job b
 
 - **An order can hold several sheets.** The job page has a sheet switcher, and each sheet is exported and printed separately. Files are named `…_sheet1of2.png`.
 - **Print files** are transparent PNGs at 300 DPI. Very long sheets download as a zip of parts.
-- **Earnings** become payable when a job ships. Each Friday payable jobs are put forward as a payout, which Space Transfers reviews and pays; nothing is paid automatically.
+- **Earnings** become payable when a job ships. Each Friday payable jobs are put forward as a payout, which Space Transfers reviews and pays; nothing is paid automatically. If the bank refuses a payout, the partner is told to check their bank details under Payout Settings.
 
 ## Security
 
-Partners can add a passkey as a second sign-in step in Settings. A suspended account is signed out on its next request. The headers and content security policy for production are in `vercel.json`.
+Partners can add a passkey as a second sign-in step in Settings. A suspended account is signed out on its next request. The headers and content security policy for production are in `render.yaml` at the top of the repository, the same as `vercel.json` here.
