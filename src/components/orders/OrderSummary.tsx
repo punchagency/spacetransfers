@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FiMail, FiPhone, FiMapPin, FiImage, FiUser } from "react-icons/fi";
 import { apiFetch } from "../../utils/api";
+import AddressCheckNote, { type AddressCheck } from "./AddressCheckNote";
 
 interface OrderSummaryProps {
     order: {
@@ -18,6 +19,7 @@ interface OrderSummaryProps {
             postalCode: string;
             country: string;
             region?: string;
+            check?: AddressCheck | null;
         };
         items: Array<{
             name: string;
@@ -275,6 +277,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                             <p>{shippingAddress.street}</p>
                             <p>{shippingAddress.city}, {shippingAddress.state} {shippingAddress.postalCode}</p>
                             <p className="text-xs text-gray-500 mt-1 uppercase">{shippingAddress.country}</p>
+                            <AddressCheckNote check={shippingAddress.check} />
                         </div>
                     ) : (
                         <p className="italic text-gray-500">No shipping address provided</p>

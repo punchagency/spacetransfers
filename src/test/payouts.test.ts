@@ -6,6 +6,8 @@ describe("payout statuses", () => {
     expect(payoutActions("pending_review")).toEqual(["approve", "reject"]);
     expect(payoutActions("approved")).toEqual(["pay", "reject"]);
     expect(payoutActions("failed")).toEqual(["retry", "reject"]);
+    // Once the money has reached the partner, rejecting would free its jobs to be paid twice.
+    expect(payoutActions("failed", true)).toEqual(["retry"]);
     for (const done of ["paid", "rejected", "processing", "cancelled"]) expect(payoutActions(done)).toEqual([]);
   });
 

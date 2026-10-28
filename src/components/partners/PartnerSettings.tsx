@@ -28,15 +28,6 @@ export const PartnerSettings = ({
      * already owns: capacity, auto-accept and status.
      */
     const [selectedRegions, setSelectedRegions] = useState<string[]>(partnerRegions ?? []);
-    /**
-     * This partner's warehouse in the client's ShipStation account.
-     *
-     * Entered by hand because ShipStation only shows the number in the
-     * warehouse page's URL. Left blank, the partner's orders are filed under
-     * the HQ warehouse — their labels still ship from their own address, but
-     * ShipStation's reporting credits the volume to head office.
-     */
-    const [warehouseId, setWarehouseId] = useState<string>('');
     const [isSaving, setIsSaving] = useState(false);
     /*
      * A suspension in progress. The server requires a reason, and a bare toggle
@@ -49,15 +40,6 @@ export const PartnerSettings = ({
     useEffect(() => {
         setIsPartnerActive(partnerStatus === 'Active');
     }, [partnerStatus]);
-
-    useEffect(() => {
-        if (!settings) return;
-        setWarehouseId(
-            settings.shipStationWarehouseId === null || settings.shipStationWarehouseId === undefined
-                ? ''
-                : String(settings.shipStationWarehouseId),
-        );
-    }, [settings]);
 
     const persistStatus = async (nextActive: boolean, reason?: string) => {
         setIsSaving(true);
@@ -87,28 +69,14 @@ export const PartnerSettings = ({
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            const payload: PartnerSettingsApi = {
-                /*
-                 * No `jobCapacity`. The server only writes the keys it is sent,
-                 * so leaving it out is what stops this panel from overwriting a
-                 * partner's own Auto-Accept choice. The two capacity limits were
-                 * already gone from this UI for the same reason.
-                 */
-                // Empty clears it, which puts this partner back on the HQ
-                // warehouse rather than leaving a stale id in place.
-                shipStationWarehouseId: warehouseId.trim() === '' ? null : Number(warehouseId.trim()),
-            };
-            await apiFetch(`/admin/partners/${partnerId}/settings`, {
-                method: 'PATCH',
-                body: JSON.stringify(payload),
-            });
-            // Separate endpoint: regions are not part of the settings document.
+            // Regions are all this panel saves. Capacity and Auto-Accept are left
+            // alone, so the partner's own Auto-Accept choice isn't overwritten.
             await apiFetch(`/admin/partners/${partnerId}`, {
                 method: 'PATCH',
                 body: JSON.stringify({ regions: selectedRegions }),
             });
             toast.success('Settings saved');
-            onUpdated(payload);
+            onUpdated(settings ?? {});
         } catch (error: any) {
             toast.error(error.message || 'Failed to save settings');
         } finally {
@@ -171,23 +139,11 @@ export const PartnerSettings = ({
                           override on top of it was a second limit to keep in
                           step for no benefit. No partner had either set.
                         */}
-                        <div className="space-y-2">
-                            <label className="text-sm font-bold text-gray-900">ShipStation warehouse ID</label>
-                            <input
-                                type="number"
-                                min="1"
-                                step="1"
-                                value={warehouseId}
-                                onChange={(e) => setWarehouseId(e.target.value)}
-                                placeholder="Leave blank to ship under HQ"
-                                className="w-full px-4 py-3 bg-gray-50 border border-transparent rounded-xl text-sm font-medium outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                            />
-                            <p className="text-[13px] text-gray-500 font-medium">
-                                The number in the warehouse&rsquo;s ShipStation URL. Without it this
-                                partner&rsquo;s orders are reported under head office — labels still ship
-                                from their own address either way.
-                            </p>
-                        </div>
+                        <p className="text-[13px] text-gray-500 font-medium leading-relaxed">
+                            Labels are bought through EasyPost when this partner marks a job ready
+                            to ship. They ship from the partner&rsquo;s business address, which is also
+                            where returns go, so keep it current: without one, no label can be made.
+                        </p>
 
                     </div>
                 </div>

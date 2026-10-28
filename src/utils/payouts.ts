@@ -41,8 +41,12 @@ export const payoutStatusStyle = (status: string): string => {
   }
 };
 
-/** Mirrors the API's rules, so a button is only offered when the API will accept it. */
-export const payoutActions = (status: string): PayoutAction[] => {
+/**
+ * Mirrors the API's rules, so a button is only offered when the API will accept it.
+ * `transferred`: the money already reached the partner's Stripe balance, so
+ * the payout can't be rejected: that would free its jobs to be paid again.
+ */
+export const payoutActions = (status: string, transferred = false): PayoutAction[] => {
   switch (status) {
     case "pending_review":
     case "pending":
@@ -50,7 +54,7 @@ export const payoutActions = (status: string): PayoutAction[] => {
     case "approved":
       return ["pay", "reject"];
     case "failed":
-      return ["retry", "reject"];
+      return transferred ? ["retry"] : ["retry", "reject"];
     default:
       return [];
   }

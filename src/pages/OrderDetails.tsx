@@ -11,6 +11,7 @@ import { apiFetch, getApiBaseUrl } from '../utils/api';
 import { getToken } from '../utils/auth';
 import toast from 'react-hot-toast';
 import { OrderCancellationRequest } from '../components/orders/OrderCancellationRequest';
+import { OrderShipment } from '../components/orders/OrderShipment';
 
 export const OrderDetails = () => {
   const { id } = useParams<{ id: string }>();
@@ -171,6 +172,7 @@ export const OrderDetails = () => {
           <div className="lg:col-span-1 space-y-6">
             <OrderTimeline order={order} />
             <OrderPartner order={order} />
+            <OrderShipment shipment={order.shipment} />
             <OrderFinancials order={order} orderId={id || ''} orderNumber={order.displayId} onChanged={reload} />
           </div>
         </div>

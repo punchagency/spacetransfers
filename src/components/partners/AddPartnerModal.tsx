@@ -249,7 +249,7 @@ export const AddPartnerModal = ({
 
           {/*
             Collected because three systems silently degrade without it: the
-            shipping-rate origin, the ShipStation label's ship-from, and the
+            shipping-rate origin, the shipping label's ship-from, and the
             nearest-partner ranking (which sorts on a state centroid and treats
             a missing state as infinitely far away).
           */}
