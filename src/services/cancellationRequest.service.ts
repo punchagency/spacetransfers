@@ -8,6 +8,7 @@ import { publishOrderEvent } from "./orderSyncHub.js";
 import { syncPartnerCapacitySafe } from "./partnerCapacity.service.js";
 import { sendCancellationDeclinedEmail, sendOrderCancelledEmail } from "./orderEmails.service.js";
 import { voidUnusedLabel } from "./shippingLabel.service.js";
+import { reportJobError } from "./monitoring.service.js";
 
 /**
  * A customer cancelling their own order.
@@ -339,6 +340,6 @@ export const escalateUnansweredRequests = async (now = new Date()) => {
 };
 
 export const startCancellationEscalation = (intervalMs = 30 * 60 * 1000) => {
-  const tick = () => escalateUnansweredRequests().catch((err: any) => console.warn(`[CANCEL_REQUEST] escalation failed: ${err?.message}`));
+  const tick = () => escalateUnansweredRequests().catch((err: any) => reportJobError("CANCEL_REQUEST", err));
   setInterval(tick, intervalMs).unref();
 };

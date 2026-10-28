@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 import mongoose from "mongoose";
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { env } from "../config/env.js";
+import { reportJobError } from "./monitoring.service.js";
+import { notifyAllAdmins } from "./adminNotifications.service.js";
 
 /**
  * Nightly copies of the database, and putting one back.
@@ -148,7 +150,18 @@ export const restoreBackup = async (date: string, targetDb: string, opts: { over
   return { date, from: manifest.database, into: targetDb, expected: manifest.collections, restored };
 };
 
-/** Runs a backup every night at 03:00 UTC, when BACKUP_ENABLED=true. */
+/**
+ * Whether a server starting now should make the backup it missed: past 03:00
+ * UTC with no backup for today yet (it was asleep or restarting at 03:00).
+ */
+export const backupMissedToday = (now: Date, latest: string | undefined): boolean =>
+  now.getUTCHours() >= 3 && latest !== now.toISOString().slice(0, 10);
+
+/**
+ * Runs a backup every night at 03:00 UTC, when BACKUP_ENABLED=true, and one on
+ * start-up if today's was missed. A failure reaches Sentry and every admin:
+ * a backup that silently stopped would only be noticed when it was needed.
+ */
 export const startBackupSchedule = () => {
   if (String(process.env.BACKUP_ENABLED || "").toLowerCase() !== "true") return;
   if (!backupsConfigured()) {
@@ -158,7 +171,24 @@ export const startBackupSchedule = () => {
   const run = () =>
     runBackup()
       .then((r) => console.log(`[BACKUP] ${r.date}: ${Object.values(r.collections).reduce((a, b) => a + b, 0)} documents in ${Object.keys(r.collections).length} collections`))
-      .catch((err) => console.error(`[BACKUP] failed: ${err?.message}`));
+      .catch((err) => {
+        reportJobError("BACKUP", err);
+        notifyAllAdmins({
+          category: "system",
+          priority: "high",
+          title: "Nightly backup failed",
+          message: `The database backup didn't complete: ${err?.message || "unknown error"}. It will be tried again tonight.`,
+          meta: { type: "backup_failed" },
+        }).catch(() => {});
+      });
+  // A couple of minutes after start-up, so it doesn't compete with the start itself.
+  setTimeout(() => {
+    listBackups()
+      .then((dates) => {
+        if (backupMissedToday(new Date(), dates[dates.length - 1])) return run();
+      })
+      .catch((err) => reportJobError("BACKUP", err));
+  }, 2 * 60 * 1000).unref();
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + (now.getUTCHours() >= 3 ? 1 : 0), 3));
   setTimeout(() => {

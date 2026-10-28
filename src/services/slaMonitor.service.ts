@@ -9,6 +9,7 @@ import {
   resolveBreachAction,
   slaReassignmentCount,
 } from "../utils/slaStages.js";
+import { reportJobError } from "./monitoring.service.js";
 
 /**
  * Acts on jobs that have missed their stage deadline.
@@ -174,7 +175,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export const startSlaMonitor = (intervalMs = 15 * 60 * 1000): void => {
   if (timer) return;
   timer = setInterval(() => {
-    runSlaSweep().catch((e) => console.error("[SLA] sweep failed:", e?.message || e));
+    runSlaSweep().catch((e) => reportJobError("SLA", e));
   }, intervalMs);
   console.log(`[SLA] monitor started — sweeping every ${Math.round(intervalMs / 60000)} min`);
 };

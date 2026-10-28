@@ -12,6 +12,7 @@ import { startBackupSchedule } from "./services/backup.service.js";
 import { startCancellationEscalation } from "./services/cancellationRequest.service.js";
 import { initMonitoring, reportServerError } from "./services/monitoring.service.js";
 import { startPaymentReconciliation } from "./services/paymentReconciliation.service.js";
+import { startExportCleanup } from "./services/exportCleanup.service.js";
 
 process.on("unhandledRejection", (reason) => {
   console.error("[UNHANDLED_REJECTION] a promise rejected with no handler — the server is still running, but this is a bug:", reason);
@@ -70,7 +71,7 @@ const start = async (): Promise<void> => {
       processDueAdminNotificationEmailBatches().catch(() => {});
     }, 10_000);
 
-    // Start Friday payout scheduler (TEST MODE ONLY)
+    // Drafts partner payouts on Fridays for an admin to review; it never pays anyone.
     scheduleFridayPayouts();
 
     // Checks parcels with the carrier, as a backup to EasyPost's tracking webhooks.
@@ -88,6 +89,8 @@ const start = async (): Promise<void> => {
     // Retries orders still waiting for a partner; idle while assignment is manual.
     startWaitingOrderSweep();
     startBackupSchedule();
+    // Removes print exports and previews past EXPORT_RETENTION_DAYS, so the disk doesn't fill.
+    startExportCleanup();
     startCancellationEscalation();
   }
 };

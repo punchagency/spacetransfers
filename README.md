@@ -185,10 +185,13 @@ Started by `server.ts` in every environment except tests:
 | Waiting orders | Every 5 minutes, offers unassigned orders to automatic assignment; idle while the rule is Manual |
 | Tracking poller | Every 30 minutes, asks EasyPost about parcels not yet delivered, as a backup to the webhook: ships an order the carrier has picked up, completes a delivered one |
 | SLA monitor | Reassigns or escalates late jobs; off until enabled in the admin console |
-| Payout scheduler | Each Friday, puts partners' payable, unpaid jobs into payouts for an admin to review. It never sends money |
-| Notification email batches | Sends queued admin notification emails |
+| Payout scheduler | Each Friday from 09:00 UTC (later that Friday if the server was asleep), puts partners' payable, unpaid jobs into payouts for an admin to review and tells the admins. It never sends money |
+| Notification email batches | Every 10 seconds, sends queued admin notification emails; a failed send is tried again, up to three times |
 | Unanswered cancellations | Every 30 minutes, tells the admins about any customer cancellation request a partner has left for 12 hours, and reminds the partner, once |
-| Backups | At 03:00 UTC, when `BACKUP_ENABLED=true`, writes an encrypted copy of every collection to R2 and keeps the last 30 |
+| Backups | At 03:00 UTC, when `BACKUP_ENABLED=true`, writes an encrypted copy of every collection to R2 and keeps the last 30. A server that starts after 03:00 without today's backup makes it then. A failure is sent to Sentry and the admins |
+| Export cleanup | Every 6 hours, removes print exports and previews older than `EXPORT_RETENTION_DAYS` (14) from the disk; they are made again on request |
+
+A job that fails is reported to Sentry, tagged with the job's name. The jobs run on timers inside the API, so they only run while it's awake (see the free plan above), and only one API may run them.
 
 ## Scripts
 

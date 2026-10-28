@@ -41,3 +41,16 @@ export const reportServerError = (error: unknown, context: { method?: string; ro
     // ignore
   }
 };
+
+/**
+ * A background job failed. Logged as before, and sent to Sentry tagged with the
+ * job: nobody reads the server log, and a job has no request to fail visibly.
+ */
+export const reportJobError = (job: string, error: unknown) => {
+  console.error(`[${job}] failed: ${(error as any)?.message || error}`);
+  try {
+    sentry?.captureException(error, { tags: { job } });
+  } catch {
+    // ignore
+  }
+};

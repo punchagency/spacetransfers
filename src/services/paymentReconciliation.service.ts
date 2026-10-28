@@ -2,6 +2,7 @@ import { Order } from "../models/order.model.js";
 import { User } from "../models/user.model.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { isStripeConfigured, stripe } from "./stripe.service.js";
+import { reportJobError } from "./monitoring.service.js";
 
 /**
  * Catches a customer charged with no order to show for it.
@@ -127,7 +128,7 @@ export const startPaymentReconciliation = (intervalMs = 10 * 60 * 1000): void =>
       .then((n) => {
         if (n > 0) console.warn(`[payments] ${n} payment(s) without an order reported to admins`);
       })
-      .catch((e) => console.error("[payments] reconciliation failed:", e?.message || e));
+      .catch((e) => reportJobError("PAYMENT_RECONCILIATION", e));
   timer = setInterval(run, intervalMs);
   run();
 };

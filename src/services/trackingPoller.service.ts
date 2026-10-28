@@ -2,6 +2,7 @@ import { Order } from "../models/order.model.js";
 import { env } from "../config/env.js";
 import { createTracker, isEasyPostConfigured, retrieveTracker } from "./easypost.service.js";
 import { applyTrackerUpdate } from "./shippingLabel.service.js";
+import { reportJobError } from "./monitoring.service.js";
 
 /**
  * Checks parcels with the carrier, as a backup to EasyPost's webhooks.
@@ -54,7 +55,7 @@ let pollerTimer: ReturnType<typeof setInterval> | null = null;
 
 export const startTrackingPoller = (intervalMs = env.trackingPollIntervalMs): void => {
   if (pollerTimer !== null) return;
-  const run = () => pollShippedOrders().catch((err: any) => console.error(`[TRACKING] poll failed: ${err?.message}`));
+  const run = () => pollShippedOrders().catch((err: any) => reportJobError("TRACKING", err));
   run();
   pollerTimer = setInterval(run, intervalMs);
   if (pollerTimer.unref) pollerTimer.unref();

@@ -18,6 +18,7 @@ import {
   isAtCapacity,
   syncPartnerCapacitySafe,
 } from "./partnerCapacity.service.js";
+import { reportJobError } from "./monitoring.service.js";
 
 // ── Pure, DB-free selection logic ─────────────────────────────────────────────
 // Exported so it can be unit-tested without a MongoDB connection.
@@ -688,7 +689,7 @@ export const startWaitingOrderSweep = (intervalMs = 5 * 60 * 1000): void => {
       .then((r) => {
         if (r.assigned > 0) console.log(`[AUTO_ASSIGN] ${r.assigned} of ${r.waiting} waiting order(s) assigned`);
       })
-      .catch((e) => console.error("[AUTO_ASSIGN] waiting-order sweep failed:", e?.message || e));
+      .catch((e) => reportJobError("AUTO_ASSIGN", e));
   sweepTimer = setInterval(run, intervalMs);
   run();
 };

@@ -7,8 +7,9 @@
  * "no automatic payments — explicit approval required" guarantee intact while
  * still saving the admin from assembling drafts by hand each week.
  *
- * Uses a simple setInterval-based cron — replace with node-cron or a job queue
- * in production.
+ * Checked every minute. It runs at the first check from Friday 09:00 UTC to the
+ * end of Friday, so a server that was asleep or restarting at 09:00 still
+ * drafts that week; running twice is harmless because drafted jobs are reserved.
  */
 
 import { User } from "../models/user.model.js";
@@ -17,6 +18,8 @@ import { getNextFridayDate, MINIMUM_PAYOUT_AMOUNT_CENTS } from "./stripe.service
 import { getEligibleJobsForPrinter } from "./partnerEarnings.service.js";
 import { env } from "../config/env.js";
 import mongoose from "mongoose";
+import { notifyAllAdmins } from "./adminNotifications.service.js";
+import { reportJobError } from "./monitoring.service.js";
 
 const MINIMUM_PAYOUT_DOLLARS =
   (env.minimumPayoutAmountCents || MINIMUM_PAYOUT_AMOUNT_CENTS) / 100;
@@ -24,7 +27,7 @@ const MINIMUM_PAYOUT_DOLLARS =
 const log = (msg: string) =>
   console.log(`[PayoutScheduler ${new Date().toISOString()}] ${msg}`);
 
-export async function runWeeklyPayouts(): Promise<void> {
+export async function runWeeklyPayouts(): Promise<{ drafted: number; total: number }> {
   log("Starting weekly draft-generation run (no automatic payments)");
 
   const printers = await User.find({
@@ -34,18 +37,36 @@ export async function runWeeklyPayouts(): Promise<void> {
 
   log(`Found ${printers.length} printers with payouts enabled`);
 
+  let drafted = 0;
+  let total = 0;
   for (const printer of printers) {
     try {
-      await createPrinterPayoutDraft(printer);
+      const amount = await createPrinterPayoutDraft(printer);
+      if (amount !== null) {
+        drafted += 1;
+        total += amount;
+      }
     } catch (err: any) {
-      log(`ERROR drafting payout for printer ${printer._id}: ${err.message}`);
+      reportJobError("PAYOUT_DRAFTS", err);
     }
   }
 
   log("Weekly draft-generation run complete");
+  if (drafted > 0) {
+    // Nothing is paid until an admin does it, so they need to know the drafts are there.
+    notifyAllAdmins({
+      category: "partners",
+      priority: "medium",
+      title: drafted === 1 ? "A payout is ready for review" : `${drafted} payouts are ready for review`,
+      message: `This week's partner payouts ($${total.toFixed(2)} in all) are waiting in Payouts. Approve and pay each one there.`,
+      meta: { type: "payout_drafts" },
+    }).catch(() => {});
+  }
+  return { drafted, total };
 }
 
-async function createPrinterPayoutDraft(printer: any): Promise<void> {
+/** The draft's amount, or null when this partner has nothing to draft. */
+async function createPrinterPayoutDraft(printer: any): Promise<number | null> {
   const printerId = printer._id;
 
   // getEligibleJobsForPrinter already excludes jobs reserved by an existing
@@ -57,7 +78,7 @@ async function createPrinterPayoutDraft(printer: any): Promise<void> {
     log(
       `Skipping printer ${printerId} — eligible balance $${total.toFixed(2)} below minimum $${MINIMUM_PAYOUT_DOLLARS} (or no jobs)`
     );
-    return;
+    return null;
   }
 
   const payout = await Payout.create({
@@ -92,12 +113,13 @@ async function createPrinterPayoutDraft(printer: any): Promise<void> {
   log(
     `Drafted payout ${payout._id} for printer ${printerId} — $${total.toFixed(2)} (${jobs.length} jobs), awaiting admin review`
   );
+  return total;
 }
 
-/**
- * Schedule the weekly Friday payout job.
- * Checks every minute if it's Friday 09:00 UTC and hasn't run today yet.
- */
+/** Whether this minute's check should draft: any time on Friday from 09:00 UTC, once a day. */
+export const isPayoutDraftDue = (now: Date, lastRunDate: string | null): boolean =>
+  now.getUTCDay() === 5 && now.getUTCHours() >= 9 && lastRunDate !== now.toISOString().slice(0, 10);
+
 let lastRunDate: string | null = null;
 
 export function scheduleFridayPayouts(): void {
@@ -105,16 +127,12 @@ export function scheduleFridayPayouts(): void {
 
   setInterval(async () => {
     const now = new Date();
-    const isFriday = now.getUTCDay() === 5;
-    const isPayoutHour = now.getUTCHours() === 9 && now.getUTCMinutes() < 5;
-    const todayKey = now.toISOString().split("T")[0];
-
-    if (isFriday && isPayoutHour && lastRunDate !== todayKey) {
-      lastRunDate = todayKey;
+    if (isPayoutDraftDue(now, lastRunDate)) {
+      lastRunDate = now.toISOString().slice(0, 10);
       try {
         await runWeeklyPayouts();
       } catch (err: any) {
-        log(`Unhandled error in weekly payout run: ${err.message}`);
+        reportJobError("PAYOUT_DRAFTS", err);
       }
     }
   }, 60_000); // check every minute

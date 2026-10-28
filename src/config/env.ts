@@ -56,6 +56,8 @@ interface Env {
   trackingMaxPollingDays: number;
   /** How many print-size exports may render at once; each can need about 2 GB. */
   exportRenderConcurrency: number;
+  /** Days a print export or preview is kept on disk; it is made again on request. */
+  exportRetentionDays: number;
   /** Where shipping quotes start when no partner serves the address. Never a label's return address. */
   shipFrom: {
     name?: string;
@@ -140,6 +142,7 @@ export const env: Env = {
   exportRenderConcurrency: Number.isInteger(Number(process.env.EXPORT_RENDER_CONCURRENCY)) && Number(process.env.EXPORT_RENDER_CONCURRENCY) > 0
     ? Number(process.env.EXPORT_RENDER_CONCURRENCY)
     : 3,
+  exportRetentionDays: Number(process.env.EXPORT_RETENTION_DAYS) > 0 ? Number(process.env.EXPORT_RETENTION_DAYS) : 14,
   // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
   // shows on the key page, and copying it verbatim should just work.
   geminiApiKey:
