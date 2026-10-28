@@ -1,7 +1,9 @@
 # AI Editing Suite
 
-Natural-language image editing for the artboard, powered by **Google Gemini** on
-its free tier.
+Natural-language image editing for the artboard, powered by **Google Gemini**.
+Understanding the request is free; editing the image needs billing on the key
+(see below). The browser tools (background and colour removal, stickers) are
+free and work without any key.
 
 ## Setup
 
@@ -35,13 +37,14 @@ Models confirmed to report `limit: 0` without billing: `gemini-2.5-flash-image`,
 `gemini-3.1-flash-image`, `gemini-3.1-flash-lite-image`, `gemini-3-pro-image`,
 `gemini-3.1-flash-image-preview`, `nano-banana-pro-preview`.
 
-**If you need image editing at zero cost**, configure the Cloudflare Workers AI
-tier instead (10,000 neurons/day, no card):
+Gemini is the only image model. Without billing, the image tools are switched
+off in the editor (the capabilities endpoint says why) and everything else keeps
+working.
 
-```bash
-CLOUDFLARE_ACCOUNT_ID=...
-CLOUDFLARE_API_TOKEN=...
-```
+Replicate and Cloudflare Workers AI were tiers here until August 2026, when they
+were removed because neither had an account behind it. Workers AI's image models
+also take inputs of at most 512×512 (FLUX.2 klein, January 2026), far below
+print resolution, so they would only suit previews.
 
 ### Model selection and rotation
 
@@ -79,32 +82,31 @@ indistinguishable at the status-code level:
 deliberately shorter than the daily cap. The moment an operator enables billing
 the model starts working and nothing tells the server, so a long window would
 keep the feature dark *after* it was already fixed, which reads as the fix not
-working. `resetGeminiBlocks()` clears every pause immediately.
+working.
 
-A success on any model clears its block at once.
+A success on any model clears its block at once, and a restart clears them all.
 
 ## Provider tiers
 
-Requests fall through in order. Each tier is skipped, not failed, when it isn't
-available — so a spent quota or a lapsed card degrades the feature instead of
-breaking it.
+A tier that isn't available is skipped, not failed, so a spent quota or a lapsed
+card switches the generative tools off instead of breaking the editor.
 
 | Order | Tier | Cost | Notes |
 | --- | --- | --- | --- |
 | 0 | **Browser (local)** | free | Background removal (WASM segmentation), colour removal, sticker borders. Never reaches the server. |
-| 1 | **Gemini** | free | All instruction editing. Takes raw bytes — no staging upload. |
-| 2 | Replicate (`flux-kontext-pro`) | ~$0.04/img | Used only if Gemini is capped or fails. |
-| 3 | Cloudflare Workers AI | free tier | Last resort. |
+| 1 | **Gemini** | ~$0.04 per image edit, with billing on | All instruction editing. Takes the image bytes directly. Planning (text) is free. |
 
-`GET /api/customer/assets/ai-edit/capabilities` reports which tiers are live,
-which intents they serve, and — when everything is dark — *why*
-(`unconfigured` / `rate_limited` / `daily_cap` / `out_of_credit`).
+`GET /api/customer/assets/ai-edit/capabilities` reports whether image editing is
+live, which intents it serves, whether planning is, and — when it is off — *why*
+(`rate_limited` / `daily_cap` / `billing_required` / `retired` / `invalid_key`),
+with a `detail` sentence giving the operator the fix. Without a key at all it
+simply reports `enabled: false`.
 
 ## Endpoints
 
 ```
 GET  /api/customer/assets/ai-edit/capabilities   readiness + live intents
-POST /api/customer/assets/ai-edit                { url, prompt, intent, seed? }
+POST /api/customer/assets/ai-edit                { url, prompt, intent }
 POST /api/customer/assets/ai-edit/plan           { prompt, history[] } → ordered steps
 ```
 
@@ -116,7 +118,7 @@ starts. It never fails a request: no key, or an unusable answer, returns
 ## Tools
 
 Each is a canonical **intent**. Adding one starts at `AiIntentId` in
-`space-transfer/src/components/artboard/lib/ai/types.ts`; the verb table,
+`space-transfers/src/components/artboard/lib/ai/types.ts`; the verb table,
 completion copy and tuning map are exhaustive `Record<AiIntentId, …>`s, so the
 type checker walks you through every place that needs wiring and a half-added
 tool cannot compile.
@@ -126,7 +128,7 @@ tool cannot compile.
 | `remove-bg` | browser → generative | WASM segmentation; keeps hair/fur detail and partial alpha |
 | `remove-color` | browser | Perceptual (CIE L\*a\*b\*) match, feathered edges, spill suppression |
 | `make-transparent`, `to-sticker` | browser | Cutout, plus a dilated contour border for stickers |
-| `upscale`, `enhance` | upscale endpoint | Replicate → HuggingFace → sharp |
+| `upscale`, `enhance` | upscale endpoint | `sharp` on the server: 2× passes, each sharpened |
 | `remove-object`, `generative-fill` | Gemini | Context-aware inpainting |
 | `replace-bg`, `replace-object`, `add-object` | Gemini | |
 | `isolate-subject` | Gemini | "Remove everyone except the main subject" |
@@ -137,15 +139,10 @@ tool cannot compile.
 
 ### Per-intent tuning
 
-`buildEditRequest` in `customer.controller.ts` expands an intent into the full
+`buildEditRequest` in `controllers/customer/aiEdit.controller.ts` expands an intent into the full
 instruction: the user's own words lead, then a `guard` (what must be preserved)
 and an `avoid` list (what must not happen). The two together are what stops an
 edit bleeding outside its target, which is the dominant failure mode.
-
-Optional model inputs are filtered against `MODEL_INPUT_SUPPORT` first —
-Replicate rejects a whole prediction with a 422 if it receives a field the model
-doesn't declare, so `negative_prompt` is folded into the instruction text for
-models without one.
 
 A `GLOBAL_GUARD` applies to every edit and pins text legibility and aspect
 ratio. Text matters disproportionately here: these images go to transfer
@@ -155,8 +152,8 @@ after it is on a garment.
 
 ## Print-resolution conformance
 
-Every generative model renders at its own canvas size — Gemini around 1024px,
-Cloudflare's SD1.5 at 512 — and none guarantee the input's aspect ratio. For a
+A generative model renders at its own canvas size (Gemini around 1024px) and
+doesn't guarantee the input's aspect ratio. For a
 screen-only app that is cosmetic; here it is not. An artboard item's DPI is
 `pixels / physical inches`, so a 1024px edit of a 4000px artwork silently drops a
 300-DPI file to 77 DPI with nothing failing.
@@ -202,7 +199,7 @@ the second clause to the model.
 
 ## Review before apply
 
-A single-item edit is staged in `AiPreview` rather than applied. The customer
+A single-item edit is staged in `AiPreviewDialog` rather than applied. The customer
 compares before/after on a draggable slider and accepts or discards; nothing
 touches the artboard and no undo entry is committed until they do.
 
@@ -229,9 +226,8 @@ Three independent layers, each answering a different question:
 
 ## Performance
 
-- **No staging upload on the common path.** Gemini takes raw bytes, so the
-  Cloudinary round trip of a print-resolution file is deferred behind a lazy
-  getter and only happens if the request reaches the Replicate tier.
+- **No staging upload.** Gemini takes the image bytes directly, so a
+  print-resolution file is never uploaded somewhere first.
 - **Local work stays local.** Background and colour removal never touch the
   network, so they work offline and while the generative tier is capped.
 - **Colour matching is memoised per distinct RGB triple.** The Lab conversion is

@@ -18,74 +18,13 @@ import { fetchImageBuffer } from "./shared.js";
 // ── Generative AI editing ─────────────────────────────────────────────────────
 
 /**
- * Instruction-based image editing model. Swapping vendors is a change to this
- * function alone — the client speaks only in {url, prompt, intent} and never
- * learns which model answered.
- */
-const AI_EDIT_MODEL = process.env.AI_EDIT_MODEL || "black-forest-labs/flux-kontext-pro";
-
-/**
- * Which optional inputs each model actually declares.
- *
- * A remote model would validate the whole prediction against its schema and
- * rejects it with a 422 if it receives a field the model does not declare — so
- * an optional input is only ever sent to a model known to accept it. Anything
- * absent from this table falls back to the conservative profile (prompt +
- * image only), which every instruction-edit model supports.
- *
- * Confirm against `GET /v1/models/<owner>/<name>` before adding a row: the
- * flux-kontext family exposes no negative_prompt / guidance / step controls,
- * so those knobs are simply unavailable there and the guidance has to travel
- * inside the prompt text instead.
- */
-interface ModelInputSupport {
-  negativePrompt: boolean;
-  guidance: boolean;
-  steps: boolean;
-  seed: boolean;
-  promptUpsampling: boolean;
-}
-
-const CONSERVATIVE_INPUT_SUPPORT: ModelInputSupport = {
-  negativePrompt: false,
-  guidance: false,
-  steps: false,
-  seed: false,
-  promptUpsampling: false,
-};
-
-const MODEL_INPUT_SUPPORT: Record<string, ModelInputSupport> = {
-  "black-forest-labs/flux-kontext-pro": {
-    ...CONSERVATIVE_INPUT_SUPPORT,
-    seed: true,
-    promptUpsampling: true,
-  },
-  "black-forest-labs/flux-kontext-max": {
-    ...CONSERVATIVE_INPUT_SUPPORT,
-    seed: true,
-    promptUpsampling: true,
-  },
-};
-
-const inputSupportFor = (model: string): ModelInputSupport =>
-  MODEL_INPUT_SUPPORT[model] ?? CONSERVATIVE_INPUT_SUPPORT;
-
-/**
  * Per-intent tuning. `guard` states what the model must preserve, `avoid` what
  * it must not do — the two together are what stops an edit bleeding outside the
  * thing the user asked to change, which is the dominant failure mode here.
- *
- * `upsample` asks the model to expand a terse instruction before running. It's
- * on for the chip-driven intents (whose prompts are a handful of words) and off
- * where the user's exact wording is the whole point — rewriting "make it gold"
- * into a paragraph is how a recolour turns into a restyle.
  */
 interface IntentTuning {
   guard: string;
   avoid: string;
-  upsample?: boolean;
-  /** Optional per-intent override, e.g. route inpainting to a specialist model. */
-  model?: string;
 }
 
 const INTENT_TUNING: Record<string, IntentTuning> = {
@@ -94,7 +33,6 @@ const INTENT_TUNING: Record<string, IntentTuning> = {
       "Replace only the background behind the subject with what is described. Keep the subject's pose, proportions, colours and lighting exactly as they are, and blend its edges cleanly into the new background.",
     avoid:
       "altering, recolouring or moving the subject; leaving a halo, fringe or cut-out outline around the subject; changing the subject's scale or crop",
-    upsample: true,
   },
   "change-color": {
     guard:
@@ -102,41 +40,35 @@ const INTENT_TUNING: Record<string, IntentTuning> = {
     avoid:
       "changing the background; altering any element other than the one named; flattening or posterising the shading; changing its shape, texture or proportions",
     // The colour word is the payload — upsampling tends to editorialise it.
-    upsample: false,
   },
   "remove-object": {
     guard:
       "Remove the described object completely and reconstruct what would be behind it, matching the surrounding texture, lighting and perspective so it reads as though the object was never there.",
     avoid:
       "leaving fragments, outlines or ghosting of the removed object; blurring or smudging the patched area; altering any other element",
-    upsample: true,
   },
   "add-shadow": {
     guard:
       "Add a single realistic contact shadow beneath the subject, consistent with the existing light direction, softness and intensity.",
     avoid:
       "modifying the subject itself; adding harsh pure-black or multiple conflicting shadows; changing the background",
-    upsample: true,
   },
   "to-sticker": {
     guard:
       "Isolate the subject and present it as a die-cut sticker with a clean, even white contour border that follows its silhouette, on a plain background.",
     avoid:
       "cropping or clipping the subject; producing an uneven, broken or coloured border; adding drop shadows or background detail",
-    upsample: true,
   },
   cartoon: {
     guard:
       "Restyle the artwork as described while preserving the original composition, pose, and the subject's identity and proportions.",
     avoid:
       "changing the composition or framing; adding or removing elements; distorting faces, hands or lettering",
-    upsample: true,
   },
   "make-transparent": {
     guard:
       "Isolate the subject on a plain, empty background with clean, sharp edges.",
     avoid: "altering the subject; leaving background remnants, halos or soft fringing",
-    upsample: true,
   },
   /**
    * Background removal normally runs in the browser (WASM segmentation), which
@@ -152,70 +84,60 @@ const INTENT_TUNING: Record<string, IntentTuning> = {
       "Remove the background completely, leaving only the subject on a plain empty background. Follow the subject's true silhouette precisely, including fine detail such as individual strands of hair, fur and thin or wispy edges, and keep partially transparent areas partially transparent rather than solid.",
     avoid:
       "altering, recolouring or re-framing the subject; leaving background remnants, a halo, a coloured fringe or a visible cut-out outline; hardening soft or wispy edges into a solid shape; discarding fine detail at the subject's boundary",
-    upsample: true,
   },
   "remove-color": {
     guard:
       "Remove only the colour described, everywhere it appears. Where that colour was part of the background, leave plain empty space; where it was part of an object, reconstruct what the object looks like without it while keeping the object's shape and shading intact.",
     avoid:
       "altering any other colour in the image; shifting the overall hue, white balance or saturation; leaving speckles or a fringe of the removed colour along edges",
-    upsample: true,
   },
   "replace-object": {
     guard:
       "Replace only the object described with the new one, matching the original's position, scale, orientation, perspective and lighting so it sits in the scene naturally.",
     avoid:
       "altering the background or any other object; changing the composition or framing; leaving traces of the original object; producing a pasted-on look with mismatched lighting or edges",
-    upsample: true,
   },
   "add-object": {
     guard:
       "Add the described element to the image, matched to the existing perspective, scale, lighting direction and colour temperature, and correctly occluded by anything in front of it.",
     avoid:
       "altering or moving anything already in the image; changing the composition or framing; adding more than what was asked for; floating the new element with no contact shadow",
-    upsample: true,
   },
   "isolate-subject": {
     guard:
       "Keep only the single main subject and remove every other person and object, reconstructing the background plausibly where they were.",
     avoid:
       "altering the main subject in any way; leaving fragments, limbs or shadows of the removed subjects; cropping or re-framing the image",
-    upsample: true,
   },
   "sketch-to-photo": {
     guard:
       "Render the drawing as a photorealistic photograph, preserving the exact composition, pose, proportions and every element present in the sketch.",
     avoid:
       "adding elements absent from the sketch; changing the pose, layout or proportions; retaining visible line art, paper texture or pencil shading",
-    upsample: true,
   },
   "style-transfer": {
     guard:
       "Re-render the image in the style described while preserving the composition, subject identity, pose and proportions exactly.",
     avoid:
       "changing the composition or framing; adding or removing elements; distorting faces, hands or lettering",
-    upsample: true,
   },
   relight: {
     guard:
       "Change only the lighting as described. Re-derive shadows, highlights and colour temperature consistently across the whole scene while keeping every object's position, shape and material unchanged.",
     avoid:
       "moving, adding or removing objects; changing the subject's colours beyond what the new lighting implies; producing shadows inconsistent with the new light direction",
-    upsample: true,
   },
   outpaint: {
     guard:
       "Extend the scene outward beyond its current edges, continuing the existing perspective, lighting, texture and content so the original area remains pixel-identical and the join is invisible.",
     avoid:
       "altering, rescaling or re-centring the original image content; introducing a visible seam, border or tonal step at the original edges; inventing a subject that contradicts the scene",
-    upsample: true,
   },
   "generative-fill": {
     guard:
       "Fill the described region with plausible content that matches the surrounding texture, lighting, perspective and grain.",
     avoid:
       "altering anything outside the described region; blurring or smudging the filled area; leaving a visible patch boundary",
-    upsample: true,
   },
 };
 
@@ -239,9 +161,6 @@ const SERVER_EDIT_INTENTS = [...Object.keys(INTENT_TUNING), "custom"];
 
 export interface BuiltEditRequest {
   instruction: string;
-  model: string;
-  /** Extra model inputs, already filtered to what this model accepts. */
-  extraInput: Record<string, unknown>;
 }
 
 /**
@@ -249,36 +168,20 @@ export interface BuiltEditRequest {
  * The user's own words always lead, so a chip press and a typed sentence
  * converge on the same shape; the tuning is appended as constraints.
  *
- * Negative guidance goes into `negative_prompt` when the model has one and is
- * folded into the instruction text otherwise, so the constraint survives either
- * way. Each `avoid` entry is phrased as a gerund under a single governing
+ * Gemini takes one instruction, so the negative guidance travels inside it. Each
+ * `avoid` entry is phrased as a gerund under a single governing
  * "Avoid all of the following:" header — a bare "Do not a; b; c" negates only
  * the first item and reads as an instruction to perform the rest.
  */
-export const buildEditRequest = (
-  intent: string,
-  prompt: string,
-  seed?: number,
-): BuiltEditRequest => {
+export const buildEditRequest = (intent: string, prompt: string): BuiltEditRequest => {
   const tuning = INTENT_TUNING[intent];
-  const model = tuning?.model || AI_EDIT_MODEL;
-  const support = inputSupportFor(model);
-  const extraInput: Record<string, unknown> = {};
-
   const parts = [prompt.trim().replace(/\.$/, "")];
   if (tuning) {
     parts.push(tuning.guard);
-    if (support.negativePrompt) extraInput.negative_prompt = tuning.avoid;
-    else parts.push(`Avoid all of the following: ${tuning.avoid}.`);
-    if (support.promptUpsampling && tuning.upsample) extraInput.prompt_upsampling = true;
+    parts.push(`Avoid all of the following: ${tuning.avoid}.`);
   }
   parts.push(GLOBAL_GUARD);
-
-  // A caller-supplied seed makes a run reproducible, which is what lets two
-  // phrasings of the same edit be compared without the noise of a fresh sample.
-  if (support.seed && Number.isFinite(seed)) extraInput.seed = Math.trunc(seed as number);
-
-  return { instruction: parts.join(". ").replace(/\.\.+/g, "."), model, extraInput };
+  return { instruction: parts.join(". ").replace(/\.\.+/g, ".") };
 };
 
 /**
@@ -393,7 +296,8 @@ export const aiEditPlan = async (req: Request, res: Response, next: NextFunction
 
 export const aiEditAsset = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { url, prompt, intent, seed } = req.body || {};
+    // A `seed` from older clients is accepted and ignored: Gemini takes none.
+    const { url, prompt, intent } = req.body || {};
     if (!url || typeof url !== "string") {
       return next(Object.assign(new Error("url is required"), { statusCode: 400 }));
     }
@@ -428,11 +332,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     const sourceMeta = await sharp(sourceBuffer, { limitInputPixels: false }).metadata();
     const sourceMimeType = `image/${sourceMeta.format || "png"}`;
 
-    const built = buildEditRequest(
-      String(intent || "custom"),
-      prompt,
-      typeof seed === "number" ? seed : undefined,
-    );
+    const built = buildEditRequest(String(intent || "custom"), prompt);
 
     /*
      * The lazy Cloudinary staging that lived here went with Replicate.
@@ -446,7 +346,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     // Gemini is the whole implementation.
     let editedBuffer: Buffer | undefined;
     let providerUsed = "";
-    let modelUsed = built.model;
+    let modelUsed = geminiImageModel();
     // Kept so an exhausted chain can report *why* rather than reporting that it
     // is exhausted, which is the part the caller can already see.
     let lastTierError: string | undefined;
@@ -515,7 +415,6 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     // inputs that produced it — the instruction is derived, not user-supplied.
     console.log(
       `[AI-EDIT] ${intent} via ${providerUsed}/${modelUsed}` +
-        `${built.extraInput.seed !== undefined ? ` seed=${built.extraInput.seed}` : ""}` +
         `${conformed.upsampled ? " upsampled" : ""}${conformed.cropped ? " aspect-corrected" : ""}` +
         ` — "${prompt.slice(0, 60)}"`,
     );
@@ -526,8 +425,6 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       heightPx: conformed.heightPx,
       originalWidthPx: sourceGeometry.width,
       originalHeightPx: sourceGeometry.height,
-      // Echoed so the same edit can be reproduced or re-rolled deliberately.
-      seed: built.extraInput.seed,
       model: modelUsed,
       // Generative edits repaint the full frame and the result has been
       // conformed to the source's exact dimensions, so the item's print box on
