@@ -321,7 +321,7 @@ export default function Editor() {
       if (isTypingTarget(e.target)) return;
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;
-      const key = e.key.toLowerCase();
+      const key = e.key?.toLowerCase();
       if (key === "z" && !e.shiftKey) {
         e.preventDefault();
         historyState.undo();
@@ -346,7 +346,7 @@ export default function Editor() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
       if (dialogOpenRef.current || isTypingTarget(e.target)) return;
-      const key = e.key.toLowerCase();
+      const key = e.key?.toLowerCase();
       if (key === "s") {
         e.preventDefault();
         setIsSidebarOpen((open) => !open);

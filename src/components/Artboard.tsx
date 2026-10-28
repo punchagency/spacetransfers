@@ -121,7 +121,8 @@ export default function Artboard({
   /* "N" nests, the way double-clicking the sheet adds artwork. */
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      // Chrome's autofill sends keydown events with no key at all.
+      if (e.key?.toLowerCase() !== "n" || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
       if (!shortcutsEnabled || isTypingTarget(e.target)) return;
       e.preventDefault();
       toggleAutoNest();

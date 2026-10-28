@@ -259,6 +259,24 @@ export default function OrderDetailsModal({
                     Tracking number{order.carrier ? ` · ${order.carrier}` : ""}
                   </p>
                   <p className="font-medium text-gray-900 break-all select-all">{order.trackingNumber}</p>
+                  {order.trackingStatus && (
+                    <p className="mt-1 text-gray-700">
+                      {order.trackingStatus}
+                      {order.estimatedDeliveryAt && order.trackingStatus !== "Delivered"
+                        ? `, expected ${new Date(order.estimatedDeliveryAt).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`
+                        : ""}
+                    </p>
+                  )}
+                  {order.trackingUrl && (
+                    <a
+                      href={order.trackingUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-block text-sm font-medium text-slate-900 underline underline-offset-2 hover:text-slate-700"
+                    >
+                      Track your parcel
+                    </a>
+                  )}
                 </>
               ) : (
                 <p className="text-gray-500 mt-1">

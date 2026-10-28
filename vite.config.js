@@ -1,7 +1,33 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite'
+import { sentryVitePlugin } from '@sentry/vite-plugin'
+import path from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
+
+/**
+ * Uploads the build's source maps to Sentry, so a reported error points at the
+ * real file and line, then deletes them so the site never serves them. Only
+ * when SENTRY_AUTH_TOKEN is set (production builds); other builds are as before.
+ */
+const SENTRY_AUTH_TOKEN = (process.env.SENTRY_AUTH_TOKEN || '').trim();
+const sentrySourceMaps = (project) => {
+  if (!SENTRY_AUTH_TOKEN) return [];
+  let mapsIn;
+  const builtMaps = new Promise((resolve) => (mapsIn = resolve));
+  return [
+    // The maps are wherever this build writes, which isn't always dist/.
+    { name: 'space-transfers-built-maps', configResolved: (config) => mapsIn(path.join(path.resolve(config.root, config.build.outDir), '**/*.map')) },
+    sentryVitePlugin({
+      org: 'space-transfers',
+      project,
+      authToken: SENTRY_AUTH_TOKEN,
+      telemetry: false,
+      release: { create: false, finalize: false, inject: false },
+      sourcemaps: { filesToDeleteAfterUpload: builtMaps },
+    }),
+  ];
+};
 /**
  * Makes the social-preview URLs absolute at build time.
  *
@@ -58,7 +84,9 @@ const crawlerFilesPlugin = () => {
 };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), siteUrlPlugin(), crawlerFilesPlugin()],
+  plugins: [react(), tailwindcss(), siteUrlPlugin(), crawlerFilesPlugin(), ...sentrySourceMaps('space-transfers-store')],
+  // "hidden": maps are made for the upload but never linked from the code.
+  ...(SENTRY_AUTH_TOKEN ? { build: { sourcemap: 'hidden' } } : {}),
   test: {
     globals: true,
     environment: 'jsdom',

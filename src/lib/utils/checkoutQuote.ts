@@ -27,6 +27,7 @@ export const toPricedItems = (cartItems: any[]) =>
   }));
 
 export interface QuoteAddress {
+  street: string;
   city: string;
   state: string;
   postalCode: string;
@@ -49,7 +50,7 @@ export const useCheckoutQuote = (
   const key = enabled
     ? JSON.stringify({
         items: items.map((i) => [i.designId, i.widthIn, i.heightIn, i.quantity]),
-        address: [address.city, address.state, address.postalCode, address.country],
+        address: [address.street, address.city, address.state, address.postalCode, address.country],
       })
     : "";
   const [result, setResult] = useState<{ key: string; quotes: Partial<Record<ShippingMethod, CheckoutQuote>> }>({
@@ -67,6 +68,7 @@ export const useCheckoutQuote = (
           body: JSON.stringify({
             items,
             shippingMethod: method,
+            shippingStreet: address.street,
             shippingCity: address.city,
             shippingState: address.state,
             shippingPostalCode: address.postalCode,

@@ -13,7 +13,9 @@ export const initMonitoring = async (app: string) => {
     const Sentry = await import("@sentry/browser");
     Sentry.init({
       dsn: DSN,
-      environment: import.meta.env.MODE,
+      // VITE_SENTRY_ENVIRONMENT tells the demo's reports from production's,
+      // which are both production builds.
+      environment: (import.meta.env.VITE_SENTRY_ENVIRONMENT || "").trim() || import.meta.env.MODE,
       sendDefaultPii: false,
       initialScope: { tags: { app } },
       beforeSend: (event) => {

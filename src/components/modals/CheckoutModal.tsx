@@ -12,6 +12,8 @@ import ReviewStep from "../checkout/ReviewStep";
 import OrderSummary from "../checkout/OrderSummary";
 import { ErrorBoundary } from "../common/ErrorBoundary";
 import ConfirmModal from "./ConfirmModal";
+import AddressCheckModal, { type AddressPrompt } from "../checkout/AddressCheckModal";
+import { addressKey, checkShippingAddress, type AddressFields } from "../../lib/utils/addressCheck";
 import { LuShoppingCart } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
 import { stripEmbeddedImages, hasEmbeddedImages } from "../../lib/utils/payloadImages";
@@ -107,6 +109,16 @@ export default function CheckoutModal({
     country: "US",
   });
   const cardHandlerRef = useRef<null | (() => Promise<{ paymentIntentId: string }>)>(null);
+  /*
+   * The carrier's check of the address, made when the customer presses
+   * Continue. `confirmedAddressRef` is the address they settled on, so going
+   * back and forward doesn't ask again; editing the address does.
+   */
+  const [addressPrompt, setAddressPrompt] = useState<AddressPrompt | null>(null);
+  const [checkingAddress, setCheckingAddress] = useState(false);
+  const confirmedAddressRef = useRef("");
+  const formDataRef = useRef(formData);
+  formDataRef.current = formData;
   const [orderId, setOrderId] = useState<string | null>(null);
   // The canonical DTF-#### number the customer will see everywhere else.
   const [orderDisplayId, setOrderDisplayId] = useState<string | null>(null);
@@ -200,7 +212,7 @@ export default function CheckoutModal({
     !checkoutErrors.country;
   const { quotes, loading: quoteLoading } = useCheckoutQuote(
     cartItems,
-    { city: formData.city, state: formData.state, postalCode: formData.postalCode, country: formData.country },
+    { street: formData.street, city: formData.city, state: formData.state, postalCode: formData.postalCode, country: formData.country },
     addressQuotable,
   );
   const priced = (method: "standard" | "express") => quotes[method] ?? estimateFor(method);
@@ -347,8 +359,31 @@ export default function CheckoutModal({
     }
   };
 
+  const addressOf = (f: typeof formData): AddressFields => ({
+    street: f.street,
+    city: f.city,
+    state: f.state,
+    postalCode: f.postalCode,
+  });
+
+  const continueFromDetails = () => {
+    /*
+     * Artwork warnings never block an order, but going past them should be a
+     * decision, not something scrolled by: ask once before payment.
+     */
+    if (artworkCheck.checking) {
+      toast("Still checking your artwork — one moment.");
+      return;
+    }
+    if (artworkCheck.warnings.length > 0) {
+      setConfirmWarnings(true);
+      return;
+    }
+    setStep(2);
+  };
+
   const handleNextStep = async () => {
-    if (isSubmitting) return;
+    if (isSubmitting || checkingAddress || addressPrompt) return;
 
     if (step === 0) {
       if (!isCartValid) {
@@ -386,19 +421,24 @@ export default function CheckoutModal({
         });
         return;
       }
-      /*
-       * Artwork warnings never block an order, but going past them should be a
-       * decision, not something scrolled by: ask once before payment.
-       */
-      if (artworkCheck.checking) {
-        toast("Still checking your artwork — one moment.");
-        return;
+      const entered = addressOf(formData);
+      if (confirmedAddressRef.current !== addressKey(entered)) {
+        setCheckingAddress(true);
+        let check;
+        try {
+          check = await checkShippingAddress(entered);
+        } finally {
+          setCheckingAddress(false);
+        }
+        // Edited while the check was out: that answer is about another address.
+        if (addressKey(addressOf(formDataRef.current)) !== addressKey(entered)) return;
+        if (check.status === "suggested" || check.status === "not_found") {
+          setAddressPrompt(check);
+          return;
+        }
+        confirmedAddressRef.current = addressKey(entered);
       }
-      if (artworkCheck.warnings.length > 0) {
-        setConfirmWarnings(true);
-        return;
-      }
-      setStep(step + 1);
+      continueFromDetails();
       return;
     }
 
@@ -843,8 +883,8 @@ export default function CheckoutModal({
                       estimated={isEstimate}
                       updating={quoteLoading}
                       onNext={handleNextStep}
-                      isSubmitting={isSubmitting}
-                      submittingLabel={finalizingArtwork ? "Finalizing artwork…" : undefined}
+                      isSubmitting={isSubmitting || checkingAddress}
+                      submittingLabel={checkingAddress ? "Checking address…" : finalizingArtwork ? "Finalizing artwork…" : undefined}
                       disableNext={
                         (step === 0 && !isCartValid) ||
                         (step === 2 && !isPaymentValid)
@@ -867,6 +907,20 @@ export default function CheckoutModal({
         </div>
       </div>
       <div onClick={(e) => e.stopPropagation()}>
+        <AddressCheckModal
+          prompt={addressPrompt}
+          entered={addressOf(formData)}
+          onUse={(address) => {
+            setFormData((f) => ({ ...f, ...address }));
+            confirmedAddressRef.current = addressKey(address);
+            setAddressPrompt(null);
+            continueFromDetails();
+          }}
+          onEdit={() => {
+            setAddressPrompt(null);
+            requestAnimationFrame(() => document.getElementById("checkout-street")?.focus());
+          }}
+        />
         <ConfirmModal
           isOpen={confirmWarnings}
           title="Your artwork has warnings"
