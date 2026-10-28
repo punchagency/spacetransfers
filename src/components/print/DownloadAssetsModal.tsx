@@ -442,7 +442,7 @@ export const DownloadAssetsModal = ({
             onDownload={handleDownload}
             onSaveToDrive={() => setDriveModalOpen(true)}
             saving={working}
-            showDrive={downloadFormat === "zip"}
+            showDrive={downloadFormat === "zip" && Boolean(driveClientId)}
           />
         </div>
       </Modal>

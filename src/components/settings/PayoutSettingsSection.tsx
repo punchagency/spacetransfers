@@ -85,7 +85,7 @@ const PayoutSettingsSection = ({ initialStatus }: { initialStatus: StripeStatus 
             Payout Settings
           </h2>
           <p className="text-xs text-gray-500">
-            Stripe Connect (test mode) — bank transfers only
+            Stripe Connect — bank transfers only
           </p>
         </div>
         {!platformReady && (

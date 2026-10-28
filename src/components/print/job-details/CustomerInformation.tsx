@@ -1,4 +1,5 @@
 import { FiUser, FiMail, FiPhone, FiMapPin } from "react-icons/fi";
+import { AddressCheckNote, type AddressCheck } from "./AddressCheckNote";
 
 interface CustomerInformationProps {
   customer: {
@@ -14,6 +15,7 @@ interface CustomerInformationProps {
         state?: string;
         postalCode?: string;
         country?: string;
+        check?: AddressCheck | null;
       }
     | null;
 }
@@ -73,6 +75,7 @@ export const CustomerInformation = ({ customer, shippingAddress }: CustomerInfor
                     {shippingAddress.postalCode || ""}
                   </div>
                   <div>{shippingAddress.country || "N/A"}</div>
+                  <AddressCheckNote check={shippingAddress.check} />
                 </>
               ) : (
                 "N/A"

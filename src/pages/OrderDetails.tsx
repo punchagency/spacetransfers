@@ -11,6 +11,7 @@ import { PrintSpecifications } from "../components/print/job-details/PrintSpecif
 import { ProductionNotes } from "../components/print/job-details/ProductionNotes";
 import { StatusTimeline } from "../components/print/job-details/StatusTimeline";
 import { JobIssues } from "../components/print/job-details/JobIssues";
+import { AddressCheckNote } from "../components/print/job-details/AddressCheckNote";
 import { DownloadAssetsModal } from "../components/print/DownloadAssetsModal";
 import { SpaceLoader } from "../components/common/SpaceLoader";
 import { DriveSaveModal } from "../components/drive/DriveSaveModal";
@@ -25,7 +26,7 @@ type Overview = {
   id: string;
   sheets?: JobSheet[];
   /** Why the last label attempt failed; cleared when a label is made. */
-  shipStationError?: string | null;
+  labelError?: string | null;
   orderId: string;
   displayId?: string | null;
   /** The order this one reprints for free, when it is one. */
@@ -61,8 +62,9 @@ type Overview = {
   trackingNumber?: string | null;
   carrier?: string | null;
   trackingUrl?: string | null;
-  shipStationTriggeredAt?: string | null;
-  shipStationLabelUrl?: string | null;
+  labelService?: string | null;
+  labelRequestedAt?: string | null;
+  labelUrl?: string | null;
 };
 
 const formatMoney = (amount: number | null | undefined, currency: string) => {
@@ -214,21 +216,21 @@ export default function OrderDetailsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetIndex]);
 
-  // Poll every 3 s while ShipStation is generating the label (QUALITY_CHECK, no labelUrl yet).
+  // Poll every 3 s while the label is being made (QUALITY_CHECK, no labelUrl yet).
   useEffect(() => {
     if (!jobId) return;
-    if (overview?.status !== "QUALITY_CHECK" || overview?.shipStationLabelUrl) return;
+    if (overview?.status !== "QUALITY_CHECK" || overview?.labelUrl) return;
     const id = setInterval(async () => {
       try {
         const refreshed = await apiFetch(`/printer/jobs/${encodeURIComponent(jobId)}/overview`);
         if (refreshed) setOverview(refreshed);
-        if (refreshed?.shipStationLabelUrl || refreshed?.status !== "QUALITY_CHECK") {
+        if (refreshed?.labelUrl || refreshed?.status !== "QUALITY_CHECK") {
           clearInterval(id);
         }
       } catch { /* ignore — will retry */ }
     }, 3000);
     return () => clearInterval(id);
-  }, [jobId, overview?.status, overview?.shipStationLabelUrl]);
+  }, [jobId, overview?.status, overview?.labelUrl]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -580,20 +582,22 @@ export default function OrderDetailsPage() {
                       "Export PNG"
                     )}
                   </button>
-                  <button
-                    disabled={savingToDrive || pngExportProgress !== null}
-                    onClick={() => setDriveModalOpen(true)}
-                    className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-60"
-                  >
-                    {savingToDrive ? (
-                      <span className="inline-flex items-center gap-2">
-                        <SpaceLoader size={18} layout="inline" />
-                        Saving…
-                      </span>
-                    ) : (
-                      "Download to Google Drive"
-                    )}
-                  </button>
+                  {driveClientId && (
+                    <button
+                      disabled={savingToDrive || pngExportProgress !== null}
+                      onClick={() => setDriveModalOpen(true)}
+                      className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-60"
+                    >
+                      {savingToDrive ? (
+                        <span className="inline-flex items-center gap-2">
+                          <SpaceLoader size={18} layout="inline" />
+                          Saving…
+                        </span>
+                      ) : (
+                        "Download to Google Drive"
+                      )}
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowAssets(true)}
                     className="flex-1 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-xl hover:bg-gray-50 transition-colors"
@@ -628,7 +632,7 @@ export default function OrderDetailsPage() {
                   timeline={overview.timeline || []}
                   backendStatus={overview.status}
                   assignedAt={overview.assignedAt || null}
-                  stepAction={(step) => timelineStepAction(step, overview.status, Boolean(overview.shipStationLabelUrl))}
+                  stepAction={(step) => timelineStepAction(step, overview.status, Boolean(overview.labelUrl))}
                   onStepClick={askStep}
                   busy={updatingStatus}
                 />
@@ -695,9 +699,9 @@ export default function OrderDetailsPage() {
                       </div>
                     )}
                     <div className="text-xs text-gray-500 leading-relaxed">The status will automatically update to Delivered once the carrier confirms delivery.</div>
-                    {overview.shipStationLabelUrl && (
+                    {overview.labelUrl && (
                       <a
-                        href={overview.shipStationLabelUrl}
+                        href={overview.labelUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
@@ -709,7 +713,7 @@ export default function OrderDetailsPage() {
                       </a>
                     )}
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationLabelUrl ? (
+                ) : overview?.status === "QUALITY_CHECK" && overview?.labelUrl ? (
                   // Label is ready — printer reviews and confirms
                   <div className="flex flex-col gap-3">
                     <div className="flex items-center gap-2 text-green-700 text-sm font-semibold">
@@ -730,24 +734,26 @@ export default function OrderDetailsPage() {
                           {overview.shippingAddress.city}, {overview.shippingAddress.state} {overview.shippingAddress.postalCode}
                         </div>
                       )}
+                      <AddressCheckNote check={overview.shippingAddress?.check} />
                     </div>
 
                     {overview.trackingNumber && (
                       <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 space-y-1">
                         <div className="text-[10px] text-gray-500 uppercase tracking-wide font-semibold">Tracking</div>
                         <div className="text-sm font-mono font-semibold text-gray-900">{overview.trackingNumber}</div>
-                        {overview.carrier && <div className="text-xs text-gray-500">{overview.carrier.toUpperCase()}</div>}
+                        {overview.carrier && (
+                          <div className="text-xs text-gray-500">
+                            {overview.carrier.toUpperCase()}
+                            {overview.labelService ? ` · ${overview.labelService}` : ""}
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/*
-                      "generated" means ShipStation made the label but sent back no
-                      printable copy. Linking to it opened a page that doesn't exist;
-                      the label modal already treats it this way.
-                    */}
-                    {overview.shipStationLabelUrl !== "generated" ? (
+                    {/* "generated" is left by an old label that came back with no printable copy. */}
+                    {overview.labelUrl !== "generated" ? (
                       <a
-                        href={overview.shipStationLabelUrl}
+                        href={overview.labelUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
@@ -759,7 +765,7 @@ export default function OrderDetailsPage() {
                       </a>
                     ) : (
                       <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
-                        The label was created, but ShipStation didn't send back a printable copy.
+                        The label was created, but no printable copy came back.
                         Contact Space Transfers for the label before you hand the package over.
                       </div>
                     )}
@@ -779,15 +785,15 @@ export default function OrderDetailsPage() {
                       Attach the label to the package, then confirm. The customer will be notified when the carrier scans it.
                     </div>
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && (overview?.shipStationTriggeredAt || retryingLabel) ? (
+                ) : overview?.status === "QUALITY_CHECK" && (overview?.labelRequestedAt || retryingLabel) ? (
                   <div className="flex flex-col items-center gap-3 py-4 text-center">
                     <SpaceLoader size={28} layout="inline" />
                     <div className="text-sm font-semibold text-gray-800">Generating shipping label…</div>
-                    <div className="text-xs text-gray-500">ShipStation is creating your label. This usually takes a few seconds.</div>
+                    <div className="text-xs text-gray-500">This usually takes a few seconds.</div>
                   </div>
-                ) : overview?.status === "QUALITY_CHECK" && overview?.shipStationError ? (
+                ) : overview?.status === "QUALITY_CHECK" && overview?.labelError ? (
                   <LabelFailed
-                    error={overview.shipStationError}
+                    error={overview.labelError}
                     busy={updatingStatus}
                     onRetry={() => void retryLabel()}
                   />
