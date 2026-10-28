@@ -45,6 +45,8 @@
          `og:image` is made absolute at build time when VITE_SITE_URL is set —
          several scrapers refuse to resolve a relative image path, which is
          exactly what leaves a shared link rendering as a bare URL. -->
+    <!-- The builder's one address; the legal pages are listed in sitemap.xml. -->
+    <link rel="canonical" href="%SITE%/" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Space Transfers" />
     <meta property="og:title" content="Space Transfers — Gang Sheet Builder" />

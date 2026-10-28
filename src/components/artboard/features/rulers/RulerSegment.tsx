@@ -22,7 +22,7 @@ export default function RulerSegment({
 
   // Colour tokens — light rulers on dark backgrounds, dark rulers on light ones.
   const borderCls = isDarkBg ? 'border-white/50'  : 'border-gray-300';
-  const textCls   = isDarkBg ? 'text-white'        : 'text-gray-500';
+  const textCls   = isDarkBg ? 'text-white'        : 'text-gray-700';
   const tickCls   = isDarkBg ? 'bg-white/80'       : 'bg-gray-400';
 
   const labelPosClass = vertical ? "top-1 right-1" : "top-4 left-1";

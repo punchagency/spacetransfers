@@ -16,7 +16,11 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 - **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery. The store opens on the sheet they last had open.
 - **Check out.** The cart holds one line per saved sheet, as it was when it was added. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
 - **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
+- **Use the keyboard.** Tab reaches each image on the sheet. The arrow keys move it 0.1 in, or 1 in with Shift. `+` and `-` resize it. Each change is announced to screen readers, and locked images don't move.
+- **Own their data.** Account Settings → Your data downloads a copy of everything held about the account. It also closes the account once no order is still on its way and no problem report is open. Past orders are kept. A linked account can download its data, but only its main account can remove it.
+- **Mark what went wrong.** Reporting a problem can include the affected designs, tapped on a drawing of the sheet as it printed.
 - **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. Any refund shows on the order. Report a problem on an order sends it to Space Transfers, with up to four photos, and the replies and the outcome appear there and by email.
+- **Cancel an order.** Until it ships. Before a print partner has it, Cancel order cancels it and refunds in full straight away. After that, the partner is asked: they accept, which cancels and refunds it, or decline with a reason the customer is shown and emailed. While waiting, Keep my order takes the request back.
 
 ## Stack
 
@@ -46,6 +50,8 @@ The API must be running; see `space-transfer-server`.
 | `VITE_API_URL` | The API, including `/api` |
 | `VITE_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key; card fields do not render without it |
 | `VITE_GOOGLE_CLIENT_ID` | Google sign-in; the option is hidden when empty |
+| `VITE_SITE_URL` | Build only: the public address, used for `robots.txt`, `sitemap.xml` and the canonical link. Unset, the sitemap and canonical link are left out |
+| `VITE_SENTRY_DSN` | Error reporting; nothing is reported when empty |
 
 Every `VITE_*` value is compiled into the public bundle. Never put a secret in one. `.env` is gitignored; `.env.production` holds only the production API URL.
 
@@ -72,4 +78,9 @@ src/
 - **The cart holds the version that was added.** A cart line belongs to one saved sheet, but keeps the sheet as it was when the customer added it. Later edits are saved to the sheet and reach the cart only through Update Cart; Save as a new sheet turns the edits into a separate sheet and puts the original back to its cart version. A line whose sheet has moved on is marked `sheetChanged` and says so in the cart.
 - **Artwork is uploaded, never embedded.** Sheets and orders hold links to stored images. A sheet whose artwork has not finished uploading cannot be saved or ordered.
 - **Images must load with CORS.** The editor reads pixels for cropping, DPI and transparency checks, so the storage bucket needs a CORS policy for this origin (see the API's `.env.example`).
+- **Legal pages come from the API.** `/legal/terms`, `/legal/privacy` and `/legal/content-policy` show whatever an admin last published. A sign-up sends the versions it showed.
 - **The store is for customers only.** Partner and admin accounts are signed out here.
+
+## Security
+
+Boosting resolution and AI edits need an account; a guest who reaches for one is shown sign-in. Customers can add a passkey as a second sign-in step in Account Settings. The headers and content security policy for production are in `vercel.json`; the store's policy allows `blob:` and `unsafe-eval` scripts because the in-browser background remover needs them.

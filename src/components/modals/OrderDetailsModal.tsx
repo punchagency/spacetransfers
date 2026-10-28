@@ -8,6 +8,8 @@ import { apiFetch } from "../../lib/utils/api";
 import { downloadInvoice } from "../../lib/utils/invoice";
 import toast from "react-hot-toast";
 import { formatOrderNumber } from "../../lib/utils/orderNumber";
+import CancelOrderDialog from "./CancelOrderDialog";
+import CancellationNote from "../orders/CancellationNote";
 
 interface OrderDetailsModalProps {
   isOpen: boolean;
@@ -45,6 +47,7 @@ export default function OrderDetailsModal({
   const [order, setOrder] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [busy, setBusy] = useState<"invoice" | "reorder" | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     if (isOpen && orderId) {
@@ -64,6 +67,15 @@ export default function OrderDetailsModal({
       onClose();
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  /** Re-reads the order in place after a change, without the loading flash. */
+  const reloadOrder = async () => {
+    try {
+      setOrder(await apiFetch(`/customer/orders/${orderId}`));
+    } catch {
+      // What is on screen is still right apart from the change just made.
     }
   };
 
@@ -181,6 +193,7 @@ export default function OrderDetailsModal({
                 </p>
               </div>
             </div>
+            {orderId && <CancellationNote orderId={orderId} cancellation={order.cancellation} onChanged={() => void reloadOrder()} />}
           </div>
 
           <div>
@@ -246,6 +259,24 @@ export default function OrderDetailsModal({
                     Tracking number{order.carrier ? ` · ${order.carrier}` : ""}
                   </p>
                   <p className="font-medium text-gray-900 break-all select-all">{order.trackingNumber}</p>
+                  {order.trackingStatus && (
+                    <p className="mt-1 text-gray-700">
+                      {order.trackingStatus}
+                      {order.estimatedDeliveryAt && order.trackingStatus !== "Delivered"
+                        ? `, expected ${new Date(order.estimatedDeliveryAt).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`
+                        : ""}
+                    </p>
+                  )}
+                  {order.trackingUrl && (
+                    <a
+                      href={order.trackingUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 inline-block text-sm font-medium text-slate-900 underline underline-offset-2 hover:text-slate-700"
+                    >
+                      Track your parcel
+                    </a>
+                  )}
                 </>
               ) : (
                 <p className="text-gray-500 mt-1">
@@ -292,7 +323,16 @@ export default function OrderDetailsModal({
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50/50">
+        <div className="flex flex-wrap justify-end gap-3 px-4 sm:px-6 py-4 border-t border-gray-100 bg-gray-50/50">
+          {order.cancellation?.option && (
+            <button
+              onClick={() => setCancelling(true)}
+              disabled={busy !== null}
+              className="mr-auto rounded-lg px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 transition-colors disabled:opacity-60"
+            >
+              Cancel order
+            </button>
+          )}
           <button
             onClick={handleDownloadInvoice}
             disabled={busy !== null}
@@ -309,6 +349,11 @@ export default function OrderDetailsModal({
           </button>
         </div>
       </div>
+      <CancelOrderDialog
+        order={cancelling && orderId && order.cancellation?.option ? { orderId, number: orderNumber, option: order.cancellation.option } : null}
+        onClose={() => setCancelling(false)}
+        onDone={() => void reloadOrder()}
+      />
     </div>
   );
 }

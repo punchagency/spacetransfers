@@ -667,11 +667,11 @@ export default function CanvasContainer({
             <span className="text-[13px] font-semibold text-slate-700 sm:hidden">Add artwork</span>
             <span className="hidden sm:flex flex-col items-start">
               <span className="text-[13px] font-semibold text-slate-700 group-hover:text-slate-900 leading-tight">Double-click anywhere or drop files to add more</span>
-              <span className="text-[11px] text-slate-400 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
+              <span className="text-[11px] text-slate-500 mt-0.5" title={UPLOAD_FORMAT_LABELS.join(", ")}>
                 {UPLOAD_FORMAT_LABELS.slice(0, 7).join(" · ")} & more
               </span>
               {/* The keyboard gestures, named next to the one for adding artwork. */}
-              <span className="text-[11px] text-slate-400 mt-0.5">
+              <span className="text-[11px] text-slate-500 mt-0.5">
                 <span className="font-semibold text-slate-500">N</span> auto-nest ·{" "}
                 <span className="font-semibold text-slate-500">S</span> settings ·{" "}
                 <span className="font-semibold text-slate-500">C</span> cart
@@ -803,7 +803,7 @@ export default function CanvasContainer({
               {`${spacing.toFixed(2)} in${autoNestStickers ? " · auto-nest on" : ""}`}
             </div>
           </div>
-          <div className="px-3 py-2 text-[11px] text-gray-400">Add more item</div>
+          <div className="px-3 py-2 text-[11px] text-gray-500">Add more item</div>
           <div className="px-3 py-3">
             <button
               className="w-full flex items-center justify-center"

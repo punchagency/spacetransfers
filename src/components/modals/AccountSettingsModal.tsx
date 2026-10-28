@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import YourData from "../security/YourData";
+import { PasskeyManager } from "../security/PasskeyManager";
 import { MdClose, MdLogout, MdPersonAddAlt } from "react-icons/md";
 import { BsBoxSeam } from "react-icons/bs";
 import { apiFetch } from "../../lib/utils/api";
@@ -32,23 +34,23 @@ export default function AccountSettingsModal({
   const [switchingAccountId, setSwitchingAccountId] = useState<string | null>(null);
   const [subAccountsError, setSubAccountsError] = useState<string | null>(null);
   const avatarBgClasses = [
-    "bg-red-600",
-    "bg-orange-600",
-    "bg-amber-600",
-    "bg-yellow-600",
-    "bg-lime-600",
-    "bg-green-600",
-    "bg-emerald-600",
-    "bg-teal-600",
-    "bg-cyan-600", 
-    "bg-sky-600",
-    "bg-blue-600",
-    "bg-indigo-600",
-    "bg-violet-600",
-    "bg-purple-600",
-    "bg-fuchsia-600",
-    "bg-pink-600",
-    "bg-rose-600",
+    "bg-red-700",
+    "bg-orange-700",
+    "bg-amber-700",
+    "bg-yellow-700",
+    "bg-lime-700",
+    "bg-green-700",
+    "bg-emerald-700",
+    "bg-teal-700",
+    "bg-cyan-700", 
+    "bg-sky-700",
+    "bg-blue-700",
+    "bg-indigo-700",
+    "bg-violet-700",
+    "bg-purple-700",
+    "bg-fuchsia-700",
+    "bg-pink-700",
+    "bg-rose-700",
   ] as const;
 
   const getAvatarBgClass = (name?: string) => {
@@ -327,6 +329,28 @@ export default function AccountSettingsModal({
             </div>
           )}
         </div>
+
+        {/* Sign-in security */}
+        {user?.email && (
+          <div className="mt-5 border-t border-gray-100 px-5 pt-5">
+            <PasskeyManager account={String(user.email)} hasPassword={!user?.isGoogleAccount} />
+          </div>
+        )}
+
+        {/* A copy of their data, and closing the account. Linked accounts are closed by the main account. */}
+        {user?.email && (
+          <div className="mt-5 border-t border-gray-100 px-5 pt-5">
+            <YourData
+              email={String(user.email)}
+              signsInWithGoogle={Boolean(user?.isGoogleAccount)}
+              isLinkedAccount={Boolean(user?.isSubAccount || linkedMainAccount)}
+              onClosed={() => {
+                onClose();
+                onSignOut();
+              }}
+            />
+          </div>
+        )}
 
         {/* Order History */}
         <div className="mt-4 px-10 ">

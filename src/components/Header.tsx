@@ -54,7 +54,7 @@ function ItemCountBadge({ count }: { count: number }) {
       )}
       <FiLayers className={`w-3 h-3 flex-shrink-0 ${count > 0 ? "text-white/75" : "text-gray-400"}`} />
       <span className="tabular-nums tracking-tight leading-none">{count}</span>
-      <span className={`text-[9px] font-medium uppercase tracking-widest leading-none ${count > 0 ? "text-white/45" : "text-gray-400"}`}>
+      <span className={`text-[9px] font-medium uppercase tracking-widest leading-none ${count > 0 ? "text-white/80" : "text-gray-600"}`}>
         pcs
       </span>
     </div>
@@ -368,7 +368,7 @@ export default function Header({
                 12in sheet reading "10.00in long" is confusing until you know
                 the minimum is what set it. */}
             {info?.atMinimumLength && (
-              <span className="ml-1 text-[10px] text-gray-400">(min)</span>
+              <span className="ml-1 text-[10px] text-gray-500">(min)</span>
             )}
           </span>
      
@@ -425,7 +425,7 @@ export default function Header({
                 not use, with no explanation.
               */}
               {info?.atMinimumLength && (
-                <span className="text-[11px] leading-snug text-gray-400">
+                <span className="text-[11px] leading-snug text-gray-500">
                   {info?.isEmpty
                     ? `Sheets start at ${(info?.widthIn ?? 0).toFixed(2)}in x ${(info?.heightIn ?? 0).toFixed(0)}in.`
                     : `Your artwork is ${(info?.usedHeightIn ?? 0).toFixed(2)}in long; sheets are billed from a ${(info?.heightIn ?? 0).toFixed(0)}in minimum.`}
@@ -559,9 +559,9 @@ export default function Header({
           <button
             onClick={onProfileClick}
             className="hidden md:flex items-center gap-2 px-1 py-1 rounded-xl text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer"
-            aria-label="Account"
             title={profileName || "Account"}
           >
+            <span className="sr-only">Account: </span>
             {profileAvatarUrl ? (
               <img
                 src={profileAvatarUrl}
@@ -645,7 +645,7 @@ export default function Header({
         </span>
         <span className="shrink-0 text-gray-500 tabular-nums">
           {(info?.heightIn ?? 0).toFixed(0)}in
-          {info?.atMinimumLength && <span className="ml-0.5 text-[9px] text-gray-400">min</span>}
+          {info?.atMinimumLength && <span className="ml-0.5 text-[9px] text-gray-500">min</span>}
         </span>
       </div>
     </header>

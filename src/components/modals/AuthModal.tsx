@@ -2,10 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { MdClose, MdEmail, MdLock, MdPerson, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { apiFetch } from "../../lib/utils/api";
 import { setToken } from "../../lib/utils/auth";
+import { needsSecondStep, type SecondStepChallenge } from "../../lib/utils/passkeys";
+import { SecondStep } from "../security/SecondStep";
 import LegalAcceptance from "./LegalAcceptance";
 import LegalDocumentModal from "./LegalDocumentModal";
-import { buildLegalAcceptancePayload } from "../../lib/legal/documents";
-import type { LegalContent } from "../../lib/legal/content";
+import { buildLegalAcceptancePayload, fetchLegalVersions } from "../../lib/legal/documents";
 import toast from "react-hot-toast";
 
 interface AuthModalProps {
@@ -59,6 +60,7 @@ export default function AuthModal({
    */
   const [confirmPassword, setConfirmPassword] = useState("");
   const [activeResetToken, setActiveResetToken] = useState<string | null>(null);
+  const [secondStep, setSecondStep] = useState<SecondStepChallenge | null>(null);
 
   // Legal acknowledgements. Never pre-selected, and reset whenever the user
   // leaves the register view so a stale tick can't carry across.
@@ -70,7 +72,7 @@ export default function AuthModal({
   // Legal documents replace the sign-up dialog while they are being read.
   // Keeping this state here (rather than inside LegalAcceptance) prevents two
   // modal backdrops from being visible at once.
-  const [activeLegalDocument, setActiveLegalDocument] = useState<LegalContent | null>(null);
+  const [activeLegalDocument, setActiveLegalDocument] = useState<string | null>(null);
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
   // Stable ref so GIS callback always calls the latest handler
   const credentialHandlerRef = useRef<((r: { credential: string }) => void) | null>(null);
@@ -144,11 +146,17 @@ export default function AuthModal({
                 legalAcceptance: buildLegalAcceptancePayload(
                   termsAccepted,
                   contentResponsibilityAccepted,
+                  await fetchLegalVersions(),
                 ),
               }
             : {}),
         }),
       });
+      // An account with a passkey has one more step, however it signed in.
+      if (needsSecondStep(result)) {
+        setSecondStep(result);
+        return;
+      }
       if (!isCustomerAccount(result.user)) {
         setError(WRONG_APP_MESSAGE);
         return;
@@ -333,6 +341,7 @@ export default function AuthModal({
                   legalAcceptance: buildLegalAcceptancePayload(
                     termsAccepted,
                     contentResponsibilityAccepted,
+                    await fetchLegalVersions(),
                   ),
                 }
               : {}),
@@ -347,6 +356,11 @@ export default function AuthModal({
         toast.success("Account created successfully!");
         onSubAccountCreated?.(response.user);
         onClose();
+        return;
+      }
+
+      if (needsSecondStep(response)) {
+        setSecondStep(response);
         return;
       }
 
@@ -383,7 +397,7 @@ export default function AuthModal({
   if (activeLegalDocument) {
     return (
       <LegalDocumentModal
-        doc={activeLegalDocument}
+        docId={activeLegalDocument}
         onClose={() => setActiveLegalDocument(null)}
       />
     );
@@ -395,6 +409,32 @@ export default function AuthModal({
    * be, with nothing explaining the gap.
    */
   const showGoogleOption = mode === "auth" && !isSubAccountCreation && Boolean(GOOGLE_CLIENT_ID);
+
+  const finishSecondStep = (result: any) => {
+    setSecondStep(null);
+    if (!isCustomerAccount(result.user)) {
+      setError(WRONG_APP_MESSAGE);
+      return;
+    }
+    if (result.token) setToken(result.token);
+    if (typeof result.recoveryCodesLeft === "number") {
+      toast(`Signed in with a recovery code. ${result.recoveryCodesLeft} left.`, { duration: 8000 });
+    } else {
+      toast.success("Welcome back!");
+    }
+    onAuthSuccess(result.user);
+    onClose();
+  };
+
+  if (secondStep) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-xs p-4">
+        <div role="dialog" aria-modal="true" aria-label="Confirm it's you" className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+          <SecondStep challenge={secondStep} onSignedIn={finishSecondStep} onCancel={() => setSecondStep(null)} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -431,7 +471,8 @@ export default function AuthModal({
           </p>
           <button
             onClick={onClose}
-            className="absolute -right-2 -top-2 p-2 text-gray-400 hover:text-gray-600 transition-colors"
+            aria-label="Close"
+            className="absolute -right-2 -top-2 p-2 text-gray-500 hover:text-gray-600 transition-colors"
           >
             <MdClose className="h-5 w-5" />
           </button>

@@ -13,6 +13,9 @@ import toast from "react-hot-toast";
 import { formatOrderNumber } from "../../lib/utils/orderNumber";
 import { canReportIssue, issueButton, type OrderIssueSummary } from "../../lib/utils/orderIssues";
 import OrderIssueModal from "./OrderIssueModal";
+import CancelOrderDialog from "./CancelOrderDialog";
+import CancellationNote from "../orders/CancellationNote";
+import type { OrderCancellation } from "../../lib/utils/orderCancellation";
 
 interface Order {
   orderId: string;
@@ -28,6 +31,7 @@ interface Order {
   /** The order this one replaces free of charge. */
   reprintOf?: string | null;
   issue?: OrderIssueSummary | null;
+  cancellation?: OrderCancellation | null;
 }
 
 interface OrderHistoryModalProps {
@@ -53,6 +57,7 @@ export default function OrderHistoryModal({
   // Which order's invoice or reorder is in flight, so a second tap waits.
   const [busy, setBusy] = useState<string | null>(null);
   const [reporting, setReporting] = useState<{ orderId: string; number: string } | null>(null);
+  const [cancelling, setCancelling] = useState<{ orderId: string; number: string; option: "now" | "request" } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -256,6 +261,7 @@ export default function OrderHistoryModal({
                         {[order.reprintOf ? `Free reprint of ${order.reprintOf}.` : null, order.refundNote].filter(Boolean).join(" ")}
                       </p>
                     )}
+                    <CancellationNote orderId={order.orderId} cancellation={order.cancellation} onChanged={refreshOrders} />
 
                     <div className="mt-4 flex flex-wrap items-center gap-2">
                       <button
@@ -295,6 +301,20 @@ export default function OrderHistoryModal({
                           <MdOutlineReportProblem className="h-4 w-4" /> {report.label}
                         </button>
                       )}
+                      {order.cancellation?.option && (
+                        <button
+                          onClick={() =>
+                            setCancelling({
+                              orderId: order.orderId,
+                              number: formatOrderNumber(order.displayId, order.orderId),
+                              option: order.cancellation!.option!,
+                            })
+                          }
+                          className="ml-auto rounded-lg px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 transition-colors"
+                        >
+                          Cancel order
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -323,6 +343,7 @@ export default function OrderHistoryModal({
         </div>
       </div>
       <OrderIssueModal order={reporting} onClose={() => setReporting(null)} onChanged={refreshOrders} />
+      <CancelOrderDialog order={cancelling} onClose={() => setCancelling(null)} onDone={refreshOrders} />
     </div>
   );
 }

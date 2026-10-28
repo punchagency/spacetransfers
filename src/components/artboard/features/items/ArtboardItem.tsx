@@ -1,3 +1,4 @@
+import { describeArtwork } from "../../../../lib/utils/keyboardNudge";
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
@@ -646,7 +647,7 @@ function ArtboardItem({
       {settingsPortal}
       {/* Group Layout for Copies — virtual rows, absolute positioned */}
       <div
-        className="relative"
+        className="relative rounded-md outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
         style={{
           width: `${groupWidthPx}px`,
           height: `${totalGroupHeightPx}px`,
@@ -663,6 +664,22 @@ function ArtboardItem({
           transformOrigin: "50% 50%",
           transition:
             "transform 280ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 280ms ease",
+        }}
+        // Reachable with Tab, so the artwork can be selected and moved without a mouse.
+        tabIndex={0}
+        role="button"
+        aria-pressed={isSelected}
+        aria-label={describeArtwork(item)}
+        aria-describedby="artboard-keys-help"
+        onFocus={(e) => {
+          // Only a keyboard focus selects; a click selects through onClick, shift-click included.
+          if (!isSelected && e.currentTarget.matches(":focus-visible")) onSelect(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onSelect(e.shiftKey);
+          }
         }}
         onMouseEnter={() => setIsHovered(true)}
         // Deliberately does NOT cancel the pending drag: on a fast flick the

@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@sentry/vite-plugin": "5.4.1",
     "@tailwindcss/postcss": "^4.1.17",
     "@tailwindcss/vite": "^4.1.18",
     "@testing-library/jest-dom": "^6.4.2",
@@ -32,6 +33,8 @@
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",
+    "@sentry/browser": "^9.47.2",
+    "@simplewebauthn/browser": "^13.3.0",
     "@stripe/react-stripe-js": "^3.9.0",
     "@stripe/stripe-js": "^7.5.0",
     "ag-psd": "^31.0.2",
@@ -41,5 +44,8 @@
     "react-hot-toast": "^2.6.0",
     "react-icons": "4.10.1",
     "utif": "^3.1.0"
+  },
+  "overrides": {
+    "@sentry/bundler-plugins": "10.76.2"
   }
 }

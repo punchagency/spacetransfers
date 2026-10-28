@@ -1,3 +1,4 @@
+import { reportError } from "../../lib/monitoring";
 import { Component, ErrorInfo, ReactNode } from "react";
 import toast from "react-hot-toast";
 
@@ -42,6 +43,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    reportError(error, { componentStack: errorInfo.componentStack, boundary: (this.props as any).name });
     console.error(`[ErrorBoundary] ${this.props.name ?? "part of the page"} crashed:`, error, errorInfo);
     if (this.props.onDismiss) {
       toast.error(`${this.props.name ?? "That window"} ran into a problem and was closed. Please try again.`, {

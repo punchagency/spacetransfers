@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { MdClose, MdWarningAmber } from "react-icons/md";
-import type { LegalContent } from "../../lib/legal/content";
+import { useLegalDocument } from "../../lib/legal/documents";
+import LegalText from "../common/LegalText";
 
 /**
  * Reader for a single legal document, opened from the sign-up agreements.
@@ -18,18 +19,20 @@ import type { LegalContent } from "../../lib/legal/content";
  */
 
 interface LegalDocumentModalProps {
-  doc: LegalContent | null;
+  /** The document to show, "terms", "privacy" or "content-policy"; null when closed. */
+  docId: string | null;
   onClose: () => void;
 }
 
-export default function LegalDocumentModal({ doc, onClose }: LegalDocumentModalProps) {
+export default function LegalDocumentModal({ docId, onClose }: LegalDocumentModalProps) {
+  const { doc, error, retry } = useLegalDocument(docId);
   const closeRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Remembered so focus can be handed back to whatever opened this.
   const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!doc) return;
+    if (!docId) return;
     returnFocusRef.current = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
     // Each document starts at the top rather than inheriting the last one's
@@ -47,9 +50,9 @@ export default function LegalDocumentModal({ doc, onClose }: LegalDocumentModalP
       document.removeEventListener("keydown", onKey);
       returnFocusRef.current?.focus?.();
     };
-  }, [doc, onClose]);
+  }, [docId, onClose]);
 
-  if (!doc) return null;
+  if (!docId) return null;
 
   // Portalled to <body>: AuthModal's backdrop uses `backdrop-filter`, which
   // creates a containing block for fixed-position descendants, and its card is
@@ -76,15 +79,15 @@ export default function LegalDocumentModal({ doc, onClose }: LegalDocumentModalP
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
           <div className="min-w-0">
             <h2 id="legal-doc-title" className="text-[15px] font-semibold text-gray-900">
-              {doc.title}
+              {doc?.title ?? "Loading…"}
             </h2>
-            <p className="mt-0.5 text-[11px] text-gray-500">Version {doc.version}</p>
+            {doc && <p className="mt-0.5 text-[11px] text-gray-500">Version {doc.version}</p>}
           </div>
           <button
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label={`Close ${doc.title}`}
+            aria-label={`Close ${doc?.title ?? "document"}`}
             className="-mr-1 -mt-1 shrink-0 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
           >
             <MdClose className="h-5 w-5" />
@@ -92,43 +95,31 @@ export default function LegalDocumentModal({ doc, onClose }: LegalDocumentModalP
         </div>
 
         <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
-          {doc.isDraft && (
-            <div
-              role="note"
-              className="mb-4 flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11.5px] leading-relaxed text-amber-900"
-            >
-              <MdWarningAmber className="mt-px h-4 w-4 shrink-0 text-amber-600" />
-              <span>
-                <strong className="font-semibold">Draft — not final.</strong> This document is a
-                section scaffold and has not been reviewed. Replace it with your finalised text
-                before launch.
-              </span>
+          {error ? (
+            <div className="py-6 text-center text-[12.5px] text-gray-700">
+              <p>{error}</p>
+              <button type="button" onClick={retry} className="mt-2 font-semibold text-blue-600 hover:underline">
+                Try again
+              </button>
             </div>
+          ) : !doc ? (
+            <p className="py-6 text-center text-[12.5px] text-gray-500">Loading…</p>
+          ) : (
+            <>
+              {doc.isDraft && (
+                <div
+                  role="note"
+                  className="mb-4 flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11.5px] leading-relaxed text-amber-900"
+                >
+                  <MdWarningAmber className="mt-px h-4 w-4 shrink-0 text-amber-600" />
+                  <span>
+                    <strong className="font-semibold">Draft.</strong> This document has not been finalised yet.
+                  </span>
+                </div>
+              )}
+              <LegalText text={doc.text} compact />
+            </>
           )}
-
-          {doc.intro && (
-            <p className="mb-4 text-[12.5px] leading-relaxed text-gray-600">{doc.intro}</p>
-          )}
-
-          <div className="space-y-4">
-            {doc.sections.map((section) => (
-              <section key={section.heading}>
-                <h3 className="text-[12.5px] font-semibold text-gray-900">{section.heading}</h3>
-                {section.paragraphs?.map((p, i) => (
-                  <p key={i} className="mt-1 text-[12px] leading-relaxed text-gray-600">
-                    {p}
-                  </p>
-                ))}
-                {section.bullets && (
-                  <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[12px] leading-relaxed text-gray-600">
-                    {section.bullets.map((b, i) => (
-                      <li key={i}>{b}</li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-            ))}
-          </div>
         </div>
 
         <div className="shrink-0 border-t border-gray-100 px-5 py-3">

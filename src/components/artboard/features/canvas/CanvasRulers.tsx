@@ -25,7 +25,7 @@ export default function CanvasRulers({
   if (!showRulers) return null;
 
   const dark = computeIsDark(canvasBg ?? 'transparent');
-  const cornerTextCls = dark ? 'text-white' : 'text-gray-500';
+  const cornerTextCls = dark ? 'text-white' : 'text-gray-700';
 
   const offset = CANVAS.RULER_OFFSET_PX;
   const ppi    = CANVAS.PIXELS_PER_INCH;

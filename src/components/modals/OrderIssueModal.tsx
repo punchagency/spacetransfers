@@ -12,6 +12,7 @@ import {
   type OrderIssue,
 } from "../../lib/utils/orderIssues";
 import { PhotoPicker, PhotoStrip, PhotoTray } from "./IssuePhotos";
+import DesignMarker, { type MarkedDesign } from "../orders/DesignMarker";
 
 interface OrderIssueModalProps {
   /** The order to report on, or null when closed. */
@@ -86,6 +87,11 @@ function Report({ issue, onReplied }: { issue: OrderIssue; onReplied: (issue: Or
         {(issue.description || Boolean(issue.attachments?.length)) && (
           <Bubble mine name="You" body={issue.description} at={issue.createdAt} photos={issue.attachments} />
         )}
+        {(issue.affectedDesigns?.length ?? 0) > 0 && (
+          <p className="text-right text-xs text-gray-500">
+            You marked {issue.affectedDesigns!.length === 1 ? "1 design" : `${issue.affectedDesigns!.length} designs`} as affected.
+          </p>
+        )}
         {issue.messages.map((m) => (
           <Bubble
             key={m.id}
@@ -149,6 +155,8 @@ export default function OrderIssueModal({ order, onClose, onChanged }: OrderIssu
   const [photos, setPhotos] = useState<IssuePhoto[]>([]);
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const [marked, setMarked] = useState<MarkedDesign[]>([]);
   // A settled report shows its history; the form for a new one opens on request.
   const [startingNew, setStartingNew] = useState(false);
   const changed = useRef(false);
@@ -170,6 +178,8 @@ export default function OrderIssueModal({ order, onClose, onChanged }: OrderIssu
     setType(null);
     setDescription("");
     setPhotos([]);
+    setMarked([]);
+    setMarking(false);
     setFormError(null);
     setStartingNew(false);
     // Opening the reports marks any reply as read, which the list should show.
@@ -194,13 +204,15 @@ export default function OrderIssueModal({ order, onClose, onChanged }: OrderIssu
     try {
       const data = await apiFetch(`/customer/orders/${order.orderId}/issues`, {
         method: "POST",
-        body: JSON.stringify({ type, description: description.trim(), attachments: photos }),
+        body: JSON.stringify({ type, description: description.trim(), attachments: photos, ...(marked.length ? { affectedDesigns: marked } : {}) }),
       });
       setIssues((prev) => [data.issue, ...(prev || [])]);
       setStartingNew(false);
       setType(null);
       setDescription("");
       setPhotos([]);
+      setMarked([]);
+      setMarking(false);
       toast.success("Report sent. We'll get back to you.");
     } catch (err: any) {
       setFormError(err.message || "Your report couldn't be sent. Please try again.");
@@ -313,6 +325,24 @@ export default function OrderIssueModal({ order, onClose, onChanged }: OrderIssu
                     placeholder="Tell us what happened so we can put it right."
                     className="mt-1.5 w-full resize-none rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
+                  <p className="mt-4 text-sm font-medium text-gray-900">
+                    Which designs are affected? <span className="font-normal text-gray-500">(optional)</span>
+                  </p>
+                  {marking ? (
+                    <div className="mt-2">
+                      <p className="mb-2 text-xs text-gray-500">Tap the designs that came out wrong. We'll reprint just those if that's the fix.</p>
+                      <DesignMarker orderId={order.orderId} marked={marked} onChange={setMarked} />
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setMarking(true)} className="mt-1 text-sm font-medium text-slate-900 underline underline-offset-2 hover:text-slate-700">
+                      Mark them on your sheet
+                    </button>
+                  )}
+                  {marked.length > 0 && (
+                    <p className="mt-1 text-xs text-gray-600" aria-live="polite">
+                      {marked.length === 1 ? "1 design marked." : `${marked.length} designs marked.`}
+                    </p>
+                  )}
                   <p className="mt-4 text-sm font-medium text-gray-900">
                     Photos <span className="font-normal text-gray-500">(optional, up to 4)</span>
                   </p>

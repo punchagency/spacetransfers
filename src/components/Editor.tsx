@@ -1,5 +1,6 @@
 import { failedUploads, imageCount } from "../lib/failedUploads";
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { REQUIRE_ACCOUNT_EVENT } from "../lib/requireAccount";
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import { ErrorBoundary } from "./common/ErrorBoundary";
 import toast from "react-hot-toast";
 import Header from "./Header";
@@ -11,7 +12,12 @@ import AccountSettingsModal from "./modals/AccountSettingsModal";
 import AuthModal from "./modals/AuthModal";
 import OrderHistoryModal from "./modals/OrderHistoryModal";
 import OrderDetailsModal from "./modals/OrderDetailsModal";
-import CheckoutModal from "./modals/CheckoutModal";
+/*
+ * Checkout, and Stripe with it, loads the first time the cart opens rather
+ * than with the page: Stripe's script is large and sets cookies of its own, and
+ * most visits never reach checkout.
+ */
+const CheckoutModal = lazy(() => import("./modals/CheckoutModal"));
 import UnsavedChangesModal from "./modals/UnsavedChangesModal";
 import ConfirmModal from "./modals/ConfirmModal";
 import MobileNoticeModal from "./modals/MobileNoticeModal";
@@ -79,6 +85,11 @@ export default function Editor() {
   const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  // Mounted from the first time the cart opens, then kept, so it holds its place between openings.
+  const [checkoutMounted, setCheckoutMounted] = useState(false);
+  useEffect(() => {
+    if (showCheckoutModal) setCheckoutMounted(true);
+  }, [showCheckoutModal]);
   const [historyState, setHistoryState] = useState<{
     undo: () => void;
     redo: () => void;
@@ -197,6 +208,17 @@ export default function Editor() {
    * until the next sign-in or reload, and the saved cart is left untouched.
    */
   const isCustomer = isLoggedIn && Boolean(user?.id) && user?.role === "CUSTOMER";
+
+  // A guest reached for a tool that needs an account: open sign-in.
+  useEffect(() => {
+    const open = () => {
+      setAuthView("login");
+      setIsSubAccountCreation(false);
+      setShowAuthModal(true);
+    };
+    window.addEventListener(REQUIRE_ACCOUNT_EVENT, open);
+    return () => window.removeEventListener(REQUIRE_ACCOUNT_EVENT, open);
+  }, []);
   useEffect(() => {
     if (!isCustomer) {
       setCartLoadedFor(null);
@@ -299,7 +321,7 @@ export default function Editor() {
       if (isTypingTarget(e.target)) return;
       const ctrl = e.ctrlKey || e.metaKey;
       if (!ctrl) return;
-      const key = e.key.toLowerCase();
+      const key = e.key?.toLowerCase();
       if (key === "z" && !e.shiftKey) {
         e.preventDefault();
         historyState.undo();
@@ -324,7 +346,7 @@ export default function Editor() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
       if (dialogOpenRef.current || isTypingTarget(e.target)) return;
-      const key = e.key.toLowerCase();
+      const key = e.key?.toLowerCase();
       if (key === "s") {
         e.preventDefault();
         setIsSidebarOpen((open) => !open);
@@ -1890,23 +1912,23 @@ export default function Editor() {
             .join("")}
           profileBgClass={(() => {
             const avatarBgClasses = [
-              "bg-red-600",
-              "bg-orange-600",
-              "bg-amber-600",
-              "bg-yellow-600",
-              "bg-lime-600",
-              "bg-green-600",
-              "bg-emerald-600",
-              "bg-teal-600",
-              "bg-cyan-600",
-              "bg-sky-600",
-              "bg-blue-600",
-              "bg-indigo-600",
-              "bg-violet-600",
-              "bg-purple-600",
-              "bg-fuchsia-600",
-              "bg-pink-600",
-              "bg-rose-600",
+              "bg-red-700",
+              "bg-orange-700",
+              "bg-amber-700",
+              "bg-yellow-700",
+              "bg-lime-700",
+              "bg-green-700",
+              "bg-emerald-700",
+              "bg-teal-700",
+              "bg-cyan-700",
+              "bg-sky-700",
+              "bg-blue-700",
+              "bg-indigo-700",
+              "bg-violet-700",
+              "bg-purple-700",
+              "bg-fuchsia-700",
+              "bg-pink-700",
+              "bg-rose-700",
             ] as const;
             const first = (user?.name || "").trim().charAt(0).toUpperCase();
             const idx = first >= "A" && first <= "Z" ? first.charCodeAt(0) - 65 : 0;
@@ -2241,6 +2263,8 @@ export default function Editor() {
         />
       </ErrorBoundary>
       <ErrorBoundary name="Checkout" resetKey={showCheckoutModal} onDismiss={() => setShowCheckoutModal(false)}>
+        {checkoutMounted && (
+        <Suspense fallback={null}>
         <CheckoutModal
           isLoggedIn={isLoggedIn}
           onRequireSignIn={() => {
@@ -2269,6 +2293,8 @@ export default function Editor() {
             if (!getCurrentItems().some((it: any) => artworkNotUploaded([it]))) clearWorkspace();
           }}
         />
+        </Suspense>
+        )}
       </ErrorBoundary>
       <ErrorBoundary name="Sign in" resetKey={showAuthModal} onDismiss={() => setShowAuthModal(false)}>
         <AuthModal

@@ -1,7 +1,33 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite'
+import { sentryVitePlugin } from '@sentry/vite-plugin'
+import path from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
+
+/**
+ * Uploads the build's source maps to Sentry, so a reported error points at the
+ * real file and line, then deletes them so the site never serves them. Only
+ * when SENTRY_AUTH_TOKEN is set (production builds); other builds are as before.
+ */
+const SENTRY_AUTH_TOKEN = (process.env.SENTRY_AUTH_TOKEN || '').trim();
+const sentrySourceMaps = (project) => {
+  if (!SENTRY_AUTH_TOKEN) return [];
+  let mapsIn;
+  const builtMaps = new Promise((resolve) => (mapsIn = resolve));
+  return [
+    // The maps are wherever this build writes, which isn't always dist/.
+    { name: 'space-transfers-built-maps', configResolved: (config) => mapsIn(path.join(path.resolve(config.root, config.build.outDir), '**/*.map')) },
+    sentryVitePlugin({
+      org: 'space-transfers',
+      project,
+      authToken: SENTRY_AUTH_TOKEN,
+      telemetry: false,
+      release: { create: false, finalize: false, inject: false },
+      sourcemaps: { filesToDeleteAfterUpload: builtMaps },
+    }),
+  ];
+};
 /**
  * Makes the social-preview URLs absolute at build time.
  *
@@ -25,12 +51,42 @@ const siteUrlPlugin = () => {
   const siteUrl = (process.env.VITE_SITE_URL || '').trim().replace(/\/+$/, '');
   return {
     name: 'space-transfers-site-url',
-    transformIndexHtml: (html) => html.split('%SITE%').join(siteUrl),
+    // A canonical address must be absolute; without the site's address there is none to give.
+    transformIndexHtml: (html) =>
+      (siteUrl ? html : html.replace(/\s*<!--[^>]*canonical[^>]*-->\s*<link rel="canonical"[^>]*>/, '').replace(/\s*<link rel="canonical"[^>]*>/, ''))
+        .split('%SITE%')
+        .join(siteUrl),
+  };
+};
+
+/**
+ * robots.txt and sitemap.xml, written at build time for the same reason: a
+ * sitemap must list absolute addresses. Without VITE_SITE_URL there is no
+ * sitemap, and robots.txt says nothing about one.
+ */
+const LEGAL_PATHS = ['/legal/terms', '/legal/privacy', '/legal/content-policy'];
+const crawlerFilesPlugin = () => {
+  const siteUrl = (process.env.VITE_SITE_URL || '').trim().replace(/\/+$/, '');
+  return {
+    name: 'space-transfers-crawler-files',
+    generateBundle() {
+      const robots = ['User-agent: *', 'Allow: /', ...(siteUrl ? ['', `Sitemap: ${siteUrl}/sitemap.xml`] : []), ''].join('\n');
+      this.emitFile({ type: 'asset', fileName: 'robots.txt', source: robots });
+      if (!siteUrl) return;
+      const urls = ['/', ...LEGAL_PATHS].map((p) => `  <url><loc>${siteUrl}${p}</loc></url>`).join('\n');
+      this.emitFile({
+        type: 'asset',
+        fileName: 'sitemap.xml',
+        source: `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
+      });
+    },
   };
 };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), siteUrlPlugin()],
+  plugins: [react(), tailwindcss(), siteUrlPlugin(), crawlerFilesPlugin(), ...sentrySourceMaps('space-transfers-store')],
+  // "hidden": maps are made for the upload but never linked from the code.
+  ...(SENTRY_AUTH_TOKEN ? { build: { sourcemap: 'hidden' } } : {}),
   test: {
     globals: true,
     environment: 'jsdom',
