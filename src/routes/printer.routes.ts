@@ -28,6 +28,9 @@ import {
   updatePrinterProfile,
   getPrinterSettings,
   updatePrinterSettings,
+  getAccountClosure,
+  answerCancellationRequest,
+  closeAccount,
   uploadProfileAsset,
   requestEmailVerification,
   listPrinterNotifications,
@@ -38,6 +41,7 @@ import {
   updateAvailabilityStatus,
 } from "../controllers/printer/index.js";
 import { upload } from "../middleware/upload.js";
+import { accountCloseLimiter } from "../middleware/rateLimit.js";
 
 const router = express.Router();
 
@@ -50,6 +54,8 @@ router.post("/profile/upload", upload.single("file"), uploadProfileAsset);
 router.post("/profile/verify-email", requestEmailVerification);
 router.get("/settings", getPrinterSettings);
 router.patch("/settings", updatePrinterSettings);
+router.get("/account/close", getAccountClosure);
+router.post("/account/close", accountCloseLimiter, closeAccount);
 router.get("/jobs/:jobId", getJobDetails);
 router.get("/jobs/:jobId/overview", getPrinterJobOverview);
 router.get("/jobs/:jobId/assets", getJobAssets);
@@ -63,6 +69,7 @@ router.get("/exports/:exportId/file", downloadGangsheetExport);
 router.get("/orders/summary", getPrinterOrdersSummary);
 router.patch("/orders/:orderId/status", updatePrinterOrderStatus);
 router.post("/orders/:orderId/cancel", cancelPrinterOrder);
+router.post("/orders/:orderId/cancellation", answerCancellationRequest);
 router.patch("/jobs/:jobId/notes", updateJobNotes);
 router.get("/orders", listPrinterOrders);
 router.get("/orders/:orderId/issues", listJobIssues);

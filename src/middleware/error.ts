@@ -1,3 +1,4 @@
+import { reportServerError } from "../services/monitoring.service.js";
 import { Request, Response, NextFunction } from "express";
 
 export const notFoundHandler = (req: Request, res: Response, next: NextFunction): void => {
@@ -77,6 +78,7 @@ export const errorHandler = (err: CustomError, req: Request, res: Response, next
     console.error(
       `[UPSTREAM] ${req.method} ${req.originalUrl} — ${asAny.type || err.name}: ${rawMessage}`,
     );
+    reportServerError(err, { method: req.method, route: req.route?.path || req.baseUrl, status: 502 });
     res.status(502).json({
       message:
         "A payment service we rely on rejected the request. This is a configuration problem on our side, not with your account — please try again shortly.",
@@ -99,5 +101,6 @@ export const errorHandler = (err: CustomError, req: Request, res: Response, next
     `[UNHANDLED] ${req.method} ${req.originalUrl} — ${err.name || "Error"}: ${rawMessage}`,
     err.stack,
   );
+  reportServerError(err, { method: req.method, route: req.route?.path || req.baseUrl, status: 500 });
   res.status(500).json({ message: "Something went wrong. Please try again." });
 };

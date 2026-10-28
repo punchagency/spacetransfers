@@ -8,7 +8,7 @@ import fs from "fs";
 import path from "path";
 import { trimImage } from "../../utils/aiCrop.js";
 import { uprightImage } from "../../utils/uprightImage.js";
-import { isLegacyCloudinaryUrl, isStoredArtworkUrl, legacyCloudinaryThumbUrl, storeArtwork } from "../../services/storage.service.js";
+import { isLegacyCloudinaryUrl, fetchStoredArtwork, isStoredArtworkUrl, legacyCloudinaryThumbUrl, storeArtwork } from "../../services/storage.service.js";
 import { MAX_IMAGE_PIXELS } from "../../utils/imageBounds.js";
 import { detectFade, TRANSPARENCY_CHECK_VERSION } from "../../services/fadeDetection.service.js";
 import { CustomError, fetchImageBuffer } from "./shared.js";
@@ -123,7 +123,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
           error.statusCode = 404;
           throw error;
         }
-        const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
+        const r = await fetchStoredArtwork(url, 90_000, "Loading the image");
         if (!r.ok) {
           const error = new Error("Asset file not found") as CustomError;
           error.statusCode = 404;
@@ -132,7 +132,7 @@ export const trimAsset = async (req: Request, res: Response, next: NextFunction)
         sourceBuffer = Buffer.from(await r.arrayBuffer());
       }
     } else {
-      const r = await fetchWithTimeout(url, {}, 90_000, "Loading the image");
+      const r = await fetchStoredArtwork(url, 90_000, "Loading the image");
       if (!r.ok) {
         const error = new Error("Asset file not found") as CustomError;
         error.statusCode = 404;

@@ -10,22 +10,15 @@
  *     user ticked — the consent never left the browser. The first block below
  *     documents which error that produces, so the message stays diagnostic.
  *
- *  2. Version drift between the server registry and the three client mirrors.
- *     The mirror pattern is deliberate (see config/legal.ts) but it has four
- *     copies of the same constants, and a bump applied to fewer than all four
- *     fails closed at runtime for real users. Reading the mirrors off disk
- *     turns that into a CI failure instead.
+ *  2. A sign-up whose versions differ from those published, which is refused
+ *     so consent is never recorded against wording the person did not see.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 
 import { buildLegalAcceptance, CURRENT_LEGAL_VERSIONS } from "../config/legal.js";
+import { LEGAL_SEED } from "../config/legalSeed.js";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "../../..");
 
 /** Acceptance block a correct client sends. */
 const validInput = () => ({
@@ -100,49 +93,18 @@ describe("buildLegalAcceptance", () => {
   });
 });
 
-describe("client legal mirrors", () => {
-  // Path -> the app it belongs to, for a failure message that names the file to
-  // edit rather than just reporting a mismatched string.
-  // Only apps that actually register users need a mirror: the mirror exists so
-  // a registering client can echo back the versions it rendered. The admin
-  // console has no sign-up — admin accounts are provisioned directly against
-  // the database — so it has no mirror to drift.
-  const mirrors = [
-    ["customer", "space-transfers/src/lib/legal/documents.ts"],
-    ["printer", "space-transfer-printer/src/utils/legal.ts"],
-  ] as const;
+describe("published legal documents", () => {
+  it("start from the wording sign-ups have already accepted", () => {
+    assert.equal(LEGAL_SEED.terms.published.version, CURRENT_LEGAL_VERSIONS.terms);
+    assert.equal(LEGAL_SEED.privacy.published.version, CURRENT_LEGAL_VERSIONS.privacy);
+    assert.equal(LEGAL_SEED["content-policy"].published.version, CURRENT_LEGAL_VERSIONS.contentPolicy);
+  });
 
-  for (const [app, relPath] of mirrors) {
-    it(`${app} mirror matches the server registry`, () => {
-      const source = readFileSync(resolve(repoRoot, relPath), "utf8");
-
-      // Parsed from source text rather than imported: these live in separate
-      // Vite apps with their own tsconfigs, and importing across app
-      // boundaries would couple the server build to all three frontends.
-      const versions = [...source.matchAll(/version:\s*"([^"]+)"/g)].map((m) => m[1]);
-
-      assert.equal(
-        versions.length,
-        3,
-        `${relPath}: expected 3 document versions, found ${versions.length}`,
-      );
-
-      const [terms, privacy, contentPolicy] = versions;
-      assert.equal(
-        terms,
-        CURRENT_LEGAL_VERSIONS.terms,
-        `${relPath}: terms version drifted from the server — bump it there too`,
-      );
-      assert.equal(
-        privacy,
-        CURRENT_LEGAL_VERSIONS.privacy,
-        `${relPath}: privacy version drifted from the server — bump it there too`,
-      );
-      assert.equal(
-        contentPolicy,
-        CURRENT_LEGAL_VERSIONS.contentPolicy,
-        `${relPath}: contentPolicy version drifted from the server — bump it there too`,
-      );
-    });
-  }
+  it("check a sign-up against whatever is published now", () => {
+    const now = { terms: "2026-10-16", privacy: "2026-10-16", contentPolicy: "2026-07-28" };
+    const fresh = { ...validInput(), termsVersion: now.terms, privacyVersion: now.privacy };
+    const record = buildLegalAcceptance(fresh, {}, now);
+    assert.equal(record.termsVersion, "2026-10-16");
+    assert.throws(() => buildLegalAcceptance(validInput(), {}, now), (e: any) => e.code === "LEGAL_VERSION_MISMATCH");
+  });
 });

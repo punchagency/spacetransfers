@@ -2,7 +2,6 @@ import mongoose from "mongoose";
  import { Request, Response, NextFunction } from "express";
 import { Order } from "../models/order.model.js";
 import { UserRole } from "../models/user.model.js";
-import { Design } from "../models/design.model.js";
 import { addOrderClient, removeOrderClient } from "../services/orderSyncHub.js";
 
 /**
@@ -28,15 +27,15 @@ export const getRecentOrders = async (req: Request, res: Response, next: NextFun
 
     if (req.user.role === UserRole.ADMIN) {
       // Admin: See everything
-      if (status) query.status = status;
+      if (typeof status === "string" && status) query.status = status;
     } else if (req.user.role === UserRole.PRINTER) {
       // Printer: Only assigned orders
       query.assignedPrinter = req.user.id;
-      if (status) query.status = status;
+      if (typeof status === "string" && status) query.status = status;
     } else {
       // Customer: Only own orders
       query.user = req.user.id;                 
-      if (status) query.status = status;
+      if (typeof status === "string" && status) query.status = status;
     }
 
     /*
@@ -59,47 +58,18 @@ export const getRecentOrders = async (req: Request, res: Response, next: NextFun
     const orders = await Order.find(query)
       .sort({ _id: -1 })
       .limit(parsedLimit + 1)
-      .select("id customer items pricing status createdAt user")
+      .select("status createdAt")
       .lean();
 
     const hasNextPage = orders.length > parsedLimit;
     const results = hasNextPage ? orders.slice(0, parsedLimit) : orders;
 
     // 4. Formatting & Visibility (Post-Processing)
-    const formattedOrders = results.map(order => {
-      const isOwnerOrStaff = req.user && (
-        req.user.role === UserRole.ADMIN || 
-        req.user.role === UserRole.PRINTER || 
-        (req.user.role === UserRole.CUSTOMER && order.user?.toString() === req.user.id)
-      );
-
-      if (isOwnerOrStaff) {
-        // Return full details for owners/staff
-        return {
-          id: order._id,
-          customer: order.customer,
-          items: order.items,
-          total: order.pricing.total,
-          currency: order.pricing.currency,
-          status: order.status,
-          createdAt: order.createdAt
-        };
-      } else {
-        // Guest Visibility Rules: Anonymize for privacy
-        return {
-          id: order._id.toString().substring(0, 8) + "...", // Partial ID
-          customer: {
-            firstName: order.customer.firstName,
-            lastName: order.customer.lastName.charAt(0) + "." // Anonymized
-          },
-          items: order.items.map(item => ({ name: item.name, quantity: item.quantity })),
-          total: order.pricing.total,
-          currency: order.pricing.currency,
-          status: order.status,
-          createdAt: order.createdAt
-        };
-      }
-    });
+    const formattedOrders = results.map((order) => ({
+      id: String(order._id),
+      status: order.status,
+      createdAt: order.createdAt,
+    }));
 
     const nextCursor = hasNextPage ? results[results.length - 1]._id : null;
 
@@ -121,8 +91,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
     const { orderId } = req.params;
 
     const order = await Order.findById(orderId)
-      .populate("user", "name email")
-      .populate("assignedPrinter", "name companyName email")
+      .select("user assignedPrinter displayId status trackingNumber carrier createdAt updatedAt")
       .lean();
 
     if (!order) {
@@ -131,31 +100,28 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
     // Authorization check
     const isAdmin = req.user?.role === UserRole.ADMIN;
-    const isAssignedPrinter = req.user?.role === UserRole.PRINTER && order.assignedPrinter?._id.toString() === req.user.id;
-    const isOwner = req.user?.role === UserRole.CUSTOMER && order.user?._id.toString() === req.user.id;
+    const isAssignedPrinter = req.user?.role === UserRole.PRINTER && String(order.assignedPrinter || "") === String(req.user.id);
+    const isOwner = req.user?.role === UserRole.CUSTOMER && String(order.user || "") === String(req.user.id);
 
     if (!isAdmin && !isAssignedPrinter && !isOwner) {
       return res.status(403).json({ message: "You do not have permission to view this order" });
     }
 
-    // Fetch design thumbnail for the first item if available
-    let designThumbnail = null;
-    const designId = order.items?.[0]?.designId;
-    if (designId && /^[0-9a-fA-F]{24}$/.test(designId)) {
-      const design = await Design.findById(designId).select("thumbnail").lean();
-      if (design && design.thumbnail) {
-        designThumbnail = design.thumbnail;
-      }
-    }
-
-    const orderResponse = {
-      ...order,
-      preview: {
-        fileUrl: designThumbnail
-      }
-    };
-
-    res.status(200).json(orderResponse);
+    /*
+     * Where the order stands, and nothing else. This used to return the whole
+     * record to all three: a partner read what the customer paid, a customer
+     * read which partner printed it and what it cost. Each app has its own
+     * order endpoint with the fields its side is meant to see.
+     */
+    res.status(200).json({
+      id: String(order._id),
+      displayId: (order as any).displayId || null,
+      status: order.status,
+      trackingNumber: (order as any).trackingNumber || null,
+      carrier: (order as any).carrier || null,
+      createdAt: order.createdAt,
+      updatedAt: (order as any).updatedAt,
+    });
   } catch (error) {
     next(error);
   }

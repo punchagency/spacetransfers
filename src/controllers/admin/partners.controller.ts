@@ -164,8 +164,8 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      *
      *  - `predictShippingOrigin` needs a postcode, so rates for their region
      *    fall back to the configured warehouse instead of shipping from them.
-     *  - `createShipStationLabel` uses `businessAddress` as the ship-from, so
-     *    their labels declare the wrong origin.
+     *  - labels ship from `businessAddress` (`shipFromFor`), so without it
+     *    no label can be made for their jobs.
      *  - candidate ranking sorts nearest-first on a state centroid; with no
      *    state the distance is Infinity, so they are always chosen last within
      *    their own region.
@@ -514,6 +514,8 @@ export const getPartnerById = async (req: Request, res: Response, next: NextFunc
        */
       availabilityStatus: (partner as any).availabilityStatus ?? "open",
       capacityPaused: Boolean((partner as any).capacityPaused),
+      // How many passkeys guard this account; an admin can reset them if they are lost.
+      passkeys: (((partner as any).passkeys || []) as any[]).length,
       statusHistory: [...(((partner as any).statusHistory || []) as any[])]
         .reverse()
         .slice(0, 20)
@@ -781,6 +783,13 @@ export const updatePartnerStatus = async (req: Request, res: Response, next: Nex
       error.statusCode = 409;
       throw error;
     }
+    if (existingPartner?.status === "Closed") {
+      const error = new Error(
+        "This partner closed their account, so it can't be reopened here. They can re-apply from the partner sign-up page with the same email."
+      ) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
 
     if (status === "Suspended" && (typeof reason !== "string" || reason.trim().length < 3)) {
       const error = new Error("A reason is required when suspending a partner") as CustomError;
@@ -896,7 +905,12 @@ export const listPendingPrinters = async (req: Request, res: Response, next: Nex
             reason: last.reason || null,
             by: last.byName || null,
           };
-        })()
+        })(),
+        /** When this applicant last closed their own partner account, if they ever had one. */
+        priorClosure: (() => {
+          const last = [...(((p as any).statusHistory || []) as any[])].reverse().find((h) => h.to === "Closed");
+          return last ? { at: last.at } : null;
+        })(),
       };
     });
 

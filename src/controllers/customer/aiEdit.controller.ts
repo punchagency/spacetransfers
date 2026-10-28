@@ -426,7 +426,7 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
     const sourceBuffer = await fetchImageBuffer(url);
     const sourceGeometry = await readSourceGeometry(sourceBuffer);
     const sourceMeta = await sharp(sourceBuffer, { limitInputPixels: false }).metadata();
-    const sourceMimeType = `image/${sourceMeta.format === "jpg" ? "jpeg" : sourceMeta.format || "png"}`;
+    const sourceMimeType = `image/${sourceMeta.format || "png"}`;
 
     const built = buildEditRequest(
       String(intent || "custom"),

@@ -1,9 +1,11 @@
 import fs from "fs";
+import { isStoredArtworkUrl } from "./storage.service.js";
 import path from "path";
 import crypto from "node:crypto";
 import sharp from "sharp";
 import mongoose from "mongoose";
 import { Asset } from "../models/asset.model.js";
+import { env } from "../config/env.js";
 
 /**
  * The roll width every order was built on before the width was recorded.
@@ -40,31 +42,41 @@ export const GANGSHEET_PRINT_DPI = 300;
 
 const SHEET_DEFAULT_WIDTH_IN = GANGSHEET_SHEET_WIDTH_IN;
 const SHEET_DEFAULT_HEIGHT_IN = 23.5;
-const GROUP_GAP_IN = 0.06;
+export const GROUP_GAP_IN = 0.06;
 const CROP_PADDING_IN = 0.08;
 
 const isObjectIdString = (v: string) => /^[0-9a-fA-F]{24}$/.test(String(v || ""));
 
-// Concurrency limiter — prevents simultaneous large exports from exhausting memory.
-const MAX_CONCURRENT_RENDERS = 3;
-let _activeRenders = 0;
-const _renderQueue: Array<() => void> = [];
-
-const acquireRenderSlot = (): Promise<void> =>
-  new Promise<void>((resolve) => {
-    if (_activeRenders < MAX_CONCURRENT_RENDERS) {
-      _activeRenders++;
-      resolve();
-    } else {
-      _renderQueue.push(() => { _activeRenders++; resolve(); });
-    }
-  });
-
-const releaseRenderSlot = (): void => {
-  _activeRenders--;
-  const next = _renderQueue.shift();
-  if (next) next();
+/** At most `max` holders at once; the rest wait their turn in order. */
+export const slots = (max: number) => {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return {
+    acquire: (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        if (active < max) {
+          active++;
+          resolve();
+        } else {
+          queue.push(() => { active++; resolve(); });
+        }
+      }),
+    release: (): void => {
+      active--;
+      const next = queue.shift();
+      if (next) next();
+    },
+  };
 };
+
+// Concurrency limiters, so simultaneous renders can't exhaust memory: one for
+// renders of any size, and one for print-size renders, each of which can need
+// about 2 GB (a 100in part at 300 DPI). EXPORT_RENDER_CONCURRENCY sizes the
+// second to the server's memory.
+const renderSlots = slots(3);
+const printRenderSlots = slots(env.exportRenderConcurrency);
+/** A canvas larger than this is a print-size render. */
+const PRINT_RENDER_BYTES = 256 * 1024 * 1024;
 
 const looksLikeUrlOrPath = (v: string) => {
   const s = String(v || "");
@@ -106,11 +118,12 @@ const loadImageBuffer = async (url: string) => {
     return null;
   }
 
-  if (/^https?:\/\//i.test(url)) {
+  // Only artwork we stored: this address came from an order, which a customer wrote.
+  if (isStoredArtworkUrl(url)) {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 20_000);
     try {
-      const res = await fetch(url, { signal: ac.signal });
+      const res = await fetch(url, { signal: ac.signal, redirect: "error" });
       if (!res.ok) throw new Error(`failed_to_fetch_asset:${res.status}`);
       const ab = await res.arrayBuffer();
       return Buffer.from(ab);
@@ -149,7 +162,7 @@ const computeCacheKey = (payload: {
   return crypto.createHash("sha1").update(raw).digest("hex");
 };
 
-const computeRotatedBounds = (wIn: number, hIn: number, rotationDeg: number) => {
+export const computeRotatedBounds = (wIn: number, hIn: number, rotationDeg: number) => {
   const r = ((Number(rotationDeg) || 0) * Math.PI) / 180;
   const c = Math.cos(r);
   const s = Math.sin(r);
@@ -250,6 +263,31 @@ const forEachPlacedCopy = (
       });
     }
   }
+};
+
+/**
+ * Whether any copy of a placement is drawn within `slackIn` of a window of the
+ * sheet (all in sheet inches). The slack covers the renderer rounding a copy to
+ * whole pixels, so a placement this rules out has nothing that lands inside.
+ */
+export const placementReachesWindowIn = (
+  item: PlacementGeometryInput & { posX: number; posY: number },
+  window: { leftIn: number; topIn: number; widthIn: number; heightIn: number },
+  sheet: Omit<PlacementParams, "artboardItems">,
+  slackIn = 1,
+): boolean => {
+  let reaches = false;
+  forEachPlacedCopy({ ...sheet, artboardItems: [item] }, (box) => {
+    if (
+      box.bottom >= window.topIn - slackIn &&
+      box.top <= window.topIn + window.heightIn + slackIn &&
+      box.right >= window.leftIn - slackIn &&
+      box.left <= window.leftIn + window.widthIn + slackIn
+    ) {
+      reaches = true;
+    }
+  });
+  return reaches;
 };
 
 /** Vertical extent of every drawn copy, in sheet inches. */
@@ -494,11 +532,25 @@ export const exportGangsheetPng24 = async ({
   cacheHit: boolean;
   crop: { leftIn: number; topIn: number; widthIn: number; heightIn: number } | null;
 }> => {
-  await acquireRenderSlot();
+  // Sized from the whole sheet unless a window is given: an upper bound for a
+  // render cropped to its content.
+  const estimateDpi = Math.max(10, Math.min(1200, Math.round(Number(dpiInput) || 600)));
+  const estimateWidthIn = renderWindowIn ? renderWindowIn.widthIn : Number(sheetWidthIn || SHEET_DEFAULT_WIDTH_IN) || SHEET_DEFAULT_WIDTH_IN;
+  const estimateHeightIn = renderWindowIn ? renderWindowIn.heightIn : Number(sheetHeightIn || SHEET_DEFAULT_HEIGHT_IN) || SHEET_DEFAULT_HEIGHT_IN;
+  const printSize = toPrintPixels(estimateWidthIn, estimateDpi) * toPrintPixels(estimateHeightIn, estimateDpi) * 4 > PRINT_RENDER_BYTES;
+
+  // A print-size render waits for its own slot first, so it never holds one a
+  // preview could use while it waits.
+  if (printSize) await printRenderSlots.acquire();
   try {
-  return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, useLossyPreview, itemSpacingIn, sheetMarginIn, renderWindowIn });
+    await renderSlots.acquire();
+    try {
+      return await _doExport({ jobId, printerId, sheetWidthIn, sheetHeightIn, artboardItems, dpi: dpiInput, cropToContent, maxComposites, format, useLossyPreview, itemSpacingIn, sheetMarginIn, renderWindowIn });
+    } finally {
+      renderSlots.release();
+    }
   } finally {
-    releaseRenderSlot();
+    if (printSize) printRenderSlots.release();
   }
 };
 
@@ -679,9 +731,15 @@ const _doExport = async ({
   const sourceResolutionErrors: string[] = [];
   const compositesCap = typeof maxComposites === "number" && maxComposites > 0 ? maxComposites : Infinity;
 
-  // All items are candidates — the dedup cache below ensures each unique image
-  // is loaded exactly ONCE regardless of how many artboard items reference it.
-  const itemsToLoad = normalizedItems;
+  // The dedup cache below loads each unique image once however many items use it.
+  // A window (one part of a split sheet) draws only what reaches it, so artwork
+  // elsewhere on the sheet isn't loaded; on a long sheet that is most of the
+  // memory a part would otherwise take.
+  const itemsToLoad = renderWindowIn
+    ? normalizedItems.filter((it) =>
+        placementReachesWindowIn(it, renderWindowIn, { sheetWidthIn: widthIn, itemSpacingIn: gapIn, sheetMarginIn: marginIn }),
+      )
+    : normalizedItems;
 
   // Deduplicate asset ObjectIds across all items — one DB round-trip for all.
   const unresolvedIds = Array.from(

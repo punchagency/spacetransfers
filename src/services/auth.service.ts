@@ -1,13 +1,14 @@
 import { User, UserRoles, UserRole } from "../models/user.model.js";
+import { getCurrentLegalVersions } from "./legal.service.js";
 import { Design } from "../models/design.model.js";
 import { Order } from "../models/order.model.js";
 import { buildLegalAcceptance, type LegalAcceptanceInput } from "../config/legal.js";
 import { normalizeRegion } from "../utils/region.js";
 import { isValidEmail, isValidPhone, resolveAddress } from "../utils/accountFields.js";
 import { hashPassword, verifyPassword } from "../utils/passwords.js";
-import { signJwt } from "../utils/jwt.js";
+import { signSessionToken } from "../utils/jwt.js";
 import crypto from "crypto";
-import { env } from "../config/env.js";
+import { env, exposeResetTokens } from "../config/env.js";
 import { sendEmail } from "./email.service.js";
 import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { OAuth2Client } from "google-auth-library";
@@ -99,7 +100,7 @@ export const registerUser = async ({
   // Validated before anything else: an account must never come into existence
   // without its acceptance record, so this runs ahead of the duplicate-email
   // check and every other validation.
-  const acceptanceRecord = buildLegalAcceptance(legalAcceptance, legalContext || {});
+  const acceptanceRecord = buildLegalAcceptance(legalAcceptance, legalContext || {}, await getCurrentLegalVersions());
 
   /*
    * Format checked here, using the same rule the console's create-partner path
@@ -156,9 +157,10 @@ export const registerUser = async ({
    * re-application to what it is for, and anything else gets the ordinary
    * "email already in use".
    */
+  // A partner who closed their own account comes back the same way.
   const isReapplication =
     existing &&
-    existing.status === "Rejected" &&
+    (existing.status === "Rejected" || existing.status === "Closed") &&
     existing.role === UserRoles.PRINTER &&
     resolvedRole === UserRoles.PRINTER;
   if (existing && !isReapplication) {
@@ -330,19 +332,33 @@ export const registerUser = async ({
      * showed a re-application as a first-time applicant.
      */
     const priorHistory = [...(((existing as any).statusHistory || []) as any[])];
+    const previousStatus = String(existing.status);
     Object.assign(existing, userPayload);
     (existing as any).statusHistory = [
       ...priorHistory,
       {
-        from: "Rejected",
+        from: previousStatus,
         to: "Pending",
-        reason: "Re-applied after rejection",
+        reason: previousStatus === "Closed" ? "Re-applied after closing their account" : "Re-applied after rejection",
         at: new Date(),
         byId: null,
         byName: null,
         notified: false,
       },
     ];
+    // Closing switched these off; a returning partner starts where a new one does.
+    if (previousStatus === "Closed") {
+      (existing as any).availabilityStatus = "open";
+      (existing as any).capacityPaused = false;
+      (existing as any).payoutsEnabled = true;
+      (existing as any).set("settings.notifications.email", {
+        newJobs: true,
+        orderUpdates: true,
+        payoutAlerts: true,
+        accountUpdates: true,
+        systemAlerts: true,
+      });
+    }
     // A previous rejection must not carry over as a live reset token.
     (existing as any).resetPasswordTokenHash = null;
     (existing as any).resetPasswordExpiresAt = null;
@@ -352,7 +368,7 @@ export const registerUser = async ({
   }
 
   const isPending = user.status === "Pending";
-  const token = isPending ? "" : signJwt({ sub: user.id, role: user.role });
+  const token = isPending ? "" : signSessionToken(user);
 
   if (resolvedRole === UserRoles.PRINTER) {
     notifyAllAdmins({
@@ -557,7 +573,7 @@ export const createSubAccount = async (parentId: string, subAccountData: Registe
     isSubAccount: true
   });
 
-  const token = signJwt({ sub: subAccount.id, role: subAccount.role });
+  const token = signSessionToken(subAccount);
 
   return {
     user: {
@@ -643,7 +659,7 @@ export const switchSubAccount = async (currentUserId: string, targetUserId: stri
     throw error;
   }
 
-  const token = signJwt({ sub: targetUser.id, role: targetUser.role });
+  const token = signSessionToken(targetUser);
 
   return {
     user: {
@@ -674,6 +690,16 @@ export const loginUser = async ({
    * be resolved. Answering with whichever account happened to be found first
    * would sign someone into the wrong side of the platform.
    */
+  /*
+   * Text only. These come straight from a JSON body, and an object in place of
+   * the address is read by the database as a query: {"$ne": null} matches
+   * every account, which turns one guess into a guess against all of them.
+   */
+  if (typeof email !== "string" || typeof password !== "string" || (role !== undefined && typeof role !== "string")) {
+    const error = new Error("Invalid credentials") as any;
+    error.statusCode = 401;
+    throw error;
+  }
   const candidates = await User.find({ email }).limit(5);
 
   let user: any = null;
@@ -695,6 +721,12 @@ export const loginUser = async ({
     // which kinds of account.
     const error = new Error("Invalid credentials") as any;
     error.statusCode = 401;
+    throw error;
+  }
+
+  if (user.status === "Closed") {
+    const error = new Error("This partner account was closed. To work with us again, sign up with this email address.") as any;
+    error.statusCode = 403;
     throw error;
   }
 
@@ -735,7 +767,7 @@ export const loginUser = async ({
     throw error;
   }
 
-  const token = signJwt({ sub: user.id, role: user.role });
+  const token = signSessionToken(user);
 
   return {
     user: {
@@ -770,6 +802,7 @@ export const requestPasswordReset = async (
    * Without a role we fall back to the single account, which keeps the
    * behaviour for addresses that only have one.
    */
+  if (typeof email !== "string" || (role !== undefined && typeof role !== "string")) return {};
   const normalized = email.toLowerCase().trim();
   const user = role
     ? await User.findOne({ email: normalized, role })
@@ -778,7 +811,8 @@ export const requestPasswordReset = async (
         return found.length === 1 ? found[0] : null;
       })();
 
-  if (!user) {
+  // A closed account has no password to reset; the answer looks the same either way.
+  if (!user || user.status === "Closed") {
     return {};
   }
 
@@ -797,9 +831,7 @@ export const requestPasswordReset = async (
    * storefront, where the token does work, but they end up signed into the wrong
    * application and nowhere near the portal they were trying to reach.
    *
-   * Admins have no reset screen anywhere yet, so they are sent to the console
-   * root rather than to a storefront that is not theirs; that page cannot
-   * complete the reset, and building it is still outstanding.
+   * Admins go to the console's own reset screen.
    */
   const resetUrl = (() => {
     const trim = (u: string) => u.replace(/\/$/, "");
@@ -809,7 +841,7 @@ export const requestPasswordReset = async (
       return `${trim(env.printerAppUrl)}/set-password?resetToken=${token}`;
     }
     if (user.role === UserRoles.ADMIN) {
-      return `${trim(env.adminAppUrl)}/?resetToken=${token}`;
+      return `${trim(env.adminAppUrl)}/reset-password?resetToken=${token}`;
     }
     return `${trim(env.appUrl)}/?resetToken=${token}&email=${encodeURIComponent(user.email)}`;
   })();
@@ -837,11 +869,10 @@ export const requestPasswordReset = async (
   }
 
   /*
-   * Outside production the raw token is returned so the flow can be exercised
-   * without a working mailbox — including when the send above failed, which is
-   * the state every environment is in until Resend is configured.
+   * On a developer's machine that asks for it (EXPOSE_RESET_TOKENS=true) the
+   * raw token is returned so the flow can be exercised without a mailbox.
    */
-  if (env.nodeEnv !== "production") {
+  if (exposeResetTokens) {
     return { resetToken: rawToken };
   }
 
@@ -870,6 +901,13 @@ export const loginWithGoogle = async (
   if (!payload?.email) {
     const error = new Error("Google account has no email address") as any;
     error.statusCode = 400;
+    throw error;
+  }
+  // An address Google has not confirmed proves nothing about who owns it, and
+  // signing in by address is what links this identity to an existing account.
+  if (payload.email_verified !== true) {
+    const error = new Error("Google hasn't verified this email address, so it can't be used to sign in.") as any;
+    error.statusCode = 403;
     throw error;
   }
 
@@ -917,7 +955,7 @@ export const loginWithGoogle = async (
     // A Google sign-in that creates an account IS a registration, so it needs
     // the same acknowledgements as the email form. Existing users skip this —
     // they accepted at their own sign-up and this is just a login.
-    const googleAcceptance = buildLegalAcceptance(legalAcceptance, legalContext || {});
+    const googleAcceptance = buildLegalAcceptance(legalAcceptance, legalContext || {}, await getCurrentLegalVersions());
 
     isNew = true;
     user = await User.create({
@@ -949,7 +987,7 @@ export const loginWithGoogle = async (
     throw error;
   }
 
-  const token = signJwt({ sub: user.id, role: user.role });
+  const token = signSessionToken(user);
 
   const userResponse: UserResponse = {
     id: user.id,
@@ -1027,13 +1065,16 @@ export const resetPassword = async ({
    * Keyed on the stored record rather than on which token the client used, so a
    * caller cannot skip it by relabelling the parameter.
    */
-  if (!(user as any).legalAcceptance) {
-    (user as any).legalAcceptance = buildLegalAcceptance(legalAcceptance, legalContext || {});
+  // Admins run the platform; the customer and partner terms are not theirs to accept.
+  if (!(user as any).legalAcceptance && user.role !== UserRoles.ADMIN) {
+    (user as any).legalAcceptance = buildLegalAcceptance(legalAcceptance, legalContext || {}, await getCurrentLegalVersions());
   }
 
   user.passwordHash = await hashPassword(newPassword);
   user.resetPasswordTokenHash = null;
   user.resetPasswordExpiresAt = null;
+  // Whoever was signed in with the old password is signed out.
+  (user as any).tokenVersion = (Number((user as any).tokenVersion) || 0) + 1;
   const settings: any = (user as any).settings || {};
   const security: any = settings.security || {};
   security.lastPasswordChange = new Date();

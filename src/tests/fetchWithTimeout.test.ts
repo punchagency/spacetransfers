@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { fetchWithTimeout, UpstreamTimeoutError } from "../utils/fetchWithTimeout.js";
 
 /**
- * Calls out to storage and ShipStation had no time limit, so a stuck service
+ * Calls out to storage and the shipping carrier had no time limit, so a stuck service
  * held the request open indefinitely. Past the limit they now fail as a 504
  * with a message fit to show.
  */

@@ -101,7 +101,9 @@ export const getCartQuote = async (req: Request, res: Response, next: NextFuncti
       throw error;
     }
 
+    // The same address fields the payment and the order send, so all three are priced alike.
     const totals = await priceItems(items, shippingMethod, {
+      street: req.body?.shippingStreet ? String(req.body.shippingStreet) : undefined,
       state: String(req.body?.shippingState || ""),
       postalCode: String(shippingPostalCode || ""),
       country: String(shippingCountry || "US"),

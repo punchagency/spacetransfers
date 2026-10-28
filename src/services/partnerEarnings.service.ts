@@ -97,13 +97,19 @@ export const canDerivePartnerEarning = (order: any): boolean => {
  * `partnerPayout`. An admin could raise a payout by a tenth and see only the
  * new total, with nothing saying why.
  */
-export const getOrderPartnerCostBreakdown = (order: any, partnerPricing: any) =>
-  computePartnerCostBreakdown({
+/** A free reprint the admin chose not to pay the partner for. Older reprints, with no choice recorded, are paid. */
+export const isUnpaidReprint = (order: any): boolean => Boolean(order?.reprintOf) && order.reprintOf.partnerPaid === false;
+
+export const getOrderPartnerCostBreakdown = (order: any, partnerPricing: any) => {
+  const breakdown = computePartnerCostBreakdown({
     items: Array.isArray(order?.items) ? order.items : [],
     partnerPricing: partnerPricing || {},
     priority: order?.priority,
     adjustments: order?.pricing?.adjustments || [],
   });
+  // The sheet area still describes the work; only the money is zero.
+  return isUnpaidReprint(order) ? { ...breakdown, base: 0, rushFee: 0, specialInkFee: 0, surcharges: 0, subtotal: 0 } : breakdown;
+};
 
 export const calculateOrderPartnerEarning = (
   order: any,

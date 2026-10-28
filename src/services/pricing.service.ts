@@ -225,7 +225,7 @@ export interface OrderTotals {
  * on the destination country. The previous quote path taxed only when the
  * country string was exactly "United States" — so a client sending "US" got
  * zero tax — while the charge path taxed unconditionally. Since fulfilment is
- * US-only (ShipStation rejects non-US addresses outright), taxing
+ * US-only (labels are only bought for US addresses), taxing
  * unconditionally is both simpler and the behaviour that was already being
  * charged.
  */

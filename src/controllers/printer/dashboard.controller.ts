@@ -139,6 +139,8 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     const assignedJobs = activeAssignedJobs.map((job: any) => ({
       id: String(job._id),
       issue: issueFlags.get(String(job._id)) || null,
+      cancelRequested: job?.cancellationRequest?.status === "PENDING",
+      reprintOf: job?.reprintOf?.displayId ? String(job.reprintOf.displayId) : null,
       displayId: job?.displayId ? String(job.displayId) : null,
       customerName: `${job.customer?.firstName || ""} ${job.customer?.lastName || ""}`.trim(),
       order: sheetCountLabel(job.items),

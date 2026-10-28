@@ -140,6 +140,10 @@ export const enqueueAdminNotificationEmailBatch = async (adminId: string, notifi
   );
 };
 
+/** Titles and messages carry what customers and partners typed; in an email it must stay text. */
+const escapeHtml = (v: unknown) =>
+  String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
+
 export const buildBatchedAdminEmailHtml = ({
   adminName,
   items
@@ -168,8 +172,8 @@ export const buildBatchedAdminEmailHtml = ({
               </span>
               <span style="color:#6b7280; font-size:12px;">${time}</span>
             </div>
-            <div style="margin-top: 6px; font-weight:700; color:#111827;">${n.title}</div>
-            <div style="margin-top: 2px; color:#374151;">${n.message}</div>
+            <div style="margin-top: 6px; font-weight:700; color:#111827;">${escapeHtml(n.title)}</div>
+            <div style="margin-top: 2px; color:#374151;">${escapeHtml(n.message)}</div>
           </td>
         </tr>
       `;
@@ -192,12 +196,31 @@ export const buildBatchedAdminEmailHtml = ({
   `;
 };
 
+/*
+ * A batch that failed (Resend briefly down, say) is tried again, and one left
+ * "sending" by a process that stopped mid-send is picked up again; before, both
+ * were dropped and the admin never got that email.
+ */
+const EMAIL_MAX_ATTEMPTS = 3;
+const EMAIL_RETRY_AFTER_MS = 5 * 60 * 1000;
+const EMAIL_STALE_SENDING_MS = 10 * 60 * 1000;
+// Only today's news: an email retried days later would only confuse.
+const EMAIL_RETRY_WITHIN_MS = 24 * 60 * 60 * 1000;
+
+export const dueEmailBatchesFilter = (now: Date) => {
+  const recent = { $gte: new Date(now.getTime() - EMAIL_RETRY_WITHIN_MS) };
+  return {
+    $or: [
+      { status: "pending", dueAt: { $lte: now } },
+      { status: "failed", dueAt: recent, attempts: { $lt: EMAIL_MAX_ATTEMPTS }, lastAttemptAt: { $lte: new Date(now.getTime() - EMAIL_RETRY_AFTER_MS) } },
+      { status: "sending", dueAt: recent, lastAttemptAt: { $lte: new Date(now.getTime() - EMAIL_STALE_SENDING_MS) } },
+    ],
+  };
+};
+
 export const processDueAdminNotificationEmailBatches = async () => {
   const now = new Date();
-  const batches = await AdminNotificationEmailBatch.find({
-    status: "pending",
-    dueAt: { $lte: now }
-  })
+  const batches = await AdminNotificationEmailBatch.find(dueEmailBatchesFilter(now))
     .sort({ dueAt: 1, _id: 1 })
     .limit(25)
     .lean();
@@ -206,8 +229,9 @@ export const processDueAdminNotificationEmailBatches = async () => {
     const batchId = String(b._id);
     const adminId = String(b.adminId);
 
+    // Taken only as found, so a batch is never sent by two passes at once.
     const locked = await AdminNotificationEmailBatch.updateOne(
-      { _id: b._id, status: "pending" },
+      { _id: b._id, status: b.status, lastAttemptAt: b.lastAttemptAt ?? null },
       { $set: { status: "sending", lastAttemptAt: new Date() }, $inc: { attempts: 1 } }
     );
     if (!locked.acknowledged || locked.modifiedCount !== 1) continue;
@@ -227,7 +251,8 @@ export const processDueAdminNotificationEmailBatches = async () => {
       .select("category priority title message createdAt email.status")
       .lean();
 
-    const eligible = notifications.filter((n: any) => n?.email?.status === "queued");
+    // "failed" too: on a retry, the notifications are still marked from the last attempt.
+    const eligible = notifications.filter((n: any) => n?.email?.status === "queued" || n?.email?.status === "failed");
     if (eligible.length === 0) {
       await AdminNotificationEmailBatch.updateOne(
         { _id: b._id },

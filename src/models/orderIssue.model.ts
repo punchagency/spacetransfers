@@ -39,6 +39,8 @@ export interface IOrderIssue extends Document {
   /** The partner the order was with when the problem was reported. */
   partner?: mongoose.Types.ObjectId | null;
   type: IssueType;
+  /** The designs the customer marked as affected, by sheet and place on it. */
+  affectedDesigns?: { sheet: number; design: number }[];
   description: string;
   attachments?: IOrderIssueAttachment[];
   status: IssueStatus;
@@ -72,6 +74,7 @@ const orderIssueSchema = new Schema<IOrderIssue>(
     type: { type: String, enum: ISSUE_TYPES, required: true },
     description: { type: String, default: "" },
     attachments: { type: [attachmentSchema], default: undefined },
+    affectedDesigns: { type: [{ _id: false, sheet: { type: Number, required: true }, design: { type: Number, required: true } }], default: undefined },
     status: { type: String, enum: ["OPEN", "RESOLVED"], default: "OPEN", index: true },
     messages: [
       {

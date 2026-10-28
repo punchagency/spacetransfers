@@ -76,41 +76,51 @@ export async function getConnectAccount(stripeAccountId: string) {
 }
 
 /**
- * Transfer funds to a printer's Connect account, then create a payout (test mode).
- * Returns the transfer and payout objects.
+ * The transfer already made for a payout, if any: the one thing that must never
+ * happen twice. Looked up on Stripe, not just in our record, so a transfer that
+ * went through just before a crash is still found.
  */
-export async function processPayoutTransfer(
+export async function findPayoutTransfer(stripeAccountId: string, payoutId: string): Promise<Stripe.Transfer | null> {
+  // Newest first; a retry follows its first attempt closely, so recent ones are enough.
+  let seen = 0;
+  for await (const transfer of stripe.transfers.list({ destination: stripeAccountId, limit: 100 })) {
+    if (transfer.metadata?.payoutId === payoutId && !transfer.reversed) return transfer;
+    if (++seen >= 300) break;
+  }
+  return null;
+}
+
+/** Moves a payout's money from the platform's balance to the partner's Stripe balance. */
+export function createPayoutTransfer(
   stripeAccountId: string,
   amountCents: number,
   payoutId: string,
-  printerId: string
-): Promise<{ transfer: Stripe.Transfer; payout: Stripe.Payout }> {
-  const transfer = await stripe.transfers.create({
-    amount: amountCents,
-    currency: "usd",
-    destination: stripeAccountId,
-    metadata: {
-      payoutId,
-      printerId,
-      mode: "test",
-    },
-  });
-
-  // Trigger an immediate payout on the connected account
-  const payout = await stripe.payouts.create(
-    {
-      amount: amountCents,
-      currency: "usd",
-      metadata: {
-        payoutId,
-        printerId,
-        mode: "test",
-      },
-    },
-    { stripeAccount: stripeAccountId }
+  printerId: string,
+  attempt: number,
+): Promise<Stripe.Transfer> {
+  return stripe.transfers.create(
+    { amount: amountCents, currency: "usd", destination: stripeAccountId, metadata: { payoutId, printerId } },
+    { idempotencyKey: `payout-transfer-${payoutId}-${attempt}` },
   );
+}
 
-  return { transfer, payout };
+/** Sends money from the partner's Stripe balance to their bank. */
+export function createBankPayout(
+  stripeAccountId: string,
+  amountCents: number,
+  payoutId: string,
+  printerId: string,
+  attempt: number,
+): Promise<Stripe.Payout> {
+  return stripe.payouts.create(
+    { amount: amountCents, currency: "usd", metadata: { payoutId, printerId } },
+    { stripeAccount: stripeAccountId, idempotencyKey: `payout-bank-${payoutId}-${attempt}` },
+  );
+}
+
+/** A bank payout as Stripe has it now; webhook events can arrive out of order. */
+export function retrieveBankPayout(stripeAccountId: string, stripePayoutId: string): Promise<Stripe.Payout> {
+  return stripe.payouts.retrieve(stripePayoutId, {}, { stripeAccount: stripeAccountId });
 }
 
 /**

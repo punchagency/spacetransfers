@@ -1,5 +1,14 @@
 import express from "express";
-import { authenticate, requireRoles } from "../middleware/auth.js";
+import { authenticate, requireAdminPasskey, requireRoles } from "../middleware/auth.js";
+import { listAdminPasskeyStatus, resetAccountPasskeys } from "../controllers/passkey.controller.js";
+import {
+  adminDiscardLegalDraft,
+  adminGetLegalDocument,
+  adminGetLegalVersion,
+  adminListLegalDocuments,
+  adminPublishLegalDocument,
+  adminSaveLegalDraft,
+} from "../controllers/legal.controller.js";
 import { upload } from "../middleware/upload.js";
 import { UserRoles } from "../models/user.model.js";
 import { 
@@ -45,11 +54,21 @@ import {
   listIssuesForOrder,
   postIssueMessage,
   resolveIssue,
+  getOrderDesignsForAdmin,
 } from "../controllers/admin/index.js";
 
 const router = express.Router();
 
-router.use(authenticate, requireRoles(UserRoles.ADMIN));
+router.use(authenticate, requireRoles(UserRoles.ADMIN), requireAdminPasskey);
+
+router.get("/security/admins", listAdminPasskeyStatus);
+router.get("/legal", adminListLegalDocuments);
+router.get("/legal/:docId", adminGetLegalDocument);
+router.put("/legal/:docId/draft", adminSaveLegalDraft);
+router.delete("/legal/:docId/draft", adminDiscardLegalDraft);
+router.post("/legal/:docId/publish", adminPublishLegalDocument);
+router.get("/legal/:docId/versions/:version", adminGetLegalVersion);
+router.post("/users/:userId/reset-passkeys", resetAccountPasskeys);
 
 router.get("/dashboard/stats", getAdminDashboardStats);
 router.get("/pricing/global", getGlobalPricing);
@@ -80,6 +99,7 @@ router.get("/issues", listIssues);
 router.get("/issues/counts", getIssueCounts);
 router.post("/issues/:issueId/messages", postIssueMessage);
 router.post("/issues/:issueId/resolve", resolveIssue);
+router.get("/orders/:orderId/designs", getOrderDesignsForAdmin);
 router.get("/orders/:orderId/invoice", downloadOrderInvoice);
 router.get("/partners", listPartners);
 router.post("/partners", createPartner); 

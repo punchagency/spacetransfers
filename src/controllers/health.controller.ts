@@ -15,9 +15,7 @@ export const getHealth = async (req: Request, res: Response, next: NextFunction)
         api: {
           status: "up",
         }
-      },
-      uptime: process.uptime(),
-      version: process.env.npm_package_version || "1.0.0"
+      }
     };
 
     if (dbStatus === "down") {

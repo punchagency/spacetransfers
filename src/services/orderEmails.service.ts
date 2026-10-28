@@ -212,3 +212,22 @@ export const sendIssueResolvedEmail = async (
   );
   return deliver(order, `Update on your Space Transfers order ${number}`, html, "issue resolved");
 };
+
+/** Tells the customer their partner can't cancel the order, and why. Never throws. */
+export const sendCancellationDeclinedEmail = async (order: any, reason: string): Promise<EmailResult | null> => {
+  const number = String(order?.displayId || order?._id || "");
+  return deliver(
+    order,
+    `Your order ${number} can't be cancelled`,
+    wrap(
+      `Your order ${esc(number)} can't be cancelled`,
+      [
+        "We asked the partner printing your order to cancel it, but it's too far along. They said:",
+        quoted(reason),
+        "Your order will carry on and ship as normal, and you haven't been charged anything extra.",
+      ],
+      "If this is a problem, reply to this email and we'll help.",
+    ),
+    "cancellation declined",
+  );
+};

@@ -1,3 +1,4 @@
+import type Stripe from "stripe";
 import { Request, Response, NextFunction } from "express";
 import { User } from "../models/user.model.js";
 import { Order } from "../models/order.model.js";
@@ -6,7 +7,10 @@ import {
     createConnectAccount,
   createConnectAccountLink,
   getConnectAccount,
-  processPayoutTransfer,
+  findPayoutTransfer,
+  createPayoutTransfer,
+  createBankPayout,
+  retrieveBankPayout,
   getNextFridayDate,
   MINIMUM_PAYOUT_AMOUNT_CENTS,
   assertStripeConfigured,
@@ -21,6 +25,8 @@ import {
   payableOrderFilter,
 } from "../services/partnerEarnings.service.js";
 import { notifyPrinter } from "../services/printerNotifications.service.js";
+import { notifyAllAdmins } from "../services/adminNotifications.service.js";
+import { bankPayoutChange, deliverPayout } from "../services/payoutDelivery.service.js";
 import type { IPayout, PayoutStatus } from "../models/payout.model.js";
 
 interface CustomError extends Error {
@@ -413,13 +419,22 @@ export const adminGetPayoutStats = async (
 };
 
 /**
- * Initiate the actual Stripe transfer for an already-approved (or retrying)
- * payout and record the outcome + audit trail. Mutates & saves the payout.
- * This is the ONLY place a real payment is initiated, and it is only ever
- * reached from an explicit admin action — never automatically.
+ * Pays an approved payout, or tries a failed one again. This is the ONLY place a
+ * real payment is initiated, and it is only ever reached from an explicit admin
+ * action — never automatically.
+ *
+ * The payout is claimed by moving it out of `from` in one step, so a double
+ * click or two admins at once can't start two payments. What Stripe is asked to
+ * do is in payoutDelivery.service: never a second transfer for one payout.
  */
-const runPayoutTransfer = async (payout: IPayout, req: Request): Promise<void> => {
-  const printer = await User.findById(payout.printerId).select(
+const runPayoutTransfer = async (payoutId: string, from: "approved" | "failed", req: Request): Promise<IPayout> => {
+  const existing = await Payout.findById(payoutId);
+  if (!existing) {
+    const e = new Error("Payout not found") as CustomError;
+    e.statusCode = 404;
+    throw e;
+  }
+  const printer = await User.findById(existing.printerId).select(
     "stripeConnectAccountId stripeConnectOnboarded payoutsEnabled email name companyName"
   );
   if (!printer || !printer.stripeConnectAccountId) {
@@ -433,27 +448,41 @@ const runPayoutTransfer = async (payout: IPayout, req: Request): Promise<void> =
     throw e;
   }
 
-  payout.status = "processing";
-  payout.failureReason = null;
-  recordStatusChange(payout, "processing", req, "Payment initiated");
+  const payout = await Payout.findOneAndUpdate(
+    { _id: existing._id, status: from },
+    { $set: { status: "processing", failureReason: null }, ...(from === "failed" ? { $inc: { retryCount: 1 } } : {}) },
+    { new: true },
+  );
+  if (!payout) {
+    const e = new Error(
+      from === "approved"
+        ? `Only approved payouts can be processed (current: ${existing.status})`
+        : `Only failed payouts can be retried (current: ${existing.status})`
+    ) as CustomError;
+    e.statusCode = existing.status === "processing" ? 409 : 400;
+    throw e;
+  }
+  recordStatusChange(payout, "processing", req, from === "failed" ? "Trying the payment again" : "Payment initiated");
   await payout.save();
 
+  let delivery: Awaited<ReturnType<typeof deliverPayout>>;
   try {
-    const amountCents = Math.round(payout.amount * 100);
-    const { transfer, payout: stripePayout } = await processPayoutTransfer(
-      printer.stripeConnectAccountId,
-      amountCents,
-      payout._id.toString(),
-      payout.printerId.toString()
-    );
+    delivery = await deliverPayout(payout, printer.stripeConnectAccountId, {
+      findTransfer: findPayoutTransfer,
+      createTransfer: createPayoutTransfer,
+      createBankPayout,
+    });
+  } catch (err: any) {
+    // Never left in "processing", where no button can reach it. Trying again is
+    // safe: a transfer that did go through is found, not repeated.
+    delivery = { outcome: "transfer_failed", reason: `The payment was interrupted: ${err?.message || "unknown error"}. Trying again won't pay twice.` };
+  }
 
-    payout.stripeTransferId = transfer.id;
-    payout.stripePayoutId = stripePayout.id;
+  if (delivery.outcome === "sent") {
     payout.status = "paid";
     payout.processedAt = new Date();
-    recordStatusChange(payout, "paid", req, `Stripe transfer ${transfer.id}`);
+    recordStatusChange(payout, "paid", req, `Stripe transfer ${delivery.transferId}, bank payout ${delivery.bankPayoutId}`);
     await payout.save();
-
     notifyPrinter({
       printerId: payout.printerId.toString(),
       category: "system",
@@ -463,12 +492,13 @@ const runPayoutTransfer = async (payout: IPayout, req: Request): Promise<void> =
       meta: { type: "payout_paid", payoutId: payout._id.toString(), amount: payout.amount },
       settingsKey: "payoutAlerts",
     }).catch(() => {});
-  } catch (stripeErr: any) {
+  } else {
     payout.status = "failed";
-    payout.failureReason = stripeErr?.message || "Stripe transfer failed";
-    recordStatusChange(payout, "failed", req, payout.failureReason);
+    payout.failureReason = delivery.reason;
+    recordStatusChange(payout, "failed", req, delivery.reason);
     await payout.save();
   }
+  return payout;
 };
 
 export const adminRetryPayout = async (
@@ -477,21 +507,7 @@ export const adminRetryPayout = async (
   next: NextFunction
 ) => {
   try {
-    const { payoutId } = req.params;
-    const payout = await Payout.findById(payoutId);
-    if (!payout) {
-      const e = new Error("Payout not found") as CustomError;
-      e.statusCode = 404;
-      throw e;
-    }
-    if (payout.status !== "failed") {
-      const e = new Error("Only failed payouts can be retried") as CustomError;
-      e.statusCode = 400;
-      throw e;
-    }
-
-    payout.retryCount += 1;
-    await runPayoutTransfer(payout, req);
+    const payout = await runPayoutTransfer(String(req.params.payoutId), "failed", req);
     res.json({ payout });
   } catch (err) {
     next(err);
@@ -706,6 +722,15 @@ export const adminRejectPayout = async (
       e.statusCode = 400;
       throw e;
     }
+    // Rejecting frees the jobs for another payout; once the money has reached
+    // the partner, that would pay them twice.
+    if (payout.stripeTransferId) {
+      const e = new Error(
+        "The money already reached the partner's Stripe balance, so this payout can't be rejected. Try payment again once their bank details are fixed."
+      ) as CustomError;
+      e.statusCode = 400;
+      throw e;
+    }
 
     payout.status = "rejected";
     payout.rejectedBy = req.user?.id ? new mongoose.Types.ObjectId(String(req.user.id)) : null;
@@ -731,20 +756,7 @@ export const adminProcessPayout = async (
   next: NextFunction
 ) => {
   try {
-    const { payoutId } = req.params;
-    const payout = await Payout.findById(payoutId);
-    if (!payout) {
-      const e = new Error("Payout not found") as CustomError;
-      e.statusCode = 404;
-      throw e;
-    }
-    if (payout.status !== "approved") {
-      const e = new Error(`Only approved payouts can be processed (current: ${payout.status})`) as CustomError;
-      e.statusCode = 400;
-      throw e;
-    }
-
-    await runPayoutTransfer(payout, req);
+    const payout = await runPayoutTransfer(String(req.params.payoutId), "approved", req);
     res.json({ payout });
   } catch (err) {
     next(err);
@@ -910,6 +922,59 @@ export const adminExportPayouts = async (
 
 // ─── WEBHOOK: Stripe events ───────────────────────────────────────────────────
 
+/**
+ * A bank payout arrived or bounced. Stripe's current state of the payout decides,
+ * not the event, because events can arrive out of order (test mode sends "paid"
+ * and then "failed" for the same bounced payout); and only the payout's latest
+ * bank payout counts.
+ */
+const applyBankPayoutEvent = async (eventPayout: Stripe.Payout, stripeAccountId?: string) => {
+  const payoutId = eventPayout.metadata?.payoutId;
+  if (!payoutId || !mongoose.isValidObjectId(payoutId)) return;
+  const payout = await Payout.findById(payoutId);
+  if (!payout) return;
+  const bank = stripeAccountId ? await retrieveBankPayout(stripeAccountId, eventPayout.id) : eventPayout;
+  const change = bankPayoutChange(payout, bank);
+  if (!change) {
+    console.log(`[Stripe Webhook] Bank payout ${eventPayout.id} (${bank.status}) changes nothing on payout ${payoutId}`);
+    return;
+  }
+
+  payout.status = change.status;
+  if (change.status === "paid") payout.processedAt = new Date(bank.arrival_date * 1000);
+  if (change.failureReason) payout.failureReason = change.failureReason;
+  payout.statusHistory.push({
+    status: change.status,
+    at: new Date(),
+    changedBy: null,
+    changedByName: "Stripe",
+    note: change.status === "paid" ? `Bank payout ${bank.id} arrived` : `Bank payout ${bank.id} failed: ${bank.failure_message || bank.failure_code || "no reason given"}`,
+  });
+  await payout.save();
+  console.log(`[Stripe Webhook] Payout ${payoutId} marked ${change.status}`);
+
+  if (change.status === "failed") {
+    const printer = await User.findById(payout.printerId).select("name companyName").lean();
+    const who = (printer as any)?.companyName || (printer as any)?.name || "A partner";
+    notifyAllAdmins({
+      category: "partners",
+      priority: "high",
+      title: "Payout failed",
+      message: `${who}'s bank refused a $${payout.amount.toFixed(2)} payout. The money is in their Stripe balance; Try payment again once their bank details are fixed.`,
+      meta: { payoutId: String(payout._id) },
+    }).catch(() => {});
+    notifyPrinter({
+      printerId: payout.printerId.toString(),
+      category: "system",
+      priority: "high",
+      title: "Payout couldn't reach your bank",
+      message: `Your bank refused a payout of $${payout.amount.toFixed(2)}. Check your bank details under Settings → Payout Settings; we'll send it again once they're fixed.`,
+      meta: { type: "payout_failed", payoutId: String(payout._id), amount: payout.amount },
+      settingsKey: "payoutAlerts",
+    }).catch(() => {});
+  }
+};
+
 export const handleStripeWebhook = async (
   req: Request,
   res: Response,
@@ -935,29 +1000,9 @@ export const handleStripeWebhook = async (
 
   try {
     switch (event.type) {
-      case "payout.paid": {
-        const stripePayout = event.data.object as any;
-        const payoutId = stripePayout.metadata?.payoutId;
-        if (payoutId) {
-          await Payout.findByIdAndUpdate(payoutId, {
-            status: "paid",
-            processedAt: new Date(stripePayout.arrival_date * 1000),
-            stripePayoutId: stripePayout.id,
-          });
-          console.log(`[Stripe Webhook] Payout ${payoutId} marked paid`);
-        }
-        break;
-      }
+      case "payout.paid":
       case "payout.failed": {
-        const stripePayout = event.data.object as any;
-        const payoutId = stripePayout.metadata?.payoutId;
-        if (payoutId) {
-          await Payout.findByIdAndUpdate(payoutId, {
-            status: "failed",
-            failureReason: stripePayout.failure_message || "Stripe payout failed",
-          });
-          console.log(`[Stripe Webhook] Payout ${payoutId} failed`);
-        }
+        await applyBankPayoutEvent(event.data.object as Stripe.Payout, event.account);
         break;
       }
       case "transfer.created": {

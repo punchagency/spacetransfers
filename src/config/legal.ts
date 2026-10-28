@@ -96,6 +96,8 @@ const badRequest = (message: string, code: string) => {
 export const buildLegalAcceptance = (
   input: LegalAcceptanceInput | undefined | null,
   context: { ip?: string; userAgent?: string },
+  /** The versions published now; admins change them from the console. */
+  current: { terms: string; privacy: string; contentPolicy: string } = CURRENT_LEGAL_VERSIONS,
 ): LegalAcceptanceRecord => {
   if (!input || typeof input !== "object") {
     throw badRequest(
@@ -126,8 +128,8 @@ export const buildLegalAcceptance = (
     privacy: input.privacyVersion,
     contentPolicy: input.contentPolicyVersion,
   };
-  for (const [key, current] of Object.entries(CURRENT_LEGAL_VERSIONS)) {
-    if (submitted[key as keyof typeof submitted] !== current) {
+  for (const [key, version] of Object.entries(current)) {
+    if (submitted[key as keyof typeof submitted] !== version) {
       throw badRequest(
         "Our legal terms have been updated. Please reload the page and review the current terms before creating an account.",
         "LEGAL_VERSION_MISMATCH",
@@ -138,9 +140,9 @@ export const buildLegalAcceptance = (
   return {
     termsAccepted: true,
     contentResponsibilityAccepted: true,
-    termsVersion: CURRENT_LEGAL_VERSIONS.terms,
-    privacyVersion: CURRENT_LEGAL_VERSIONS.privacy,
-    contentPolicyVersion: CURRENT_LEGAL_VERSIONS.contentPolicy,
+    termsVersion: current.terms,
+    privacyVersion: current.privacy,
+    contentPolicyVersion: current.contentPolicy,
     acceptedAt: new Date(),
     // Both are recorded for audit. Where a jurisdiction forbids storing the IP,
     // drop it at the controller rather than here so the shape stays uniform.

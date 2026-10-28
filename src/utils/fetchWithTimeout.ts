@@ -1,7 +1,7 @@
 /**
  * `fetch` with a time limit.
  *
- * The server's calls out — to artwork storage, ShipStation — had none, so a
+ * The server's calls out — to artwork storage, the shipping carrier — had none, so a
  * stuck service held the request (and the customer's spinner) open until the
  * connection itself gave up, minutes later if ever. Past the limit this throws
  * a 504 whose message can be shown as-is.

@@ -19,7 +19,7 @@ import { User, UserRoles, IUser } from "../../models/user.model.js";
 import { Design } from "../../models/design.model.js";
 import { notifyAllAdmins } from "../../services/adminNotifications.service.js";
 import { notifyPrinter } from "../../services/printerNotifications.service.js";
-import { canDerivePartnerEarning } from "../../services/partnerEarnings.service.js";
+import { canDerivePartnerEarning, getOrderPartnerCostBreakdown } from "../../services/partnerEarnings.service.js";
 import { getPartnerPayRate } from "../../services/pricing.service.js";
 import {
   syncPartnerCapacitySafe,
@@ -29,9 +29,10 @@ import {
   isAtCapacity,
 } from "../../services/partnerCapacity.service.js";
 import { exportGangsheetPng24, orderSheetWidthIn } from "../../services/gangsheetExport.service.js";
-import { computePartnerCostBreakdown } from "../../utils/partnerPricingCost.js";
 import { computeAssignmentDeadlineFor } from "../../utils/assignmentDeadline.js";
 import { CustomError } from "./shared.js";
+import { voidUnusedLabel } from "../../services/shippingLabel.service.js";
+import { TRACKING_STATUS_LABELS } from "../../services/easypost.service.js";
 
 export const listOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -277,6 +278,12 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       error.statusCode = 404;
       throw error;
     }
+    // Someone who can't sign in can't see the job, let alone print it.
+    if (!["Active", "Under Review"].includes(String(partner.status))) {
+      const error = new Error(`This partner's account is ${String(partner.status).toLowerCase()}, so they can't take jobs.`) as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
 
     // Region check — warn on cross-region unless admin explicitly passes force:true.
     const customerRegion = normalizeRegion(getRegionFromState(order.shippingAddress?.state || "")) || null;
@@ -327,6 +334,10 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
         }
       }
     }
+
+    // A label bought from the previous partner's address goes back for a refund;
+    // the new partner makes their own.
+    const labelToVoid = isReassignment && ((order as any).labelUrl || (order as any).easyPostShipmentId) ? order.toObject() : null;
 
     order.assignedPrinter = partnerId;
     // (Re)start the 24h fulfilment clock from this assignment moment. A no-op
@@ -380,6 +391,12 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     } as any);
 
     await order.save();
+    if (labelToVoid) {
+      void voidUnusedLabel(labelToVoid, "the job was reassigned", {
+        clear: true,
+        note: "This job was reassigned to you, so the previous label was cancelled. Create a new one from your address.",
+      });
+    }
 
     // Reconcile capacity: the newly-assigned partner may now be at their max
     // (auto-pause), and on a reassignment the previous partner frees a slot
@@ -452,12 +469,7 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       fileUrl: resolveApiFile(req, (item as any).previewImage) || undefined,
     }));
 
-    const breakdown = computePartnerCostBreakdown({
-      items: Array.isArray(order.items) ? order.items : [],
-      partnerPricing: await getPartnerPayRate(),
-      priority: (order as any).priority,
-      adjustments: (order as any)?.pricing?.adjustments || []
-    });
+    const breakdown = getOrderPartnerCostBreakdown(order, await getPartnerPayRate());
     /**
      * Null when there is nothing to derive a cost from — the fourth surface
      * that needed this. An order whose items carry no sheet dimensions has an
@@ -579,7 +591,8 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         state: order.shippingAddress?.state || "N/A",
         postalCode: order.shippingAddress?.postalCode || "N/A",
         country: order.shippingAddress?.country || "N/A",
-        region: resolveOrderRegion(order, oneUserRegionMap)
+        region: resolveOrderRegion(order, oneUserRegionMap),
+        check: order.shippingAddress?.check?.status ? order.shippingAddress.check : null
       },
 
       items: formattedItems,
@@ -645,6 +658,30 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
       regionInfo: resolveRegionInfo(order, oneUserRegionMap),
 
+      cancellationRequest: (order as any).cancellationRequest && (order as any).cancellationRequest.status !== "WITHDRAWN"
+        ? {
+            status: String((order as any).cancellationRequest.status),
+            reason: (order as any).cancellationRequest.reason || null,
+            requestedAt: (order as any).cancellationRequest.requestedAt || null,
+            respondedAt: (order as any).cancellationRequest.respondedAt || null,
+            respondedByName: (order as any).cancellationRequest.respondedByName || null,
+            declineReason: (order as any).cancellationRequest.declineReason || null,
+          }
+        : null,
+      /** The label and where the parcel is, once one has been bought. */
+      shipment: (order as any).labelUrl || (order as any).trackingNumber || (order as any).labelError || (order as any).labelRefund
+        ? {
+            carrier: (order as any).carrier || null,
+            service: (order as any).labelService || null,
+            trackingNumber: (order as any).trackingNumber || null,
+            trackingUrl: (order as any).trackingUrl || null,
+            trackingStatus: (order as any).trackingStatus ? TRACKING_STATUS_LABELS[(order as any).trackingStatus] || (order as any).trackingStatus : null,
+            estimatedDeliveryAt: (order as any).estimatedDeliveryAt || null,
+            labelUrl: (order as any).labelUrl || null,
+            labelError: (order as any).labelError || null,
+            labelRefund: (order as any).labelRefund?.status ? { status: String((order as any).labelRefund.status), requestedAt: (order as any).labelRefund.requestedAt } : null,
+          }
+        : null,
       // A free replacement names the order it replaces, and that order names it back.
       reprintOf: (order as any).reprintOf?.orderId
         ? { orderId: String((order as any).reprintOf.orderId), displayId: String((order as any).reprintOf.displayId || "") }
@@ -939,6 +976,7 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
       }).catch(() => {});
     }
     publishOrderEvent(orderId, "order.status.changed", { orderId, status: "CANCELLED", updatedAt: new Date() });
+    void voidUnusedLabel(order, "the order was cancelled");
     const mail = await sendOrderCancelledEmail(order, result.refundAmount, reason);
 
     res.json({

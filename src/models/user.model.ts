@@ -15,6 +15,22 @@ export const UserRoles = {
 export interface IUser extends Document {
   email: string;
   passwordHash: string | null;
+  /** Raised to end every session issued so far. */
+  tokenVersion?: number;
+  /** Passkeys registered as the second step of sign-in. */
+  passkeys?: {
+    id: string;
+    publicKey: string;
+    counter: number;
+    transports?: string[];
+    deviceType?: string;
+    backedUp?: boolean;
+    name: string;
+    createdAt: Date;
+    lastUsedAt?: Date | null;
+  }[];
+  /** One-time codes for signing in when no passkey is to hand; stored hashed. */
+  recoveryCodes?: { hash: string; usedAt?: Date | null }[];
   googleId?: string | null;
   name: string;
   companyName?: string;
@@ -51,19 +67,6 @@ export interface IUser extends Document {
     registrationNumber?: string;
     foundedDate?: Date;
   };
-  /**
-   * This partner's own warehouse in the client's ShipStation account.
-   *
-   * ShipStation stamps a warehouse on every order and reports against it, so
-   * without one every partner's jobs are filed under the HQ warehouse — the
-   * labels still ship from the right address, but ShipStation's own reporting
-   * shows all volume coming from head office.
-   *
-   * The client creates a warehouse per partner and passes the numeric id; it is
-   * only visible in the ShipStation URL, which is why it is entered by hand
-   * rather than discovered.
-   */
-  shipStationWarehouseId?: number | null;
   businessAddress?: {
     street: string;
     city: string;
@@ -192,6 +195,25 @@ const userSchema = new Schema<IUser>(
       lowercase: true,
       trim: true
     },
+    tokenVersion: { type: Number, default: 0 },
+    passkeys: {
+      type: [
+        {
+          _id: false,
+          id: { type: String, required: true },
+          publicKey: { type: String, required: true },
+          counter: { type: Number, default: 0 },
+          transports: { type: [String], default: undefined },
+          deviceType: String,
+          backedUp: Boolean,
+          name: { type: String, default: "Passkey" },
+          createdAt: { type: Date, default: Date.now },
+          lastUsedAt: { type: Date, default: null },
+        },
+      ],
+      default: undefined,
+    },
+    recoveryCodes: { type: [{ _id: false, hash: { type: String, required: true }, usedAt: { type: Date, default: null } }], default: undefined },
     passwordHash: {
       type: String,
       default: null,
@@ -232,7 +254,8 @@ const userSchema = new Schema<IUser>(
        * Collapsing the two left declined applicants sitting in the partners
        * table looking exactly like a working partner paused for cause.
        */
-      enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected"],
+      // "Closed" is a partner who closed their own account; the record stays for payouts and tax.
+      enum: ["Active", "Suspended", "Under Review", "Pending", "Rejected", "Closed"],
       default: "Active"
     },
 
@@ -312,7 +335,6 @@ const userSchema = new Schema<IUser>(
       registrationNumber: String,
       foundedDate: Date
     },
-    shipStationWarehouseId: { type: Number, default: null },
     businessAddress: {
       street: String,
       city: String,

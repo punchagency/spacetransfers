@@ -34,10 +34,10 @@ describe("order financials", () => {
   });
 
   it("keeps shipping markup: the label's real cost, else the carrier quote", () => {
-    assert.deepEqual(orderShippingCost(order({ shipStationLabelCost: 6.4, shippingQuote: { carrierCost: 7 } })), { cost: 6.4, source: "label" });
+    assert.deepEqual(orderShippingCost(order({ labelCost: 6.4, shippingQuote: { carrierCost: 7 } })), { cost: 6.4, source: "label" });
     assert.deepEqual(orderShippingCost(order({ shippingQuote: { carrierCost: 7.5 } })), { cost: 7.5, source: "quote" });
     // 28.24 − 1.43 − 6.40 − 12.73 = 7.68: the 2.59 over the label is the business's.
-    assert.equal(computeOrderFinancials(order({ shipStationLabelCost: 6.4 }), RATE).profit, 7.68);
+    assert.equal(computeOrderFinancials(order({ labelCost: 6.4 }), RATE).profit, 7.68);
   });
 
   it("has no profit, rather than a made-up one, when no partner cost can be derived", () => {

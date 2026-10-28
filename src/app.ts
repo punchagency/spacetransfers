@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import path from "path";
 import fs from "fs";
 import sharp from "sharp";
@@ -22,6 +23,29 @@ const app = express();
  * worse than no limiting at all because it looks like it works.
  */
 app.set("trust proxy", 1);
+
+/*
+ * Query strings are read as plain text. The default parser turns
+ * `?status[$ne]=x` into an object, and an object placed in a database filter is
+ * a query operator the caller chose. No client sends nested parameters.
+ */
+app.set("query parser", "simple");
+
+/*
+ * This API returns JSON and files, never pages, so it forbids being framed or
+ * running anything, tells browsers to use https only, and stops naming its
+ * framework. Stored images are loaded by the three apps from their own
+ * addresses, so those stay readable across origins.
+ */
+app.disable("x-powered-by");
+app.use(
+  helmet({
+    contentSecurityPolicy: { useDefaults: false, directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    strictTransportSecurity: { maxAge: 31536000, includeSubDomains: false },
+    referrerPolicy: { policy: "no-referrer" },
+  }),
+);
 
 /**
  * Origins allowed to call this API from a browser.
@@ -48,7 +72,7 @@ app.use(
     origin(origin, callback) {
       /*
        * No Origin header at all: curl, server-to-server calls, and the
-       * ShipStation webhook. CORS is a browser control and does not apply to
+       * EasyPost webhook. CORS is a browser control and does not apply to
        * these — rejecting them here would break the webhook while stopping
        * nothing, since anything that can forge an Origin can also omit it.
        */
@@ -83,6 +107,8 @@ app.use(
 // and found the body already consumed, so every genuine event failed signature
 // verification with a 400 — payout and Connect account updates never landed.
 app.use("/api/payouts/webhook", express.raw({ type: "application/json", limit: STANDARD_BODY_LIMIT }));
+// EasyPost signs the exact bytes too (X-Hmac-Signature), so its webhook is also kept raw.
+app.use("/api/webhooks/easypost", express.raw({ type: () => true, limit: STANDARD_BODY_LIMIT }));
 app.use("/api/customer/assets", express.json({ limit: IMAGE_JSON_LIMIT }));
 app.use(express.json({ limit: STANDARD_BODY_LIMIT }));
 app.use(express.urlencoded({ limit: STANDARD_BODY_LIMIT, extended: true }));

@@ -113,6 +113,7 @@ export const issueForAdmin = (issue: any) => ({
   ...base(issue),
   description: String(issue.description || ""),
   attachments: attachments(issue.attachments),
+  affectedDesigns: affected(issue.affectedDesigns),
   needsAdmin: Boolean(issue.needsAdmin),
   partnerId: issue.partner ? String(issue.partner) : null,
   messages: (issue.messages || []).map(message),
@@ -126,6 +127,7 @@ export const issueForCustomer = (issue: any) => {
     ...base(issue),
     description: String(issue.description || ""),
     attachments: attachments(issue.attachments),
+    affectedDesigns: affected(issue.affectedDesigns),
     unread: Boolean(issue.customerUnread),
     messages: (issue.messages || [])
       .filter((m: any) => m.channel === "CUSTOMER")
@@ -202,3 +204,25 @@ export const partnerIssueFlags = (issues: any[], partnerId: string): Map<string,
   }
   return flags;
 };
+
+/** Designs the customer marked as affected: optional, each one on the order, each once. */
+export const cleanAffectedDesigns = (order: any, value: unknown): { designs: { sheet: number; design: number }[]; error: string | null } => {
+  if (value === undefined || value === null) return { designs: [], error: null };
+  if (!Array.isArray(value) || value.length > 200) return { designs: [], error: "Those designs couldn't be read. Please choose them again." };
+  const items: any[] = Array.isArray(order?.items) ? order.items : [];
+  const seen = new Set<string>();
+  const designs: { sheet: number; design: number }[] = [];
+  for (const entry of value as any[]) {
+    const sheet = Number(entry?.sheet);
+    const design = Number(entry?.design);
+    const exists = Number.isInteger(sheet) && Number.isInteger(design) && Boolean(items[sheet]?.artboardItems?.[design]);
+    if (!exists) return { designs: [], error: "One of the marked designs isn't on this order." };
+    const key = `${sheet}:${design}`;
+    if (!seen.has(key)) designs.push({ sheet, design });
+    seen.add(key);
+  }
+  return { designs, error: null };
+};
+
+const affected = (value: any) =>
+  Array.isArray(value) ? value.map((d: any) => ({ sheet: Number(d.sheet), design: Number(d.design) })) : [];

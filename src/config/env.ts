@@ -21,17 +21,6 @@ interface Env {
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
   minimumPayoutAmountCents: number;
-  // ShipStation
-  /**
-   * Whether this environment may buy real postage.
-   *
-   * ShipStation has no sandbox: a label is a real purchase against the client's
-   * card, and there is no undo. Staging runs with this false so it can quote
-   * rates and create orders but never spend.
-   *
-   * Defaults to false — an environment that forgets to set it fails safe rather
-   * than silently spending.
-   */
   /**
    * Cloudflare R2 — where artwork lives once the client has provisioned it.
    *
@@ -44,23 +33,41 @@ interface Env {
   r2SecretAccessKey?: string;
   r2Bucket?: string;
   r2PublicBaseUrl?: string;
-  shipStationLabelsEnabled: boolean;
-  shipStationApiKey?: string;
-  shipStationApiSecret?: string;
-  shipStationCarrierId?: string;   // e.g. "stamps_com" | "ups" | "fedex"
-  shipStationServiceCode?: string; // e.g. "usps_priority_mail" | "ups_ground"
-  shipStationWebhookSecret?: string; // token appended as ?token= to the webhook URL
-  shipStationPollIntervalMs: number;
-  shipStationMaxPollingDays: number;
-  // Warehouse ID from ShipStation → Settings → Warehouses (numeric ID in the page URL).
-  shipStationWarehouseId?: number;
-  // Ship-from address (the print shop). If omitted, ShipStation uses the default warehouse.
-  shipStationFromName?: string;
-  shipStationFromStreet?: string;
-  shipStationFromCity?: string;
-  shipStationFromState?: string;
-  shipStationFromPostalCode?: string;
-  shipStationFromCountry?: string;
+  // EasyPost: shipping rates, labels and tracking
+  /**
+   * Whether this environment may buy postage.
+   *
+   * With a test API key a label is a free test label; with a production key it
+   * is real postage on the client's account. Staging that holds a production
+   * key leaves this off, so it can quote rates but never spend. Defaults to
+   * false, so an environment that forgets to set it fails safe.
+   */
+  easyPostLabelsEnabled: boolean;
+  easyPostApiKey?: string;
+  /** Signs EasyPost's webhook events; checked against `X-Hmac-Signature`. */
+  easyPostWebhookSecret?: string;
+  /** Carriers to quote and buy from, e.g. ["USPS"]. Empty: every carrier on the account. */
+  easyPostCarriers: string[];
+  /** EasyPost carrier account ids to restrict to. Empty: all of them. */
+  easyPostCarrierAccounts: string[];
+  /** How often shipped orders are checked for delivery, as a backup to webhooks. */
+  trackingPollIntervalMs: number;
+  /** Shipped orders older than this are no longer checked. */
+  trackingMaxPollingDays: number;
+  /** How many print-size exports may render at once; each can need about 2 GB. */
+  exportRenderConcurrency: number;
+  /** Days a print export or preview is kept on disk; it is made again on request. */
+  exportRetentionDays: number;
+  /** Where shipping quotes start when no partner serves the address. Never a label's return address. */
+  shipFrom: {
+    name?: string;
+    street?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    country?: string;
+    phone?: string;
+  };
   /** Effort level for the copyright vision pass. Higher = more accurate, slower, costlier. */
   /**
    * Google Gemini — the primary (and free) generative editing tier. An AI
@@ -78,6 +85,10 @@ const cleanEnvString = (value?: string): string | undefined => {
   if (value == null) return undefined;
   return value.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
 };
+
+/** A comma-separated setting as a list, blanks dropped. */
+const listEnv = (value?: string): string[] =>
+  (cleanEnvString(value) || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const cleanJwtExpiresIn = (value?: string): string => {
   const cleaned = (cleanEnvString(value) || "7d").replace(/\s+/g, "");
@@ -111,25 +122,27 @@ export const env: Env = {
   minimumPayoutAmountCents: process.env.MINIMUM_PAYOUT_AMOUNT_CENTS
     ? Number(process.env.MINIMUM_PAYOUT_AMOUNT_CENTS)
     : 1000,
-  // ShipStation
   r2AccountId: cleanEnvString(process.env.R2_ACCOUNT_ID),
   r2AccessKeyId: cleanEnvString(process.env.R2_ACCESS_KEY_ID),
   r2SecretAccessKey: cleanEnvString(process.env.R2_SECRET_ACCESS_KEY),
   r2Bucket: cleanEnvString(process.env.R2_BUCKET),
   r2PublicBaseUrl: cleanEnvString(process.env.R2_PUBLIC_BASE_URL),
-  shipStationLabelsEnabled:
-    String(cleanEnvString(process.env.SHIPSTATION_LABELS_ENABLED) ?? "").toLowerCase() === "true",
-  shipStationApiKey: cleanEnvString(process.env.SHIPSTATION_API_KEY),
-  shipStationApiSecret: cleanEnvString(process.env.SHIPSTATION_API_SECRET),
-  shipStationCarrierId: cleanEnvString(process.env.SHIPSTATION_CARRIER_ID),
-  shipStationServiceCode: cleanEnvString(process.env.SHIPSTATION_SERVICE_CODE),
-  shipStationWebhookSecret: cleanEnvString(process.env.SHIPSTATION_WEBHOOK_SECRET),
-  shipStationPollIntervalMs: process.env.SHIPSTATION_POLL_INTERVAL_MS
-    ? Number(process.env.SHIPSTATION_POLL_INTERVAL_MS)
-    : 30 * 60 * 1000, // 30 minutes
-  shipStationMaxPollingDays: process.env.SHIPSTATION_MAX_POLLING_DAYS
-    ? Number(process.env.SHIPSTATION_MAX_POLLING_DAYS)
+  easyPostLabelsEnabled:
+    String(cleanEnvString(process.env.EASYPOST_LABELS_ENABLED) ?? "").toLowerCase() === "true",
+  easyPostApiKey: cleanEnvString(process.env.EASYPOST_API_KEY),
+  easyPostWebhookSecret: cleanEnvString(process.env.EASYPOST_WEBHOOK_SECRET),
+  easyPostCarriers: listEnv(process.env.EASYPOST_CARRIERS),
+  easyPostCarrierAccounts: listEnv(process.env.EASYPOST_CARRIER_ACCOUNTS),
+  trackingPollIntervalMs: Number(process.env.TRACKING_POLL_INTERVAL_MS) > 0
+    ? Number(process.env.TRACKING_POLL_INTERVAL_MS)
+    : 30 * 60 * 1000,
+  trackingMaxPollingDays: Number(process.env.TRACKING_MAX_POLLING_DAYS) > 0
+    ? Number(process.env.TRACKING_MAX_POLLING_DAYS)
     : 30,
+  exportRenderConcurrency: Number.isInteger(Number(process.env.EXPORT_RENDER_CONCURRENCY)) && Number(process.env.EXPORT_RENDER_CONCURRENCY) > 0
+    ? Number(process.env.EXPORT_RENDER_CONCURRENCY)
+    : 3,
+  exportRetentionDays: Number(process.env.EXPORT_RETENTION_DAYS) > 0 ? Number(process.env.EXPORT_RETENTION_DAYS) : 14,
   // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
   // shows on the key page, and copying it verbatim should just work.
   geminiApiKey:
@@ -137,13 +150,43 @@ export const env: Env = {
     cleanEnvString(process.env.GOOGLE_AI_API_KEY),
   geminiImageModel: cleanEnvString(process.env.GEMINI_IMAGE_MODEL),
   geminiTextModel: cleanEnvString(process.env.GEMINI_TEXT_MODEL),
-  shipStationWarehouseId: process.env.SHIPSTATION_WAREHOUSE_ID
-    ? Number(process.env.SHIPSTATION_WAREHOUSE_ID)
-    : undefined,
-  shipStationFromName: cleanEnvString(process.env.SHIPSTATION_FROM_NAME),
-  shipStationFromStreet: cleanEnvString(process.env.SHIPSTATION_FROM_STREET),
-  shipStationFromCity: cleanEnvString(process.env.SHIPSTATION_FROM_CITY),
-  shipStationFromState: cleanEnvString(process.env.SHIPSTATION_FROM_STATE),
-  shipStationFromPostalCode: cleanEnvString(process.env.SHIPSTATION_FROM_POSTAL_CODE),
-  shipStationFromCountry: cleanEnvString(process.env.SHIPSTATION_FROM_COUNTRY),
+  shipFrom: {
+    name: cleanEnvString(process.env.SHIP_FROM_NAME),
+    street: cleanEnvString(process.env.SHIP_FROM_STREET),
+    city: cleanEnvString(process.env.SHIP_FROM_CITY),
+    state: cleanEnvString(process.env.SHIP_FROM_STATE),
+    zip: cleanEnvString(process.env.SHIP_FROM_ZIP),
+    country: cleanEnvString(process.env.SHIP_FROM_COUNTRY),
+    phone: cleanEnvString(process.env.SHIP_FROM_PHONE),
+  },
 };
+
+/**
+ * Refuses to start with a session secret anyone could guess.
+ *
+ * A missing JWT_SECRET used to fall back to a published default without a
+ * word, which let anyone sign themselves an admin session. Only a developer's
+ * own machine and the test suite may run on the default.
+ */
+const WEAK_SECRETS = new Set(["", "change-me", "changeme", "secret"]);
+const localOnly = env.nodeEnv === "development" || env.nodeEnv === "test";
+const publiclyServed = [env.appUrl, env.printerAppUrl, env.adminAppUrl].some((u) => /^https:\/\//i.test(u));
+if ((!localOnly || publiclyServed) && (WEAK_SECRETS.has(env.jwtSecret) || env.jwtSecret.length < 32)) {
+  throw new Error("JWT_SECRET must be set to a random value of at least 32 characters. The server will not start without it.");
+}
+
+/**
+ * Whether forgot-password hands the reset token back in its response, so the
+ * flow can be exercised without a mailbox. It is account takeover for anyone
+ * who can call the endpoint, so it has to be asked for by name and is never
+ * honoured on a deployment served over https.
+ */
+export const exposeResetTokens =
+  localOnly && !publiclyServed && String(cleanEnvString(process.env.EXPOSE_RESET_TOKENS) ?? "").toLowerCase() === "true";
+
+/**
+ * Whether an admin must have a passkey before the console will serve them.
+ * On unless switched off by name, which is for a developer's machine only.
+ */
+export const adminPasskeyRequired =
+  String(cleanEnvString(process.env.ADMIN_PASSKEY_REQUIRED) ?? "true").toLowerCase() !== "false" || (!localOnly || publiclyServed);

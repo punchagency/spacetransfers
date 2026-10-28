@@ -8,6 +8,7 @@ import { isStoredArtworkUrl, storeArtwork } from "../../services/storage.service
 import {
   ISSUE_ATTACHMENT_FOLDER,
   ISSUE_TYPE_LABELS,
+  cleanAffectedDesigns,
   cleanIssueAttachments,
   cleanIssueText,
   issueForCustomer,
@@ -17,6 +18,8 @@ import {
 import { notifyAllAdmins } from "../../services/adminNotifications.service.js";
 import { sendIssueReceivedEmail } from "../../services/orderEmails.service.js";
 import { CustomError } from "./shared.js";
+import { describeOrderDesigns } from "../../services/sheetDesigns.service.js";
+import { resolveApiFile } from "../../utils/publicApiBase.js";
 
 const fail = (message: string, statusCode: number) => Object.assign(new Error(message) as CustomError, { statusCode });
 
@@ -70,6 +73,8 @@ export const reportOrderIssue = async (req: Request, res: Response, next: NextFu
     if (error) throw fail(error, 400);
     const photos = cleanIssueAttachments(req.body?.attachments, isStoredArtworkUrl);
     if (photos.error) throw fail(photos.error, 400);
+    const marked = cleanAffectedDesigns(order, req.body?.affectedDesigns);
+    if (marked.error) throw fail(marked.error, 400);
     const refusal = issueReportError(order, type, description);
     if (refusal) throw fail(refusal, 400);
 
@@ -85,6 +90,7 @@ export const reportOrderIssue = async (req: Request, res: Response, next: NextFu
       type,
       description,
       attachments: photos.attachments.length ? photos.attachments : undefined,
+      affectedDesigns: marked.designs.length ? marked.designs : undefined,
       status: "OPEN",
       needsAdmin: true,
       messages: [],
@@ -97,7 +103,8 @@ export const reportOrderIssue = async (req: Request, res: Response, next: NextFu
       title: `Problem reported on ${displayId}`,
       message:
         `${name}: ${ISSUE_TYPE_LABELS[type]}${description ? ` — ${description.slice(0, 140)}` : ""}` +
-        (photos.attachments.length ? ` (${photos.attachments.length} photo${photos.attachments.length === 1 ? "" : "s"})` : ""),
+        (photos.attachments.length ? ` (${photos.attachments.length} photo${photos.attachments.length === 1 ? "" : "s"})` : "") +
+        (marked.designs.length ? ` (${marked.designs.length} design${marked.designs.length === 1 ? "" : "s"} marked)` : ""),
       meta: { orderId: String(order._id), issueId: String(issue._id) },
     }).catch(() => {});
     void sendIssueReceivedEmail(order, ISSUE_TYPE_LABELS[type], description);
@@ -158,6 +165,16 @@ export const replyToOrderIssue = async (req: Request, res: Response, next: NextF
     }).catch(() => {});
 
     res.json({ issue: issueForCustomer(issue.toObject()) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** The designs on the order's sheets, drawn where they print, for marking the affected ones. */
+export const getOrderDesigns = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const order = await ownOrder(req);
+    res.json({ sheets: await describeOrderDesigns(order, (v) => resolveApiFile(req, v)) });
   } catch (error) {
     next(error);
   }

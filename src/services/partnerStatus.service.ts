@@ -19,7 +19,7 @@ import { env } from "../config/env.js";
  * affects, because there is nowhere else to put the transition.
  */
 
-export type PartnerStatus = "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected";
+export type PartnerStatus = "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected" | "Closed";
 
 interface Actor {
   id?: string | null;
@@ -92,6 +92,17 @@ const MESSAGES: Record<PartnerStatus, StatusMessage> = {
       <p style="margin:0 0 12px 0;">Hello ${name},</p>
       <p style="margin:0 0 12px 0;">Your partner account is currently under review. You can still sign in, and we will be in touch shortly.</p>
       ${reasonBlock(reason)}
+    `,
+  },
+  Closed: {
+    subject: "Your Space Transfers partner account is closed",
+    notifyPartner: true,
+    adminTitle: "Partner closed their account",
+    body: (name) => `
+      <p style="margin:0 0 12px 0;">Hello ${name},</p>
+      <p style="margin:0 0 12px 0;">Your print partner account is closed, as you asked. You won't receive any more jobs, and you can no longer sign in.</p>
+      <p style="margin:0 0 12px 0;">We keep the records of the jobs you completed and the payouts you received, because we are required to for accounting and tax.</p>
+      <p style="margin:0;font-size:12px;color:#6b7280;">If you'd like to work with us again, sign up with this email address and we'll review your application. If you didn't close your account, reply to this email straight away.</p>
     `,
   },
   Pending: {
