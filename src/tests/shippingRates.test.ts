@@ -9,7 +9,7 @@ import { applyMarkup } from "../services/shipping.service.js";
 import { normalizeGlobalPricing, totalBillableSqFt } from "../services/pricing.service.js";
 
 /**
- * Every ShipStation order used to be declared as 1lb / 12x10x2in, whatever it
+ * Every shipment used to be declared as 1lb / 12x10x2in, whatever it
  * actually was. Rating against that produces a confident number for a parcel
  * that does not exist, and carriers re-bill the difference on the label.
  */

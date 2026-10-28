@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { isLiveSession, signJwt, signSessionToken, verifyJwt } from "../utils/jwt.js";
 import { isDownloadRequest } from "../middleware/auth.js";
 import { fetchStoredArtwork, isStoredArtworkUrl } from "../services/storage.service.js";
-import { isShipStationUrl } from "../services/shipstation.service.js";
+import { verifyWebhookSignature } from "../services/easypost.service.js";
+import { createHmac } from "node:crypto";
 import { loginUser } from "../services/auth.service.js";
 import { buildBatchedAdminEmailHtml } from "../services/adminNotifications.service.js";
 import { buildNotificationEmailHtml } from "../services/printerNotifications.service.js";
@@ -72,11 +73,17 @@ describe("addresses the server will fetch", () => {
     }
   });
 
-  it("send ShipStation credentials only to ShipStation over https", () => {
-    assert.equal(isShipStationUrl("https://ssapi.shipstation.com/shipments?batchId=1"), true);
-    for (const url of ["http://ssapi.shipstation.com/x", "https://ssapi.shipstation.com.evil.example/x", "https://evil.example/?ssapi.shipstation.com", "nonsense"]) {
-      assert.equal(isShipStationUrl(url), false, url);
-    }
+  it("accept a shipping webhook only when EasyPost signed those exact bytes", () => {
+    const body = Buffer.from('{"description":"tracker.updated","result":{"object":"Tracker","status":"delivered"}}');
+    const sign = (secret: string, bytes: Buffer) => "hmac-sha256-hex=" + createHmac("sha256", Buffer.from(secret.normalize("NFKD"), "utf8")).update(bytes).digest("hex");
+    assert.equal(verifyWebhookSignature(body, sign("s3cret", body), "s3cret"), true);
+    assert.equal(verifyWebhookSignature(body, sign("other", body), "s3cret"), false, "another secret");
+    assert.equal(verifyWebhookSignature(Buffer.from(body.toString().replace("delivered", "in_transit")), sign("s3cret", body), "s3cret"), false, "a changed body");
+    assert.equal(verifyWebhookSignature(body, sign("s3cret", body).replace("hmac-sha256-hex=", ""), "s3cret"), false, "no prefix");
+    for (const header of [undefined, "", 42]) assert.equal(verifyWebhookSignature(body, header, "s3cret"), false, String(header));
+    assert.equal(verifyWebhookSignature(body, sign("s3cret", body), undefined), false, "no secret configured");
+    // The secret is normalised, as EasyPost does: a composed and a decomposed é sign alike.
+    assert.equal(verifyWebhookSignature(body, sign("caf\u00e9", body), "cafe\u0301"), true);
   });
 });
 

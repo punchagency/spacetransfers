@@ -83,6 +83,8 @@ export interface IOrder extends Document {
     detectedRegion?: string;
     coordinates?: { lat: number; lng: number };
     geocoded?: boolean;
+    /** The carrier's check at checkout; see addressCheck.service. */
+    check?: { status: "verified" | "differs" | "not_found" | "unchecked"; suggestion?: string; reason?: string };
   };
   shippingMethod: string;
   payment: {
@@ -116,6 +118,8 @@ export interface IOrder extends Document {
     chargedCost?: number;
     serviceName?: string;
     serviceCode?: string;
+    /** The carrier the quoted service belongs to, e.g. "USPS". */
+    carrier?: string;
     source?: "carrier" | "fallback";
     fallbackReason?: string;
     originPostalCode?: string;
@@ -158,14 +162,27 @@ export interface IOrder extends Document {
   };
   cancelledByPrinterId?: mongoose.Types.ObjectId;
   cancelledByPrinterName?: string;
-  // ShipStation fulfillment
-  shipStationOrderId?: string;
-  shipStationShipmentId?: string;
-  shipStationLabelUrl?: string;
-  /** What the purchased label cost, as ShipStation charged it. */
-  shipStationLabelCost?: number;
-  shipStationTriggeredAt?: Date | null;
-  shipStationError?: string | null;
+  // The shipping label, bought through EasyPost when the partner marks the job ready.
+  labelUrl?: string | null;
+  /** What the label cost, as EasyPost charged it: shipping's real cost to the business. */
+  labelCost?: number | null;
+  /** The carrier service the label was bought for, e.g. "Priority". */
+  labelService?: string | null;
+  /** Set while a label is being made, so two requests can't buy two. */
+  labelRequestedAt?: Date | null;
+  labelPurchasedAt?: Date | null;
+  /** Why the last attempt failed; cleared when a label is made. */
+  labelError?: string | null;
+  easyPostShipmentId?: string | null;
+  easyPostTrackerId?: string | null;
+  /** The carrier's latest word on the parcel, from EasyPost tracking. */
+  trackingStatus?: string | null;
+  trackingStatusDetail?: string | null;
+  estimatedDeliveryAt?: Date | null;
+  /** When the carrier's word above was given, so an older event can't overwrite a newer one. */
+  trackingUpdatedAt?: Date | null;
+  /** An unused label sent back for a refund, when the order was cancelled or moved. */
+  labelRefund?: { status: string; requestedAt: Date; shipmentId: string } | null;
   priority: "NORMAL" | "URGENT";
   notes?: string;
   specs?: {
@@ -307,7 +324,12 @@ const orderSchema = new Schema<IOrder>(
         lat: { type: Number },
         lng: { type: Number }
       },
-      geocoded: { type: Boolean, default: false }
+      geocoded: { type: Boolean, default: false },
+      check: {
+        status: { type: String, enum: ["verified", "differs", "not_found", "unchecked"] },
+        suggestion: { type: String },
+        reason: { type: String },
+      }
     },
     shippingMethod: {
       type: String,
@@ -370,6 +392,7 @@ const orderSchema = new Schema<IOrder>(
       chargedCost: { type: Number },
       serviceName: { type: String },
       serviceCode: { type: String },
+      carrier: { type: String },
       source: { type: String, enum: ["carrier", "fallback"] },
       fallbackReason: { type: String },
       originPostalCode: { type: String },
@@ -429,13 +452,22 @@ const orderSchema = new Schema<IOrder>(
     },
     cancelledByPrinterId: { type: Schema.Types.ObjectId, ref: "User", default: null },
     cancelledByPrinterName: { type: String, default: null },
-    shipStationOrderId: { type: String, default: null },
-    shipStationShipmentId: { type: String, default: null },
-    shipStationLabelUrl: { type: String, default: null },
-    // The label's real cost — shipping's actual cost to the business.
-    shipStationLabelCost: { type: Number, default: null },
-    shipStationTriggeredAt: { type: Date, default: null },
-    shipStationError: { type: String, default: null },
+    labelUrl: { type: String, default: null },
+    labelCost: { type: Number, default: null },
+    labelService: { type: String, default: null },
+    labelRequestedAt: { type: Date, default: null },
+    labelPurchasedAt: { type: Date, default: null },
+    labelError: { type: String, default: null },
+    easyPostShipmentId: { type: String, default: null },
+    easyPostTrackerId: { type: String, default: null },
+    trackingStatus: { type: String, default: null },
+    trackingStatusDetail: { type: String, default: null },
+    estimatedDeliveryAt: { type: Date, default: null },
+    trackingUpdatedAt: { type: Date, default: null },
+    labelRefund: {
+      type: { _id: false, status: String, requestedAt: Date, shipmentId: String },
+      default: undefined,
+    },
     priority: {
       type: String,
       enum: ["NORMAL", "URGENT"],
@@ -560,6 +592,10 @@ orderSchema.index({ updatedAt: -1, _id: -1 });
  */
 orderSchema.index({ assignedPrinter: 1, updatedAt: -1, _id: -1 });
 orderSchema.index({ createdAt: -1 });
+// Tracking updates find their order by tracker, or by tracking number for a
+// label EasyPost didn't make. Partial, because both default to null.
+orderSchema.index({ easyPostTrackerId: 1 }, { partialFilterExpression: { easyPostTrackerId: { $type: "string" } } });
+orderSchema.index({ trackingNumber: 1 }, { partialFilterExpression: { trackingNumber: { $type: "string" } } });
 orderSchema.index({ status: 1, createdAt: -1 });
 
 /**

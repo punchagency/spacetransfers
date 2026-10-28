@@ -12,7 +12,9 @@ export const initMonitoring = async () => {
     const Sentry = await import("@sentry/node");
     Sentry.init({
       dsn,
-      environment: process.env.NODE_ENV || "development",
+      // SENTRY_ENVIRONMENT tells the demo's reports from production's, which
+      // both run with NODE_ENV=production.
+      environment: String(process.env.SENTRY_ENVIRONMENT || "").trim() || process.env.NODE_ENV || "development",
       sendDefaultPii: false,
       beforeSend: (event) => {
         if (event.request) {

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { assertOrderRequest, buildOrderItem } from "../../services/orderCreation.service.js";
 import { resolveApiFile } from "../../utils/publicApiBase.js";
 import { verifyCardPayment } from "../../services/paymentVerification.service.js";
+import { orderAddressCheck } from "../../services/addressCheck.service.js";
 import { User } from "../../models/user.model.js";
 import { isValidPhone } from "../../utils/accountFields.js";
 import { Order } from "../../models/order.model.js";
@@ -28,6 +29,7 @@ import { assertPersistable } from "../../utils/documentSize.js";
 import { notifyAllAdmins } from "../../services/adminNotifications.service.js";
 import { CustomError } from "./shared.js";
 import { customerCancellation, requestCancellation, withdrawCancellation } from "../../services/cancellationRequest.service.js";
+import { TRACKING_STATUS_LABELS } from "../../services/easypost.service.js";
 
 export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
   /**
@@ -86,6 +88,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       totalSqFt: totalBillableSqFt(items, globalPricing),
       method: normalizeShippingMethod(shippingMethod),
       destination: {
+        street: shippingAddress?.street ? String(shippingAddress.street) : undefined,
         state: String(shippingAddress?.state || ""),
         postalCode: String(shippingAddress?.postalCode || ""),
         country: String(shippingAddress?.country || "US"),
@@ -154,7 +157,15 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       // false-positive region matches with West-region printers.
       detectedRegion: stateBasedRegion ?? undefined,
       coordinates: stateCoord ? { lat: stateCoord.lat, lng: stateCoord.lon } : undefined,
-      geocoded: false
+      geocoded: false,
+      // What checkout's carrier check said about this exact address; set here,
+      // after the request's own fields, so a client can't vouch for itself.
+      check: orderAddressCheck({
+        street: String(shippingAddress?.street || ""),
+        city: String(shippingAddress?.city || ""),
+        state: String(shippingAddress?.state || ""),
+        postalCode: String(shippingAddress?.postalCode || ""),
+      }),
     };
 
     const verifiedPayment = await verifyCardPayment({
@@ -193,6 +204,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
         chargedCost: shippingQuote.cost,
         serviceName: shippingQuote.serviceName ?? undefined,
         serviceCode: shippingQuote.serviceCode ?? undefined,
+        carrier: shippingQuote.carrier ?? undefined,
         source: shippingQuote.source,
         fallbackReason: shippingQuote.fallbackReason,
         originPostalCode: shippingQuote.originPostalCode ?? undefined,
@@ -278,6 +290,19 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       message: `${String(customer.firstName)} ${String(customer.lastName)} • $${recordedPricing.total.toFixed(2)}`,
       meta: { orderId: order.id, status: "PENDING" }
     }).catch(() => {});
+
+    // The customer chose to ship somewhere the carrier didn't confirm: someone
+    // should look before a partner buys the label.
+    const addressCheck = enrichedShippingAddress.check;
+    if (addressCheck.status === "differs" || addressCheck.status === "not_found") {
+      notifyAllAdmins({
+        category: "orders",
+        priority: "high",
+        title: "Address not confirmed by the carrier",
+        message: `${order.displayId}: the customer kept an address the carrier ${addressCheck.status === "differs" ? "corrected" : "couldn't find"}. Check it before the label is bought.`,
+        meta: { orderId: order.id, status: "PENDING" }
+      }).catch(() => {});
+    }
 
     /**
      * Auto-assignment runs after the response.
@@ -482,6 +507,10 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
       shippingMethod: (order as any).shippingMethod === "express" ? "express" : "standard",
       trackingNumber: order.trackingNumber || null,
       carrier: (order as any).carrier || null,
+      /** The carrier's public tracking page, and its latest word on the parcel. */
+      trackingUrl: (order as any).trackingUrl || null,
+      trackingStatus: (order as any).trackingStatus ? TRACKING_STATUS_LABELS[(order as any).trackingStatus] || null : null,
+      estimatedDeliveryAt: (order as any).estimatedDeliveryAt || null,
       refundNote: orderRefundNote(order),
       reprintOf: (order as any).reprintOf?.displayId || null,
       cancellation: customerCancellation(order),

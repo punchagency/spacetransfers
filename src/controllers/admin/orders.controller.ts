@@ -31,6 +31,8 @@ import {
 import { exportGangsheetPng24, orderSheetWidthIn } from "../../services/gangsheetExport.service.js";
 import { computeAssignmentDeadlineFor } from "../../utils/assignmentDeadline.js";
 import { CustomError } from "./shared.js";
+import { voidUnusedLabel } from "../../services/shippingLabel.service.js";
+import { TRACKING_STATUS_LABELS } from "../../services/easypost.service.js";
 
 export const listOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -333,6 +335,10 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
       }
     }
 
+    // A label bought from the previous partner's address goes back for a refund;
+    // the new partner makes their own.
+    const labelToVoid = isReassignment && ((order as any).labelUrl || (order as any).easyPostShipmentId) ? order.toObject() : null;
+
     order.assignedPrinter = partnerId;
     // (Re)start the 24h fulfilment clock from this assignment moment. A no-op
     // re-assign to the printer who already holds the order keeps its existing
@@ -385,6 +391,12 @@ export const assignOrder = async (req: Request, res: Response, next: NextFunctio
     } as any);
 
     await order.save();
+    if (labelToVoid) {
+      void voidUnusedLabel(labelToVoid, "the job was reassigned", {
+        clear: true,
+        note: "This job was reassigned to you, so the previous label was cancelled. Create a new one from your address.",
+      });
+    }
 
     // Reconcile capacity: the newly-assigned partner may now be at their max
     // (auto-pause), and on a reassignment the previous partner frees a slot
@@ -579,7 +591,8 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
         state: order.shippingAddress?.state || "N/A",
         postalCode: order.shippingAddress?.postalCode || "N/A",
         country: order.shippingAddress?.country || "N/A",
-        region: resolveOrderRegion(order, oneUserRegionMap)
+        region: resolveOrderRegion(order, oneUserRegionMap),
+        check: order.shippingAddress?.check?.status ? order.shippingAddress.check : null
       },
 
       items: formattedItems,
@@ -645,7 +658,6 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
 
       regionInfo: resolveRegionInfo(order, oneUserRegionMap),
 
-      // A free replacement names the order it replaces, and that order names it back.
       cancellationRequest: (order as any).cancellationRequest && (order as any).cancellationRequest.status !== "WITHDRAWN"
         ? {
             status: String((order as any).cancellationRequest.status),
@@ -656,6 +668,21 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
             declineReason: (order as any).cancellationRequest.declineReason || null,
           }
         : null,
+      /** The label and where the parcel is, once one has been bought. */
+      shipment: (order as any).labelUrl || (order as any).trackingNumber || (order as any).labelError || (order as any).labelRefund
+        ? {
+            carrier: (order as any).carrier || null,
+            service: (order as any).labelService || null,
+            trackingNumber: (order as any).trackingNumber || null,
+            trackingUrl: (order as any).trackingUrl || null,
+            trackingStatus: (order as any).trackingStatus ? TRACKING_STATUS_LABELS[(order as any).trackingStatus] || (order as any).trackingStatus : null,
+            estimatedDeliveryAt: (order as any).estimatedDeliveryAt || null,
+            labelUrl: (order as any).labelUrl || null,
+            labelError: (order as any).labelError || null,
+            labelRefund: (order as any).labelRefund?.status ? { status: String((order as any).labelRefund.status), requestedAt: (order as any).labelRefund.requestedAt } : null,
+          }
+        : null,
+      // A free replacement names the order it replaces, and that order names it back.
       reprintOf: (order as any).reprintOf?.orderId
         ? { orderId: String((order as any).reprintOf.orderId), displayId: String((order as any).reprintOf.displayId || "") }
         : null,
@@ -949,6 +976,7 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
       }).catch(() => {});
     }
     publishOrderEvent(orderId, "order.status.changed", { orderId, status: "CANCELLED", updatedAt: new Date() });
+    void voidUnusedLabel(order, "the order was cancelled");
     const mail = await sendOrderCancelledEmail(order, result.refundAmount, reason);
 
     res.json({

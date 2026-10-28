@@ -7,6 +7,7 @@ import { notifyAllAdmins } from "./adminNotifications.service.js";
 import { publishOrderEvent } from "./orderSyncHub.js";
 import { syncPartnerCapacitySafe } from "./partnerCapacity.service.js";
 import { sendCancellationDeclinedEmail, sendOrderCancelledEmail } from "./orderEmails.service.js";
+import { voidUnusedLabel } from "./shippingLabel.service.js";
 
 /**
  * A customer cancelling their own order.
@@ -233,6 +234,7 @@ export const respondToCancellation = async (orderId: string, printerId: string, 
       throw err;
     }
     syncPartnerCapacitySafe(printerId);
+    void voidUnusedLabel(order, "the order was cancelled");
     publishOrderEvent(orderId, "order.status.changed", { orderId, status: "CANCELLED", updatedAt: new Date() });
     notifyAllAdmins({
       category: "orders",

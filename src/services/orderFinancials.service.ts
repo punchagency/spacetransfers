@@ -36,7 +36,7 @@ export interface OrderFinancials {
 }
 
 export const orderShippingCost = (order: any): { cost: number; source: ShippingCostSource } => {
-  const label = num(order?.shipStationLabelCost);
+  const label = num(order?.labelCost);
   if (label !== null && label > 0) return { cost: round2(label), source: "label" };
   const quote = num(order?.shippingQuote?.carrierCost);
   if (quote !== null && quote > 0) return { cost: round2(quote), source: "quote" };

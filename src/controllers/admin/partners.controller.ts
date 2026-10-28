@@ -164,8 +164,8 @@ export const createPartner = async (req: Request, res: Response, next: NextFunct
      *
      *  - `predictShippingOrigin` needs a postcode, so rates for their region
      *    fall back to the configured warehouse instead of shipping from them.
-     *  - `createShipStationLabel` uses `businessAddress` as the ship-from, so
-     *    their labels declare the wrong origin.
+     *  - labels ship from `businessAddress` (`shipFromFor`), so without it
+     *    no label can be made for their jobs.
      *  - candidate ranking sorts nearest-first on a state centroid; with no
      *    state the distance is Infinity, so they are always chosen last within
      *    their own region.

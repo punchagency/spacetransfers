@@ -39,7 +39,8 @@ import {
 } from "../controllers/customer/index.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
 import { upload, uploadPhoto } from "../middleware/upload.js";
-import { accountCloseLimiter, aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
+import { accountCloseLimiter, addressCheckLimiter, aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
+import { checkShippingAddress } from "../controllers/customer/address.controller.js";
 
 const router = express.Router();
 
@@ -92,6 +93,7 @@ router.patch("/designs/:designId", updateDesign);
 router.delete("/designs/:designId", deleteDesign);
 router.post("/designs/:designId/duplicate", duplicateDesign);
 router.post("/cart/quote", getCartQuote);
+router.post("/addresses/check", addressCheckLimiter, checkShippingAddress);
 router.post("/notifications/gangsheet-utilization-warning", sendGangsheetUtilizationWarning);
 router.post("/payments/stripe/create-intent", createStripePaymentIntent);
 

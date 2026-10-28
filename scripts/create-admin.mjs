@@ -33,7 +33,8 @@ import bcrypt from "bcryptjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// Load .env manually, matching the other scripts in this folder.
+// Load .env manually, matching the other scripts in this folder. A deployment
+// sets its variables in the environment and has no .env, which is fine.
 const envPath = join(__dir, "../.env");
 let env = {};
 try {
@@ -42,13 +43,12 @@ try {
     if (m) env[m[1]] = m[2].trim();
   }
 } catch {
-  console.error(`Could not read ${envPath}`);
-  process.exit(1);
+  // No .env: the environment is all there is.
 }
 
 const MONGO_URI = process.env.MONGO_URI || env.MONGO_URI;
 if (!MONGO_URI) {
-  console.error("MONGO_URI is not set (checked the environment and .env).");
+  console.error(`MONGO_URI is not set (checked the environment and ${envPath}).`);
   process.exit(1);
 }
 
@@ -125,6 +125,7 @@ const run = async () => {
     `\n✓ Admin created\n\n` +
       `  Name      ${name}\n` +
       `  Email     ${normalisedEmail}\n` +
+      `  Database  ${mongoose.connection.host}/${mongoose.connection.name}\n` +
       `  Password  ${password}\n\n` +
       `  At first sign-in they set up a passkey, and keep the recovery codes it shows.\n` +
       (providedPassword

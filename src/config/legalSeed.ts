@@ -186,7 +186,7 @@ We share personal information only as needed for the purposes above:
 
 - Our print partners, who receive your name, contact details, shipping address and the artwork for the orders they print.
 - Stripe, which processes payments and refunds and pays our print partners.
-- Our technology providers, which host our database (MongoDB), store files (Cloudflare), send email (Resend) and buy shipping labels and track parcels (ShipStation or EasyPost).
+- Our technology providers, which host our database (MongoDB), store files (Cloudflare), send email (Resend) and buy shipping labels and track parcels (EasyPost).
 - Google, when you sign in with Google, and when you use AI edits: the image and instruction for each AI edit are sent to Google to produce the result.
 - Address and location services we use to work out the region of an address (the US Census Bureau) and the approximate location of a sign-in (ipwho.is).
 - Authorities or others where the law requires it, or to protect our rights and the safety of others.

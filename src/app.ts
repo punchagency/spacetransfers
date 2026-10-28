@@ -72,7 +72,7 @@ app.use(
     origin(origin, callback) {
       /*
        * No Origin header at all: curl, server-to-server calls, and the
-       * ShipStation webhook. CORS is a browser control and does not apply to
+       * EasyPost webhook. CORS is a browser control and does not apply to
        * these — rejecting them here would break the webhook while stopping
        * nothing, since anything that can forge an Origin can also omit it.
        */
@@ -107,6 +107,8 @@ app.use(
 // and found the body already consumed, so every genuine event failed signature
 // verification with a 400 — payout and Connect account updates never landed.
 app.use("/api/payouts/webhook", express.raw({ type: "application/json", limit: STANDARD_BODY_LIMIT }));
+// EasyPost signs the exact bytes too (X-Hmac-Signature), so its webhook is also kept raw.
+app.use("/api/webhooks/easypost", express.raw({ type: () => true, limit: STANDARD_BODY_LIMIT }));
 app.use("/api/customer/assets", express.json({ limit: IMAGE_JSON_LIMIT }));
 app.use(express.json({ limit: STANDARD_BODY_LIMIT }));
 app.use(express.urlencoded({ limit: STANDARD_BODY_LIMIT, extended: true }));

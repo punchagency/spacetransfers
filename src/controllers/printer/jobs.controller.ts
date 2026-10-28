@@ -23,7 +23,7 @@ import { GANGSHEET_PRINT_DPI } from "../../services/gangsheetExport.service.js";
 import { getOrderPartnerCostBreakdown, canDerivePartnerEarning, isPartnerEarningRealized } from "../../services/partnerEarnings.service.js";
 import { autoAssignOrder } from "../../services/orderAssignment.service.js";
 import { syncPartnerCapacitySafe, getAssignmentSettings, ACTIVE_ORDER_STATUSES } from "../../services/partnerCapacity.service.js";
-import { triggerShipStationWorkflow } from "../../services/shipstation.service.js";
+import { isLabelInProgress, requestShippingLabel, voidUnusedLabel } from "../../services/shippingLabel.service.js";
 import { CustomError, isObjectIdString, splitAssetRefs } from "./shared.js";
 import { cancellationBlocksPartner, respondToCancellation } from "../../services/cancellationRequest.service.js";
 
@@ -508,16 +508,16 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
         currency,
       },
       warnings: { hasWarning },
-      // Shipping & ShipStation fields — needed by the printer app to show tracking info
-      // and to determine whether ShipStation is still processing.
+      // The shipping label and tracking, and whether a label is still being made.
       trackingNumber: (job as any).trackingNumber || null,
       carrier: (job as any).carrier || null,
+      labelService: (job as any).labelService || null,
       trackingUrl: (job as any).trackingUrl || null,
-      shipStationTriggeredAt: (job as any).shipStationTriggeredAt
-        ? new Date((job as any).shipStationTriggeredAt).toISOString()
-        : null,
-      shipStationLabelUrl: (job as any).shipStationLabelUrl || null,
-      shipStationError: (job as any).shipStationError || null,
+      trackingStatus: (job as any).trackingStatus || null,
+      // Only while it is live: an attempt that was cut off shows as nothing, so the partner can ask again.
+      labelRequestedAt: isLabelInProgress((job as any).labelRequestedAt) ? new Date((job as any).labelRequestedAt).toISOString() : null,
+      labelUrl: (job as any).labelUrl || null,
+      labelError: (job as any).labelError || null,
       recentExports: exports.map((e: any) => ({
         id: String(e._id),
         fileName: e.fileName,
@@ -642,7 +642,7 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     const current = String((job as any).status || "").toUpperCase();
     const next = normalized;
 
-    const refusal = (next !== current && cancellationBlocksPartner(job)) || partnerTransitionError(current, next, Boolean((job as any).shipStationLabelUrl));
+    const refusal = (next !== current && cancellationBlocksPartner(job)) || partnerTransitionError(current, next, Boolean((job as any).labelUrl));
     if (refusal) {
       const error = new Error(refusal) as CustomError;
       error.statusCode = 409;
@@ -673,14 +673,11 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     // Reconcile capacity — a move to SHIPPED/COMPLETED/CANCELLED frees a slot.
     syncPartnerCapacitySafe(String(printerId));
 
-    // When the printer marks a job "Ready for Packaging" (QUALITY_CHECK), fire the
-    // ShipStation workflow async: create a shipping order, generate a label, retrieve
-    // the tracking number, and auto-advance the job to SHIPPED.
+    // "Ready to ship" buys the shipping label, in the background; the partner's
+    // page shows it when it's ready. Choosing it again retries a failed label.
     if (next === "QUALITY_CHECK") {
-      triggerShipStationWorkflow(String(job._id)).catch((err: any) => {
-        console.error(
-          `[SS] Fire-and-forget workflow error for order ${job._id}: ${err?.message}`
-        );
+      requestShippingLabel(String(job._id)).catch((err: any) => {
+        console.error(`[LABEL] order ${job._id}: ${err?.message}`);
       });
     }
 
@@ -750,7 +747,7 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
     const job = await Order.findOne({
       _id: new mongoose.Types.ObjectId(id),
       assignedPrinter: new mongoose.Types.ObjectId(String(printerId)),
-    }).select("status displayId statusTimeline assignmentHistory customer cancellationRequest");
+    }).select("status displayId statusTimeline assignmentHistory customer cancellationRequest labelUrl easyPostShipmentId");
 
     if (!job) {
       const error = new Error("Order not found or not assigned to this printer") as CustomError;
@@ -766,6 +763,11 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
     }
     if (current === "COMPLETED") {
       const error = new Error("Cannot cancel a completed order") as CustomError;
+      error.statusCode = 409;
+      throw error;
+    }
+    if (current === "SHIPPED") {
+      const error = new Error("This job has shipped, so it can't be handed back.") as CustomError;
       error.statusCode = 409;
       throw error;
     }
@@ -837,6 +839,11 @@ export const cancelPrinterOrder = async (req: Request, res: Response, next: Next
       `[REASSIGN] Printer "${printerName}" released order ${id} (${displayId}) → PENDING, assignedPrinter cleared` +
         (cancelReason ? ` — reason: ${cancelReason}` : "")
     );
+
+    // A label bought for this partner's address is no use to the next one.
+    if ((job as any).labelUrl || (job as any).easyPostShipmentId) {
+      void voidUnusedLabel(job.toObject(), "the partner handed the job back", { clear: true });
+    }
 
     // Releasing the job frees one of the cancelling printer's slots — auto-reopen
     // them if they were paused because they were at capacity.

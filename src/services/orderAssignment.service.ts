@@ -556,6 +556,9 @@ export interface PredictedOrigin {
   postalCode: string;
   state: string;
   city: string;
+  /** The rest of the address, which EasyPost rates against. */
+  street: string;
+  country: string;
   region: string;
   printerName: string;
   /** True when no printer serves the customer's own region and a fallback was used. */
@@ -580,7 +583,7 @@ export interface PredictedOrigin {
  * assigned.
  *
  * Shipping rates were quoted from a single fixed origin in the environment
- * (`SHIPSTATION_FROM_*`, an Austin postcode) while the label ships from the
+ * (a fixed postcode in the environment) while the label ships from the
  * assigned partner's own address. Quote and label therefore described different
  * journeys — and the error was systematic, not random: assignment matches
  * partners to the customer's region, so real shipments are short local hops
@@ -610,8 +613,8 @@ export const predictShippingOrigin = async (
   const customerCoord = getLatLngFromState(customerState);
   const origins = (printers as any[])
     .map((p) => {
-      // businessAddress first — it is what `createShipStationLabel` uses as the
-      // ship-from, so the quote and the label agree on the origin.
+      // businessAddress first — it is what the label is bought from (`shipFromFor`),
+      // so the quote and the label agree on the origin.
       const addr = p.businessAddress?.postalCode ? p.businessAddress : p.defaultShippingAddress;
       const coord = originCoordinates(addr);
       return {
@@ -636,6 +639,8 @@ export const predictShippingOrigin = async (
         postalCode: String(addr.postalCode),
         state: String(addr.state || ""),
         city: String(addr.city || ""),
+        street: String(addr.street || ""),
+        country: String(addr.country || "US"),
         region,
         printerName: String(p.companyName || p.name || "Print Partner"),
         isFallbackRegion: region !== customerRegion,

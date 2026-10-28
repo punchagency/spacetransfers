@@ -66,7 +66,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
     }
 
     const partner = await User.findOne({ _id: partnerIdString, role: UserRoles.PRINTER })
-      .select("settings shipStationWarehouseId")
+      .select("settings")
       .lean();
 
     if (!partner) {
@@ -82,9 +82,6 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
       // jobCapacity document came back without it and the toggle defaulted
       // blind.
       jobCapacity: settings.jobCapacity || { maxConcurrent: 0, dailyMax: 0, autoAccept: true },
-      // Lives on the user, not in settings — it identifies this partner inside
-      // the client's ShipStation account rather than configuring the platform.
-      shipStationWarehouseId: (partner as any).shipStationWarehouseId ?? null,
     });
   } catch (error) {
     next(error);
@@ -94,7 +91,7 @@ export const getPartnerSettings = async (req: Request, res: Response, next: Next
 export const updatePartnerSettings = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { partnerId } = req.params;
-    const { jobCapacity, shipStationWarehouseId } = req.body;
+    const { jobCapacity } = req.body;
 
     const partnerIdString = Array.isArray(partnerId) ? partnerId[0] : partnerId as string;
     if (!/^[0-9a-fA-F]{24}$/.test(partnerIdString) || !mongoose.Types.ObjectId.isValid(partnerIdString)) {
@@ -113,23 +110,6 @@ export const updatePartnerSettings = async (req: Request, res: Response, next: N
        * saved anything: it moved, reported success, and reverted on reload.
        */
       if (jobCapacity.autoAccept !== undefined) updateData["settings.jobCapacity.autoAccept"] = jobCapacity.autoAccept;
-    }
-
-    if (shipStationWarehouseId !== undefined) {
-      const raw = shipStationWarehouseId;
-      if (raw === null || raw === "") {
-        updateData["shipStationWarehouseId"] = null;
-      } else {
-        const n = Number(raw);
-        if (!Number.isInteger(n) || n <= 0) {
-          const error = new Error(
-            "ShipStation warehouse ID must be a positive whole number — it is the number in the warehouse's URL",
-          ) as CustomError;
-          error.statusCode = 400;
-          throw error;
-        }
-        updateData["shipStationWarehouseId"] = n;
-      }
     }
 
     const partner = await User.findOneAndUpdate(

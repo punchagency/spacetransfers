@@ -1,4 +1,5 @@
 import http from "http";
+import mongoose from "mongoose";
 import app from "./app.js";
 import { connectToDatabase } from "./config/db.js";
 import { env } from "./config/env.js";
@@ -29,6 +30,26 @@ const start = async (): Promise<void> => {
     console.log(`space-transfer-server listening on port ${env.port}`);
   });
 
+  // A deploy stops the old process with SIGTERM, which Node ignores unless it
+  // is handled; the host would then wait out its timeout and kill the process
+  // mid-request. Requests in progress finish here. Open event streams never end
+  // by themselves, so the process exits after 10s regardless.
+  let stopping = false;
+  const stop = (signal: string) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`[SHUTDOWN] ${signal}: finishing open requests`);
+    setTimeout(() => process.exit(0), 10_000).unref();
+    server.close(() => {
+      mongoose.connection
+        .close()
+        .catch(() => {})
+        .finally(() => process.exit(0));
+    });
+  };
+  process.on("SIGTERM", () => stop("SIGTERM"));
+  process.on("SIGINT", () => stop("SIGINT"));
+
   const tryConnect = async () => {
     try {
       await connectToDatabase();
@@ -52,7 +73,7 @@ const start = async (): Promise<void> => {
     // Start Friday payout scheduler (TEST MODE ONLY)
     scheduleFridayPayouts();
 
-    // Start ShipStation tracking poller (SHIPPED → COMPLETED on delivery confirmation)
+    // Checks parcels with the carrier, as a backup to EasyPost's tracking webhooks.
     startTrackingPoller();
 
     // Start the SLA monitor. It reads its settings on every pass and does

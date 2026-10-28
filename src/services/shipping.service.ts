@@ -1,8 +1,5 @@
-import {
-  getShipStationRates,
-  isShipStationConfigured,
-  type CarrierRate,
-} from "./shipstation.service.js";
+import { env } from "../config/env.js";
+import { getRates, isEasyPostConfigured, selectService, type ShipAddress } from "./easypost.service.js";
 import { deriveParcel, type PackagingProfile } from "./packaging.service.js";
 
 /**
@@ -34,12 +31,17 @@ export interface ShippingQuote {
   carrierCost: number | null;
   serviceName: string | null;
   serviceCode: string | null;
+  /** The carrier of the quoted service, e.g. "USPS". */
+  carrier: string | null;
+  /** The parcel the rate was asked for, so the label can be bought for the same one. */
+  parcel: { weightLb: number; lengthIn: number; widthIn: number; heightIn: number } | null;
   /** How this number was arrived at — surfaced so a fallback is never silent. */
   source: "carrier" | "fallback";
   fallbackReason?: string;
 }
 
 export interface ShippingDestination {
+  street?: string;
   state: string;
   postalCode: string;
   country: string;
@@ -48,24 +50,6 @@ export interface ShippingDestination {
 }
 
 const roundToTwo = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
-
-/**
- * "standard" is the cheapest service the carrier offers; "express" the
- * cheapest that is meaningfully faster.
- *
- * Chosen by cost rather than by a hard-coded service code because which
- * services exist depends on the ShipStation account and the destination.
- */
-const selectService = (rates: CarrierRate[], method: "standard" | "express"): CarrierRate | null => {
-  if (rates.length === 0) return null;
-  // getShipStationRates sorts ascending by cost.
-  if (method === "standard") return rates[0];
-
-  const expedited = rates.filter((r) => /express|priority|overnight|2.?day|next.?day/i.test(r.serviceName));
-  // If nothing advertises itself as expedited, the dearest service is the best
-  // available proxy — never the cheapest, which is what "standard" already is.
-  return expedited[0] ?? rates[rates.length - 1] ?? null;
-};
 
 export const applyMarkup = (carrierCost: number, markupPct: ShippingMarkupPct): number =>
   roundToTwo(carrierCost * (1 + markupPct / 100));
@@ -84,7 +68,7 @@ export const quoteShipping = async (params: {
   packaging: PackagingProfile;
   markupPct: ShippingMarkupPct;
   /** The likely ship-from, from `predictShippingOrigin`. */
-  origin?: { postalCode: string; region: string } | null;
+  origin?: { postalCode: string; region: string; street?: string; city?: string; state?: string; country?: string; name?: string } | null;
   fallbackRates: { standard: number; express: number };
 }): Promise<ShippingQuote> => {
   const { method, destination, fallbackRates } = params;
@@ -96,6 +80,8 @@ export const quoteShipping = async (params: {
       carrierCost: null,
       serviceName: null,
       serviceCode: null,
+      carrier: null,
+      parcel: null,
       originPostalCode: params.origin?.postalCode ?? null,
       originPartnerRegion: params.origin?.region ?? null,
       source: "fallback",
@@ -103,22 +89,41 @@ export const quoteShipping = async (params: {
     };
   };
 
-  if (!isShipStationConfigured()) return fallback("ShipStation is not configured");
+  if (!isEasyPostConfigured()) return fallback("EasyPost is not configured");
   if (!destination?.postalCode || !destination?.country) {
     return fallback("no destination address yet");
   }
 
+  // Rated from the partner who will most likely ship it; the configured address when none is known.
+  const from: ShipAddress | null = params.origin?.postalCode
+    ? {
+        name: params.origin.name,
+        street1: params.origin.street,
+        city: params.origin.city,
+        state: params.origin.state,
+        zip: params.origin.postalCode,
+        country: params.origin.country || "US",
+      }
+    : env.shipFrom.zip
+      ? { name: env.shipFrom.name, street1: env.shipFrom.street, city: env.shipFrom.city, state: env.shipFrom.state, zip: env.shipFrom.zip, country: env.shipFrom.country || "US" }
+      : null;
+  if (!from) return fallback("no ship-from address is known for this region");
+
   const parcel = deriveParcel(params.totalSqFt, params.packaging);
 
   try {
-    const rates = await getShipStationRates({
-      toState: destination.state,
-      toPostalCode: destination.postalCode,
-      toCountry: destination.country,
-      toCity: destination.city,
-      residential: destination.residential,
+    const rates = await getRates({
+      from,
+      to: {
+        street1: destination.street,
+        city: destination.city,
+        state: destination.state,
+        zip: destination.postalCode,
+        country: destination.country,
+        // Residential addresses carry a surcharge; assume so unless told otherwise.
+        residential: destination.residential !== false,
+      },
       parcel,
-      fromPostalCode: params.origin?.postalCode,
     });
 
     const chosen = selectService(rates, method);
@@ -129,7 +134,9 @@ export const quoteShipping = async (params: {
       carrierCost: roundToTwo(chosen.costUsd),
       serviceName: chosen.serviceName,
       serviceCode: chosen.serviceCode,
-      originPostalCode: params.origin?.postalCode ?? null,
+      carrier: chosen.carrier,
+      parcel: { weightLb: parcel.weightLb, lengthIn: parcel.lengthIn, widthIn: parcel.widthIn, heightIn: parcel.heightIn },
+      originPostalCode: params.origin?.postalCode ?? from.zip ?? null,
       originPartnerRegion: params.origin?.region ?? null,
       source: "carrier",
     };

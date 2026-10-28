@@ -108,6 +108,17 @@ export const assetLimiter = rateLimit({
   message: { message: "You're uploading faster than we can keep up with. Please wait a few minutes and try again." },
 });
 
+/** Each address check is a request to the carrier, which may bill for it. */
+export const addressCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 40,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many address checks. Please wait a few minutes and try again." },
+});
+
 /** AI edits spend a paid allowance, so they belong to an account and are counted per account. */
 export const aiEditLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

@@ -1,285 +1,85 @@
 import { Request, Response, NextFunction } from "express";
-import mongoose from "mongoose";
-// Node's crypto, not the WebCrypto global — only the former has timingSafeEqual.
-import { timingSafeEqual } from "node:crypto";
 import { env } from "../config/env.js";
 import { Order } from "../models/order.model.js";
-import { ssRequestByUrl, isShipStationConfigured } from "../services/shipstation.service.js";
-import { publishOrderEvent } from "../services/orderSyncHub.js";
-import { notifyAllAdmins } from "../services/adminNotifications.service.js";
-import { closeRequestOnShipment } from "../services/cancellationRequest.service.js";
+import { verifyWebhookSignature } from "../services/easypost.service.js";
+import { applyTrackerUpdate } from "../services/shippingLabel.service.js";
 
-// ── ShipStation webhook payload ───────────────────────────────────────────────
-//
-// ShipStation POSTs a thin envelope:
-//   { resource_url: "https://ssapi.shipstation.com/...", resource_type: "SHIP_NOTIFY" }
-//
-// We respond 200 immediately, then fetch the resource_url in the background so
-// ShipStation doesn't time out waiting for us.
-//
-// Supported event types:
-//   SHIP_NOTIFY   — a shipment / label was created in ShipStation
-//   ORDER_NOTIFY  — an order status changed inside ShipStation
-//
-// Security: caller must supply ?token=<SHIPSTATION_WEBHOOK_SECRET> in the URL.
-// Register the webhook in ShipStation → Settings → Webhooks as:
-//   https://yourserver.com/api/webhooks/shipstation?token=<SHIPSTATION_WEBHOOK_SECRET>
+/**
+ * EasyPost's webhook: tracking updates for parcels, and the outcome of label
+ * refunds.
+ *
+ * Every event is signed: `X-Hmac-Signature` must match the raw body under
+ * `EASYPOST_WEBHOOK_SECRET` (see `verifyWebhookSignature`), so the body is
+ * received unparsed (`app.ts`). EasyPost waits seven seconds for an answer and
+ * retries otherwise, so the event is acknowledged first and handled after.
+ */
 
-interface SSWebhookBody {
-  resource_url?: string;
-  resource_type?: string;
-}
+const ORDER_FIELDS = "_id displayId status trackingNumber carrier easyPostTrackerId trackingUrl trackingStatus assignedPrinter labelRefund easyPostShipmentId";
 
-interface SSShipmentPayload {
-  shipments?: Array<{
-    shipmentId?: number;
-    orderId?: number;
-    orderNumber?: string;
-    trackingNumber?: string;
-    carrierCode?: string;
-    serviceCode?: string;
-    shipDate?: string;
-    voided?: boolean;
-  }>;
-}
-
-interface SSOrderPayload {
-  orders?: Array<{
-    orderId?: number;
-    orderNumber?: string;
-    orderStatus?: string;
-    trackingNumber?: string;
-    carrierCode?: string;
-  }>;
-}
-
-async function handleShipNotify(resourceUrl: string): Promise<void> {
-  const payload = await ssRequestByUrl<SSShipmentPayload>(resourceUrl);
-  const shipments = Array.isArray(payload?.shipments) ? payload.shipments : [];
-
-  for (const shipment of shipments) {
-    if (shipment.voided) continue;
-
-    const orderNumber = String(shipment.orderNumber || "");
-    const trackingNumber = String(shipment.trackingNumber || "").trim();
-    const carrier = String(shipment.carrierCode || "").trim();
-    const shipStationShipmentId = String(shipment.shipmentId ?? "");
-    const shipStationOrderId = String(shipment.orderId ?? "");
-
-    if (!orderNumber && !shipStationOrderId) continue;
-
-    // Find our order by displayId (ShipStation orderNumber = our displayId) or SS order ID.
-    const query: any = { $or: [] };
-    if (orderNumber) query.$or.push({ displayId: orderNumber });
-    if (shipStationOrderId) query.$or.push({ shipStationOrderId });
-    if (query.$or.length === 0) continue;
-
-    const order = await Order.findOne(query).lean();
-    if (!order) {
-      console.log(`[SS Webhook] SHIP_NOTIFY — no matching order for orderNumber=${orderNumber}`);
-      continue;
-    }
-
-    const orderId = String((order as any)._id);
-    const displayId = String((order as any).displayId || orderId);
-    const currentStatus = String((order as any).status || "");
-
-    // If already SHIPPED or further along (COMPLETED, CANCELLED), just store new tracking
-    // fields without overwriting the status.
-    const alreadyShipped = ["SHIPPED", "COMPLETED"].includes(currentStatus.toUpperCase());
-
-    const now = new Date();
-    const updateFields: any = { updatedAt: now };
-    if (trackingNumber && !(order as any).trackingNumber) updateFields.trackingNumber = trackingNumber;
-    if (carrier && !(order as any).carrier) updateFields.carrier = carrier;
-    if (shipStationShipmentId && !(order as any).shipStationShipmentId)
-      updateFields.shipStationShipmentId = shipStationShipmentId;
-    if (shipStationOrderId && !(order as any).shipStationOrderId)
-      updateFields.shipStationOrderId = shipStationOrderId;
-
-    if (!alreadyShipped) {
-      updateFields.status = "SHIPPED";
-      updateFields.shipStationTriggeredAt = updateFields.shipStationTriggeredAt ?? now;
-    }
-
-    const timelineEntry = {
-      status: alreadyShipped ? currentStatus : "SHIPPED",
-      time: now,
-      message: `ShipStation SHIP_NOTIFY received. Carrier: ${carrier || "unknown"}, Tracking: ${trackingNumber || "unknown"}.`,
-      actorRole: "SYSTEM",
-      actorId: "SHIPSTATION_WEBHOOK",
-      actorName: "ShipStation",
-    };
-
-    await Order.updateOne(
-      { _id: new mongoose.Types.ObjectId(orderId) },
-      { $set: updateFields, $push: { statusTimeline: timelineEntry } }
-    );
-    if (!alreadyShipped) await closeRequestOnShipment(orderId).catch(() => {});
-
-    if (!alreadyShipped) {
-      publishOrderEvent(orderId, "order.status.changed", {
-        orderId,
-        status: "SHIPPED",
-        from: currentStatus,
-        to: "SHIPPED",
-        trackingNumber,
-        carrier,
-        updatedAt: now,
-        lastTimelineEntry: timelineEntry,
-      });
-
-      notifyAllAdmins({
-        category: "orders",
-        priority: "medium",
-        title: "Order shipped (ShipStation webhook)",
-        message: `Order #${displayId} confirmed shipped. Carrier: ${carrier}, Tracking: ${trackingNumber}.`,
-        meta: { orderId, displayId, trackingNumber, carrier },
-      }).catch(() => {});
-    }
-
-    console.log(
-      `[SS Webhook] SHIP_NOTIFY processed — order ${orderId} (${displayId}), ` +
-      `tracking: ${trackingNumber}, carrier: ${carrier}, statusUpdated: ${!alreadyShipped}`
-    );
+/** The order a tracker belongs to: by tracker id, or by tracking number for one made elsewhere. */
+const orderForTracker = async (tracker: any) => {
+  if (tracker?.id) {
+    const byTracker = await Order.findOne({ easyPostTrackerId: String(tracker.id) }).select(ORDER_FIELDS).lean();
+    if (byTracker) return byTracker;
   }
-}
-
-async function handleOrderNotify(resourceUrl: string): Promise<void> {
-  const payload = await ssRequestByUrl<SSOrderPayload>(resourceUrl);
-  const orders = Array.isArray(payload?.orders) ? payload.orders : [];
-
-  for (const ssOrder of orders) {
-    const orderNumber = String(ssOrder.orderNumber || "");
-    const ssStatus = String(ssOrder.orderStatus || "").toLowerCase();
-    const trackingNumber = String(ssOrder.trackingNumber || "").trim();
-    const carrier = String(ssOrder.carrierCode || "").trim();
-
-    if (!orderNumber) continue;
-
-    const order = await Order.findOne({ displayId: orderNumber }).lean();
-    if (!order) continue;
-
-    const orderId = String((order as any)._id);
-    const displayId = String((order as any).displayId || orderId);
-
-    // Map ShipStation status → our status.
-    // Only act on shipped/delivered transitions — we manage other statuses internally.
-    const statusMap: Record<string, string> = {
-      shipped: "SHIPPED",
-      delivered: "COMPLETED",
-    };
-    const nextStatus = statusMap[ssStatus];
-    if (!nextStatus) continue;
-
-    const currentStatus = String((order as any).status || "").toUpperCase();
-    if (currentStatus === nextStatus || currentStatus === "COMPLETED") continue;
-
-    const now = new Date();
-    const timelineEntry = {
-      status: nextStatus,
-      time: now,
-      message: `ShipStation ORDER_NOTIFY: status changed to ${ssStatus}.${trackingNumber ? ` Tracking: ${trackingNumber}` : ""}`,
-      actorRole: "SYSTEM",
-      actorId: "SHIPSTATION_WEBHOOK",
-      actorName: "ShipStation",
-    };
-
-    const updateFields: any = { status: nextStatus, updatedAt: now };
-    if (trackingNumber) updateFields.trackingNumber = trackingNumber;
-    if (carrier) updateFields.carrier = carrier;
-
-    await Order.updateOne(
-      { _id: new mongoose.Types.ObjectId(orderId), status: (order as any).status },
-      { $set: updateFields, $push: { statusTimeline: timelineEntry } }
-    );
-    await closeRequestOnShipment(orderId).catch(() => {});
-
-    publishOrderEvent(orderId, "order.status.changed", {
-      orderId,
-      status: nextStatus,
-      from: currentStatus,
-      to: nextStatus,
-      trackingNumber: trackingNumber || (order as any).trackingNumber,
-      carrier: carrier || (order as any).carrier,
-      updatedAt: now,
-      lastTimelineEntry: timelineEntry,
-    });
-
-    notifyAllAdmins({
-      category: "orders",
-      priority: nextStatus === "COMPLETED" ? "medium" : "low",
-      title: nextStatus === "COMPLETED" ? "Order delivered" : "Order status updated",
-      message:
-        nextStatus === "COMPLETED"
-          ? `Order #${displayId} delivered — confirmed by ShipStation.`
-          : `Order #${displayId} → ${nextStatus} (ShipStation webhook).`,
-      meta: { orderId, displayId, trackingNumber, status: nextStatus },
-    }).catch(() => {});
-
-    console.log(`[SS Webhook] ORDER_NOTIFY processed — order ${orderId} → ${nextStatus}`);
+  if (tracker?.tracking_code) {
+    return Order.findOne({ trackingNumber: String(tracker.tracking_code), status: { $nin: ["CANCELLED"] } })
+      .sort({ createdAt: -1 })
+      .select(ORDER_FIELDS)
+      .lean();
   }
-}
+  return null;
+};
 
-export const shipStationWebhook = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+export const handleEasyPostEvent = async (event: any): Promise<void> => {
+  const result = event?.result;
+  const description = String(event?.description || "");
+  if (result?.object === "Tracker" && description.startsWith("tracker.")) {
+    const order = await orderForTracker(result);
+    if (order) await applyTrackerUpdate(order, result, "webhook");
+    return;
+  }
+  // A refund's progress on a label sent back, as a Shipment or as a Refund: kept on the order it belonged to.
+  const refunded =
+    result?.object === "Shipment" && result?.id && result?.refund_status
+      ? { shipmentId: String(result.id), status: String(result.refund_status) }
+      : result?.object === "Refund" && result?.shipment_id && result?.status
+        ? { shipmentId: String(result.shipment_id), status: String(result.status) }
+        : null;
+  if (refunded) {
+    await Order.updateOne({ "labelRefund.shipmentId": refunded.shipmentId }, { $set: { "labelRefund.status": refunded.status } });
+  }
+};
+
+export const easyPostWebhook = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const secret = env.shipStationWebhookSecret;
+    const secret = env.easyPostWebhookSecret;
     if (!secret) {
-      console.error(
-        "[SHIPSTATION_WEBHOOK] refused: SHIPSTATION_WEBHOOK_SECRET is not set, so callers cannot be verified",
-      );
+      console.error("[EASYPOST_WEBHOOK] refused: EASYPOST_WEBHOOK_SECRET is not set, so events can't be verified");
       res.status(503).end();
       return;
     }
-
-    const provided = String(req.query.token || "");
-    /*
-     * Length-independent comparison. `!==` on strings returns as soon as two
-     * characters differ, and the timing of that is measurable over enough
-     * requests — the token is a fixed secret, which is exactly the shape that
-     * can be recovered a character at a time.
-     */
-    const providedBuf = Buffer.from(provided);
-    const secretBuf = Buffer.from(secret);
-    const tokenMatches =
-      providedBuf.length === secretBuf.length && timingSafeEqual(providedBuf, secretBuf);
-
-    if (!tokenMatches) {
+    const raw = req.body;
+    if (!Buffer.isBuffer(raw)) {
+      res.status(400).end();
+      return;
+    }
+    if (!verifyWebhookSignature(raw, req.get("x-hmac-signature"), secret)) {
       res.status(401).end();
       return;
     }
-
-    const { resource_url, resource_type } = (req.body || {}) as SSWebhookBody;
-
-    if (!resource_url || !resource_type) {
-      // Malformed — respond 200 so ShipStation doesn't retry endlessly.
+    let event: any;
+    try {
+      event = JSON.parse(raw.toString("utf8"));
+    } catch {
+      // Signed but unreadable: acknowledged, so it isn't retried forever.
       res.status(200).end();
       return;
     }
-
-    // Respond to ShipStation immediately so it doesn't time out.
     res.status(200).end();
-
-    if (!isShipStationConfigured()) return;
-
-    // Process in the background — don't let errors propagate to the already-sent response.
-    (async () => {
-      try {
-        if (resource_type === "SHIP_NOTIFY") {
-          await handleShipNotify(resource_url);
-        } else if (resource_type === "ORDER_NOTIFY") {
-          await handleOrderNotify(resource_url);
-        } else {
-          console.log(`[SS Webhook] Unhandled resource_type: ${resource_type}`);
-        }
-      } catch (err: any) {
-        console.error(`[SS Webhook] Background processing failed (${resource_type}): ${err?.message}`);
-      }
-    })();
+    handleEasyPostEvent(event).catch((err: any) =>
+      console.error(`[EASYPOST_WEBHOOK] ${event?.description || "event"} ${event?.id || ""} failed: ${err?.message}`),
+    );
   } catch (error) {
     next(error);
   }
