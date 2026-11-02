@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gray-on-color",
+        "value": "*",
+        "files": [
+          "src/components/settings/CloseAccountSection.tsx"
+        ],
+        "createdAt": "2026-10-19T13:03:40.777Z",
+        "reason": "Claude: gray text only applies to the disabled state, which also resets the red hover tint to transparent on a white card"
+      }
+    ]
+  }
+}
