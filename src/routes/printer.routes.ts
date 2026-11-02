@@ -42,6 +42,7 @@ import {
 } from "../controllers/printer/index.js";
 import { upload } from "../middleware/upload.js";
 import { accountCloseLimiter } from "../middleware/rateLimit.js";
+import { reportRightsConcern } from "../controllers/printer/rights.controller.js";
 
 const router = express.Router();
 
@@ -58,6 +59,7 @@ router.get("/account/close", getAccountClosure);
 router.post("/account/close", accountCloseLimiter, closeAccount);
 router.get("/jobs/:jobId", getJobDetails);
 router.get("/jobs/:jobId/overview", getPrinterJobOverview);
+router.post("/jobs/:jobId/rights-concern", reportRightsConcern);
 router.get("/jobs/:jobId/assets", getJobAssets);
 router.get("/jobs/:jobId/gangsheet/preview", getJobGangsheetPreview);
 router.post("/jobs/:jobId/assets/bundle", createJobAssetBundle);

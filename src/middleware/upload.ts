@@ -64,3 +64,16 @@ export const uploadPhoto = multer({
   },
   limits: { fileSize: 15 * 1024 * 1024, files: 1 },
 });
+
+/** Proof of rights sent with a dispute: a licence is often a PDF, or a photo of one. */
+export const uploadEvidence = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    if (PHOTO_TYPES.has(file.mimetype) || file.mimetype === "application/pdf") return cb(null, true);
+    const error = new Error(`“${file.originalname}” can't be attached. Please add a PDF, JPG or PNG.`) as Error & { statusCode?: number };
+    error.statusCode = 400;
+    cb(error);
+  },
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+});
+

@@ -30,19 +30,19 @@ export const LEGAL_DOCUMENTS = {
   terms: {
     id: "terms",
     title: "Terms of Service",
-    version: "2026-07-28",
+    version: "2026-10-29",
     url: "/legal/terms",
   },
   privacy: {
     id: "privacy",
     title: "Privacy Policy",
-    version: "2026-07-28",
+    version: "2026-10-29",
     url: "/legal/privacy",
   },
   contentPolicy: {
     id: "content-policy",
     title: "Content & Intellectual Property Policy",
-    version: "2026-07-28",
+    version: "2026-10-29",
     url: "/legal/content-policy",
   },
 } as const satisfies Record<string, LegalDocument>;
@@ -62,6 +62,15 @@ export interface LegalAcceptanceInput {
   termsVersion?: unknown;
   privacyVersion?: unknown;
   contentPolicyVersion?: unknown;
+  /** When the person reached the end of each document in the sign-up reader, as ISO times. */
+  readAt?: unknown;
+}
+
+/** When each document was read to the end before accepting. */
+export interface LegalReadRecord {
+  terms: Date;
+  privacy: Date;
+  contentPolicy: Date;
 }
 
 /** What gets persisted on the user. */
@@ -71,6 +80,7 @@ export interface LegalAcceptanceRecord {
   termsVersion: string;
   privacyVersion: string;
   contentPolicyVersion: string;
+  readAt: LegalReadRecord;
   acceptedAt: Date;
   /** Recorded where legally permitted; omitted when unavailable. */
   ip?: string;
@@ -82,6 +92,31 @@ const badRequest = (message: string, code: string) => {
   error.statusCode = 400;
   error.code = code;
   return error;
+};
+
+/** How long a reading stays good for a sign-up, and how far a browser clock may run ahead. */
+const READ_VALID_MS = 24 * 60 * 60 * 1000;
+const CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * The sign-up forms only let a box be ticked once each document it covers has
+ * been scrolled to the end, and send when that happened. A sign-up without
+ * those times, or with times that can't be real, didn't come through that
+ * reader, so it is refused rather than recorded as read.
+ */
+const readTimes = (value: unknown, now = Date.now()): LegalReadRecord => {
+  const at = (key: keyof LegalReadRecord) => {
+    const raw = value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
+    const time = typeof raw === "string" ? Date.parse(raw) : NaN;
+    if (!Number.isFinite(time) || time > now + CLOCK_SKEW_MS || time < now - READ_VALID_MS) {
+      throw badRequest(
+        "Please open each agreement and read it to the end before creating an account.",
+        "LEGAL_NOT_READ",
+      );
+    }
+    return new Date(Math.min(time, now));
+  };
+  return { terms: at("terms"), privacy: at("privacy"), contentPolicy: at("contentPolicy") };
 };
 
 /**
@@ -137,12 +172,15 @@ export const buildLegalAcceptance = (
     }
   }
 
+  const readAt = readTimes(input.readAt);
+
   return {
     termsAccepted: true,
     contentResponsibilityAccepted: true,
     termsVersion: current.terms,
     privacyVersion: current.privacy,
     contentPolicyVersion: current.contentPolicy,
+    readAt,
     acceptedAt: new Date(),
     // Both are recorded for audit. Where a jurisdiction forbids storing the IP,
     // drop it at the controller rather than here so the shape stays uniform.

@@ -37,8 +37,8 @@ describe("buildEditRequest", () => {
   it("appends the per-intent guard and negative guidance", () => {
     const built = buildEditRequest("remove-object", "Remove the coffee cup");
     assert.match(built.instruction, /reconstruct what would be behind it/i);
-    // flux-kontext exposes no negative_prompt, so the avoid list has to travel
-    // inside the instruction text or it is silently lost.
+    // Gemini takes one instruction, so the avoid list has to travel inside it
+    // or it is silently lost.
     assert.match(built.instruction, /Avoid all of the following:/);
     assert.match(built.instruction, /ghosting of the removed object/i);
   });
@@ -69,22 +69,9 @@ describe("buildEditRequest", () => {
     assert.deepEqual(untuned.slice().sort(), expectedUntuned.slice().sort());
   });
 
-  it("only sends optional inputs the model actually declares", () => {
-    // A strict model API rejects the whole request if it receives a field
-    // the model doesn't declare, so a seed must not be sent blindly.
-    const built = buildEditRequest("remove-object", "Remove the cup", 1234);
-    assert.equal(built.extraInput.seed, 1234);
-    assert.equal(built.extraInput.negative_prompt, undefined);
-  });
-
-  it("truncates a fractional seed rather than passing it through", () => {
-    const built = buildEditRequest("remove-object", "Remove the cup", 42.9);
-    assert.equal(built.extraInput.seed, 42);
-  });
-
-  it("omits the seed entirely when none is given", () => {
+  it("builds the instruction alone: nothing model-specific travels beside it", () => {
     const built = buildEditRequest("remove-object", "Remove the cup");
-    assert.equal("seed" in built.extraInput, false);
+    assert.deepEqual(Object.keys(built), ["instruction"]);
   });
 });
 

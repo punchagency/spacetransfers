@@ -25,6 +25,7 @@ import { autoAssignOrder } from "../../services/orderAssignment.service.js";
 import { syncPartnerCapacitySafe, getAssignmentSettings, ACTIVE_ORDER_STATUSES } from "../../services/partnerCapacity.service.js";
 import { isLabelInProgress, requestShippingLabel, voidUnusedLabel } from "../../services/shippingLabel.service.js";
 import { CustomError, isObjectIdString, splitAssetRefs } from "./shared.js";
+import { recheckOrderRights } from "../../services/rights/screening.service.js";
 import { cancellationBlocksPartner, respondToCancellation } from "../../services/cancellationRequest.service.js";
 
 const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
@@ -518,6 +519,11 @@ export const getPrinterJobOverview = async (req: Request, res: Response, next: N
       labelRequestedAt: isLabelInProgress((job as any).labelRequestedAt) ? new Date((job as any).labelRequestedAt).toISOString() : null,
       labelUrl: (job as any).labelUrl || null,
       labelError: (job as any).labelError || null,
+      // The rights check as the order was placed, the same images judged against
+      // today's rules, and any concern this partner raised.
+      rights: (job as any).rights || null,
+      rightsRecheck: await recheckOrderRights(job).catch(() => null),
+      rightsConcern: (job as any).rightsConcern || null,
       recentExports: exports.map((e: any) => ({
         id: String(e._id),
         fileName: e.fileName,
@@ -642,7 +648,12 @@ export const updatePrinterOrderStatus = async (req: Request, res: Response, next
     const current = String((job as any).status || "").toUpperCase();
     const next = normalized;
 
-    const refusal = (next !== current && cancellationBlocksPartner(job)) || partnerTransitionError(current, next, Boolean((job as any).labelUrl));
+    const refusal =
+      (next !== current && (job as any).rightsConcern?.status === "open"
+        ? "This job is on hold while Space Transfers reviews your rights concern."
+        : null) ||
+      (next !== current && cancellationBlocksPartner(job)) ||
+      partnerTransitionError(current, next, Boolean((job as any).labelUrl));
     if (refusal) {
       const error = new Error(refusal) as CustomError;
       error.statusCode = 409;

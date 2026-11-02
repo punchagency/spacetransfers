@@ -179,6 +179,7 @@ export interface IUser extends Document {
     termsVersion: string;
     privacyVersion: string;
     contentPolicyVersion: string;
+    readAt?: { terms: Date; privacy: Date; contentPolicy: Date };
     acceptedAt: Date;
     ip?: string;
     userAgent?: string;
@@ -471,6 +472,8 @@ const userSchema = new Schema<IUser>(
           termsVersion: { type: String, required: true },
           privacyVersion: { type: String, required: true },
           contentPolicyVersion: { type: String, required: true },
+          // When each document was read to the end; absent on records made before that was asked.
+          readAt: { type: new Schema({ terms: Date, privacy: Date, contentPolicy: Date }, { _id: false }), default: undefined },
           acceptedAt: { type: Date, required: true },
           ip: { type: String },
           userAgent: { type: String },

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import Stripe from "stripe";
 import { priceItems } from "../services/pricing.service.js";
+import { checkImages, RIGHTS_STOP_MESSAGE, stoppedImages } from "../services/rights/screening.service.js";
 
 interface CustomError extends Error {
   statusCode?: number;
@@ -35,6 +36,29 @@ export const createStripePaymentIntent = async (
       const error = new Error("shippingMethod is required") as CustomError;
       error.statusCode = 400;
       throw error;
+    }
+
+    /*
+     * Nothing is charged for artwork the rights check stopped: the card is
+     * captured at payment, so this is where an order can still be held back.
+     * The customer confirms the rights too, as the Content Policy asks.
+     */
+    if (req.body?.rightsConfirmed !== true) {
+      const error = new Error("Please confirm that you have the rights to print this artwork.") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    const artworkUrls: string[] = Array.isArray(req.body?.artworkUrls)
+      ? req.body.artworkUrls.filter((u: unknown): u is string => typeof u === "string").slice(0, 500)
+      : [];
+    if (artworkUrls.length === 0) {
+      const error = new Error("Your artwork couldn't be checked. Please reload the page and try again.") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    const stopped = stoppedImages(await checkImages(String((req as any).user?.id || ""), artworkUrls));
+    if (stopped.length) {
+      return res.status(409).json({ message: RIGHTS_STOP_MESSAGE, code: "RIGHTS_REVIEW", images: stopped });
     }
 
     // The address is passed so the intent is built from the same live carrier

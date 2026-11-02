@@ -139,10 +139,21 @@ Partners can only move a job forward, and they cannot cancel an order: a partner
 
 Shipping is through EasyPost (`services/easypost.service.ts`, `services/shippingLabel.service.ts`).
 
-- **Quotes.** Checkout asks for live rates from the partner most likely to ship the order (`predictShippingOrigin`), for a parcel sized from the sheets' area by the packaging bands in the admin console. Standard is the cheapest service; express is the cheapest faster one. The admin's markup is added. Without EasyPost, or when it fails, the flat rates are charged and the order records why.
+- **Quotes.** Checkout asks for live rates from the partner most likely to ship the order (`predictShippingOrigin`), for a parcel sized from the sheets' area by the packaging bands in the admin console. Standard is the cheapest service; express is the cheapest faster one. The admin's markup is added. Without EasyPost, or when it fails, the flat rates are charged and the order records why. A quote's rates are kept for 10 minutes, so the two options, the payment and the order are priced from one EasyPost request, and from the same rates the customer saw.
+- **Address check.** When the customer continues from the address step, EasyPost checks it (`POST /api/customer/addresses/check`, `services/addressCheck.service.ts`; at most 40 checks per customer in 15 minutes). A corrected version is offered beside theirs; one it can't find must be fixed or kept on purpose. The order records the outcome in `shippingAddress.check`, and a kept address the carrier questioned notifies the admins and is flagged to the partner. Without EasyPost, nothing is checked.
 - **Labels.** Marking a job ready to ship (`QUALITY_CHECK`) buys the label in the background: a 4x6 PDF, from the partner's business address, on the service the customer was quoted, for the same parcel. The shipment is saved before it is bought, so a retry after a failure finds a label that was bought rather than buying another. A failure is shown to the partner with a Try again button and sent to the admins.
 - **Tracking.** EasyPost's `tracker.updated` webhook (`POST /api/webhooks/easypost`, signed with `EASYPOST_WEBHOOK_SECRET`) and the poller move an order to `SHIPPED` when the carrier has it and to `COMPLETED` when it's delivered. Returns and delivery failures are sent to the admins. The customer sees the carrier's status, the expected date and a tracking link.
 - **Unused labels.** A label is sent back for a refund when its order is cancelled, and when the job is handed back or reassigned. In the last two cases it is also cleared, so the next partner makes their own.
+
+### Rights check
+
+Artwork is checked for third-party intellectual property before it can be ordered (`services/rights/`).
+
+- **What runs.** The image's own copyright and source details, and a perceptual fingerprint matched against images admins blocked, always. Google Cloud Vision (logos, the picture on the web, its text) with `GOOGLE_VISION_API_KEY`, and Claude (brands, characters, teams, watermarks) with `ANTHROPIC_API_KEY`. Names on the watch list (built in, plus admins' own) hold an image whose text or recognised content includes them. Each image is checked once and cached by its bytes; a failed check is retried later.
+- **Where.** At upload: a confident match never reaches the board; an uncertain one is marked on it. On AI edits: a confident match isn't applied. Before payment and again when the order is saved, on every printed image and the original it was made from; held artwork stops both. The order records the result, and partners see it with a fresh check against today's rules.
+- **Disputes.** A customer disputes a result from Rights reviews with a message and proof (`/api/customer/rights/*`). An admin approves or rejects from Rights (`/api/admin/rights/*`), always with a written reason; an approval clears the named findings for that customer only, and a rejection blocks the image for everyone unless unticked. Three rejections flag the customer under the repeat infringer policy.
+- **Partners** can put a job on hold with a rights concern (`POST /api/printer/jobs/:jobId/rights-concern`) until an admin clears it.
+- **Rules** in `services/rights/findings.ts`: thresholds, stock libraries and how a verdict is reached; `terms.ts` for the built-in watch list.
 
 ### Print files
 

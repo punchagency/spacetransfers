@@ -231,3 +231,22 @@ export const sendCancellationDeclinedEmail = async (order: any, reason: string):
     "cancellation declined",
   );
 };
+
+/** Tells a customer about their rights dispute: a reply, or the decision. Never throws. */
+export const sendRightsDisputeEmail = async (
+  to: string,
+  subject: string,
+  heading: string,
+  paragraphs: string[],
+  quote?: string,
+): Promise<EmailResult | null> => {
+  if (!to) return null;
+  const html = wrap(esc(heading), [...paragraphs.map(esc), ...(quote ? [quoted(quote)] : [])], "You can reply from the editor: Rights reviews, in your account menu.");
+  try {
+    return await sendEmail({ to, subject, html });
+  } catch (err: any) {
+    console.warn(`[EMAIL] rights dispute email failed: ${err?.message}`);
+    return null;
+  }
+};
+
