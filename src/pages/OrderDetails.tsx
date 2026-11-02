@@ -11,6 +11,7 @@ import { PrintSpecifications } from "../components/print/job-details/PrintSpecif
 import { ProductionNotes } from "../components/print/job-details/ProductionNotes";
 import { StatusTimeline } from "../components/print/job-details/StatusTimeline";
 import { JobIssues } from "../components/print/job-details/JobIssues";
+import { JobRights, type JobRightsInfo } from "../components/print/job-details/JobRights";
 import { AddressCheckNote } from "../components/print/job-details/AddressCheckNote";
 import { DownloadAssetsModal } from "../components/print/DownloadAssetsModal";
 import { SpaceLoader } from "../components/common/SpaceLoader";
@@ -65,7 +66,7 @@ type Overview = {
   labelService?: string | null;
   labelRequestedAt?: string | null;
   labelUrl?: string | null;
-};
+} & JobRightsInfo;
 
 const formatMoney = (amount: number | null | undefined, currency: string) => {
   const n = typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
@@ -545,6 +546,18 @@ export default function OrderDetailsPage() {
               />
             )}
             {overview && <JobIssues orderId={overview.id} />}
+            {overview && (
+              <JobRights
+                jobId={overview.id}
+                status={overview.status}
+                info={overview}
+                onChanged={() => {
+                  apiFetch(`/printer/jobs/${encodeURIComponent(overview.id)}/overview`)
+                    .then((ov) => ov && setOverview(ov))
+                    .catch(() => {});
+                }}
+              />
+            )}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 font-bold text-gray-900 border-b border-gray-100">
                 {sheets.length > 1 ? `Gangsheet Preview · ${sheets.length} sheets` : "Gangsheet Preview"}
