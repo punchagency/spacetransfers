@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { FaCheck } from "react-icons/fa";
 import { setAuth } from "../../utils/auth";
 import { needsSecondStep, type SecondStepChallenge } from "../../utils/passkeys";
 import { SecondStep } from "../security/SecondStep";
@@ -15,7 +14,8 @@ import {
 import { BsArrowRight } from "react-icons/bs";
 import type { AuthFormProps } from "../../types/auth";
 import { apiFetch, getApiBaseUrl } from "../../utils/api";
-import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload, fetchLegalVersions, legalUrl } from "../../utils/legal";
+import { buildLegalAcceptancePayload, fetchLegalVersions, type LegalReadTimes } from "../../utils/legal";
+import { LegalAgreements } from "./LegalAgreements";
 import toast from "react-hot-toast";
 import { SpaceLoader } from "../common/SpaceLoader";
 
@@ -75,6 +75,8 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
   // separate because they are distinct legal statements.
   const [contentResponsibilityAccepted, setContentResponsibilityAccepted] =
     useState(false);
+  // When each document was read to the end, which its box needs before it can be ticked.
+  const [legalReadAt, setLegalReadAt] = useState<LegalReadTimes>({});
   const [isLoading, setIsLoading]         = useState(false);
   const [sendingReset, setSendingReset]   = useState(false);
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -162,7 +164,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
     setFullName(""); setCompanyName(""); setPhone(""); setWebsite("");
     setStreet(""); setCity(""); setStateProv(""); setPostalCode("");
     setCountry("United States"); setEmail(""); setPassword(""); setConfirmPassword("");
-    setTermsAccepted(false); setDetectedRegion(null);
+    setTermsAccepted(false); setLegalReadAt({}); setDetectedRegion(null);
     setRegionValidated(false); setNonUSWarning(false);
     /*
      * Cleared with the rest of the form.
@@ -316,6 +318,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
               termsAccepted,
               contentResponsibilityAccepted,
               await fetchLegalVersions(),
+              legalReadAt,
             ),
           }),
         });
@@ -355,7 +358,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
         {/* Toggle */}
         <div className="bg-gray-100 p-1 rounded-xl flex items-center">
           <button
-            onClick={() => { setIsSignIn(true); setTermsAccepted(false); resetForm(); }}
+            onClick={() => { setIsSignIn(true); setTermsAccepted(false); setLegalReadAt({}); resetForm(); }}
             className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
               isSignIn ? "bg-white text-blue-700 shadow-sm" : "text-slate-600 hover:text-slate-800"
             }`}
@@ -363,7 +366,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
             Sign In
           </button>
           <button
-            onClick={() => { setIsSignIn(false); setTermsAccepted(false); resetForm(); }}
+            onClick={() => { setIsSignIn(false); setTermsAccepted(false); setLegalReadAt({}); resetForm(); }}
             className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 ${
               !isSignIn ? "bg-white text-blue-700 shadow-sm" : "text-slate-600 hover:text-slate-800"
             }`}
@@ -610,56 +613,15 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
 
           {/* Legal acknowledgements. Both are required by the server. */}
           {!isSignIn && (
-            <div className="space-y-2.5 pt-1">
-              <div className="flex items-start gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTermsAccepted((v) => !v)}
-                  role="checkbox"
-                  aria-checked={termsAccepted}
-                  aria-labelledby="signup-terms"
-                  className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
-                    termsAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
-                  }`}
-                >
-                  {termsAccepted && <FaCheck className="text-white text-[9px]" />}
-                </button>
-                <label
-                  id="signup-terms"
-                  onClick={() => setTermsAccepted((v) => !v)}
-                  className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
-                >
-                  I have read and agree to the{" "}
-                  <a href={legalUrl(LEGAL_DOCUMENTS.terms)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.terms.title}</a>{" "}
-                  and{" "}
-                  <a href={legalUrl(LEGAL_DOCUMENTS.privacy)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.privacy.title}</a>
-                </label>
-              </div>
-
-              <div className="flex items-start gap-2">
-                <button
-                  type="button"
-                  onClick={() => setContentResponsibilityAccepted((v) => !v)}
-                  role="checkbox"
-                  aria-checked={contentResponsibilityAccepted}
-                  aria-labelledby="signup-content"
-                  className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
-                    contentResponsibilityAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
-                  }`}
-                >
-                  {contentResponsibilityAccepted && <FaCheck className="text-white text-[9px]" />}
-                </button>
-                <label
-                  id="signup-content"
-                  onClick={() => setContentResponsibilityAccepted((v) => !v)}
-                  className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
-                >
-                  I accept the{" "}
-                  <a href={legalUrl(LEGAL_DOCUMENTS.contentPolicy)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.contentPolicy.title}</a>{" "}
-                  and am solely responsible for the content uploaded through this account
-                </label>
-              </div>
-            </div>
+            <LegalAgreements
+              termsAccepted={termsAccepted}
+              onTermsChange={setTermsAccepted}
+              contentAccepted={contentResponsibilityAccepted}
+              onContentChange={setContentResponsibilityAccepted}
+              readAt={legalReadAt}
+              onRead={(key) => setLegalReadAt((r) => (r[key] ? r : { ...r, [key]: new Date().toISOString() }))}
+              idPrefix="signup"
+            />
           )}
 
           {/* Submit */}
@@ -703,7 +665,7 @@ export const AuthForm = ({ isSignIn, setIsSignIn }: AuthFormProps) => {
           <p className="text-sm text-slate-500">
             {isSignIn ? "Don't have an account?" : "Already have an account?"}{" "}
             <button
-              onClick={() => { setIsSignIn(!isSignIn); setTermsAccepted(false); resetForm(); }}
+              onClick={() => { setIsSignIn(!isSignIn); setTermsAccepted(false); setLegalReadAt({}); resetForm(); }}
               className="text-blue-600 font-medium hover:underline"
             >
               {isSignIn ? "Sign up" : "Sign in"}

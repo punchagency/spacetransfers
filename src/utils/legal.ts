@@ -11,10 +11,31 @@ export interface LegalDocument {
   url: string;
 }
 
-export const LEGAL_DOCUMENTS: Record<"terms" | "privacy" | "contentPolicy", LegalDocument> = {
+export const LEGAL_DOCUMENTS: Record<LegalKey, LegalDocument> = {
   terms: { id: "terms", title: "Terms of Service", url: "/legal/terms" },
   privacy: { id: "privacy", title: "Privacy Policy", url: "/legal/privacy" },
   contentPolicy: { id: "content-policy", title: "Content & Intellectual Property Policy", url: "/legal/content-policy" },
+};
+
+/** The key a document id belongs to. */
+export const legalKeyOf = (docId: string): LegalKey | null =>
+  (Object.keys(LEGAL_DOCUMENTS) as LegalKey[]).find((k) => LEGAL_DOCUMENTS[k].id === docId) ?? null;
+
+export type LegalKey = "terms" | "privacy" | "contentPolicy";
+
+/** When each document was scrolled to its end in the reader, as ISO times. */
+export type LegalReadTimes = Partial<Record<LegalKey, string>>;
+
+/** Within this many pixels of the bottom counts as the end, for rounding and zoom. */
+const END_SLACK_PX = 24;
+
+/** Whether a scrolling box has been read to its end, and how far through it is. */
+export const readingProgress = (el: { scrollTop: number; scrollHeight: number; clientHeight: number }) => {
+  const seen = el.scrollTop + el.clientHeight;
+  return {
+    atEnd: el.scrollHeight - seen <= END_SLACK_PX,
+    fraction: el.scrollHeight > 0 ? Math.min(1, seen / el.scrollHeight) : 1,
+  };
 };
 
 export interface LegalVersions {
@@ -52,6 +73,7 @@ export interface LegalAcceptancePayload {
   termsVersion: string;
   privacyVersion: string;
   contentPolicyVersion: string;
+  readAt: LegalReadTimes;
 }
 
 /**
@@ -61,18 +83,20 @@ export interface LegalAcceptancePayload {
  * booleans — passing a checkbox's string value silently records consent that
  * was never given, which is the exact failure the acceptance record exists to
  * rule out. The versions are those published now, the wording the partner was
- * shown.
+ * shown, and the read times say when each was read to the end.
  */
 export const buildLegalAcceptancePayload = (
   termsAccepted: boolean,
   contentResponsibilityAccepted: boolean,
   current: LegalVersions,
+  readAt: LegalReadTimes,
 ): LegalAcceptancePayload => ({
   termsAccepted: termsAccepted === true,
   contentResponsibilityAccepted: contentResponsibilityAccepted === true,
   termsVersion: current.terms,
   privacyVersion: current.privacy,
   contentPolicyVersion: current.contentPolicy,
+  readAt: { terms: readAt.terms, privacy: readAt.privacy, contentPolicy: readAt.contentPolicy },
 });
 
 /**

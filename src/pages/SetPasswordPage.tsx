@@ -3,11 +3,11 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { HiOutlineLockClosed } from "react-icons/hi";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import { BsArrowRight } from "react-icons/bs";
-import { FaCheck } from "react-icons/fa";
 import toast from "react-hot-toast";
 import { AuthBanner } from "../components/auth/AuthBanner";
 import { apiFetch } from "../utils/api";
-import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload, fetchLegalVersions, legalUrl } from "../utils/legal";
+import { buildLegalAcceptancePayload, fetchLegalVersions, type LegalReadTimes } from "../utils/legal";
+import { LegalAgreements } from "../components/auth/LegalAgreements";
 
 /**
  * Where an invitation lands.
@@ -39,6 +39,8 @@ const SetPasswordPage = () => {
   const [saving, setSaving] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [contentResponsibilityAccepted, setContentResponsibilityAccepted] = useState(false);
+  // When each document was read to the end, which its box needs before it can be ticked.
+  const [legalReadAt, setLegalReadAt] = useState<LegalReadTimes>({});
 
   const tooShort = password.length > 0 && password.length < MIN_LENGTH;
   const mismatch = confirm.length > 0 && password !== confirm;
@@ -69,6 +71,7 @@ const SetPasswordPage = () => {
                   termsAccepted,
                   contentResponsibilityAccepted,
                   await fetchLegalVersions(),
+                  legalReadAt,
                 ),
               }
             : {}),
@@ -183,56 +186,15 @@ const SetPasswordPage = () => {
               </div>
 
               {isInvite && (
-                <div className="space-y-2.5 pt-1">
-                  <div className="flex items-start gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setTermsAccepted((v) => !v)}
-                      role="checkbox"
-                      aria-checked={termsAccepted}
-                      aria-labelledby="setpw-0"
-                      className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
-                        termsAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
-                      }`}
-                    >
-                      {termsAccepted && <FaCheck className="text-white text-[9px]" />}
-                    </button>
-                    <label
-                      id="setpw-0"
-                      onClick={() => setTermsAccepted((v) => !v)}
-                      className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
-                    >
-                      I have read and agree to the{" "}
-                      <a href={legalUrl(LEGAL_DOCUMENTS.terms)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.terms.title}</a>{" "}
-                      and{" "}
-                      <a href={legalUrl(LEGAL_DOCUMENTS.privacy)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.privacy.title}</a>
-                    </label>
-                  </div>
-
-                  <div className="flex items-start gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setContentResponsibilityAccepted((v) => !v)}
-                      role="checkbox"
-                      aria-checked={contentResponsibilityAccepted}
-                      aria-labelledby="setpw-1"
-                      className={`mt-0.5 flex-shrink-0 h-4 w-4 rounded border transition-colors flex items-center justify-center cursor-pointer ${
-                        contentResponsibilityAccepted ? "bg-blue-600 border-blue-600" : "bg-white border-slate-300 hover:border-blue-400"
-                      }`}
-                    >
-                      {contentResponsibilityAccepted && <FaCheck className="text-white text-[9px]" />}
-                    </button>
-                    <label
-                      id="setpw-1"
-                      onClick={() => setContentResponsibilityAccepted((v) => !v)}
-                      className="text-xs text-slate-500 leading-snug cursor-pointer select-none"
-                    >
-                      I accept the{" "}
-                      <a href={legalUrl(LEGAL_DOCUMENTS.contentPolicy)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">{LEGAL_DOCUMENTS.contentPolicy.title}</a>{" "}
-                      and am solely responsible for the content uploaded through this account
-                    </label>
-                  </div>
-                </div>
+                <LegalAgreements
+                  termsAccepted={termsAccepted}
+                  onTermsChange={setTermsAccepted}
+                  contentAccepted={contentResponsibilityAccepted}
+                  onContentChange={setContentResponsibilityAccepted}
+                  readAt={legalReadAt}
+                  onRead={(key) => setLegalReadAt((r) => (r[key] ? r : { ...r, [key]: new Date().toISOString() }))}
+                  idPrefix="setpw"
+                />
               )}
 
               <button
