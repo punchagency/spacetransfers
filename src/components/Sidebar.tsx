@@ -1,10 +1,12 @@
 import { registerSelectedImageSlot } from "../lib/selectedImageSlot";
+import { openRightsCenter } from "../lib/rightsCenter";
 import { useEffect, useState } from 'react';
 import { useIsMobile } from '../lib/useIsMobile';
 import { CANVAS, CANVAS_BACKGROUNDS, MARGIN_OPTIONS } from '../config/artboard.config';
 import {
     MdSettings,
     MdReceiptLong,
+    MdGavel,
     MdClose,
     MdStraighten,
     MdVisibility,
@@ -573,6 +575,10 @@ export default function Sidebar({
                                         <button onClick={() => { onClose(); onOpenAccountModal(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
                                             <MdPerson size={20} />
                                             <span className="text-[12px] font-medium">Account Settings</span>
+                                        </button>
+                                        <button onClick={() => { onClose(); openRightsCenter({ reason: "menu" }); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
+                                            <MdGavel size={20} />
+                                            <span className="text-[12px] font-medium">Rights reviews</span>
                                         </button>
                                         <button onClick={() => { onClose(); onOpenOrderHistory(); }} className="flex items-center gap-3 w-full py-2 px-2 -mx-2 rounded-lg text-gray-600 hover:text-slate-900 hover:bg-gray-50 text-left cursor-pointer transition-colors">
                                             <MdReceiptLong size={20} />

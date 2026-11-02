@@ -6,7 +6,7 @@ import { needsSecondStep, type SecondStepChallenge } from "../../lib/utils/passk
 import { SecondStep } from "../security/SecondStep";
 import LegalAcceptance from "./LegalAcceptance";
 import LegalDocumentModal from "./LegalDocumentModal";
-import { buildLegalAcceptancePayload, fetchLegalVersions } from "../../lib/legal/documents";
+import { LEGAL_DOCUMENTS, buildLegalAcceptancePayload, fetchLegalVersions, legalKeyOf, type LegalKey, type LegalReadTimes } from "../../lib/legal/documents";
 import toast from "react-hot-toast";
 
 interface AuthModalProps {
@@ -73,6 +73,8 @@ export default function AuthModal({
   // Keeping this state here (rather than inside LegalAcceptance) prevents two
   // modal backdrops from being visible at once.
   const [activeLegalDocument, setActiveLegalDocument] = useState<string | null>(null);
+  // When each document was read to the end, which its box needs before it can be ticked.
+  const [legalReadAt, setLegalReadAt] = useState<LegalReadTimes>({});
   const googleBtnContainerRef = useRef<HTMLDivElement>(null);
   // Stable ref so GIS callback always calls the latest handler
   const credentialHandlerRef = useRef<((r: { credential: string }) => void) | null>(null);
@@ -105,6 +107,7 @@ export default function AuthModal({
     setContentResponsibilityAccepted(false);
     setShowLegalErrors(false);
     setActiveLegalDocument(null);
+    setLegalReadAt({});
     setLoading(false);
     setGoogleLoading(false);
     setShowPassword(false);
@@ -147,6 +150,7 @@ export default function AuthModal({
                   termsAccepted,
                   contentResponsibilityAccepted,
                   await fetchLegalVersions(),
+                  legalReadAt,
                 ),
               }
             : {}),
@@ -342,6 +346,7 @@ export default function AuthModal({
                     termsAccepted,
                     contentResponsibilityAccepted,
                     await fetchLegalVersions(),
+                    legalReadAt,
                   ),
                 }
               : {}),
@@ -395,10 +400,24 @@ export default function AuthModal({
   // the reader only clears this selection, which restores the same form and
   // preserves everything the customer has already entered.
   if (activeLegalDocument) {
+    const key = legalKeyOf(activeLegalDocument);
+    // The next document still to read, so the reader can walk through them in order.
+    const nextKey = (Object.keys(LEGAL_DOCUMENTS) as LegalKey[]).find((k) => k !== key && !legalReadAt[k]);
     return (
       <LegalDocumentModal
         docId={activeLegalDocument}
         onClose={() => setActiveLegalDocument(null)}
+        readAt={key ? legalReadAt[key] : undefined}
+        onReadToEnd={
+          requiresLegalAcceptance && key
+            ? () => setLegalReadAt((r) => (r[key] ? r : { ...r, [key]: new Date().toISOString() }))
+            : undefined
+        }
+        next={
+          requiresLegalAcceptance && nextKey
+            ? { title: LEGAL_DOCUMENTS[nextKey].title, onOpen: () => setActiveLegalDocument(LEGAL_DOCUMENTS[nextKey].id) }
+            : undefined
+        }
       />
     );
   }
@@ -737,6 +756,7 @@ export default function AuthModal({
               showErrors={showLegalErrors}
               disabled={loading || googleLoading}
               onOpenDocument={setActiveLegalDocument}
+              readAt={legalReadAt}
             />
           )}
 

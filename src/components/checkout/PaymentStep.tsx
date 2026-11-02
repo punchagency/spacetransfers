@@ -19,6 +19,8 @@ interface PaymentStepProps {
     country: string;
   };
   onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
+  /** The images the order prints, for the payment's rights check. */
+  getArtworkUrls?: () => string[];
   stripeEnabled: boolean;
   onCardCompleteChange?: (complete: boolean) => void;
 }
@@ -30,6 +32,7 @@ function StripeCardSection({
   shippingAddress,
   onCardHandlerReady,
   onCardCompleteChange,
+  getArtworkUrls,
 }: {
   mappedItems: any[];
   shipping: "standard" | "express";
@@ -43,6 +46,7 @@ function StripeCardSection({
   };
   onCardHandlerReady: (handler: (() => Promise<{ paymentIntentId: string }>) | null) => void;
   onCardCompleteChange?: (complete: boolean) => void;
+  getArtworkUrls?: () => string[];
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -66,6 +70,9 @@ function StripeCardSection({
           // Sent so the intent is priced from the same live carrier quote the
           // order will use; without it the two disagree on shipping.
           shippingAddress,
+          // Checked before anything is charged; see the rights check in the API.
+          artworkUrls: getArtworkUrls?.() || [],
+          rightsConfirmed: true,
         }),
       });
 
@@ -117,6 +124,7 @@ function StripeCardSection({
     shippingAddress.state,
     shippingAddress.street,
     stripe,
+    getArtworkUrls,
   ]);
 
   useEffect(() => {
@@ -161,6 +169,7 @@ export default function PaymentStep({
   onCardHandlerReady,
   stripeEnabled,
   onCardCompleteChange,
+  getArtworkUrls,
 }: PaymentStepProps) {
   const mappedItems = useMemo(() => toPricedItems(cartItems), [cartItems]);
 
@@ -218,6 +227,7 @@ export default function PaymentStep({
                 shippingAddress={shippingAddress}
                 onCardHandlerReady={onCardHandlerReady}
                 onCardCompleteChange={onCardCompleteChange}
+                getArtworkUrls={getArtworkUrls}
               />
             ) : (
               /**

@@ -14,12 +14,13 @@ It talks to the API in `space-transfer-server`. The business side lives in `spac
 - **Get warned.** Images under 300 DPI and artwork with fades or see-through areas are flagged, because DTF cannot print them as shown.
 - **Edit with AI.** Board commands such as "12 copies" or "make it 4 inches wide" run in the browser. Image edits go to the API.
 - **Save automatically.** Signed-in customers' sheets are saved as they work and reopen from the gallery. The store opens on the sheet they last had open.
-- **Check out.** The cart holds one line per saved sheet, as it was when it was added. Checkout validates the address inline, prices shipping for the address, and takes a card through Stripe.
+- **Check out.** The cart holds one line per saved sheet, as it was when it was added. Checkout validates the address inline, prices shipping for the address with live carrier rates, and takes a card through Stripe. On Continue the carrier checks the address: a corrected version is offered beside the customer's own, and an address it can't find has to be fixed or kept on purpose. The order records which, and the admin and partner are warned about a kept one.
+- **Rights reviews.** Uploads are checked for other people's brands, characters and works. A confident match isn't added to the sheet; an uncertain one is marked on it, and checkout pauses until it is removed or cleared. The customer disputes a result with proof from Rights reviews in the account menu, and the conversation with Space Transfers continues there and by email. Before ordering they confirm they have the rights to the artwork.
 - **Share an account.** A main account can add up to four sub-accounts, switch between them, and remove one. Removing deletes its sign-in and saved sheets; past orders stay on record, and an account with orders in progress cannot be removed.
 - **Use the keyboard.** Tab reaches each image on the sheet. The arrow keys move it 0.1 in, or 1 in with Shift. `+` and `-` resize it. Each change is announced to screen readers, and locked images don't move.
 - **Own their data.** Account Settings → Your data downloads a copy of everything held about the account. It also closes the account once no order is still on its way and no problem report is open. Past orders are kept. A linked account can download its data, but only its main account can remove it.
 - **Mark what went wrong.** Reporting a problem can include the affected designs, tapped on a drawing of the sheet as it printed.
-- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. Any refund shows on the order. Report a problem on an order sends it to Space Transfers, with up to four photos, and the replies and the outcome appear there and by email.
+- **Follow orders.** Order history shows status, details and the invoice, and can reorder a past order. Once shipped, an order shows where the parcel is, the expected delivery date and a link to the carrier's tracking page. Any refund shows on the order. Report a problem on an order sends it to Space Transfers, with up to four photos, and the replies and the outcome appear there and by email.
 - **Cancel an order.** Until it ships. Before a print partner has it, Cancel order cancels it and refunds in full straight away. After that, the partner is asked: they accept, which cancels and refunds it, or decline with a reason the customer is shown and emailed. While waiting, Keep my order takes the request back.
 
 ## Stack
@@ -52,6 +53,8 @@ The API must be running; see `space-transfer-server`.
 | `VITE_GOOGLE_CLIENT_ID` | Google sign-in; the option is hidden when empty |
 | `VITE_SITE_URL` | Build only: the public address, used for `robots.txt`, `sitemap.xml` and the canonical link. Unset, the sitemap and canonical link are left out |
 | `VITE_SENTRY_DSN` | Error reporting; nothing is reported when empty |
+| `VITE_SENTRY_ENVIRONMENT` | How Sentry labels this deployment's errors: `staging` on the demo, `production` on Render. Unset, the build mode |
+| `SENTRY_AUTH_TOKEN` | Build only, never in the bundle: a Sentry organization token. With it, the build uploads its source maps so errors show the real file and line, then deletes them from the output. Without it the build is unchanged |
 
 Every `VITE_*` value is compiled into the public bundle. Never put a secret in one. `.env` is gitignored; `.env.production` holds only the production API URL.
 
@@ -83,4 +86,4 @@ src/
 
 ## Security
 
-Boosting resolution and AI edits need an account; a guest who reaches for one is shown sign-in. Customers can add a passkey as a second sign-in step in Account Settings. The headers and content security policy for production are in `vercel.json`; the store's policy allows `blob:` and `unsafe-eval` scripts because the in-browser background remover needs them.
+Boosting resolution and AI edits need an account; a guest who reaches for one is shown sign-in. Customers can add a passkey as a second sign-in step in Account Settings. The headers and content security policy for production are in `render.yaml` at the top of the repository, the same as `vercel.json` here; the store's policy allows `blob:` and `unsafe-eval` scripts because the in-browser background remover needs them.

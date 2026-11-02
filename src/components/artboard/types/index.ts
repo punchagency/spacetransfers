@@ -72,6 +72,8 @@ export interface ArtboardItem {
   measuredHeightPx?: number;
   /** Placed from the customer's file, but the upload never succeeded: it exists only in this browser. */
   uploadFailed?: boolean;
+  /** The rights check held this image: it can't be ordered until removed or cleared. */
+  rights?: import("../../../lib/utils/rights").ImageRights;
   isDropping?: boolean;
   dpi?: number;
   // Unified flow geometry — when set, copies render at cells within a shared

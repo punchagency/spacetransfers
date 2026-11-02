@@ -25,6 +25,14 @@ import { showUploadQueuedNotice } from "../../../common/UploadQueueNotice";
 import { createSerialQueue } from "../utils/serialQueue";
 import type { SerialQueue } from "../utils/serialQueue";
 import type { CommitHistory } from "./useHistory";
+import { openRightsCenter } from "../../../../lib/rightsCenter";
+import { readSourceMetadata, type ImageRights } from "../../../../lib/utils/rights";
+
+/*
+ * The copyright and source details of each file the customer chose, read
+ * before conversion drops them and sent with the upload of what it became.
+ */
+const sourceMetaOf = new WeakMap<File, string>();
 
 /**
  * An upload is given up on when it stops moving, not when it takes long.
@@ -137,6 +145,21 @@ export const useDropHandler = (
   itemsRef.current = items;
 
   const batchTokenRef = useRef(0);
+  /*
+   * Uploads the rights check stopped. They never reach the board; the customer
+   * is told once per drop, in the rights reviews panel, where they can dispute.
+   */
+  const heldUploadsRef = useRef<ImageRights[]>([]);
+  const heldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noteHeldUpload = (rights: ImageRights) => {
+    heldUploadsRef.current.push(rights);
+    if (heldTimerRef.current) clearTimeout(heldTimerRef.current);
+    heldTimerRef.current = setTimeout(() => {
+      const images = heldUploadsRef.current;
+      heldUploadsRef.current = [];
+      if (images.length) openRightsCenter({ reason: "upload", images });
+    }, 400);
+  };
   const canceledBatchesRef = useRef(new Set<number>());
   const activeUploadsRef = useRef(new Map<number, Set<XMLHttpRequest>>());
 
@@ -310,6 +333,7 @@ export const useDropHandler = (
 
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("sourceMeta", sourceMetaOf.get(file) || "");
       xhr.send(formData);
     });
   };
@@ -407,6 +431,7 @@ export const useDropHandler = (
     for (const file of files) {
       let toastId: string | undefined;
       try {
+        const sourceMeta = await readSourceMetadata(file);
         const result = await convertUpload(file, {
           onConverting: () => {
             toastId = toast.loading(`Converting “${file.name}”…`);
@@ -417,6 +442,7 @@ export const useDropHandler = (
             }
           } });
         if (toastId) toast.dismiss(toastId);
+        for (const converted of result.files) sourceMetaOf.set(converted, sourceMeta);
         out.push(...result.files);
         for (const notice of result.notices) toast(notice, { duration: 8000, icon: "ℹ️" });
       } catch (err) {
@@ -837,6 +863,13 @@ export const useDropHandler = (
         fileProgress[idx] = 1;
         publishProgress();
 
+        // Blocked by the rights check: kept off the board entirely.
+        const rights: ImageRights | null = assetResponse?.rights ? { ...assetResponse.rights, name: file.name } : null;
+        if (rights?.verdict === "blocked") {
+          noteHeldUpload(rights);
+          return null;
+        }
+
         const rawDpi = Math.max(1, Math.round(assetResponse?.dpi || dpiInfo.dpiX || dpiInfo.dpiY || 300));
         // Mirror server normalization: values < 150 (e.g. 72 dpi JFIF defaults) are treated as unknown
         const dpi = rawDpi < 150 ? 300 : rawDpi;
@@ -922,6 +955,8 @@ export const useDropHandler = (
         if (baseItem.url === (trimmedUrl || serverUrl) && assetResponse?.fade) {
           void checkFade(baseItem.url, assetResponse.fade);
         }
+
+        if (rights?.verdict === "review") baseItem.rights = rights;
 
         if (uploadFailure) {
           baseItem.uploadFailed = true;
@@ -1039,6 +1074,11 @@ export const useDropHandler = (
       } catch {
       }
 
+      if (asset?.rights?.verdict === "blocked") {
+        openRightsCenter({ reason: "upload", images: [{ ...asset.rights, name: asset.originalFilename }] });
+        return;
+      }
+
       const url = asset?.trimmedUrl || asset?.url || droppedUrl;
       const dpi = asset?.dpi;
       const item = await createItemFromUrl(
@@ -1047,6 +1087,7 @@ export const useDropHandler = (
         dpi,
         asset?.url,
       );
+      if (asset?.rights?.verdict === "review") item.rights = { ...asset.rights, name: asset.originalFilename };
 
       // Single item from a URL or a saved design. Packed against `prev` in the
       // same updater that adds it, for the same reason the file path is: the

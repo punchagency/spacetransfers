@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { LEGAL_DOCUMENTS, fetchLegalVersions, type LegalKey } from "../../lib/legal/documents";
+import { MdCheckCircle } from "react-icons/md";
+import { LEGAL_DOCUMENTS, fetchLegalVersions, type LegalKey, type LegalReadTimes } from "../../lib/legal/documents";
 
 /**
  * The two mandatory acknowledgements shown during sign-up.
@@ -26,7 +27,17 @@ import { LEGAL_DOCUMENTS, fetchLegalVersions, type LegalKey } from "../../lib/le
  *
  * State is owned by the parent so the submit button can stay disabled until
  * both are true. Neither is ever pre-selected.
+ *
+ * A box can be ticked only once every document it covers has been read to the
+ * end in the reader. Trying to tick it before then opens the first one still
+ * unread, and the line under each box says which are read.
  */
+
+/** The documents each acknowledgement covers. */
+const COVERS: Record<"terms" | "content", LegalKey[]> = {
+  terms: ["terms", "privacy"],
+  content: ["contentPolicy"],
+};
 
 interface LegalAcceptanceProps {
   termsAccepted: boolean;
@@ -38,6 +49,8 @@ interface LegalAcceptanceProps {
   disabled?: boolean;
   /** The auth dialog owns the reader so it can hide while a document is open. */
   onOpenDocument: (docId: string) => void;
+  /** When each document was read to the end. */
+  readAt: LegalReadTimes;
 }
 
 export default function LegalAcceptance({
@@ -48,11 +61,43 @@ export default function LegalAcceptance({
   showErrors,
   disabled,
   onOpenDocument,
+  readAt,
 }: LegalAcceptanceProps) {
   // Asked for as the form opens, so signing up does not wait on it.
   useEffect(() => {
     fetchLegalVersions().catch(() => {});
   }, []);
+
+  const unread = (box: keyof typeof COVERS) => COVERS[box].filter((k) => !readAt[k]);
+  /** Ticks the box, or opens the first document it covers that is still unread. */
+  const tick = (box: keyof typeof COVERS, value: boolean, set: (v: boolean) => void) => {
+    const [first] = unread(box);
+    if (value && first) {
+      onOpenDocument(LEGAL_DOCUMENTS[first].id);
+      return;
+    }
+    set(value);
+  };
+
+  /** Which of a box's documents have been read, under the box. */
+  const ReadStatus = ({ box, id }: { box: keyof typeof COVERS; id: string }) => {
+    const left = unread(box);
+    return (
+      <p id={id} className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-[26px] text-[11px] text-gray-500">
+        {left.length === 0 ? (
+          <span className="flex items-center gap-1 font-medium text-emerald-700">
+            <MdCheckCircle className="h-3.5 w-3.5" aria-hidden />
+            Read to the end
+          </span>
+        ) : (
+          <span>
+            Read {COVERS[box].length > 1 ? "both documents" : "the policy"} to the end to tick this
+            {COVERS[box].length > 1 && left.length === 1 ? ` (${LEGAL_DOCUMENTS[left[0]].title} still to read)` : ""}.
+          </span>
+        )}
+      </p>
+    );
+  };
 
   const termsError = showErrors && !termsAccepted;
   const contentError = showErrors && !contentResponsibilityAccepted;
@@ -106,9 +151,9 @@ export default function LegalAcceptance({
               type="checkbox"
               checked={termsAccepted}
               disabled={disabled}
-              onChange={(e) => onTermsChange(e.target.checked)}
+              onChange={(e) => tick("terms", e.target.checked, onTermsChange)}
               aria-invalid={termsError}
-              aria-describedby={termsError ? "legal-terms-error" : undefined}
+              aria-describedby={termsError ? "legal-terms-status legal-terms-error" : "legal-terms-status"}
               className={boxClass(termsError)}
             />
             <span>
@@ -116,6 +161,7 @@ export default function LegalAcceptance({
               <DocButton docKey="privacy" />.
             </span>
           </label>
+          <ReadStatus box="terms" id="legal-terms-status" />
           {termsError && (
             <p
               id="legal-terms-error"
@@ -139,9 +185,9 @@ export default function LegalAcceptance({
               type="checkbox"
               checked={contentResponsibilityAccepted}
               disabled={disabled}
-              onChange={(e) => onContentResponsibilityChange(e.target.checked)}
+              onChange={(e) => tick("content", e.target.checked, onContentResponsibilityChange)}
               aria-invalid={contentError}
-              aria-describedby={contentError ? "legal-content-error" : undefined}
+              aria-describedby={contentError ? "legal-content-status legal-content-error" : "legal-content-status"}
               className={boxClass(contentError)}
             />
             <span>
@@ -150,6 +196,7 @@ export default function LegalAcceptance({
               <DocButton docKey="contentPolicy" label="Content & IP Policy" />.
             </span>
           </label>
+          <ReadStatus box="content" id="legal-content-status" />
           {contentError && (
             <p
               id="legal-content-error"

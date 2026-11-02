@@ -15,6 +15,25 @@ export const LEGAL_DOCUMENTS: Record<LegalKey, { id: string; title: string; url:
   contentPolicy: { id: "content-policy", title: "Content & Intellectual Property Policy", url: "/legal/content-policy" },
 };
 
+/** The document a key names, and the key a document id belongs to. */
+export const legalKeyOf = (docId: string): LegalKey | null =>
+  (Object.keys(LEGAL_DOCUMENTS) as LegalKey[]).find((k) => LEGAL_DOCUMENTS[k].id === docId) ?? null;
+
+/** When each document was scrolled to its end in the reader, as ISO times. */
+export type LegalReadTimes = Partial<Record<LegalKey, string>>;
+
+/** Within this many pixels of the bottom counts as the end, for rounding and zoom. */
+const END_SLACK_PX = 24;
+
+/** Whether a scrolling box has been read to its end, and how far through it is. */
+export const readingProgress = (el: { scrollTop: number; scrollHeight: number; clientHeight: number }) => {
+  const seen = el.scrollTop + el.clientHeight;
+  return {
+    atEnd: el.scrollHeight - seen <= END_SLACK_PX,
+    fraction: el.scrollHeight > 0 ? Math.min(1, seen / el.scrollHeight) : 1,
+  };
+};
+
 export interface LegalVersions {
   terms: string;
   privacy: string;
@@ -50,22 +69,26 @@ export interface LegalAcceptancePayload {
   termsVersion: string;
   privacyVersion: string;
   contentPolicyVersion: string;
+  readAt: LegalReadTimes;
 }
 
 /**
- * The acceptance block for a sign-up: both ticks, and the version of each
- * document that is published now, which is the wording the person was shown.
+ * The acceptance block for a sign-up: both ticks, the version of each
+ * document that is published now, which is the wording the person was shown,
+ * and when they read each one to the end.
  */
 export const buildLegalAcceptancePayload = (
   termsAccepted: boolean,
   contentResponsibilityAccepted: boolean,
   current: LegalVersions,
+  readAt: LegalReadTimes,
 ): LegalAcceptancePayload => ({
   termsAccepted: termsAccepted === true,
   contentResponsibilityAccepted: contentResponsibilityAccepted === true,
   termsVersion: current.terms,
   privacyVersion: current.privacy,
   contentPolicyVersion: current.contentPolicy,
+  readAt: { terms: readAt.terms, privacy: readAt.privacy, contentPolicy: readAt.contentPolicy },
 });
 
 export interface LegalDocumentText {

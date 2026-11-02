@@ -10,6 +10,8 @@ import type { AiPanelBridge } from "../ai";
 import { CANVAS, MAX_SHEET_HEIGHT_IN } from "../../../../config/artboard.config";
 import { computeGroupDims, computeRenderCopies, dpiFromPixels } from "../../lib/utils/layoutHelpers";
 import { shouldWarn, transparencyMessage, type FadeVerdict } from "../../lib/utils/fadeCheck";
+import { heldFindings, isHeld } from "../../../../lib/utils/rights";
+import { openRightsCenter } from "../../../../lib/rightsCenter";
 import { readImageInfo } from "../../lib/utils/imageUtils";
 import type { PixelBatchResult } from "../../lib/hooks/useItemActions";
 import type { SelectionSummary } from "../../types";
@@ -40,6 +42,7 @@ interface ArtboardItemProps {
     nativeWidthPx?: number;
     croppedWidthPx?: number;
     nestRotation?: 0 | 90;
+    rights?: import("../../../../lib/utils/rights").ImageRights;
   };
   isSelected: boolean;
   isPrimary: boolean;
@@ -58,6 +61,8 @@ interface ArtboardItemProps {
    * undefined while it is still being checked (`useTransparencyVerdicts`).
    */
   transparency?: FadeVerdict;
+  /** The rights check's verdict when it holds this image; see useRightsVerdicts. */
+  rights?: import("../../../../lib/utils/rights").ImageRights;
   showProperties: boolean;
   onSelect: (multi?: boolean) => void;
   onToggleProperties: () => void;
@@ -116,6 +121,7 @@ function ArtboardItem({
   isNotUploaded = false,
   issuePulse = 0,
   transparency,
+  rights: rightsVerdict,
   showProperties,
   onSelect,
   onToggleProperties,
@@ -340,10 +346,16 @@ function ArtboardItem({
     transparency?.source === "ai" ? ` (${Math.round(transparency.confidence * 100)}% confident)` : "";
   const fadeTitle = fadeMessage ? `${fadeMessage.title}${fadeConfidence}: ${fadeMessage.body}` : undefined;
 
-  // Priority: too-small (red) > fade (orange) > low/unknown-dpi (amber) > normal (blue)
-  const borderColor = isTooSmall ? "#EF4444" : hasFade ? "#F97316" : needsDpiAttention ? "#EDAE00" : "#3b82f6";
-  const borderColorHover = isTooSmall ? "#EF4444" : hasFade ? "#F97316" : needsDpiAttention ? "#EDAE00" : "#60a5fa";
-  const handleColor = isTooSmall
+  // Held by the rights check: it can't be ordered, so it outranks every other warning.
+  const rightsInfo = item.rights ?? rightsVerdict;
+  const rightsHeld = isHeld(rightsInfo);
+
+  // Priority: rights (deep red) > too-small (red) > fade (orange) > low/unknown-dpi (amber) > normal (blue)
+  const borderColor = rightsHeld ? "#B91C1C" : isTooSmall ? "#EF4444" : hasFade ? "#F97316" : needsDpiAttention ? "#EDAE00" : "#3b82f6";
+  const borderColorHover = rightsHeld ? "#B91C1C" : isTooSmall ? "#EF4444" : hasFade ? "#F97316" : needsDpiAttention ? "#EDAE00" : "#60a5fa";
+  const handleColor = rightsHeld
+    ? "bg-red-700"
+    : isTooSmall
     ? "bg-red-500"
     : hasFade
     ? "bg-orange-500"
@@ -471,6 +483,22 @@ function ArtboardItem({
               {item.name || `Item #${item.id}`}
             </div>
             {/* Why this image is outlined, in the outline's own colour. */}
+            {rightsHeld && rightsInfo && (
+              <div className="border-b border-red-200 bg-red-50 px-3 py-2">
+                <p className="text-[11px] font-semibold leading-snug text-red-800">Needs a rights review</p>
+                <p className="mt-0.5 text-[11px] leading-snug text-red-950">
+                  {heldFindings(rightsInfo).map((f) => f.label).join(", ") || "It may include someone else's work."} It can't be ordered until it's
+                  removed or cleared.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => openRightsCenter({ reason: "board", images: [rightsInfo] })}
+                  className="mt-1.5 text-[11px] font-semibold text-red-800 underline underline-offset-2 hover:text-red-950"
+                >
+                  Review or dispute
+                </button>
+              </div>
+            )}
             {fadeMessage && (
               <div className="border-b border-orange-200 bg-orange-50 px-3 py-2">
                 <p className="text-[11px] font-semibold leading-snug text-orange-700">
@@ -905,6 +933,27 @@ function ArtboardItem({
         >
           <path d={polygonPathD} fill="none" stroke="#F97316" strokeWidth={3} strokeLinejoin="round" />
         </svg>
+      )}
+      {/*
+        Rights flag: held by the rights check, so it can't be ordered. Always
+        visible, not only when selected; selecting it explains why and offers
+        the dispute.
+      */}
+      {rightsHeld && (
+        <>
+          <svg
+            className="absolute top-0 left-0 pointer-events-none"
+            style={{ overflow: "visible" }}
+            width={groupWidthPx}
+            height={totalGroupHeightPx}
+            aria-hidden
+          >
+            <path d={polygonPathD} fill="none" stroke="#B91C1C" strokeWidth={3} strokeLinejoin="round" />
+          </svg>
+          <span className="pointer-events-none absolute left-1 top-1 rounded bg-red-700 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white shadow-sm">
+            Rights review
+          </span>
+        </>
       )}
       {/*
         Upload flag. The most pressing of the three, so it is drawn last and
