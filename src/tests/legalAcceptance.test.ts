@@ -27,6 +27,7 @@ const validInput = () => ({
   termsVersion: CURRENT_LEGAL_VERSIONS.terms,
   privacyVersion: CURRENT_LEGAL_VERSIONS.privacy,
   contentPolicyVersion: CURRENT_LEGAL_VERSIONS.contentPolicy,
+  readAt: { terms: new Date().toISOString(), privacy: new Date().toISOString(), contentPolicy: new Date().toISOString() },
 });
 
 describe("buildLegalAcceptance", () => {
@@ -93,6 +94,27 @@ describe("buildLegalAcceptance", () => {
   });
 });
 
+describe("reading before accepting", () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
+
+  it("records when each document was read to the end", () => {
+    const read = { terms: minutesAgo(3), privacy: minutesAgo(2), contentPolicy: minutesAgo(1) };
+    const record = buildLegalAcceptance({ ...validInput(), readAt: read }, {});
+    assert.equal(record.readAt.terms.toISOString(), read.terms);
+    assert.equal(record.readAt.contentPolicy.toISOString(), read.contentPolicy);
+  });
+
+  it("refuses a sign-up that didn't read every document, or whose times can't be real", () => {
+    const refused = (readAt: unknown) =>
+      assert.throws(() => buildLegalAcceptance({ ...validInput(), readAt }, {}), (e: any) => e.code === "LEGAL_NOT_READ");
+    refused(undefined);
+    refused({ terms: minutesAgo(1), privacy: minutesAgo(1) });
+    refused({ terms: "yesterday", privacy: minutesAgo(1), contentPolicy: minutesAgo(1) });
+    refused({ terms: minutesAgo(-60), privacy: minutesAgo(1), contentPolicy: minutesAgo(1) });
+    refused({ terms: minutesAgo(60 * 25), privacy: minutesAgo(1), contentPolicy: minutesAgo(1) });
+  });
+});
+
 describe("published legal documents", () => {
   it("start from the wording sign-ups have already accepted", () => {
     assert.equal(LEGAL_SEED.terms.published.version, CURRENT_LEGAL_VERSIONS.terms);
@@ -102,7 +124,7 @@ describe("published legal documents", () => {
 
   it("check a sign-up against whatever is published now", () => {
     const now = { terms: "2026-10-16", privacy: "2026-10-16", contentPolicy: "2026-07-28" };
-    const fresh = { ...validInput(), termsVersion: now.terms, privacyVersion: now.privacy };
+    const fresh = { ...validInput(), termsVersion: now.terms, privacyVersion: now.privacy, contentPolicyVersion: now.contentPolicy };
     const record = buildLegalAcceptance(fresh, {}, now);
     assert.equal(record.termsVersion, "2026-10-16");
     assert.throws(() => buildLegalAcceptance(validInput(), {}, now), (e: any) => e.code === "LEGAL_VERSION_MISMATCH");

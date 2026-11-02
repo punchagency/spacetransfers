@@ -145,6 +145,16 @@ Shipping is through EasyPost (`services/easypost.service.ts`, `services/shipping
 - **Tracking.** EasyPost's `tracker.updated` webhook (`POST /api/webhooks/easypost`, signed with `EASYPOST_WEBHOOK_SECRET`) and the poller move an order to `SHIPPED` when the carrier has it and to `COMPLETED` when it's delivered. Returns and delivery failures are sent to the admins. The customer sees the carrier's status, the expected date and a tracking link.
 - **Unused labels.** A label is sent back for a refund when its order is cancelled, and when the job is handed back or reassigned. In the last two cases it is also cleared, so the next partner makes their own.
 
+### Rights check
+
+Artwork is checked for third-party intellectual property before it can be ordered (`services/rights/`).
+
+- **What runs.** The image's own copyright and source details, and a perceptual fingerprint matched against images admins blocked, always. Google Cloud Vision (logos, the picture on the web, its text) with `GOOGLE_VISION_API_KEY`, and Claude (brands, characters, teams, watermarks) with `ANTHROPIC_API_KEY`. Names on the watch list (built in, plus admins' own) hold an image whose text or recognised content includes them. Each image is checked once and cached by its bytes; a failed check is retried later.
+- **Where.** At upload: a confident match never reaches the board; an uncertain one is marked on it. On AI edits: a confident match isn't applied. Before payment and again when the order is saved, on every printed image and the original it was made from; held artwork stops both. The order records the result, and partners see it with a fresh check against today's rules.
+- **Disputes.** A customer disputes a result from Rights reviews with a message and proof (`/api/customer/rights/*`). An admin approves or rejects from Rights (`/api/admin/rights/*`), always with a written reason; an approval clears the named findings for that customer only, and a rejection blocks the image for everyone unless unticked. Three rejections flag the customer under the repeat infringer policy.
+- **Partners** can put a job on hold with a rights concern (`POST /api/printer/jobs/:jobId/rights-concern`) until an admin clears it.
+- **Rules** in `services/rights/findings.ts`: thresholds, stock libraries and how a verdict is reached; `terms.ts` for the built-in watch list.
+
 ### Print files
 
 A partner's PNG export is the full roll width the order was built on (23.5in, 7,050px at 300 DPI) and as long as the artwork: down to the lowest graphic plus the sheet margin. A sheet billed at the minimum length is not padded out to it. Sheets longer than 100in are split into parts between graphics. See `printFileLengthIn` in `services/gangsheetExport.service.ts`.

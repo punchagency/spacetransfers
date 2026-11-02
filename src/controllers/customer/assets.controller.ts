@@ -12,6 +12,8 @@ import { isLegacyCloudinaryUrl, fetchStoredArtwork, isStoredArtworkUrl, legacyCl
 import { MAX_IMAGE_PIXELS } from "../../utils/imageBounds.js";
 import { detectFade, TRANSPARENCY_CHECK_VERSION } from "../../services/fadeDetection.service.js";
 import { CustomError, fetchImageBuffer } from "./shared.js";
+import { checkImages, checkStoredWithin, screenUpload } from "../../services/rights/screening.service.js";
+import { metadataText } from "../../services/rights/metadata.js";
 
 /*
  * One rule now: the thumbnail sits beside the original under the same name.
@@ -355,7 +357,9 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
             // verdict is still returned and will be recomputed next time.
           });
         }
+        const rights = await checkStoredWithin(foundAsset.url, String(req.user!.id));
         return res.json({
+          rights,
           id: String(foundAsset._id),
           url: foundAsset.url,
           trimmedUrl: foundAsset.trimmedUrl || null,
@@ -524,9 +528,26 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
       );
     }
 
+    /*
+     * The rights check, on the bytes stored. The file's own details are read
+     * from what was uploaded (turning it upright can drop them), and from what
+     * the browser read before converting it.
+     */
+    const sourceText = [
+      typeof req.body?.sourceMeta === "string" ? req.body.sourceMeta.slice(0, 20000) : "",
+      await metadataText(rawBuffer),
+    ].join("\n");
+    const rights = await screenUpload(
+      fileBuffer,
+      [fileUrl, ...(trimmedUrl && trimmedUrl !== fileUrl ? [trimmedUrl] : [])],
+      req.user?.id ? String(req.user.id) : null,
+      sourceText,
+    );
+
     // Guest uploads: return metadata without persisting to the database
     if (!req.user?.id) {
       return res.status(201).json({
+        rights,
         url: fileUrl,
         trimmedUrl: trimmedUrl || null,
         thumbnailUrl,
@@ -581,6 +602,7 @@ export const uploadAsset = async (req: Request, res: Response, next: NextFunctio
     }
 
     res.status(201).json({
+      rights,
       id: savedAssetId,
       url: fileUrl,
       trimmedUrl: trimmedUrl || null,
@@ -623,7 +645,13 @@ export const listAssets = async (req: Request, res: Response, next: NextFunction
     const page = hasMore ? assets.slice(0, pageSize) : assets;
     const nextCursor = hasMore ? String(page[page.length - 1]._id) : null;
 
+    // Judged from screens already made: listing never pays for a check, and an
+    // image not yet screened is screened at checkout.
+    const verdicts = new Map(
+      (await checkImages(req.user?.id ? String(req.user.id) : null, page.map((a) => a.url), { screenMissing: false })).map((c) => [c.url, c]),
+    );
     const items = page.map((asset) => ({
+      rights: verdicts.get(asset.url)?.verdict === "unchecked" ? null : verdicts.get(asset.url) || null,
       id: asset.id,
       url: asset.url,
       trimmedUrl: asset.trimmedUrl || null,

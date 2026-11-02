@@ -38,9 +38,10 @@ import {
   deleteAccount,
 } from "../controllers/customer/index.js";
 import { createStripePaymentIntent } from "../controllers/payments.controller.js";
-import { upload, uploadPhoto } from "../middleware/upload.js";
-import { accountCloseLimiter, addressCheckLimiter, aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
+import { upload, uploadEvidence, uploadPhoto } from "../middleware/upload.js";
+import { accountCloseLimiter, addressCheckLimiter, rightsCheckLimiter, aiEditLimiter, assetLimiter, upscaleLimiter } from "../middleware/rateLimit.js";
 import { checkShippingAddress } from "../controllers/customer/address.controller.js";
+import { checkRights, getMyDispute, listMyDisputes, openDispute, replyToDispute, uploadDisputeEvidence, withdrawDispute } from "../controllers/customer/rights.controller.js";
 
 const router = express.Router();
 
@@ -94,6 +95,13 @@ router.delete("/designs/:designId", deleteDesign);
 router.post("/designs/:designId/duplicate", duplicateDesign);
 router.post("/cart/quote", getCartQuote);
 router.post("/addresses/check", addressCheckLimiter, checkShippingAddress);
+router.post("/rights/check", rightsCheckLimiter, checkRights);
+router.get("/rights/disputes", listMyDisputes);
+router.post("/rights/disputes", openDispute);
+router.get("/rights/disputes/:disputeId", getMyDispute);
+router.post("/rights/disputes/:disputeId/messages", replyToDispute);
+router.post("/rights/disputes/:disputeId/withdraw", withdrawDispute);
+router.post("/rights/evidence", uploadEvidence.single("file"), uploadDisputeEvidence);
 router.post("/notifications/gangsheet-utilization-warning", sendGangsheetUtilizationWarning);
 router.post("/payments/stripe/create-intent", createStripePaymentIntent);
 

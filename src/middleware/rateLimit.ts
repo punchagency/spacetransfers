@@ -119,6 +119,17 @@ export const addressCheckLimiter = rateLimit({
   message: { message: "Too many address checks. Please wait a few minutes and try again." },
 });
 
+/** A rights check can send images to paid detectors, so checks are counted per account. */
+export const rightsCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many artwork checks. Please wait a few minutes and try again." },
+});
+
 /** AI edits spend a paid allowance, so they belong to an account and are counted per account. */
 export const aiEditLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

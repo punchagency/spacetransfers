@@ -668,6 +668,9 @@ export const getOrderById = async (req: Request, res: Response, next: NextFuncti
             declineReason: (order as any).cancellationRequest.declineReason || null,
           }
         : null,
+      /** The rights check as the order was placed, and any concern its partner raised. */
+      rights: (order as any).rights || null,
+      rightsConcern: (order as any).rightsConcern || null,
       /** The label and where the parcel is, once one has been bought. */
       shipment: (order as any).labelUrl || (order as any).trackingNumber || (order as any).labelError || (order as any).labelRefund
         ? {

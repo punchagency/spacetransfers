@@ -3,6 +3,7 @@ import { assertOrderRequest, buildOrderItem } from "../../services/orderCreation
 import { resolveApiFile } from "../../utils/publicApiBase.js";
 import { verifyCardPayment } from "../../services/paymentVerification.service.js";
 import { orderAddressCheck } from "../../services/addressCheck.service.js";
+import { checkImages, orderRightsRecord, RIGHTS_STOP_MESSAGE, stoppedImages } from "../../services/rights/screening.service.js";
 import { User } from "../../models/user.model.js";
 import { isValidPhone } from "../../utils/accountFields.js";
 import { Order } from "../../models/order.model.js";
@@ -69,6 +70,27 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
     const globalPricing = await getGlobalPricing();
 
     const orderItems = (items as any[]).map((item) => buildOrderItem(item, globalPricing));
+
+    /*
+     * The rights check again, on the images this order actually prints. The
+     * payment step already ran it; this catches artwork that changed since, and
+     * records what was cleared, and by whom, for the partner and the admins.
+     */
+    if (req.body?.rightsConfirmed !== true) {
+      const error = new Error("Please confirm that you have the rights to print this artwork.") as CustomError;
+      error.statusCode = 400;
+      throw error;
+    }
+    // The printed images and the originals they were cut from: a crop or a
+    // removed background keeps the original's brand but not its file details.
+    const printedUrls = orderItems.flatMap((it: any) =>
+      (it.artboardItems || []).flatMap((a: any) => [a.croppedUrl, a.assetId]).filter((u: unknown) => typeof u === "string" && u),
+    );
+    const rightsChecks = await checkImages(String(req.user?.id || ""), printedUrls);
+    if (stoppedImages(rightsChecks).length) {
+      return res.status(409).json({ message: RIGHTS_STOP_MESSAGE, code: "RIGHTS_REVIEW", images: stoppedImages(rightsChecks) });
+    }
+    const rightsRecord = await orderRightsRecord(String(req.user?.id || ""), rightsChecks, true);
     const computedSubtotal = orderItems.reduce((sum, it) => sum + it.subtotal, 0);
 
     const roundedComputedSubtotal = roundToTwo(computedSubtotal);
@@ -193,6 +215,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
       user: req.user?.id,
       displayId: await nextOrderDisplayId(),
       items: orderItems,
+      rights: rightsRecord,
       customer: normalizedCustomer,
       shippingAddress: enrichedShippingAddress,
       shippingMethod,

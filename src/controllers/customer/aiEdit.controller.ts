@@ -14,6 +14,7 @@ import {
 } from "../../services/gemini.service.js";
 import { conformToSource, readSourceGeometry } from "../../utils/generativeImage.js";
 import { fetchImageBuffer } from "./shared.js";
+import { screenUpload } from "../../services/rights/screening.service.js";
 
 // ── Generative AI editing ─────────────────────────────────────────────────────
 
@@ -410,6 +411,21 @@ export const aiEditAsset = async (req: Request, res: Response, next: NextFunctio
       conformed.buffer,
       "space-transfers/ai-edited",
     );
+
+    // A generated image can bring in a brand or character the original didn't
+    // have; one the check is sure of never reaches the board.
+    const rights = await screenUpload(conformed.buffer, [editedUrl], String(req.user?.id || ""));
+    if (rights.verdict === "blocked") {
+      const what = "findings" in rights ? rights.findings.find((f) => f.severity === "block")?.label : undefined;
+      return next(
+        Object.assign(
+          new Error(
+            `This edit wasn't applied: the result looks like it includes ${what || "a brand, character or other work"} you'd need the rights to print. Try a different instruction.`,
+          ),
+          { statusCode: 422 },
+        ),
+      );
+    }
 
     // Logged together so a bad result can be traced back to the exact model and
     // inputs that produced it — the instruction is derived, not user-supplied.

@@ -11,6 +11,7 @@ import {
 } from "../controllers/legal.controller.js";
 import { upload } from "../middleware/upload.js";
 import { UserRoles } from "../models/user.model.js";
+import * as rights from "../controllers/admin/rights.controller.js";
 import { 
   listOrders, 
   assignOrder, 
@@ -62,6 +63,18 @@ const router = express.Router();
 router.use(authenticate, requireRoles(UserRoles.ADMIN), requireAdminPasskey);
 
 router.get("/security/admins", listAdminPasskeyStatus);
+router.get("/rights/summary", rights.rightsSummary);
+router.get("/rights/disputes", rights.listDisputes);
+router.get("/rights/disputes/:disputeId", rights.getDispute);
+router.post("/rights/disputes/:disputeId/messages", rights.replyToDispute);
+router.post("/rights/disputes/:disputeId/approve", rights.approveDispute);
+router.post("/rights/disputes/:disputeId/reject", rights.rejectDispute);
+router.post("/rights/disputes/:disputeId/revoke", rights.revokeApproval);
+router.get("/rights/rules", rights.listRules);
+router.post("/rights/rules", rights.addTermRule);
+router.delete("/rights/rules/:ruleId", rights.deleteRule);
+router.get("/rights/concerns", rights.listConcerns);
+router.post("/orders/:orderId/rights-concern/resolve", rights.resolveConcern);
 router.get("/legal", adminListLegalDocuments);
 router.get("/legal/:docId", adminGetLegalDocument);
 router.put("/legal/:docId/draft", adminSaveLegalDraft);

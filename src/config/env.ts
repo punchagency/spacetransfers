@@ -58,6 +58,12 @@ interface Env {
   exportRenderConcurrency: number;
   /** Days a print export or preview is kept on disk; it is made again on request. */
   exportRetentionDays: number;
+  /** Google Cloud Vision, for the rights check: logos, matching images on the web, text. */
+  googleVisionApiKey?: string;
+  /** Claude, for the rights check: recognises brands, characters and teams in artwork. */
+  anthropicApiKey?: string;
+  /** The Claude model the rights check uses. */
+  rightsClaudeModel: string;
   /** Where shipping quotes start when no partner serves the address. Never a label's return address. */
   shipFrom: {
     name?: string;
@@ -68,7 +74,6 @@ interface Env {
     country?: string;
     phone?: string;
   };
-  /** Effort level for the copyright vision pass. Higher = more accurate, slower, costlier. */
   /**
    * Google Gemini — the primary (and free) generative editing tier. An AI
    * Studio key needs no card and covers ~500 image edits/day, so it is tried
@@ -143,6 +148,9 @@ export const env: Env = {
     ? Number(process.env.EXPORT_RENDER_CONCURRENCY)
     : 3,
   exportRetentionDays: Number(process.env.EXPORT_RETENTION_DAYS) > 0 ? Number(process.env.EXPORT_RETENTION_DAYS) : 14,
+  googleVisionApiKey: cleanEnvString(process.env.GOOGLE_VISION_API_KEY),
+  anthropicApiKey: cleanEnvString(process.env.ANTHROPIC_API_KEY),
+  rightsClaudeModel: cleanEnvString(process.env.RIGHTS_CLAUDE_MODEL) || "claude-opus-5-5",
   // Accepts GOOGLE_AI_API_KEY as an alias — that is the name AI Studio itself
   // shows on the key page, and copying it verbatim should just work.
   geminiApiKey:

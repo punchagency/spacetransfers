@@ -183,6 +183,32 @@ export interface IOrder extends Document {
   trackingUpdatedAt?: Date | null;
   /** An unused label sent back for a refund, when the order was cancelled or moved. */
   labelRefund?: { status: string; requestedAt: Date; shipmentId: string } | null;
+  /** The rights check of the artwork when the order was placed; see rights/screening.service. */
+  rights?: {
+    checkedAt: Date;
+    attestedAt?: Date | null;
+    checks: string[];
+    images: {
+      url: string;
+      verdict: "clear" | "approved";
+      incomplete?: boolean;
+      approvals: { id: string; label: string; byName: string; at: Date | null; note: string }[];
+      notes: string[];
+    }[];
+  } | null;
+  /** When admins were told the artwork was flagged after the order was placed. */
+  rightsAlertedAt?: Date | null;
+  /** A partner's concern about the artwork's rights; the job is on hold while it is open. */
+  rightsConcern?: {
+    status: "open" | "cleared";
+    note: string;
+    reportedById: mongoose.Types.ObjectId;
+    reportedByName: string;
+    at: Date;
+    resolvedByName?: string;
+    resolvedAt?: Date;
+    resolution?: string;
+  } | null;
   priority: "NORMAL" | "URGENT";
   notes?: string;
   specs?: {
@@ -467,6 +493,22 @@ const orderSchema = new Schema<IOrder>(
     labelRefund: {
       type: { _id: false, status: String, requestedAt: Date, shipmentId: String },
       default: undefined,
+    },
+    rights: { type: Schema.Types.Mixed, default: null },
+    rightsAlertedAt: { type: Date, default: null },
+    rightsConcern: {
+      type: {
+        _id: false,
+        status: { type: String, enum: ["open", "cleared"] },
+        note: String,
+        reportedById: { type: Schema.Types.ObjectId, ref: "User" },
+        reportedByName: String,
+        at: Date,
+        resolvedByName: String,
+        resolvedAt: Date,
+        resolution: String,
+      },
+      default: null,
     },
     priority: {
       type: String,
