@@ -41,6 +41,7 @@ export const Topbar = ({ onOpenMenu }: { onOpenMenu?: () => void }) => {
     if (meta.orderId) return `/dashboard/orders/${meta.orderId}`;
     if (meta.partnerId) return `/dashboard/fulfilment-partners/${meta.partnerId}`;
     if (meta.payoutId || meta.type === "payout_drafts") return "/payouts";
+    if (meta.disputeId || meta.type === "rights_dispute") return "/rights";
     return null;
   };
 

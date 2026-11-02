@@ -21,6 +21,7 @@ import { OrdersStoreProvider } from './state/OrdersStore';
 import { NotificationsStoreProvider } from './state/NotificationsStore';
 import { ProtectedRoute, PublicOnlyRoute } from './components/auth/ProtectedRoute';
 import './App.css';
+import { Rights } from './pages/Rights';
 
 /**
  * Stores for the signed-in area. Mounted inside ProtectedRoute so they only
@@ -64,6 +65,7 @@ function App() {
                         <Route path="/dashboard/fulfilment-partners/:id" element={<PartnerDetails />} />
                         <Route path="/earnings" element={<Earnings />} />
                         <Route path="/issues" element={<Issues />} />
+                        <Route path="/rights" element={<Rights />} />
                         <Route path="/payouts" element={<Payouts />} />
                         <Route path="/profile" element={<Profile />} />
                         <Route path="/settings" element={<Settings />} />

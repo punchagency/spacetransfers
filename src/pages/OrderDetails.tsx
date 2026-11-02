@@ -12,6 +12,7 @@ import { getToken } from '../utils/auth';
 import toast from 'react-hot-toast';
 import { OrderCancellationRequest } from '../components/orders/OrderCancellationRequest';
 import { OrderShipment } from '../components/orders/OrderShipment';
+import { OrderRights } from '../components/orders/OrderRights';
 
 export const OrderDetails = () => {
   const { id } = useParams<{ id: string }>();
@@ -173,6 +174,7 @@ export const OrderDetails = () => {
             <OrderTimeline order={order} />
             <OrderPartner order={order} />
             <OrderShipment shipment={order.shipment} />
+            <OrderRights orderId={id || ''} rights={order.rights} concern={order.rightsConcern} onChanged={reload} />
             <OrderFinancials order={order} orderId={id || ''} orderNumber={order.displayId} onChanged={reload} />
           </div>
         </div>

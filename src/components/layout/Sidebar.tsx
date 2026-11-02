@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { FiAlertTriangle, FiFileText } from "react-icons/fi";
+import { FiAlertTriangle, FiFileText, FiShield } from "react-icons/fi";
 import { apiFetch } from '../../utils/api';
 import { confirmLeave } from '../../utils/leaveGuard';
 import { MdClose } from "react-icons/md";
@@ -21,6 +21,7 @@ const nav = [
     path: "/fulfilment-partners",
   },
   { label: "Issues", icon: FiAlertTriangle, path: "/issues" },
+  { label: "Rights", icon: FiShield, path: "/rights" },
   { label: "Approvals", icon: AiOutlineCheckCircle, path: "/printer-approvals" },
   { label: "Earnings", icon: AiOutlineDollar, path: "/earnings" },
   { label: "Payouts", icon: AiOutlineBank, path: "/payouts" },
@@ -43,16 +44,23 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Open customer reports, so one waiting is seen from any page.
-  const [openIssues, setOpenIssues] = useState(0);
+  /*
+   * What waits on an admin, so it is seen from any page: open customer reports,
+   * and rights disputes awaiting an answer plus partners' open rights concerns.
+   */
+  const [waiting, setWaiting] = useState<Record<string, number>>({});
   useEffect(() => {
     let alive = true;
-    const load = () =>
-      apiFetch('/admin/issues/counts')
+    const count = (path: string, url: string, read: (data: any) => number) =>
+      apiFetch(url)
         .then((data) => {
-          if (alive) setOpenIssues(Number(data?.open) || 0);
+          if (alive) setWaiting((w) => ({ ...w, [path]: Number(read(data)) || 0 }));
         })
         .catch(() => {});
+    const load = () => {
+      count('/issues', '/admin/issues/counts', (d) => d?.open);
+      count('/rights', '/admin/rights/summary', (d) => (Number(d?.waiting) || 0) + (Number(d?.openConcerns) || 0));
+    };
     load();
     const id = window.setInterval(load, 30000);
     return () => {
@@ -112,12 +120,12 @@ export const Sidebar = ({ open = false, onClose }: { open?: boolean; onClose?: (
               <img src={iconSrc} alt={label} className="w-[18px] h-[18px]" />
             )}
             <span>{label}</span>
-            {path === '/issues' && openIssues > 0 && (
+            {(waiting[path] ?? 0) > 0 && (
               <span
                 className="ml-auto rounded-full bg-red-500 px-2 text-xs font-semibold leading-5 text-white"
-                aria-label={`${openIssues} open`}
+                aria-label={path === '/rights' ? `${waiting[path]} waiting on you` : `${waiting[path]} open`}
               >
-                {openIssues}
+                {waiting[path]}
               </span>
             )}
           </button>
