@@ -1,0 +1,73 @@
+/**
+ * Assignment SLA: a printer has exactly 24 hours from the moment a job is
+ * assigned to them to fulfil it. This is the single source of truth for that
+ * window — every assignment path and every read path computes the deadline
+ * through here so the countdown and expiration logic can never drift.
+ */
+export const ASSIGNMENT_SLA_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * The same window, but shortened for a rush job.
+ *
+ * The flat constant above ran at one speed for everything: an URGENT order the
+ * customer paid a rush surcharge on got exactly as long as a normal one, which
+ * made the surcharge a charge for nothing on the timing side.
+ */
+export const computeAssignmentDeadlineFor = (
+  assignedAt: Date,
+  priority: unknown,
+  acceptHours: { normal: number; urgent: number },
+): Date => {
+  const urgent = String(priority ?? "").trim().toUpperCase() === "URGENT";
+  const hours = urgent ? acceptHours.urgent : acceptHours.normal;
+  return new Date(assignedAt.getTime() + hours * 60 * 60 * 1000);
+};
+
+/** The deadline for a job assigned at `assignedAt` (assignedAt + 24h). */
+export const computeAssignmentDeadline = (assignedAt: Date): Date =>
+  new Date(assignedAt.getTime() + ASSIGNMENT_SLA_MS);
+
+/**
+ * The deadline to surface for an order, as an ISO string (or null when there is
+ * no basis for one). Prefers the stored `assignmentDeadline`; falls back to
+ * `assignedAt + 24h`, then to `createdAt + 24h` for legacy orders that predate
+ * the assignment-timestamp fields.
+ */
+const deadlineFrom = (
+  from: Date,
+  priority: unknown,
+  acceptHours?: { normal: number; urgent: number },
+): Date =>
+  acceptHours
+    ? computeAssignmentDeadlineFor(from, priority, acceptHours)
+    : computeAssignmentDeadline(from);
+
+export const resolveOrderDeadlineIso = (
+  order: {
+    assignmentDeadline?: Date | string | null;
+    assignedAt?: Date | string | null;
+    createdAt?: Date | string | null;
+    priority?: string | null;
+  },
+  /**
+   * The configured accept windows. Optional so existing callers keep working,
+   * but every caller should pass them: without it the fallback below reverts to
+   * the flat 24h constant and shows a partner a different number from the one
+   * the SLA monitor enforces.
+   */
+  acceptHours?: { normal: number; urgent: number },
+): string | null => {
+  if (order?.assignmentDeadline) {
+    const d = new Date(order.assignmentDeadline);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+  if (order?.assignedAt) {
+    const a = new Date(order.assignedAt);
+    if (!Number.isNaN(a.getTime())) return deadlineFrom(a, order.priority, acceptHours).toISOString();
+  }
+  if (order?.createdAt) {
+    const c = new Date(order.createdAt);
+    if (!Number.isNaN(c.getTime())) return deadlineFrom(c, order.priority, acceptHours).toISOString();
+  }
+  return null;
+};

@@ -1,0 +1,148 @@
+import Stripe from "stripe";
+import { env } from "../config/env.js";
+
+// TEST MODE ONLY — switch to live key via STRIPE_SECRET_KEY env var when ready
+const stripeSecretKey = env.stripeSecretKey || "sk_test_placeholder";
+
+export const stripe = new Stripe(stripeSecretKey, {
+  apiVersion: "2025-08-27.basil",
+});
+
+/** Whether a real key is present, as opposed to the placeholder above. */
+export const isStripeConfigured = (): boolean => Boolean(env.stripeSecretKey);
+
+/**
+ * Refuse before calling out, rather than letting the placeholder key be
+ * rejected upstream.
+ *
+ * Calling Stripe with `sk_test_placeholder` produced a 401 that read as an
+ * expired session and signed the partner out. Failing here says the true thing
+ * — payouts are not set up yet — and says it as a 503, which is what an
+ * unconfigured dependency is.
+ */
+export const assertStripeConfigured = (): void => {
+  if (isStripeConfigured()) return;
+  const error = new Error(
+    "Payouts are not set up yet. Once our payment provider is connected you'll be able to link your account here.",
+  ) as Error & { statusCode?: number; code?: string };
+  error.statusCode = 503;
+  error.code = "STRIPE_NOT_CONFIGURED";
+  throw error;
+};
+
+export const MINIMUM_PAYOUT_AMOUNT_CENTS = 1000; // $10.00 minimum
+
+/**
+ * Create a Stripe Connect account link for onboarding a printer (test mode).
+ */
+export async function createConnectAccountLink(
+  stripeAccountId: string,
+  refreshUrl: string,
+  returnUrl: string
+): Promise<string> {
+  const link = await stripe.accountLinks.create({
+    account: stripeAccountId,
+    refresh_url: refreshUrl,
+    return_url: returnUrl,
+    type: "account_onboarding",
+  });
+  return link.url;
+}
+
+/**
+ * Create a new Stripe Express Connect account (test mode).
+ */
+export async function createConnectAccount(email: string): Promise<string> {
+  const account = await stripe.accounts.create({
+    type: "express",
+    email,
+    capabilities: {
+      transfers: { requested: true },
+    },
+    settings: {
+      payouts: {
+        schedule: { interval: "manual" },
+      },
+    },
+  });
+  return account.id;
+}
+
+/**
+ * Retrieve a Connect account's details (test mode).
+ */
+export async function getConnectAccount(stripeAccountId: string) {
+  return stripe.accounts.retrieve(stripeAccountId);
+}
+
+/**
+ * The transfer already made for a payout, if any: the one thing that must never
+ * happen twice. Looked up on Stripe, not just in our record, so a transfer that
+ * went through just before a crash is still found.
+ */
+export async function findPayoutTransfer(stripeAccountId: string, payoutId: string): Promise<Stripe.Transfer | null> {
+  // Newest first; a retry follows its first attempt closely, so recent ones are enough.
+  let seen = 0;
+  for await (const transfer of stripe.transfers.list({ destination: stripeAccountId, limit: 100 })) {
+    if (transfer.metadata?.payoutId === payoutId && !transfer.reversed) return transfer;
+    if (++seen >= 300) break;
+  }
+  return null;
+}
+
+/** Moves a payout's money from the platform's balance to the partner's Stripe balance. */
+export function createPayoutTransfer(
+  stripeAccountId: string,
+  amountCents: number,
+  payoutId: string,
+  printerId: string,
+  attempt: number,
+): Promise<Stripe.Transfer> {
+  return stripe.transfers.create(
+    { amount: amountCents, currency: "usd", destination: stripeAccountId, metadata: { payoutId, printerId } },
+    { idempotencyKey: `payout-transfer-${payoutId}-${attempt}` },
+  );
+}
+
+/** Sends money from the partner's Stripe balance to their bank. */
+export function createBankPayout(
+  stripeAccountId: string,
+  amountCents: number,
+  payoutId: string,
+  printerId: string,
+  attempt: number,
+): Promise<Stripe.Payout> {
+  return stripe.payouts.create(
+    { amount: amountCents, currency: "usd", metadata: { payoutId, printerId } },
+    { stripeAccount: stripeAccountId, idempotencyKey: `payout-bank-${payoutId}-${attempt}` },
+  );
+}
+
+/** A bank payout as Stripe has it now; webhook events can arrive out of order. */
+export function retrieveBankPayout(stripeAccountId: string, stripePayoutId: string): Promise<Stripe.Payout> {
+  return stripe.payouts.retrieve(stripePayoutId, {}, { stripeAccount: stripeAccountId });
+}
+
+/**
+ * Construct a Stripe webhook event from raw body and signature header.
+ */
+export function constructWebhookEvent(
+  rawBody: Buffer,
+  signature: string,
+  secret: string
+): Stripe.Event {
+  return stripe.webhooks.constructEvent(rawBody, signature, secret);
+}
+
+/**
+ * Get next Friday's date at 09:00 UTC.
+ */
+export function getNextFridayDate(): Date {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0=Sun … 6=Sat
+  const daysUntilFriday = (5 - day + 7) % 7 || 7;
+  const next = new Date(now);
+  next.setUTCDate(now.getUTCDate() + daysUntilFriday);
+  next.setUTCHours(9, 0, 0, 0);
+  return next;
+}

@@ -1,0 +1,184 @@
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import type { Request } from "express";
+import { env } from "../config/env.js";
+
+/**
+ * Throttles for the unauthenticated auth surface.
+ *
+ * `express-rate-limit` was already a dependency and had never been imported, so
+ * login, registration and password reset accepted unlimited attempts. There is
+ * no account lockout either — nothing tracks failed attempts on the user — which
+ * left a password the only thing between an attacker and an account, guessable
+ * as fast as the network allows.
+ *
+ * Limits are per IP. Behind Render's proxy that requires `trust proxy`, set in
+ * app.ts; without it every request appears to come from the proxy and one
+ * attacker would rate-limit everybody.
+ */
+
+// Disabled under test so the suite is not throttled by its own fixtures.
+const skip = () => env.nodeEnv === "test";
+
+const message = (retryAfterMinutes: number) => ({
+  message: `Too many attempts. Please try again in ${retryAfterMinutes} minutes.`,
+});
+
+/**
+ * Sign-in and anything else that verifies a secret against an account.
+ *
+ * Counts successes as well as failures. Skipping successful requests sounds
+ * appealing but hands an attacker a free pass the moment they guess correctly,
+ * and credential-stuffing runs are mostly successes against reused passwords.
+ */
+export const authAttemptLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(15),
+});
+
+/**
+ * Account creation. Looser than sign-in — a shared office NAT can legitimately
+ * register several people — but bounded, since this writes rows and sends mail.
+ */
+export const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(60),
+});
+
+/**
+ * Password reset and OTP delivery.
+ *
+ * Tightest of the three: each request sends an email to an address the caller
+ * chose, so an unthrottled endpoint is a way to use our mail reputation to spam
+ * someone else's inbox.
+ */
+export const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(60),
+});
+
+/**
+ * Unauthenticated reads that hit the database.
+ *
+ * Generous, because these are ordinary page loads rather than credential
+ * attempts, but bounded: the endpoint is reachable by anyone and every call is
+ * a query. The response is cached server-side too, so this is the second of two
+ * limits rather than the only one.
+ */
+export const publicReadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many requests. Please try again shortly." },
+});
+
+/** One bucket per signed-in account, else per address. */
+const callerKey = (req: Request): string => {
+  const id = (req as any).user?.id;
+  return id ? `u:${id}` : `ip:${ipKeyGenerator(req.ip || "")}`;
+};
+const signedIn = (req: Request): boolean => Boolean((req as any).user?.id);
+
+/**
+ * Uploads and the image checks that follow each one. Guests may design before
+ * signing in, so they are allowed, but each of these stores a file or runs
+ * image processing: the ceiling is far above a real session (a 100-image
+ * batch is about 400 requests) and far below a flood.
+ */
+export const assetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: (req) => (signedIn(req) ? 3000 : 600),
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "You're uploading faster than we can keep up with. Please wait a few minutes and try again." },
+});
+
+/** Each address check is a request to the carrier, which may bill for it. */
+export const addressCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 40,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many address checks. Please wait a few minutes and try again." },
+});
+
+/** A rights check can send images to paid detectors, so checks are counted per account. */
+export const rightsCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many artwork checks. Please wait a few minutes and try again." },
+});
+
+/** AI edits spend a paid allowance, so they belong to an account and are counted per account. */
+export const aiEditLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 60,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "You've reached this hour's limit for AI edits. Please try again later." },
+});
+
+/** Upscaling multiplies an image up to eightfold in memory. */
+export const upscaleLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 120,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "You've reached this hour's limit for resolution boosts. Please try again later." },
+});
+
+/** Address lookups go to an outside service on our account. */
+export const geocodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  keyGenerator: callerKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: { message: "Too many address checks. Please try again shortly." },
+});
+
+/** The passkey step of sign-in and recovery codes: a secret is being checked. */
+export const twoFactorLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(15),
+});
+
+/** Closing an account checks the password again, so a stolen session can't be used to guess it. */
+export const accountCloseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip,
+  message: message(15),
+});

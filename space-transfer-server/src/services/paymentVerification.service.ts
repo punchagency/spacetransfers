@@ -1,0 +1,226 @@
+import { Order } from "../models/order.model.js";
+import { isStripeConfigured, stripe } from "./stripe.service.js";
+
+/**
+ * Proof that an order was actually paid for.
+ *
+ * `createOrder` checked only that `payment.paymentIntentId` was a non-empty
+ * string and then stored the client's payment object verbatim. Stripe was never
+ * consulted, so any authenticated customer could place an order by inventing an
+ * id:
+ *
+ *   payment: { method: "card", paymentIntentId: "pi_totally_made_up_1789…" }
+ *   -> 201, DTF-0269, $46.00, PENDING, queued for a partner to print.
+ *
+ * Pricing was already safe — the server reprices every line and ignores the
+ * client's figures — so the exploit could not choose its own price. It could
+ * simply not pay at all.
+ *
+ * Five things have to hold, and each has its own failure:
+ *   1. Stripe is configured        — otherwise nothing can be verified
+ *   2. the intent exists           — not an invented id
+ *   3. it succeeded                — not `requires_payment_method`, not canceled
+ *   4. it covers the order total   — not a $0.50 intent against a $46 order
+ *   5. it belongs to this customer — not someone else's receipt
+ *   6. it has not been spent       — one payment cannot buy two orders
+ */
+
+export interface VerifiedPayment {
+  paymentIntentId: string;
+  amountReceivedCents: number;
+  currency: string;
+  cardBrand: string | null;
+  cardLast4: string | null;
+  /** Stripe's fee in dollars; null while Stripe has not settled it. */
+  processingFee: number | null;
+}
+
+const badRequest = (message: string, statusCode = 400, code?: string) => {
+  const error = new Error(message) as Error & { statusCode?: number; code?: string };
+  error.statusCode = statusCode;
+  if (code) error.code = code;
+  return error;
+};
+
+/**
+ * A message a customer can act on, without naming our internals.
+ *
+ * "Your card was not charged" matters: the common cause is an intent that never
+ * completed, and someone whose order failed needs to know whether to expect a
+ * refund before they try again.
+ */
+const NOT_PAID =
+  "We could not confirm your payment, so the order was not placed. Your card has not been charged — please try again.";
+
+/**
+ * Stripe and the order lookup are injectable.
+ *
+ * Not for its own sake: these are the money paths, and with no Stripe key
+ * configured the only reachable branch is the "not configured" guard — every
+ * other check would go untested. The defaults are the real thing, so callers
+ * pass nothing.
+ */
+export interface PaymentVerificationDeps {
+  configured: () => boolean;
+  retrieveIntent: (id: string) => Promise<any>;
+  findOrderByIntent: (id: string) => Promise<{ displayId?: string } | null>;
+}
+
+const defaultDeps: PaymentVerificationDeps = {
+  configured: isStripeConfigured,
+  // `latest_charge` expanded for the card, and its balance transaction for the fee.
+  retrieveIntent: (id) => stripe.paymentIntents.retrieve(id, { expand: ["latest_charge.balance_transaction"] }),
+  findOrderByIntent: (id) =>
+    Order.findOne({ "payment.paymentIntentId": id }).select("_id displayId").lean() as any,
+};
+
+export const verifyCardPayment = async ({
+  paymentIntentId,
+  expectedTotal,
+  currency,
+  userId,
+  deps = defaultDeps,
+}: {
+  paymentIntentId: unknown;
+  /** The server's own total. Never the client's. */
+  expectedTotal: number;
+  currency: string;
+  userId: string;
+  deps?: PaymentVerificationDeps;
+}): Promise<VerifiedPayment> => {
+  const id = typeof paymentIntentId === "string" ? paymentIntentId.trim() : "";
+  if (!id) throw badRequest("payment.paymentIntentId is required for card payments");
+
+  /*
+   * Refused outright rather than waved through. With no key we cannot tell a
+   * real payment from an invented one, and accepting the unverifiable is the
+   * whole bug — an unconfigured Stripe must stop orders, not stop checking.
+   */
+  if (!deps.configured()) {
+    throw badRequest(
+      "Card payments are not available at the moment, so this order was not placed. Please try again shortly.",
+      503,
+      "STRIPE_NOT_CONFIGURED",
+    );
+  }
+
+  /*
+   * Checked before Stripe: a replay is cheap to detect and there is no reason
+   * to spend a round trip on one. The unique index on `payment.paymentIntentId`
+   * is what closes the race between two requests arriving together; this is the
+   * check that produces a sensible message for the ordinary case.
+   */
+  const alreadySpent = await deps.findOrderByIntent(id);
+  if (alreadySpent) {
+    throw badRequest(
+      "This payment has already been used for another order.",
+      409,
+      "PAYMENT_ALREADY_USED",
+    );
+  }
+
+  let intent: any;
+  try {
+    intent = await deps.retrieveIntent(id);
+  } catch (err: any) {
+    // An id Stripe has never issued. Logged in full; the caller is told only
+    // that it could not be confirmed.
+    console.warn(`[payment] could not retrieve intent ${id}: ${err?.message}`);
+    throw badRequest(NOT_PAID);
+  }
+
+  if (!intent || intent.status !== "succeeded") {
+    console.warn(`[payment] intent ${id} is ${intent?.status ?? "missing"}, not succeeded`);
+    throw badRequest(NOT_PAID);
+  }
+
+  /*
+   * The order's own total, computed server-side, converted the same way the
+   * intent was created. A one-cent tolerance absorbs rounding between the quote
+   * that created the intent and the order that consumes it; anything larger is
+   * a mismatch worth refusing.
+   */
+  const expectedCents = Math.round(expectedTotal * 100);
+  const received = Number(intent.amount_received ?? 0);
+  if (received + 1 < expectedCents) {
+    console.warn(
+      `[payment] intent ${id} paid ${received} but the order totals ${expectedCents}`,
+    );
+    throw badRequest(
+      "The payment does not cover the order total, so the order was not placed.",
+      400,
+      "PAYMENT_AMOUNT_MISMATCH",
+    );
+  }
+
+  if (String(intent.currency || "").toLowerCase() !== String(currency || "").toLowerCase()) {
+    console.warn(`[payment] intent ${id} is ${intent.currency}, order is ${currency}`);
+    throw badRequest(NOT_PAID);
+  }
+
+  const intentUser = String(intent.metadata?.userId || "");
+  if (intentUser && intentUser !== String(userId)) {
+    console.warn(`[payment] intent ${id} belongs to ${intentUser}, not ${userId}`);
+    throw badRequest(NOT_PAID, 403);
+  }
+
+  /*
+   * `charges` was dropped from PaymentIntents in Stripe's 2022-11-15 API, and
+   * this client is pinned to 2025-08-27 — so the card was always null and no
+   * order ever recorded which card paid for it. `latest_charge` replaced it.
+   */
+  const charge = typeof intent.latest_charge === "object" ? intent.latest_charge : null;
+  const card =
+    charge?.payment_method_details?.card ?? intent.charges?.data?.[0]?.payment_method_details?.card ?? null;
+  return {
+    paymentIntentId: id,
+    amountReceivedCents: received,
+    currency: String(intent.currency || currency).toUpperCase(),
+    cardBrand: card?.brand ? String(card.brand) : null,
+    cardLast4: card?.last4 ? String(card.last4) : null,
+    processingFee: stripeFeeOf(charge),
+  };
+};
+
+/**
+ * Stripe's fee for a charge, in dollars, from its (expanded) balance
+ * transaction. Null when the transaction is not available yet — a charge can
+ * settle a moment after it succeeds — so the fee is filled in later rather
+ * than recorded as zero.
+ */
+export const stripeFeeOf = (charge: any): number | null => {
+  const bt = charge && typeof charge.balance_transaction === "object" ? charge.balance_transaction : null;
+  const fee = Number(bt?.fee);
+  return bt && Number.isFinite(fee) ? Math.round(fee) / 100 : null;
+};
+
+/**
+ * Fills in Stripe's fee on an order that doesn't have it — orders placed before
+ * fees were recorded, or whose charge had not settled at checkout. Returns the
+ * fee (existing or found), or null when it can't be had. Never throws: the
+ * admin page that calls it must load regardless.
+ */
+export const recordMissingProcessingFee = async (
+  order: any,
+  deps: Pick<PaymentVerificationDeps, "configured" | "retrieveIntent"> = defaultDeps,
+): Promise<number | null> => {
+  const payment = order?.payment || {};
+  if (typeof payment.processingFee === "number") return payment.processingFee;
+  if (payment.method !== "card" || !deps.configured()) return null;
+  // Only a real Stripe payment has a fee to look up. Orders from before Stripe
+  // was connected carry placeholder ids ("mock_txn_…") that would be asked for,
+  // and refused, on every visit.
+  if (!/^pi_/.test(String(payment.paymentIntentId || ""))) return null;
+  try {
+    const intent = await deps.retrieveIntent(String(payment.paymentIntentId));
+    const charge = typeof intent?.latest_charge === "object" ? intent.latest_charge : null;
+    const fee = stripeFeeOf(charge);
+    if (fee === null) return null;
+    await Order.updateOne({ _id: order._id }, { $set: { "payment.processingFee": fee } });
+    if (order.payment) order.payment.processingFee = fee;
+    return fee;
+  } catch (err: any) {
+    console.warn(`[payment] fee lookup failed for order ${order?._id}: ${err?.message}`);
+    return null;
+  }
+};
