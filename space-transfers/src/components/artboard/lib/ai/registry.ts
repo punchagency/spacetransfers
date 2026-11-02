@@ -1,0 +1,84 @@
+import type { AiEditProvider, AiEditRequest, AiEditResult, AiIntentId } from "./types";
+import { AiEditAbortedError, NoProviderError } from "./types";
+import { localColorProvider, localProvider } from "./providers/local.provider";
+import { serverProvider } from "./providers/server.provider";
+
+/**
+ * Provider registry + dispatcher.
+ *
+ * Adding a vendor is `registerProvider(myProvider)` — no UI or hook changes.
+ * Providers are tried in ascending `priority` order, skipping any that don't
+ * support the intent or aren't currently available.
+ */
+
+const providers: AiEditProvider[] = [localProvider, serverProvider, localColorProvider];
+
+export const registerProvider = (provider: AiEditProvider) => {
+  const existing = providers.findIndex((p) => p.id === provider.id);
+  if (existing >= 0) providers[existing] = provider;
+  else providers.push(provider);
+};
+
+export const unregisterProvider = (id: string) => {
+  const index = providers.findIndex((p) => p.id === id);
+  if (index >= 0) providers.splice(index, 1);
+};
+
+export const listProviders = (): readonly AiEditProvider[] => [...providers];
+
+const candidatesFor = (intent: AiIntentId) =>
+  providers.filter((p) => p.supports(intent)).sort((a, b) => a.priority - b.priority);
+
+export const canServeIntent = async (intent: AiIntentId): Promise<boolean> => {
+  for (const provider of candidatesFor(intent)) {
+    try {
+      if (await provider.isAvailable()) return true;
+    } catch {
+      // An unavailable provider is not an error — keep probing the rest.
+    }
+  }
+  return false;
+};
+
+/**
+ * Runs an edit against the first available provider that supports the intent.
+ *
+ * A provider that throws is not fatal while another candidate remains — the
+ * dispatcher falls through, and if every candidate fails it reports the most
+ * useful error: a built-in provider's, when one ran. Those are worded for the
+ * customer about this image ("I couldn't find red in this image"), while the
+ * model's failure after a handoff is a generic "no model could complete this
+ * edit" that hid the real answer. Cancellation short-circuits immediately.
+ */
+export const runAiEdit = async (request: AiEditRequest): Promise<AiEditResult> => {
+  const candidates = candidatesFor(request.intent);
+  let lastError: unknown = null;
+  let localError: unknown = null;
+  let attempted = false;
+
+  for (const provider of candidates) {
+    if (request.signal?.aborted) throw new AiEditAbortedError();
+
+    let available = false;
+    try {
+      available = await provider.isAvailable();
+    } catch {
+      available = false;
+    }
+    if (!available) continue;
+
+    attempted = true;
+    try {
+      return await provider.edit(request);
+    } catch (error) {
+      if (error instanceof AiEditAbortedError) throw error;
+      lastError = error;
+      if (provider.id.startsWith("local")) localError ??= error;
+      console.warn(`[AI] provider "${provider.id}" failed — trying next`, error);
+    }
+  }
+
+  if (!attempted) throw new NoProviderError(request.intent);
+  const reported = localError ?? lastError;
+  throw reported instanceof Error ? reported : new Error("The AI edit failed");
+};

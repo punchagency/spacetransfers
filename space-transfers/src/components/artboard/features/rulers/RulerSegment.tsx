@@ -1,0 +1,53 @@
+import { CANVAS } from "../../../../config/artboard.config";
+
+export default function RulerSegment({
+  vertical = false,
+  label,
+  maxFraction = 1,
+  isDarkBg = false,
+}: {
+  vertical?: boolean;
+  label: number;
+  maxFraction?: number;
+  isDarkBg?: boolean;
+}) {
+  const base     = CANVAS.PIXELS_PER_INCH;
+  const rawTicks = [12, 24, 36, 48, 60, 72, 84].map(t => t * (base / 96));
+  const ticks    = rawTicks
+    .map(pos => ({
+      pos:  pos / base,
+      size: pos === base / 2 ? "large" : pos === base / 4 || pos === (3 * base) / 4 ? "medium" : "small",
+    }))
+    .filter(t => t.pos <= maxFraction + 1e-6);
+
+  // Colour tokens — light rulers on dark backgrounds, dark rulers on light ones.
+  const borderCls = isDarkBg ? 'border-white/50'  : 'border-gray-300';
+  const textCls   = isDarkBg ? 'text-white'        : 'text-gray-700';
+  const tickCls   = isDarkBg ? 'bg-white/80'       : 'bg-gray-400';
+
+  const labelPosClass = vertical ? "top-1 right-1" : "top-4 left-1";
+
+  return (
+    <div
+      className={`relative transition-colors duration-200 ${
+        vertical
+          ? `flex-1 w-full h-full border-t ${borderCls}`
+          : `flex-1 h-full border-l ${borderCls}`
+      }`}
+    >
+      {label !== 0 && (
+        <span className={`absolute text-[9px] font-normal select-none whitespace-nowrap transition-colors duration-200 ${textCls} ${labelPosClass}`}>
+          {label}
+        </span>
+      )}
+      {ticks.map(tick => {
+        const lengthPx = tick.size === "large" ? 12 : tick.size === "medium" ? 8 : 5;
+        const style = vertical
+          ? { top: `${tick.pos * 100}%`, left: 0, width: `${lengthPx}px`, height: "1px", transform: "translateY(-0.5px)" }
+          : { left: `${tick.pos * 100}%`, top: 0, height: `${lengthPx}px`, width: "1px", transform: "translateX(-0.5px)" };
+
+        return <div key={tick.pos} className={`absolute ${tickCls}`} style={style} />;
+      })}
+    </div>
+  );
+}

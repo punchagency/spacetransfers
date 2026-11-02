@@ -1,0 +1,227 @@
+import React, { useState } from "react";
+import { FiFileText } from "react-icons/fi";
+import { FaRegFolderOpen } from "react-icons/fa";
+import { FiSearch, FiAlertCircle } from "react-icons/fi";
+import { RiDeleteBin5Line } from "react-icons/ri";
+import { MdEdit, MdContentCopy } from "react-icons/md";
+interface LoadGangSheetModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  designs: Array<{
+    id: string;
+    title: string;
+    time: string;
+    size: string;
+    thumbnail: string;
+  }>;
+  /** True while the saved list is being read. */
+  isLoading?: boolean;
+  /** Why the list could not be read — shown instead of the empty state. */
+  error?: string | null;
+  onRetry?: () => void;
+  onRename?: (id: string, newTitle: string) => void;
+  onDuplicate?: (id: string) => void;
+  onDelete?: (id: string) => void;
+  onLoad?: (id: string) => void;
+  onSearch?: (term: string) => void;
+}
+
+const LoadGangSheetModal: React.FC<LoadGangSheetModalProps> = ({ isOpen, onClose, designs, isLoading, error, onRetry, onRename, onDuplicate, onDelete, onLoad, onSearch }) => {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const timeoutRef = React.useRef<ReturnType<typeof setTimeout>>();
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const term = e.target.value;
+    setSearchTerm(term);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      if (onSearch) onSearch(term);
+    }, 300);
+  };
+
+  const handleRename = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditTitle(currentTitle);
+  };
+
+  const saveRename = (id: string) => {
+    if (onRename && editTitle.trim()) {
+      onRename(id, editTitle.trim());
+    }
+    setEditingId(null);
+    setEditTitle("");
+  };
+
+  const handleDuplicate = (id: string) => {
+    if (onDuplicate) onDuplicate(id);
+  };
+
+  const handleDelete = (id: string) => {
+    if (onDelete) onDelete(id);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto py-4 sm:py-6 bg-black/20 backdrop-blur-xs">
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl mx-3 sm:mx-4 my-auto">
+        {/* Header */}
+        <div className="flex items-center gap-3 sm:gap-4 px-4 py-4 sm:px-6 sm:py-5">
+          <div className="flex h-10 w-10 sm:h-12 sm:w-12 flex-shrink-0 items-center justify-center rounded-xl bg-blue-600 shadow-md">
+            <FaRegFolderOpen className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-[18px] sm:text-[24px] text-gray-900 truncate">Gang Sheet Gallery</h2>
+            <p className="text-[12px] sm:text-[14px] text-gray-500">
+              Browse and manage your saved gang sheets
+            </p>
+          </div>
+        </div>
+
+        {/* Search */}
+        <div className="border-b border-[#E2E8F0] px-4 py-3 sm:px-6 sm:py-4">
+          <div className="relative">
+            <FiSearch className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search designs..."
+              className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-11 pr-4 text-sm text-gray-700 shadow-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              value={searchTerm}
+              onChange={handleSearchChange}
+            />
+          </div>
+        </div>
+
+        {/* Gang Sheet Cards */}
+        <div className="p-4 sm:p-6 pb-8 flex gap-4 overflow-x-auto min-h-[280px] sm:min-h-[320px]">
+          {error && designs.length === 0 ? (
+            <div className="w-full flex flex-col items-center justify-center px-6 text-center text-gray-500">
+              <div className="w-24 h-24 bg-red-50 rounded-full flex items-center justify-center mb-4">
+                <FiAlertCircle className="w-12 h-12 text-red-400" />
+              </div>
+              <p className="text-lg text-gray-700">Your sheets couldn't be loaded</p>
+              <p className="text-sm text-gray-500 mt-1 max-w-sm">{error}</p>
+              <p className="text-sm text-gray-500 mt-1">Your saved sheets are safe — this is only a problem reading the list.</p>
+              {onRetry && (
+                <button
+                  onClick={onRetry}
+                  className="mt-4 rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"
+                >
+                  Try again
+                </button>
+              )}
+            </div>
+          ) : isLoading && designs.length === 0 ? (
+            <div className="w-full flex flex-col items-center justify-center text-gray-500">
+              <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4 animate-pulse">
+                <FiFileText className="w-12 h-12 text-gray-400" />
+              </div>
+              <p className="text-lg text-gray-700">Loading your sheets…</p>
+            </div>
+          ) : designs.length === 0 ? (
+            <div className="w-full flex flex-col items-center justify-center text-gray-500">
+              <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                <FiFileText className="w-12 h-12 text-gray-400" />
+              </div>
+              <p className="text-lg text-gray-700">No designs found</p>
+              <p className="text-sm text-gray-500 mt-1">
+                Try adjusting your search or create a new design
+              </p>
+            </div>
+          ) : (
+            designs.map((design) => (
+              <div
+                key={design.id}
+                className="w-[220px] sm:w-[260px] flex-shrink-0 overflow-hidden rounded-2xl border-2 border-[#E2E8F0] hover:border-[#155DFC] bg-white shadow-sm cursor-pointer hover:shadow-md transition-all group relative"
+                onClick={() => {
+                  if (onLoad) {
+                    onLoad(design.id);
+                    onClose();
+                  }
+                }}
+              >
+                <div className="relative h-[200px] bg-[#E9F2F1] overflow-hidden flex items-center justify-center">
+                  <img
+                    key={design.thumbnail}
+                    src={design.thumbnail}
+                    alt={design.title}
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div className="px-4 py-3 pb-12">
+                  {editingId === design.id ? (
+                    <input
+                      type="text"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      onBlur={() => saveRename(design.id)}
+                      onKeyDown={(e) => e.key === 'Enter' && saveRename(design.id)}
+                      className="w-full font-medium text-gray-900 border border-blue-500 rounded px-2 py-1 outline-none"
+                      autoFocus
+                    />
+                  ) : (
+                    <h3 className="font-medium text-gray-900">{design.title}</h3>
+                  )}
+                  <div className="mt-1 flex items-center justify-between text-sm text-gray-500">
+                    <span>{design.time}</span>
+                    <span>{design.size}</span>
+                  </div>
+                </div>
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                  <button
+                    className="flex items-center gap-1 text-gray-700 hover:text-gray-900"
+                    onClick={(e) => { 
+                      e.stopPropagation();
+                      handleRename(design.id, design.title);
+                    }}
+                  >
+                    <MdEdit className="h-4 w-4" />
+                    <span className="text-[12px]">Rename</span>
+                  </button>
+                  <button
+                    className="flex items-center gap-1 text-gray-700 hover:text-gray-900"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDuplicate(design.id);
+                    }}
+                  >
+                    <MdContentCopy className="h-4 w-4" />
+                    <span className="text-[12px]">Duplicate</span>
+                  </button>
+                  <button
+                    className="hover:text-gray-700"
+                    aria-label={`Delete ${design.title}`}
+                    title="Delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(design.id);
+                    }}
+                  >
+                    <RiDeleteBin5Line className="h-4 w-4 text-gray-600" />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex bg-[#F8FAFC] items-center justify-between gap-3 border-t border-[#E2E8F0] px-4 py-3 sm:px-6 sm:py-4">
+          <p className="text-xs sm:text-sm text-gray-500">
+            Click on any design to load it
+          </p>
+          <button
+            className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-medium text-white hover:bg-slate-800"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default LoadGangSheetModal;
