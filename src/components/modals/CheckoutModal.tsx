@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, Fragment } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, Fragment } from "react";
 import { gsap } from "gsap";
 import { MdClose, MdCheckCircle, MdArrowBack, MdWarningAmber } from "react-icons/md";
 import { CHECKOUT_FIELD_ORDER, checkoutFormErrors } from "../../lib/utils/checkoutValidation";
@@ -14,6 +14,8 @@ import { ErrorBoundary } from "../common/ErrorBoundary";
 import ConfirmModal from "./ConfirmModal";
 import AddressCheckModal, { type AddressPrompt } from "../checkout/AddressCheckModal";
 import { addressKey, checkShippingAddress, type AddressFields } from "../../lib/utils/addressCheck";
+import { checkArtworkRights, heldByItem, printedUrls, rightsStopIn, type ImageRights } from "../../lib/utils/rights";
+import { openRightsCenter } from "../../lib/rightsCenter";
 import { LuShoppingCart } from "react-icons/lu";
 import { apiFetch } from "../../lib/utils/api";
 import { stripEmbeddedImages, hasEmbeddedImages } from "../../lib/utils/payloadImages";
@@ -116,6 +118,15 @@ export default function CheckoutModal({
    */
   const [addressPrompt, setAddressPrompt] = useState<AddressPrompt | null>(null);
   const [checkingAddress, setCheckingAddress] = useState(false);
+  /*
+   * The rights check of the printed artwork, before payment, and the
+   * customer's own confirmation that they may print it (the Content Policy's
+   * terms). The payment carries both; the server checks again.
+   */
+  const [checkingRights, setCheckingRights] = useState(false);
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const artworkUrlsRef = useRef<string[]>([]);
+  const getArtworkUrls = useCallback(() => artworkUrlsRef.current, []);
   const confirmedAddressRef = useRef("");
   const formDataRef = useRef(formData);
   formDataRef.current = formData;
@@ -309,6 +320,8 @@ export default function CheckoutModal({
       },
       shippingMethod: shipping,
       payment: paymentPayload,
+      // Confirmed on the review step; the order records when.
+      rightsConfirmed: true,
       pricing: {
         subtotal: priced(shipping).subtotal,
         shippingCost,
@@ -382,8 +395,36 @@ export default function CheckoutModal({
     setStep(2);
   };
 
+  /*
+   * Every printed image is checked before the details step, so a held one is
+   * found there rather than after the card is entered. The cart it cleared is
+   * kept, so a cart changed while the modal was closed is checked again on the
+   * next step. If the check can't be reached, checkout carries on: the payment
+   * checks again on the server.
+   */
+  const rightsClearedRef = useRef<typeof cartItems | null>(null);
+  const holdForRights = async (): Promise<boolean> => {
+    setCheckingRights(true);
+    try {
+      const checking = cartItems;
+      const prepared = await stripEmbeddedImages({ items: checking });
+      const held = heldByItem(prepared.items, await checkArtworkRights(printedUrls(prepared.items)));
+      if (held.length) {
+        rightsClearedRef.current = null;
+        openRightsCenter({ reason: "checkout", images: held });
+        return true;
+      }
+      rightsClearedRef.current = checking;
+    } catch {
+      rightsClearedRef.current = null;
+    } finally {
+      setCheckingRights(false);
+    }
+    return false;
+  };
+
   const handleNextStep = async () => {
-    if (isSubmitting || checkingAddress || addressPrompt) return;
+    if (isSubmitting || checkingAddress || checkingRights || addressPrompt) return;
 
     if (step === 0) {
       if (!isCartValid) {
@@ -400,9 +441,13 @@ export default function CheckoutModal({
         onRequireSignIn?.();
         return;
       }
+      if (await holdForRights()) return;
       setStep(1);
       return;
     }
+
+    // Reopened past the first step with a different cart: check it again here.
+    if ((step === 1 || step === 2) && rightsClearedRef.current !== cartItems && (await holdForRights())) return;
 
     if (step === 1) {
       const problems = CHECKOUT_FIELD_ORDER.filter((key) => checkoutErrors[key]);
@@ -459,10 +504,17 @@ export default function CheckoutModal({
         if (!handler) {
           throw new Error("Card payment is not configured");
         }
+        // The images the order will print, uploaded, for the payment's rights check.
+        artworkUrlsRef.current = printedUrls((await stripEmbeddedImages({ items: cartItems })).items);
 
         const { paymentIntentId } = await handler();
         await placeOrder({ method: "card", paymentIntentId });
       } catch (err: any) {
+        const held: ImageRights[] | null = rightsStopIn(err);
+        if (held) {
+          const prepared = await stripEmbeddedImages({ items: cartItems }).catch(() => ({ items: cartItems }));
+          openRightsCenter({ reason: "checkout", images: heldByItem(prepared.items, held) });
+        }
         toast.error(err.message || "Failed to place order");
       } finally {
         setIsSubmitting(false);
@@ -719,6 +771,7 @@ export default function CheckoutModal({
                     (stripePromise ? (
                       <Elements stripe={stripePromise}>
                         <PaymentStep
+                          getArtworkUrls={getArtworkUrls}
                           payment={payment}
                           setPayment={setPayment}
                           shipping={shipping}
@@ -745,6 +798,7 @@ export default function CheckoutModal({
                       </Elements>
                     ) : (
                       <PaymentStep
+                        getArtworkUrls={getArtworkUrls}
                         payment={payment}
                         setPayment={setPayment}
                         shipping={shipping}
@@ -778,6 +832,20 @@ export default function CheckoutModal({
                       shipping={shipping}
                       payment={payment}
                     />
+                  )}
+                  {step === 3 && (
+                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-gray-200 bg-white p-4 text-[13px] leading-relaxed text-gray-800">
+                      <input
+                        type="checkbox"
+                        checked={rightsConfirmed}
+                        onChange={(e) => setRightsConfirmed(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600"
+                      />
+                      <span>
+                        I own this artwork or have the rights to print it, and it follows the Content &amp; IP Policy. Space Transfers may cancel an
+                        order that infringes someone's rights.
+                      </span>
+                    </label>
                   )}
 
                   {step === 4 && (
@@ -856,11 +924,13 @@ export default function CheckoutModal({
                         </div>
                       </div>
 
+                      {/* The same path as the summary's button: sign-in, then the rights check. */}
                       <button
-                        onClick={() => setStep(1)}
-                        className="w-full mt-4 rounded-lg bg-black py-3 text-sm font-semibold text-white hover:bg-gray-900"
+                        onClick={() => void handleNextStep()}
+                        disabled={checkingRights}
+                        className="w-full mt-4 rounded-lg bg-black py-3 text-sm font-semibold text-white hover:bg-gray-900 disabled:cursor-wait disabled:bg-gray-500"
                       >
-                        Proceed to Checkout
+                        {checkingRights ? "Checking artwork…" : "Proceed to Checkout"}
                       </button>
                       {/* The way back to the artboard, where the rest of the order is built. */}
                       <button
@@ -883,11 +953,14 @@ export default function CheckoutModal({
                       estimated={isEstimate}
                       updating={quoteLoading}
                       onNext={handleNextStep}
-                      isSubmitting={isSubmitting || checkingAddress}
-                      submittingLabel={checkingAddress ? "Checking address…" : finalizingArtwork ? "Finalizing artwork…" : undefined}
+                      isSubmitting={isSubmitting || checkingAddress || checkingRights}
+                      submittingLabel={
+                        checkingRights ? "Checking artwork…" : checkingAddress ? "Checking address…" : finalizingArtwork ? "Finalizing artwork…" : undefined
+                      }
                       disableNext={
                         (step === 0 && !isCartValid) ||
-                        (step === 2 && !isPaymentValid)
+                        (step === 2 && !isPaymentValid) ||
+                        (step === 3 && !rightsConfirmed)
                       }
                       nextLabel={
                         step === 2 && !stripePromise
@@ -895,7 +968,9 @@ export default function CheckoutModal({
                           : step === 2 && !isPaymentValid
                           ? "Enter card details"
                           : step === 3
-                            ? "Place Order"
+                            ? rightsConfirmed
+                              ? "Place Order"
+                              : "Confirm the artwork rights first"
                             : undefined
                       }
                     />

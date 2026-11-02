@@ -34,6 +34,7 @@ import type { ArtboardProps } from "./artboard/types";
 import { CANVAS, MAX_SHEET_HEIGHT_IN, UPLOAD_ACCEPT_ATTRIBUTE, ZOOM } from "../config/artboard.config";
 import { DEFAULT_EDITOR_SETTINGS } from "../lib/utils/editorSettings";
 import { autoNestWouldUndoRotation, isSheetFull } from "./artboard/lib/utils";
+import { useRightsVerdicts } from "./artboard/lib/hooks/useRightsVerdicts";
 
 /** The one choice a background removal has, worded the same wherever it is offered. */
 const clearEnclosedOption = (checked: boolean, viaModel: boolean, onChange: (checked: boolean) => void): ReviewOption => ({
@@ -232,6 +233,7 @@ export default function Artboard({
       autoCropUploads,
     );
   const transparencyVerdicts = useTransparencyVerdicts(items);
+  const rightsVerdicts = useRightsVerdicts(items);
 
   /**
    * The pieces whose transparency won't print as shown, in reading order, with
@@ -877,6 +879,7 @@ export default function Artboard({
           notUploadedIds={notUploadedIds}
           issueTarget={issueTarget}
           transparencyVerdicts={transparencyVerdicts}
+          rightsVerdicts={rightsVerdicts}
           onCancelUpload={cancelUploads}
           onBrowseFiles={() => fileInputRef.current?.click()}
           items={items}

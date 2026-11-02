@@ -76,6 +76,8 @@ interface CanvasContainerProps {
   issueTarget?: { id: number; nonce: number } | null;
   /** Transparency verdicts by image URL (`useTransparencyVerdicts`). */
   transparencyVerdicts?: ReadonlyMap<string, FadeVerdict>;
+  /** Rights check verdicts by item id (`useRightsVerdicts`): held images only. */
+  rightsVerdicts?: ReadonlyMap<number, import("../../../../lib/utils/rights").ImageRights>;
   uploadFileName: string | null;
   onCancelUpload: () => void;
   /** Something else (the AI button) occupies the bottom-right — lift the scroll-to-top control clear of it. */
@@ -143,6 +145,7 @@ export default function CanvasContainer({
   notUploadedIds,
   issueTarget = null,
   transparencyVerdicts,
+  rightsVerdicts,
   uploadFileName,
   onCancelUpload,
   avoidBottomRight = false,
@@ -645,6 +648,7 @@ export default function CanvasContainer({
                   isNotUploaded={notUploadedIds?.has(it.id) ?? false}
                   issuePulse={issueTarget?.id === it.id ? issueTarget.nonce : 0}
                   transparency={transparencyVerdicts?.get(it.url)}
+                  rights={rightsVerdicts?.get(it.id)}
                 />
               ))}
             </div>

@@ -13,6 +13,7 @@ import { hydratePricePerSqFt, watchPricingSettings } from "./lib/utils/pricingRa
 import { resolveRoute } from "./lib/route";
 import LegalPage from "./pages/LegalPage";
 import NotFoundPage from "./pages/NotFoundPage";
+import RightsCenter from "./components/rights/RightsCenter";
 
 export default function App() {
   const route = resolveRoute(window.location.pathname);
@@ -47,6 +48,9 @@ function Builder() {
           browser extension rewriting the page is enough) blanked everything. */}
       <ErrorBoundary name="Notifications" fallback={null}>
         <Toaster position="top-center" containerStyle={{ top: 80 }} gutter={10} />
+      </ErrorBoundary>
+      <ErrorBoundary name="Rights reviews" fallback={null}>
+        <RightsCenter />
       </ErrorBoundary>
       {/* Last resort: each part of the editor has its own boundary, so this
           only shows if the page as a whole fails — instead of a blank screen. */}
