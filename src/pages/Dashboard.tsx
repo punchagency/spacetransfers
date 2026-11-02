@@ -128,6 +128,7 @@ export const Dashboard = () => {
         </label> */}
         <SelectInput
           id="dashboard-range"
+          aria-label="Period"
           value={range}
           onChange={(e) => setRange(e.target.value as Range)}
           containerClassName="w-44"
@@ -138,7 +139,7 @@ export const Dashboard = () => {
             </option>
           ))}
         </SelectInput>
-        <span className="text-xs text-gray-400">
+        <span className="text-xs text-gray-500">
           Applies to Total Orders, Unassigned Orders and Total Revenue
         </span>
       </div>

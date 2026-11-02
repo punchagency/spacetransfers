@@ -145,6 +145,7 @@ export const GeneralSettings = () => {
     <div className="space-y-1.5">
       <label className="text-sm font-medium text-gray-700">{label}</label>
       <input
+        aria-label={label}
         type="number"
         min="0"
         step="0.01"
@@ -293,6 +294,7 @@ export const GeneralSettings = () => {
                     <div key={key} className="space-y-1">
                       <label className="text-xs font-medium text-gray-600">{label}</label>
                       <input
+                        aria-label={`Box ${i + 1}: ${label}`}
                         type="number"
                         min="0"
                         step="0.01"

@@ -40,6 +40,8 @@ export const Topbar = ({ onOpenMenu }: { onOpenMenu?: () => void }) => {
     const meta = n.meta || {};
     if (meta.orderId) return `/dashboard/orders/${meta.orderId}`;
     if (meta.partnerId) return `/dashboard/fulfilment-partners/${meta.partnerId}`;
+    if (meta.payoutId || meta.type === "payout_drafts") return "/payouts";
+    if (meta.disputeId || meta.type === "rights_dispute") return "/rights";
     return null;
   };
 
@@ -144,7 +146,7 @@ export const Topbar = ({ onOpenMenu }: { onOpenMenu?: () => void }) => {
 
               <div className="p-4 space-y-3 border-b border-gray-100">
                 <div className="flex items-center gap-2 border border-gray-200 rounded-lg px-3 py-2">
-                  <AiOutlineSearch className="w-4 h-4 text-gray-400" />
+                  <AiOutlineSearch className="w-4 h-4 text-gray-500" />
                   <input
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
@@ -216,7 +218,7 @@ export const Topbar = ({ onOpenMenu }: { onOpenMenu?: () => void }) => {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-3">
                               <div className="font-semibold text-sm text-gray-900 truncate">{n.title}</div>
-                              <div className="text-[11px] text-gray-400 whitespace-nowrap">{formatTime(n.createdAt)}</div>
+                              <div className="text-[11px] text-gray-500 whitespace-nowrap">{formatTime(n.createdAt)}</div>
                             </div>
                             <div className="mt-1 text-xs text-gray-600">{n.message}</div>
                             <div className="mt-2 flex items-center justify-between">

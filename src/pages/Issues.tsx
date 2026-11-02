@@ -110,13 +110,13 @@ export const Issues = () => {
                                                     </span>
                                                 </div>
                                                 <p className="mt-1 truncate text-sm text-gray-500">{issuePreview(issue) || 'No details given.'}</p>
-                                                <p className="mt-1 text-xs text-gray-400">
+                                                <p className="mt-1 text-xs text-gray-500">
                                                     {issue.customerName}
                                                     {issue.partnerName ? ` · printed by ${issue.partnerName}` : ''} · order {formatOrderStatus(issue.orderStatus).toLowerCase()} · $
                                                     {issue.orderTotal.toFixed(2)}
                                                 </p>
                                             </div>
-                                            <span className="shrink-0 text-xs text-gray-400">{when(issue.updatedAt)}</span>
+                                            <span className="shrink-0 text-xs text-gray-500">{when(issue.updatedAt)}</span>
                                         </button>
                                     </li>
                                 );

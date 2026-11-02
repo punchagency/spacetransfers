@@ -133,6 +133,23 @@ export function setAuth(token: string, user: AuthUser): void {
   notifyAuthChanged();
 }
 
+/** Changes what is remembered about the signed-in admin, keeping the session. */
+export function updateStoredUser(patch: Partial<AuthUser>): void {
+  const user = getUser();
+  if (!user) return;
+  try {
+    localStorage.setItem(USER_KEY, JSON.stringify({ ...user, ...patch }));
+  } catch {
+    /* ignore */
+  }
+  notifyAuthChanged();
+}
+
+/** True while this admin has no passkey: the console shows only the setup screen. */
+export function mustEnrollPasskey(): boolean {
+  return Boolean(getUserSnapshot()?.mustEnrollPasskey);
+}
+
 export function clearAuth(): void {
   try {
     localStorage.removeItem(TOKEN_KEY);

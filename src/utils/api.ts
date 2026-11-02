@@ -1,4 +1,4 @@
-import { clearAuth, getToken } from "./auth";
+import { clearAuth, getToken, getUser, updateStoredUser } from "./auth";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
 
@@ -86,9 +86,14 @@ async function apiFetchWithin(endpoint: string, options: RequestInit, timedOut: 
     // `PATCH /admin/profile/password` returns 403 for a wrong *submitted*
     // current password on an otherwise valid session, and logging the admin out
     // there would be wrong.
-    if (response.status === 401 && !endpoint.startsWith("/auth/login")) {
+    // The passkey step of sign-in is likewise a rejected credential, not a dead session.
+    if (response.status === 401 && !endpoint.startsWith("/auth/login") && !endpoint.startsWith("/auth/2fa")) {
       clearAuth();
       throw new Error(data?.message || "Your session has expired. Please sign in again.");
+    }
+    // The server will not serve an admin without a passkey; show them the setup screen.
+    if (response.status === 403 && data?.code === "PASSKEY_REQUIRED") {
+      if (!getUser()?.mustEnrollPasskey) updateStoredUser({ mustEnrollPasskey: true });
     }
     throw new Error(data?.message || data?.error || "Something went wrong");
   }

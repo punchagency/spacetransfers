@@ -10,10 +10,10 @@ export const StatCard = ({ title, value, trendPct, trendHint, subtitle }: StatCa
 
   const trendClass =
     direction === "up"
-      ? "text-green-600"
+      ? "text-green-700"
       : direction === "down"
-        ? "text-red-500"
-        : "text-gray-400";
+        ? "text-red-600"
+        : "text-gray-500";
 
   // "+12.5%" / "-8%" / "0%" — the sign carries the direction, so no icon-only
   // ambiguity for anyone who cannot distinguish the colours.
@@ -47,7 +47,7 @@ export const StatCard = ({ title, value, trendPct, trendHint, subtitle }: StatCa
           </span>
         )}
       </div>
-      {subtitle && <p className="text-xs text-gray-400 mt-1.5">{subtitle}</p>}
+      {subtitle && <p className="text-xs text-gray-500 mt-1.5">{subtitle}</p>}
     </div>
   );
 };

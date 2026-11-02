@@ -42,6 +42,8 @@ type PayoutRow = {
   processedAt?: string | null;
   failureReason?: string | null;
   rejectionReason?: string | null;
+  /** Set once the money has reached the partner's Stripe balance. */
+  stripeTransferId?: string | null;
   orderIds?: string[];
   printerId?: { _id: string; name?: string; companyName?: string; email?: string } | null;
 };
@@ -172,7 +174,7 @@ export const Payouts = () => {
       const res: any = await calls[action]();
       // A payment can be accepted by the API and still fail at Stripe.
       if ((action === "pay" || action === "retry") && res?.payout?.status === "failed") {
-        toast.error(`Stripe refused the payment: ${res.payout.failureReason || "no reason given"}`, { duration: 9000 });
+        toast.error(res.payout.failureReason || "Stripe refused the payment, with no reason given.", { duration: 9000 });
       } else {
         toast.success(done[action]);
       }
@@ -241,7 +243,7 @@ export const Payouts = () => {
                 <div key={c.label} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
                   <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{c.label}</p>
                   <p className="mt-1 text-2xl font-bold text-gray-900 tabular-nums">{c.value}</p>
-                  <p className="mt-1 text-xs text-gray-400">{c.note}</p>
+                  <p className="mt-1 text-xs text-gray-500">{c.note}</p>
                 </div>
               ))}
             </div>
@@ -286,7 +288,7 @@ export const Payouts = () => {
                           </td>
                           <td className="px-5 py-3 tabular-nums text-gray-700">{currency(p.totalPaid)}</td>
                           <td className="px-5 py-3">
-                            <Toggle enabled={p.payoutsEnabled} setEnabled={(next) => void togglePayouts(p, next)} />
+                            <Toggle label={`Payouts for ${p.name || "this partner"}`} enabled={p.payoutsEnabled} setEnabled={(next) => void togglePayouts(p, next)} />
                           </td>
                           <td className="px-5 py-3 text-right">
                             <button
@@ -358,7 +360,7 @@ export const Payouts = () => {
                               <button onClick={() => void openDetail(p._id)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">
                                 View jobs
                               </button>
-                              {payoutActions(p.status).map((a) => (
+                              {payoutActions(p.status, Boolean(p.stripeTransferId)).map((a) => (
                                 <button
                                   key={a}
                                   onClick={() => setConfirm({ action: a, payout: p })}
@@ -430,14 +432,19 @@ export const Payouts = () => {
             <h3 className="text-lg font-bold text-gray-900">
               {confirm.action === "approve" && `Approve ${currency(confirm.payout.amount)} for ${partnerName(confirm.payout.printerId)}?`}
               {confirm.action === "reject" && `Reject this ${currency(confirm.payout.amount)} payout?`}
-              {(confirm.action === "pay" || confirm.action === "retry") &&
-                `Pay ${currency(confirm.payout.amount)} to ${partnerName(confirm.payout.printerId)}?`}
+              {confirm.action === "pay" && `Pay ${currency(confirm.payout.amount)} to ${partnerName(confirm.payout.printerId)}?`}
+              {confirm.action === "retry" &&
+                (confirm.payout.stripeTransferId
+                  ? `Send ${currency(confirm.payout.amount)} to ${partnerName(confirm.payout.printerId)}'s bank again?`
+                  : `Try paying ${currency(confirm.payout.amount)} to ${partnerName(confirm.payout.printerId)} again?`)}
             </h3>
             <p className="mt-1 text-sm text-gray-500">
               {confirm.action === "approve" && "Approving doesn't send any money. Use Pay now afterwards to send it."}
               {confirm.action === "reject" && "The payout is closed and its jobs become ready to pay again."}
-              {(confirm.action === "pay" || confirm.action === "retry") &&
-                "This sends the money to the partner's Stripe account now. It can't be undone from here."}
+              {confirm.action === "retry" && confirm.payout.stripeTransferId
+                ? "The money is already in their Stripe balance. This only sends it on to their bank, so nothing is paid twice."
+                : (confirm.action === "pay" || confirm.action === "retry") &&
+                  "This sends the money to the partner's Stripe account now. It can't be undone from here."}
             </p>
             {cannotPay && (
               <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">

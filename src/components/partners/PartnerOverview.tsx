@@ -75,11 +75,11 @@ export const PartnerOverview = ({
                 <h2 className="text-md font-bold text-gray-900">Company Information</h2>
                 <div className="space-y-4">
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiBriefcase className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Business Name</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Business Name</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.companyName}</p>
                         </div>
                     </div>
@@ -93,16 +93,16 @@ export const PartnerOverview = ({
                       and not required for approval.
                     */}
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiFileText className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Business Type</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Business Type</p>
                             {partner.businessType ? (
                                 <p className="text-sm font-semibold text-gray-900">{partner.businessType}</p>
                             ) : (
                                 <p
-                                    className="text-sm font-semibold text-gray-400"
+                                    className="text-sm font-semibold text-gray-500"
                                     title="The partner has not set this on their own profile."
                                 >
                                     Not provided
@@ -118,41 +118,41 @@ export const PartnerOverview = ({
                       name and no idea who they were asking for.
                     */}
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiUser className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Contact Name</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Contact Name</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.contactName || 'N/A'}</p>
                         </div>
                     </div>
 
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiMail className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Email</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Email</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.email}</p>
                         </div>
                     </div>
 
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiPhone className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Phone</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Phone</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.phone}</p>
                         </div>
                     </div>
 
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiMapPin className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Address</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Address</p>
                             {(() => {
                               const a = partner.address;
                               const lines = a
@@ -179,21 +179,21 @@ export const PartnerOverview = ({
                     </div>
 
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiGlobe className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium">Website</p>
+                            <p className="text-[12px] text-gray-500 font-medium">Website</p>
                             <p className="text-sm font-semibold text-gray-900">{partner.website || 'N/A'}</p>
                         </div>
                     </div>
 
                     <div className="flex gap-4">
-                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-400 shrink-0">
+                        <div className="w-10 h-10 bg-gray-50 rounded-full flex items-center justify-center text-gray-500 shrink-0">
                             <FiMapPin className="w-5 h-5" />
                         </div>
                         <div>
-                            <p className="text-[12px] text-gray-400 font-medium mb-2">Regions Covered</p>
+                            <p className="text-[12px] text-gray-500 font-medium mb-2">Regions Covered</p>
                             <div className="flex flex-wrap gap-2">
                                 {partner.regions.map(region => (
                                     <span key={region} className="px-3 py-1 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-500">
@@ -213,7 +213,7 @@ export const PartnerOverview = ({
                 <div className="space-y-6">
                     <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-500">Status</span>
-                        <span className={`px-3 py-1 rounded-full text-[12px] font-bold border ${partner.status === 'Active' ? 'bg-green-50 text-green-600 border-green-100' : partner.status === 'Suspended' ? 'bg-red-50 text-red-600 border-red-100' : partner.status === 'Rejected' ? 'bg-gray-100 text-gray-500 border-gray-200' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>
+                        <span className={`px-3 py-1 rounded-full text-[12px] font-bold border ${partner.status === 'Active' ? 'bg-green-50 text-green-700 border-green-100' : partner.status === 'Suspended' ? 'bg-red-50 text-red-700 border-red-100' : partner.status === 'Rejected' || partner.status === 'Closed' ? 'bg-gray-100 text-gray-600 border-gray-200' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>
                             {partner.status}
                         </span>
                         {(() => {
@@ -253,7 +253,7 @@ export const PartnerOverview = ({
                             <div className="flex justify-between items-center gap-3">
                                 <div>
                                     <span className="text-sm font-medium text-gray-500">Availability</span>
-                                    <p className="text-[11px] text-gray-400 mt-0.5">
+                                    <p className="text-[11px] text-gray-500 mt-0.5">
                                         {partner.availabilityStatus === 'paused'
                                             ? 'Not receiving auto-assigned orders'
                                             : 'Receiving auto-assigned orders'}
@@ -358,7 +358,7 @@ export const PartnerOverview = ({
                                     : `${(partner.averageProductionHours / 24).toFixed(1)} days`}
                             </span>
                         ) : (
-                            <span className="text-sm font-medium text-gray-400">No completed jobs yet</span>
+                            <span className="text-sm font-medium text-gray-500">No completed jobs yet</span>
                         )}
                     </div>
                     <div className="flex justify-between items-center">
@@ -371,7 +371,7 @@ export const PartnerOverview = ({
                                 {partner.onTimeDeliveryRate}%
                             </span>
                         ) : (
-                            <span className="text-sm font-medium text-gray-400">No completed jobs yet</span>
+                            <span className="text-sm font-medium text-gray-500">No completed jobs yet</span>
                         )}
                     </div>
                     <div className="flex justify-between items-center">

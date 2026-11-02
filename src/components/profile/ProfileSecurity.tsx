@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { FiEye, FiEyeOff } from "react-icons/fi";
 import toast from "react-hot-toast";
 import { apiFetch } from "../../utils/api";
+import { getUser, setAuth } from "../../utils/auth";
+import { PasskeyManager } from "../security/PasskeyManager";
+import { AdminPasskeyList } from "../security/AdminPasskeyList";
 
 export const ProfileSecurity = () => {
   const [loading, setLoading] = useState(true);
@@ -62,14 +65,17 @@ export const ProfileSecurity = () => {
     if (!canUpdatePassword) return;
     setUpdatingPassword(true);
     try {
-      await apiFetch("/admin/profile/password", {
+      const res = await apiFetch("/admin/profile/password", {
         method: "PATCH",
         body: JSON.stringify({
           currentPassword,
           newPassword,
         }),
       });
-      toast.success("Password updated");
+      // Changing it signs every other device out; this one carries on with a new session.
+      const me = getUser();
+      if (res?.token && me) setAuth(res.token, me);
+      toast.success("Password updated. Other devices have been signed out.");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -91,12 +97,20 @@ export const ProfileSecurity = () => {
         </p>
       </div>
 
+      <div className="mb-10">
+        <PasskeyManager account={String(getUser()?.email || "")} />
+      </div>
+
+      <div className="mb-10">
+        <AdminPasskeyList />
+      </div>
+
       {/* Change Password */}
       <div className="space-y-6">
         <div>
           <h3 className="text-base font-bold text-gray-900">Change Password</h3>
           {lastPasswordChange && (
-            <div className="text-xs text-gray-400 mt-1">
+            <div className="text-xs text-gray-500 mt-1">
               Last password change:{" "}
               {lastPasswordChange.toLocaleDateString("en-US", {
                 month: "short",
@@ -123,7 +137,7 @@ export const ProfileSecurity = () => {
               type="button"
               aria-label="Toggle current password visibility"
               onClick={() => setShowCurrent((v) => !v)}
-              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-600 transition-colors"
             >
               {showCurrent ? <FiEyeOff className="w-4 h-4" /> : <FiEye className="w-4 h-4" />}
             </button>
@@ -146,7 +160,7 @@ export const ProfileSecurity = () => {
               type="button"
               aria-label="Toggle new password visibility"
               onClick={() => setShowNew((v) => !v)}
-              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-600 transition-colors"
             >
               {showNew ? <FiEyeOff className="w-4 h-4" /> : <FiEye className="w-4 h-4" />}
             </button>
@@ -169,7 +183,7 @@ export const ProfileSecurity = () => {
               type="button"
               aria-label="Toggle confirm password visibility"
               onClick={() => setShowConfirm((v) => !v)}
-              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 transition-colors"
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-600 transition-colors"
             >
               {showConfirm ? <FiEyeOff className="w-4 h-4" /> : <FiEye className="w-4 h-4" />}
             </button>

@@ -60,7 +60,7 @@ export const OrderTimeline = ({ order }: OrderTimelineProps) => {
                                     <p className="text-xs text-gray-500 mt-0.5">{entry.message}</p>
                                 )}
                                 {entry.time && (
-                                    <p className="text-xs text-gray-400 mt-0.5">{formatDate(entry.time)}</p>
+                                    <p className="text-xs text-gray-500 mt-0.5">{formatDate(entry.time)}</p>
                                 )}
                             </div>
                         </div>
@@ -98,7 +98,7 @@ export const OrderTimeline = ({ order }: OrderTimelineProps) => {
                             </div>
                             <div>
                                 <p className={`text-sm font-medium ${
-                                    isCurrent ? 'text-blue-600' : isCompleted ? 'text-gray-900' : 'text-gray-400'
+                                    isCurrent ? 'text-blue-600' : isCompleted ? 'text-gray-900' : 'text-gray-500'
                                 }`}>
                                     {step.label}
                                 </p>

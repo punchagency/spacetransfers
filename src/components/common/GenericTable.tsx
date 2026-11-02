@@ -119,7 +119,7 @@ export function GenericTable<T>({
                                         >
                                             <span>{col.header}</span>
                                             {sortColumnIndex === idx ? (
-                                                <span className="text-[11px] text-gray-400">
+                                                <span className="text-[11px] text-gray-500">
                                                     {sortDirection === "asc" ? "↑" : "↓"}
                                                 </span>
                                             ) : null}

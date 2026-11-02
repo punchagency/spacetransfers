@@ -156,7 +156,7 @@ export const AddPartnerModal = ({
           </div>
           <button
             onClick={handleClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-400 hover:text-gray-600"
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-500 hover:text-gray-600"
           >
             <FiX className="w-5 h-5" />
           </button>
@@ -166,7 +166,7 @@ export const AddPartnerModal = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-900">
-                Partner Name <span className="text-red-500">*</span>
+                Partner Name <span className="text-red-600">*</span>
               </label>
               <input
                 value={partnerName}
@@ -194,7 +194,7 @@ export const AddPartnerModal = ({
 
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-900">
-                Email <span className="text-red-500">*</span>
+                Email <span className="text-red-600">*</span>
               </label>
               <input
                 value={email}
@@ -227,7 +227,7 @@ export const AddPartnerModal = ({
               <label className="text-sm font-bold text-gray-900">
                 Service Areas
               </label>
-              <span className="text-xs text-gray-400">{regions.length} selected</span>
+              <span className="text-xs text-gray-500">{regions.length} selected</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {REGIONS.map((region) => {
@@ -249,14 +249,14 @@ export const AddPartnerModal = ({
 
           {/*
             Collected because three systems silently degrade without it: the
-            shipping-rate origin, the ShipStation label's ship-from, and the
+            shipping-rate origin, the shipping label's ship-from, and the
             nearest-partner ranking (which sorts on a state centroid and treats
             a missing state as infinitely far away).
           */}
           <div className="border-t border-gray-100 pt-6 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-gray-900">Business Address</h3>
-              <p className="text-xs text-gray-400">Where orders ship from</p>
+              <p className="text-xs text-gray-500">Where orders ship from</p>
             </div>
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-900">

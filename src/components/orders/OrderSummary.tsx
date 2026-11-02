@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FiMail, FiPhone, FiMapPin, FiImage, FiUser } from "react-icons/fi";
 import { apiFetch } from "../../utils/api";
+import AddressCheckNote, { type AddressCheck } from "./AddressCheckNote";
 
 interface OrderSummaryProps {
     order: {
@@ -18,6 +19,7 @@ interface OrderSummaryProps {
             postalCode: string;
             country: string;
             region?: string;
+            check?: AddressCheck | null;
         };
         items: Array<{
             name: string;
@@ -274,10 +276,11 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                         <div>
                             <p>{shippingAddress.street}</p>
                             <p>{shippingAddress.city}, {shippingAddress.state} {shippingAddress.postalCode}</p>
-                            <p className="text-xs text-gray-400 mt-1 uppercase">{shippingAddress.country}</p>
+                            <p className="text-xs text-gray-500 mt-1 uppercase">{shippingAddress.country}</p>
+                            <AddressCheckNote check={shippingAddress.check} />
                         </div>
                     ) : (
-                        <p className="italic text-gray-400">No shipping address provided</p>
+                        <p className="italic text-gray-500">No shipping address provided</p>
                     )}
                 </div>
             </div>
@@ -299,7 +302,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                             <div className="space-y-4">
                                 {displayItems.map((item, index) => (
                                     <div key={index} className="flex items-center gap-4 bg-gray-50 p-4 rounded-lg border border-gray-100">
-                                        <div className="w-12 h-12 bg-white rounded border border-gray-200 flex items-center justify-center text-gray-400 overflow-hidden shrink-0">
+                                        <div className="w-12 h-12 bg-white rounded border border-gray-200 flex items-center justify-center text-gray-500 overflow-hidden shrink-0">
                                             {item.fileUrl && !brokenPreviews.has(index) ? (
                                                 // A stored picture can be gone (orders placed through
                                                 // another server kept that server's files); fall back to
@@ -325,7 +328,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                                             <div className="text-right shrink-0">
                                                 <p className="text-sm font-semibold text-gray-900">${(item.price * item.quantity).toFixed(2)}</p>
                                                 {item.quantity > 1 && (
-                                                    <p className="text-[10px] text-gray-400">${item.price.toFixed(2)} each</p>
+                                                    <p className="text-[10px] text-gray-500">${item.price.toFixed(2)} each</p>
                                                 )}
                                             </div>
                                         )}
@@ -374,7 +377,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                                 Gangsheet Contents ({effectiveGangsheetItems.length} Unique Items)
                             </h4>
                             {gangsheetPageCount > 1 && (
-                                <span className="text-xs text-gray-400">
+                                <span className="text-xs text-gray-500">
                                     Showing {gangsheetStart + 1}–{gangsheetStart + visibleGangsheetItems.length}
                                 </span>
                             )}
@@ -387,7 +390,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                                 // page's DOM — showing the wrong thumbnail.
                                 <div key={`${it.sku}-${gangsheetStart + idx}`} className="bg-gray-50 p-4 rounded-lg border border-gray-100">
                                     <div className="flex items-start gap-4">
-                                        <div className="w-12 h-12 bg-white rounded border border-gray-200 flex items-center justify-center text-gray-400 overflow-hidden shrink-0">
+                                        <div className="w-12 h-12 bg-white rounded border border-gray-200 flex items-center justify-center text-gray-500 overflow-hidden shrink-0">
                                             {it.fileUrl ? (
                                                 <img src={it.fileUrl} alt={it.name} className="w-full h-full object-cover" />
                                             ) : (
@@ -403,13 +406,13 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                                             </div>
                                             <div className="mt-1 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-gray-600">
                                                 <div>
-                                                    <span className="text-gray-400">Total Qty:</span>{" "}
+                                                    <span className="text-gray-500">Total Qty:</span>{" "}
                                                     <span className="font-bold text-blue-600">{it.quantity}</span>
                                                 </div>
-                                                <div><span className="text-gray-400">Size:</span> {it.size}</div>
-                                                <div><span className="text-gray-400">Color:</span> {it.color}</div>
+                                                <div><span className="text-gray-500">Size:</span> {it.size}</div>
+                                                <div><span className="text-gray-500">Color:</span> {it.color}</div>
                                                 <div>
-                                                    <span className="text-gray-400">Attrs:</span>{" "}
+                                                    <span className="text-gray-500">Attrs:</span>{" "}
                                                     {it.customAttributes ? Object.entries(it.customAttributes).map(([k, v]) => `${k}:${String(v)}`).join(", ") : "N/A"}
                                                 </div>
                                             </div>
@@ -462,7 +465,7 @@ export const OrderSummary = ({ order }: OrderSummaryProps) => {
                     {currentSheet && sheets.length > 1 ? `Gangsheet Preview · Sheet ${currentSheet.index + 1}` : "Gangsheet Preview"}
                 </h3>
                 {(currentSheet?.sheetSize || order.preview?.sheetSize) && (
-                    <p className="text-xs text-gray-400 mb-3">
+                    <p className="text-xs text-gray-500 mb-3">
                         Sheet size: <span className="font-medium text-gray-600">{currentSheet?.sheetSize || order.preview?.sheetSize}</span>
                     </p>
                 )}

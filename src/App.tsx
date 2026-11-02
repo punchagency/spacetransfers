@@ -1,4 +1,8 @@
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { LegalDocuments } from './pages/LegalDocuments';
+import { LegalDocumentEditor } from './pages/LegalDocumentEditor';
+import { NotFoundPage } from './pages/NotFoundPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { ErrorBoundary, PageBoundary } from './components/common/ErrorBoundary';
 import AuthPage from './pages/AuthPage';
 import { Dashboard } from './pages/Dashboard';
@@ -17,6 +21,7 @@ import { OrdersStoreProvider } from './state/OrdersStore';
 import { NotificationsStoreProvider } from './state/NotificationsStore';
 import { ProtectedRoute, PublicOnlyRoute } from './components/auth/ProtectedRoute';
 import './App.css';
+import { Rights } from './pages/Rights';
 
 /**
  * Stores for the signed-in area. Mounted inside ProtectedRoute so they only
@@ -60,16 +65,20 @@ function App() {
                         <Route path="/dashboard/fulfilment-partners/:id" element={<PartnerDetails />} />
                         <Route path="/earnings" element={<Earnings />} />
                         <Route path="/issues" element={<Issues />} />
+                        <Route path="/rights" element={<Rights />} />
                         <Route path="/payouts" element={<Payouts />} />
                         <Route path="/profile" element={<Profile />} />
                         <Route path="/settings" element={<Settings />} />
+                        <Route path="/legal" element={<LegalDocuments />} />
+                        <Route path="/legal/:docId" element={<LegalDocumentEditor />} />
                     </Route>
                 </Route>
 
-                {/* Unknown path: aim at the dashboard; the guard redirects on to
-                    /auth when there's no session, so a stray URL can't log an
-                    admin out. */}
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                {/* Where an admin's password reset email lands; open with or without a session. */}
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
+
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="*" element={<NotFoundPage />} />
             </Routes>
             </ErrorBoundary>
         </BrowserRouter>

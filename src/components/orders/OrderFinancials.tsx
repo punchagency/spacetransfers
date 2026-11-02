@@ -102,13 +102,13 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                   are not on it and must not be read as though they were.
                 */}
                 <div className="pt-2">
-                    <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">
+                    <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
                         Internal — not shown to the customer
                     </p>
                 </div>
                 {tax !== null && (
                     <div className="flex justify-between items-center text-sm">
-                        <span className="text-gray-600">Tax <span className="text-gray-400">(for the state)</span></span>
+                        <span className="text-gray-600">Tax <span className="text-gray-500">(for the state)</span></span>
                         <span className="font-medium text-gray-900">{minus(tax)}</span>
                     </div>
                 )}
@@ -116,7 +116,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                     <div className="flex justify-between items-center text-sm">
                         <span className="text-gray-600 cursor-help" title={shippingNote}>
                             Shipping{' '}
-                            <span className="text-gray-400">
+                            <span className="text-gray-500">
                                 ({f?.shippingCostSource === 'label' ? 'label' : f?.shippingCostSource === 'quote' ? 'quoted' : 'at cost'})
                             </span>
                         </span>
@@ -148,7 +148,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                 <div className="flex justify-between items-center text-sm">
                     <span className="text-gray-600">{cancelled ? 'Partner paid for work started' : 'Partner Cost'}</span>
                     <span
-                        className={`font-medium ${partnerCost === null ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
+                        className={`font-medium ${partnerCost === null ? 'text-gray-500 cursor-help' : 'text-gray-900'}`}
                         title={partnerCost === null ? f?.unavailableReason : undefined}
                     >
                         {minus(partnerCost)}
@@ -158,7 +158,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                 <div className="flex justify-between items-center text-sm">
                     <span className="text-gray-600">Card Processing Fee</span>
                     <span
-                        className={`font-medium ${processingFees === null ? 'text-gray-400 cursor-help' : 'text-gray-900'}`}
+                        className={`font-medium ${processingFees === null ? 'text-gray-500 cursor-help' : 'text-gray-900'}`}
                         title={
                             processingFees === null
                                 ? "Stripe's fee for this payment isn't recorded, so it isn't taken off the profit below."
@@ -173,7 +173,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                     <span
                         className={`font-bold ${
                             adminProfit === null
-                                ? 'text-gray-400 cursor-help'
+                                ? 'text-gray-500 cursor-help'
                                 : adminProfit >= 0
                                   ? 'text-green-600'
                                   : 'text-red-500'
@@ -188,12 +188,12 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                     >
                         {money(adminProfit)}
                         {isEstimate && (
-                            <span className="ml-1 text-[11px] font-normal text-gray-400">est.</span>
+                            <span className="ml-1 text-[11px] font-normal text-gray-500">est.</span>
                         )}
                     </span>
                 </div>
                 {processingFees === null && adminProfit !== null && (
-                    <p className="text-xs text-gray-400 pt-1">
+                    <p className="text-xs text-gray-500 pt-1">
                         Before the card processing fee, which isn't recorded for this order.
                     </p>
                 )}
@@ -231,7 +231,7 @@ export const OrderFinancials = ({ order, orderId, orderNumber, onChanged }: Orde
                   invoice next to internal margin figures, so "Invoice" alone
                   left it ambiguous whether the PDF carried them.
                 */}
-                <p className="text-xs text-gray-400 mt-2 text-center">
+                <p className="text-xs text-gray-500 mt-2 text-center">
                     The same PDF the customer can download. Shows what they paid — no partner
                     cost or margin.
                 </p>

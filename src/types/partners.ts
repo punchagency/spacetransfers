@@ -3,7 +3,7 @@ export interface Partner {
   name: string;
   email: string;
   regions: string[];
-  status: "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected";
+  status: PartnerStatus;
   /**
    * Whether the partner is currently taking work, as distinct from whether
    * their account is in good standing. A partner can be Active and Paused at
@@ -18,6 +18,9 @@ export interface Partner {
 
 export type AvailabilityStatus = "open" | "paused";
 
+/** "Closed" is a partner who closed their own account; their records stay. */
+export type PartnerStatus = "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected" | "Closed";
+
 export interface PartnerDetailsData {
   id: string;
   name: string;
@@ -27,7 +30,7 @@ export interface PartnerDetailsData {
   phone: string;
   website?: string;
   regions: string[];
-  status: "Active" | "Pending" | "Suspended" | "Under Review" | "Rejected";
+  status: PartnerStatus;
   ordersCompleted: number;
   /** Null until the partner has shipped something — not zero, which would read as instant. */
   averageProductionHours?: number | null;
@@ -48,6 +51,8 @@ export interface PartnerDetailsData {
     postalCode: string | null;
     country: string | null;
   } | null;
+  /** How many passkeys guard the partner's account. */
+  passkeys?: number;
   statusHistory?: Array<{
     from: string | null;
     to: string;
@@ -59,8 +64,6 @@ export interface PartnerDetailsData {
 }
 
 export interface PartnerSettingsApi {
-  /** Null when this partner has no warehouse of their own; HQ is used instead. */
-  shipStationWarehouseId?: number | null;
   jobCapacity?: { maxConcurrent?: number; dailyMax?: number; autoAccept?: boolean };
 }
 

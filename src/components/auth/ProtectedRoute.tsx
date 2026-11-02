@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { isAuthenticated, subscribeToAuth } from "../../utils/auth";
+import { isAuthenticated, mustEnrollPasskey, subscribeToAuth } from "../../utils/auth";
+import { PasskeySetupGate } from "../security/PasskeySetupGate";
 
 /**
  * Live auth state. Subscribing (rather than snapshotting once into useState)
@@ -21,9 +22,12 @@ export function ProtectedRoute() {
   const authed = useIsAuthenticated();
   const location = useLocation();
 
+  const enrolling = useSyncExternalStore(subscribeToAuth, mustEnrollPasskey, () => false);
+
   if (!authed) {
     return <Navigate to="/auth" replace state={{ from: location }} />;
   }
+  if (enrolling) return <PasskeySetupGate />;
   return <Outlet />;
 }
 

@@ -9,13 +9,13 @@ import { GenericTable } from "../common/GenericTable";
  */
 const getStatusColor = (label: string) => {
   switch (label) {
-    case "Completed":   return "text-green-600";
+    case "Completed":   return "text-green-700";
     case "Shipped":     return "text-gray-900";
     case "Ready to Ship": return "text-purple-600";
     case "Printing":    return "text-indigo-600";
     case "Assigned":    return "text-blue-600";
     case "Unassigned":  return "text-amber-500";
-    case "Cancelled":   return "text-gray-400";
+    case "Cancelled":   return "text-gray-500";
     default:            return "text-gray-500";
   }
 };
@@ -49,7 +49,7 @@ export const OrdersTable = ({
           {order.id}
           {order.isUrgent && (
             <span
-              className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-200"
+              className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-700 border border-red-200"
               title="Urgent — the partner is paid a rush surcharge on this order"
             >
               Urgent
@@ -80,7 +80,7 @@ export const OrdersTable = ({
       header: "Partner",
       sortValue: (o: Order) => o.partner,
       render: (order: Order) => (
-        <span className={order.partner === "Unassigned" ? "text-gray-400 italic" : "text-gray-600"}>
+        <span className={order.partner === "Unassigned" ? "text-gray-500 italic" : "text-gray-600"}>
           {order.partner}
         </span>
       )
@@ -123,7 +123,7 @@ export const OrdersTable = ({
           <span
             className={
               unknown
-                ? "font-normal text-gray-400 cursor-help"
+                ? "font-normal text-gray-500 cursor-help"
                 : String(order.profit).startsWith("-")
                   ? "font-bold text-red-600"
                   : "font-bold text-gray-900"
@@ -138,7 +138,7 @@ export const OrdersTable = ({
           >
             {order.profit}
             {!unknown && !order.profitRealized && (
-              <span className="ml-1 text-[11px] font-normal text-gray-400">est.</span>
+              <span className="ml-1 text-[11px] font-normal text-gray-500">est.</span>
             )}
           </span>
         );
@@ -160,7 +160,7 @@ export const OrdersTable = ({
        * affordance that says so.
        */
       render: () => (
-        <span className="text-gray-400 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
+        <span className="text-gray-500 group-hover:text-gray-600 font-medium text-xs uppercase tracking-wide">
           View
         </span>
       )
