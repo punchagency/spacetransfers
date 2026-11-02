@@ -22,8 +22,7 @@ import { exportGangsheetPng24 } from "../services/gangsheetExport.service.js";
 /** A solid 2x2 PNG, inlined so the renderer needs no network. */
 const SWATCH =
   "data:image/png;base64," +
-  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8Dwn4GBgYGJAQ0AAB" +
-  "Y0AQU8pQd9AAAAAElFTkSuQmCC";
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWMQqTjxH4QZYAwATZwJTT1ZqfsAAAAASUVORK5CYII=";
 
 /** A sheet of `count` swatches tiled down the page, one per row band. */
 const buildSheet = (count: number) => {
