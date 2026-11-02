@@ -1,0 +1,284 @@
+# Space Transfers on Render: the API and the three front ends, from one repo
+# whose root holds the four app folders:
+#
+#   space-transfer-server/   the API (Docker)
+#   space-transfers/         the store
+#   space-transfers-admin/   the admin console
+#   space-transfer-printer/  the printer portal
+#
+# Render → New → Blueprint, pick the repo. Render asks for every value marked
+# `sync: false` once, when the Blueprint is created; afterwards they are edited
+# in each service's Environment tab. What each one means is in the app's
+# .env.example. The order to do things in is in space-transfer-server/README.md,
+# under "Deploying". Each service redeploys only when its own folder changes.
+
+services:
+  # ── API ──────────────────────────────────────────────────────────────────────
+  - type: web
+    name: space-transfers-api
+    runtime: docker
+    rootDir: space-transfer-server
+    dockerfilePath: ./Dockerfile
+    branch: main
+    autoDeployTrigger: commit
+    region: virginia
+    # Free until launch: 512 MB, asleep after 15 idle minutes, no disk, no Shell
+    # (see README, "Deploying"). Print exports of long sheets need more memory
+    # than this. At launch: `plan: pro` (4 GB) and add this disk, which keeps
+    # partners' print exports between deploys:
+    #
+    #   disk:
+    #     name: uploads
+    #     mountPath: /app/uploads
+    #     sizeGB: 20
+    plan: free
+    # One instance only: the background jobs (payouts, tracking, backups…) have
+    # no lock, so a second instance would run each of them twice.
+    numInstances: 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 4000
+      # One print export at a time (each can need about 2.3 GB); raise it only
+      # on a plan with room for more.
+      - key: EXPORT_RENDER_CONCURRENCY
+        value: 1
+      # The three front ends' public addresses: links in emails, CORS, and the
+      # domain admin passkeys are bound to.
+      - key: APP_URL
+        sync: false
+      - key: ADMIN_APP_URL
+        sync: false
+      - key: PRINTER_APP_URL
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: MINIMUM_PAYOUT_AMOUNT_CENTS
+        value: 1000
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: EASYPOST_API_KEY
+        sync: false
+      # Real postage once the key is a production key: switched on at launch.
+      # No EASYPOST_CARRIERS: every carrier on the account is quoted and the
+      # cheapest wins.
+      - key: EASYPOST_LABELS_ENABLED
+        value: "false"
+      - key: EASYPOST_WEBHOOK_SECRET
+        generateValue: true
+      # Where quotes start when no partner serves the customer's region: the
+      # geographic centre of the contiguous US. Never printed on a label.
+      - key: SHIP_FROM_NAME
+        value: Space Transfers
+      - key: SHIP_FROM_CITY
+        value: Lebanon
+      - key: SHIP_FROM_STATE
+        value: KS
+      - key: SHIP_FROM_ZIP
+        value: "66952"
+      - key: SHIP_FROM_COUNTRY
+        value: US
+      - key: BACKUP_ENABLED
+        value: "true"
+      # Generated outside Render (openssl rand -hex 32) so a copy is kept
+      # elsewhere: without it the backups can't be read.
+      - key: BACKUP_ENCRYPTION_KEY
+        sync: false
+      - key: BACKUP_R2_BUCKET
+        sync: false
+      # Sentry project "Space Transfers API". A DSN only lets an app send reports,
+      # so it is kept here rather than entered by hand.
+      - key: SENTRY_DSN
+        value: https://11c6d2213619f0d1cb480cc6c044b0e7@o4512327371325440.ingest.us.sentry.io/4512327926218752
+      # The demo reports as "staging", so the two are told apart in Sentry.
+      - key: SENTRY_ENVIRONMENT
+        value: production
+      # The rights check's optional detectors (see the API README, "Rights check").
+      - key: GOOGLE_VISION_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Google sign-in and Gemini arrive later: add GOOGLE_CLIENT_ID and
+      # GEMINI_API_KEY here then, and VITE_GOOGLE_CLIENT_ID on the store and
+      # printer portal.
+
+  # ── Store ────────────────────────────────────────────────────────────────────
+  - type: web
+    name: space-transfers-store
+    runtime: static
+    rootDir: space-transfers
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: "26"
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: VITE_SITE_URL
+        sync: false
+      - key: VITE_SENTRY_DSN
+        value: https://99582d38c9e622e1d0f26fae56130b81@o4512327371325440.ingest.us.sentry.io/4512328040841216
+      - key: VITE_SENTRY_ENVIRONMENT
+        value: production
+      # A Sentry organization token: the build uploads its source maps with it,
+      # then deletes them. The same token for all three front ends.
+      - key: SENTRY_AUTH_TOKEN
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://accounts.google.com; worker-src 'self' blob:; media-src 'self' blob:; connect-src 'self' https: blob: data:; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https://js.stripe.com https://accounts.google.com; frame-src https://js.stripe.com https://hooks.stripe.com https://accounts.google.com"
+
+  # ── Admin console ────────────────────────────────────────────────────────────
+  - type: web
+    name: space-transfers-admin
+    runtime: static
+    rootDir: space-transfers-admin
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: "26"
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_STORE_URL
+        sync: false
+      - key: VITE_SENTRY_DSN
+        value: https://98ae746643ce0731848fd50d25209aeb@o4512327371325440.ingest.us.sentry.io/4512328040972288
+      - key: VITE_SENTRY_ENVIRONMENT
+        value: production
+      # A Sentry organization token: the build uploads its source maps with it,
+      # then deletes them. The same token for all three front ends.
+      - key: SENTRY_AUTH_TOKEN
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: X-Robots-Tag
+        value: noindex, nofollow
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://accounts.google.com; worker-src 'self' blob:; media-src 'self' blob:; connect-src 'self' https: blob: data:; script-src 'self'; frame-src 'none'"
+
+  # ── Printer portal ───────────────────────────────────────────────────────────
+  - type: web
+    name: space-transfers-printer
+    runtime: static
+    rootDir: space-transfer-printer
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: "26"
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_STORE_URL
+        sync: false
+      - key: VITE_SENTRY_DSN
+        value: https://6f87eff8ced4a868c976fb7dbdff5b3c@o4512327371325440.ingest.us.sentry.io/4512328041037824
+      - key: VITE_SENTRY_ENVIRONMENT
+        value: production
+      # A Sentry organization token: the build uploads its source maps with it,
+      # then deletes them. The same token for all three front ends.
+      - key: SENTRY_AUTH_TOKEN
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: X-Robots-Tag
+        value: noindex, nofollow
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline' https://accounts.google.com; worker-src 'self' blob:; media-src 'self' blob:; connect-src 'self' https: blob: data:; script-src 'self' https://accounts.google.com https://apis.google.com; frame-src 'self' blob: data: https:"
