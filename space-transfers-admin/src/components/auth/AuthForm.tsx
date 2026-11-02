@@ -1,0 +1,241 @@
+import { useState } from "react";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
+import { HiOutlineEye, HiOutlineEyeOff } from "react-icons/hi";
+import { apiFetch } from "../../utils/api";
+import { setAuth } from "../../utils/auth";
+import toast from "react-hot-toast";
+import { needsSecondStep, type SecondStepChallenge } from "../../utils/passkeys";
+import { SecondStep } from "../security/SecondStep";
+
+export const AuthForm = () => {
+  const [showPassword, setShowPassword] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [secondStep, setSecondStep] = useState<SecondStepChallenge | null>(null);
+  const [searchParams] = useSearchParams();
+  const [forgot, setForgot] = useState(() => searchParams.get("forgot") === "1");
+  const [resetSent, setResetSent] = useState(false);
+
+  const requestReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLoading) return;
+    if (!email.trim()) {
+      toast.error("Enter your email address.");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await apiFetch("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email: email.trim(), role: "ADMIN" }) });
+      setResetSent(true);
+    } catch (error: any) {
+      toast.error(error.message || "The reset link couldn't be sent. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const finishSignIn = (response: any) => {
+    if (response?.user?.role !== "ADMIN") {
+      toast.error("Access denied. Admin account required.");
+      setSecondStep(null);
+      return;
+    }
+    setAuth(response.token, response.user);
+    if (typeof response.recoveryCodesLeft === "number") {
+      toast(`Signed in with a recovery code. ${response.recoveryCodesLeft} left.`, { duration: 8000 });
+    } else if (!response.user.mustEnrollPasskey) {
+      toast.success("Welcome back, Admin!");
+    }
+    // Return the operator to whatever the guard intercepted, so a deep link
+    // survives the login round trip.
+    const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
+    navigate(from || "/dashboard", { replace: true });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLoading) return;
+
+    if (!email.trim() || !password) {
+      toast.error("Enter your email and password.");
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const response = await apiFetch("/auth/login", {
+        method: "POST",
+        // The console signs in to the admin account on this address, which may
+        // not be the only account it holds.
+        body: JSON.stringify({ email: email.trim(), password, role: "ADMIN" }),
+      });
+
+      // The password was right; an account with a passkey has one more step.
+      if (needsSecondStep(response)) {
+        setSecondStep(response);
+        return;
+      }
+      finishSignIn(response);
+    } catch (error: any) {
+      toast.error(error.message || "Authentication failed");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="w-full lg:w-1/2 flex flex-col justify-center items-center p-8 lg:p-16 bg-[#F8FAFC]">
+      <div className="w-full max-w-xl space-y-8">
+        {/* Logo */}
+        <div className="flex justify-center mb-8">
+          <div className="flex items-center ">
+            <span className="text-2xl font-bold text-slate-900 tracking-tight">
+              spacetransfers
+            </span>
+            <div className="relative">
+              <img src="/space.svg" alt="space" className="w-[74px] h-[74px]" />
+            </div>
+          </div>
+        </div>
+
+        {secondStep && (
+          <SecondStep
+            challenge={secondStep}
+            onSignedIn={finishSignIn}
+            onCancel={() => {
+              setSecondStep(null);
+              setPassword("");
+            }}
+          />
+        )}
+
+        {forgot && !secondStep && (
+          <form onSubmit={requestReset} className="space-y-5 text-left">
+            <div className="text-center space-y-2">
+              <h2 className="text-3xl font-bold text-slate-900">Reset your password</h2>
+              <p className="text-slate-500 text-sm">
+                {resetSent
+                  ? "If an admin account uses that address, a reset link is on its way. It works for 15 minutes."
+                  : "Enter your admin email and we'll send you a link to choose a new password."}
+              </p>
+            </div>
+            {!resetSent && (
+              <>
+                <div className="space-y-1.5">
+                  <label htmlFor="admin-reset-email" className="text-xs font-bold text-slate-900 ml-1 block">
+                    Email Address
+                  </label>
+                  <input
+                    id="admin-reset-email"
+                    type="email"
+                    autoComplete="username"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
+                    placeholder="admin@company.com"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-3.5 px-4 rounded-lg text-white font-semibold shadow-sm bg-[#2563EB] hover:bg-blue-700 disabled:bg-blue-400"
+                >
+                  {isLoading ? "Sending…" : "Send reset link"}
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => { setForgot(false); setResetSent(false); }}
+              className="w-full text-sm font-medium text-slate-500 hover:text-slate-700"
+            >
+              Back to sign in
+            </button>
+          </form>
+        )}
+
+        <div className={`text-center space-y-2 ${secondStep || forgot ? "hidden" : ""}`}>
+          <h2 className="text-3xl font-bold text-slate-900">Welcome Back</h2>
+          <p className="text-slate-500 text-sm">
+            Sign in to access your Admin Portal dashboard
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className={`space-y-5 text-left ${secondStep || forgot ? "hidden" : ""}`}>
+          <div className="space-y-5">
+            <div className="space-y-1.5">
+              <label
+                htmlFor="admin-email"
+                className="text-xs font-bold text-slate-900 ml-1 block"
+              >
+                Email Address *
+              </label>
+              <input
+                id="admin-email"
+                type="email"
+                autoComplete="username"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
+                placeholder="admin@company.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="admin-password"
+                className="text-xs font-bold text-slate-900 ml-1 block"
+              >
+                Password *
+              </label>
+              <div className="relative">
+                <input
+                  id="admin-password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm placeholder:text-slate-400"
+                  placeholder="Enter password"
+                />
+                <button
+                  type="button"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  {showPassword ? (
+                    <HiOutlineEyeOff className="text-lg" />
+                  ) : (
+                    <HiOutlineEye className="text-lg" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button type="button" onClick={() => setForgot(true)} className="text-sm font-medium text-blue-600 hover:underline">
+              Forgot password?
+            </button>
+          </div>
+
+          <button
+            type="submit"
+            disabled={isLoading}
+            className={`w-full py-3.5 px-4 rounded-lg text-white font-semibold shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.99] mt-6 ${
+              isLoading
+                ? "bg-blue-400 cursor-not-allowed"
+                : "bg-[#2563EB] hover:bg-blue-700"
+            }`}
+          >
+            <span>{isLoading ? "Please Wait..." : "Sign In"}</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
