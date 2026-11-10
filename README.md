@@ -15,3 +15,8 @@ services; each redeploys only when its own folder changes.
 
 Secrets never go in git. Every secret in `render.yaml` is `sync: false` and is
 set in the Render dashboard.
+
+## Documentation
+
+Start with [docs/](docs/README.md): the handover, architecture, development,
+operations, and the product decisions behind the rules in the code.
